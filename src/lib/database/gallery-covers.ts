@@ -1,5 +1,5 @@
 /**
- * 갤러리 카드의 미리보기 — 행 페이지 본문의 첫 이미지 (DB 심화 2f-2조각 · F-04-05)
+ * 갤러리 카드의 미리보기 — 행 페이지 본문의 첫 이미지 · 행 페이지의 커버 (DB 심화 2f-2조각 · 34번 트랙 PC-5 · F-04-05 · F-02-06)
  *
  * 정본: 00-canonical-data-model.md §3.6 [보강] 갤러리 ④ · 04-database-views.md F-04-05 *"`page_content`: 페이지 본문의 첫 이미지
  *       블록을 썸네일로 사용 [추정]"*
@@ -20,15 +20,57 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
-import { imageDisplayUrl, readImageSource } from '../block/image.ts'
+import { imageContentPath, imageDisplayUrl, readImageSource } from '../block/image.ts'
+import { coverBackground, readPageCover } from '../block/page-cover.ts'
+import type { GalleryLayout } from './gallery.ts'
 
 /** 본문을 걷는 깊이의 상한(Y-1) — 그보다 깊은 이미지는 보지 않는다(편집기의 중첩도 그만큼 깊지 않다). */
 const MAX_COVER_DEPTH = 10
 
-/** 행 id → 카드에 넣을 이미지 주소. 이미지가 없는 행은 빠진다. */
-export type CardCovers = Readonly<Record<string, string>>
+/**
+ * 카드의 미리보기 하나 — 이미지 주소(글) 또는 내장 커버의 배경(PC-5 — 단색 · 그라디언트는 그림이 아니다). 글을 그대로 둔 것은 2f-2 부터의
+ * 응답 모양(행 id → 주소)을 지키려서다.
+ */
+export type CardCover = string | { readonly background: string }
 
-export async function readCardCovers(ctx: SessionContext, rowIds: readonly string[]): Promise<CardCovers> {
+/** 행 id → 카드에 넣을 미리보기. 없는 행은 빠진다. */
+export type CardCovers = Readonly<Record<string, CardCover>>
+
+/** 레이아웃의 미리보기(`gallery.cover`)대로 읽는다 — 본문의 첫 이미지 · 행 페이지의 커버 · 없음. */
+export async function readGalleryCovers(ctx: SessionContext, cover: GalleryLayout['cover'], rowIds: readonly string[]): Promise<CardCovers> {
+  if (cover === 'page_content') return readCardCovers(ctx, rowIds)
+  if (cover === 'page_cover') return readPageCoverCards(ctx, rowIds)
+  return {}
+}
+
+/**
+ * 행 페이지의 커버(PC-5 · 정본 §3.4 [보강 PC-5]) — 올린 이미지는 워크스페이스의 파일 경로 · 주소는 그 주소 · 내장 커버는 배경. 커버가 없는
+ * 행은 빠진다. 위치(PC-3)는 싣지 않는다 — 카드는 가운데로 잘라 채운다(카드의 맞춤 설정이 정한다). 읽을 수 있는 스코프의 행만(본문의 첫
+ * 이미지와 같은 까닭).
+ */
+export async function readPageCoverCards(ctx: SessionContext, rowIds: readonly string[]): Promise<CardCovers> {
+  if (rowIds.length === 0) return {}
+  return withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return {}
+    const rows = await tx.query<{ id: string; cover: unknown }>(
+      `SELECT id, format -> 'page_cover' AS cover FROM live_block
+        WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page' AND perm_scope_id = ANY($3::uuid[])
+          AND format ? 'page_cover'`,
+      [rowIds, ctx.workspaceId, scopes],
+    )
+    const out: Record<string, CardCover> = {}
+    for (const r of rows) {
+      const cover = readPageCover(r.cover)
+      if (cover === null) continue
+      out[r.id] =
+        cover.type === 'gallery' ? { background: coverBackground(cover) } : cover.type === 'external' ? cover.url : imageContentPath(ctx.workspaceId, cover.file_id)
+    }
+    return out
+  })
+}
+
+export async function readCardCovers(ctx: SessionContext, rowIds: readonly string[]): Promise<Readonly<Record<string, string>>> {
   if (rowIds.length === 0) return {}
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)

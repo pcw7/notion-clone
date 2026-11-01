@@ -8,6 +8,7 @@
  * try/catch 를 빠뜨려 낙관적으로 칠한 칸이 되돌아가지 않는 경로를 만들지 않는다.
  */
 
+import type { CardCovers } from '@/lib/database/gallery-covers'
 import type { OpenPagesIn } from '@/lib/database/open-pages'
 import type { SubItemDisplay, SubItemFilterScope } from '@/lib/database/sub-item-scope'
 import type { FilterLeaf, FilterNode, SortKey } from '@/lib/database/filter'
@@ -315,7 +316,7 @@ export type RowPage = {
   hasMore: boolean
   nextCursor: string | null
   /** 갤러리의 카드 미리보기(2f-2) — 행 id → 이미지 주소. 갤러리가 아니면 비어 있다. */
-  covers?: Readonly<Record<string, string>>
+  covers?: CardCovers
   /** 첫 페이지에만 — 열 집계(2d-1)와 뷰의 컬럼 전부. 표 변경 알림(2k-2)이 다시 읽을 때 집계를 바꾸고 컬럼이 바뀌었는지 본다. */
   calculations?: Calculations
   columns?: ViewColumn[]
@@ -344,7 +345,7 @@ export function loadRows(
       rows: body.rows as RowJson[],
       hasMore: body.hasMore === true,
       nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
-      ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as Record<string, string> } : {}),
+      ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as CardCovers } : {}),
       ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
       ...(Array.isArray(body.columns) ? { columns: body.columns as ViewColumn[] } : {}),
     }),
@@ -374,7 +375,7 @@ export function loadGroupRows(
     // 덩이의 열 집계(G-2d) — 표 뷰의 첫 페이지에만 온다
     ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
     // 갤러리 덩이의 카드 미리보기(G-3a) — 그 페이지의 것
-    ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as Record<string, string> } : {}),
+    ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as CardCovers } : {}),
   }))
 }
 

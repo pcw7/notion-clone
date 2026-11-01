@@ -6,7 +6,7 @@
  *   ① 읽기는 너그럽다 — 없거나 모르는 값은 그 키만 기본값
  *   ② 바꿀 키만 받는다 — 모르는 키 · 값 · 빈 객체는 거부
  *   ③ 합치기 — 바꾼 키만 바뀐다
- *   ④ 목록이 저장 CHECK(0057)과 같다
+ *   ④ 목록이 저장 CHECK(0057 · 0125 가 다시 세웠다)과 같다
  */
 
 import { test, describe } from 'node:test'
@@ -39,7 +39,9 @@ describe('② 검증', () => {
   test('바꿀 키만 · 모르는 키 · 값 · 빈 객체는 거부', () => {
     assert.deepEqual(validateGalleryPatch({ cover_size: 'large' }), [])
     assert.deepEqual(validateGalleryPatch({ cover: 'none', cover_aspect: 'contain' }), [])
-    assert.equal(validateGalleryPatch({ cover: 'page_cover' })[0]?.path, 'gallery.cover')
+    // 'page_cover' 는 PC-5(0125)부터 받는다 — 모르는 값의 예는 'cover_image'
+    assert.equal(validateGalleryPatch({ cover: 'page_cover' }).length, 0)
+    assert.equal(validateGalleryPatch({ cover: 'cover_image' })[0]?.path, 'gallery.cover')
     assert.equal(validateGalleryPatch({ color: 'red' })[0]?.path, 'gallery.color')
     assert.equal(validateGalleryPatch({}).length, 1)
     assert.equal(validateGalleryPatch([]).length, 1)
@@ -54,8 +56,8 @@ describe('③ 합치기', () => {
 })
 
 describe('④ 저장 CHECK 과 같은 목록', () => {
-  test('0057 의 값들과 같다', () => {
-    const sql = readFileSync(new URL('../../../db/migrations/0057_gallery_layout.sql', import.meta.url), 'utf8')
+  test('CHECK 을 마지막으로 세운 0125 의 값들과 같다', () => {
+    const sql = readFileSync(new URL('../../../db/migrations/0125_gallery_page_cover.sql', import.meta.url), 'utf8')
     const listOf = (key: string) => {
       const m = sql.match(new RegExp(`'${key}'\\) IN \\(([^)]*)\\)`))
       assert.ok(m, key)

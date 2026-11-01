@@ -27278,6 +27278,65 @@ async function main() {
       check('해제하면 커버의 공개 경로도 없다', (await rawFetch(`${BASE}${coverPath}`)).status === 404)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 커버 — 갤러리 카드 (PC-5 · F-04-05 · F-02-06)')) { try {
+      // 갤러리 카드의 페이지 커버(정본 §3.4 [보강 PC-5]) — "카드" 패널에서 미리보기를 "페이지 커버" 로 고르면 저장되고, 내장 커버의 카드는 그
+      // 그라디언트 배경 · 주소 커버의 카드는 그 그림 · 커버가 없는 카드는 같은 높이의 빈 자리 · 다시 열어도 그대로.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const { createServer } = await import('node:http')
+      const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+      const images = createServer((req, res) => res.writeHead(200, { 'content-type': 'image/png' }).end(PNG))
+      await new Promise((r) => images.listen(HOOK_PORT, '127.0.0.1', r))
+      try {
+        const db = (await api('POST', '/databases', { name: `커버 갤러리 ${stamp}` })).body.database
+        const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const row = async (title) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const [withGallery, withImage, plain] = [await row('내장 커버'), await row('그림 커버'), await row('커버 없음')]
+        const imageUrl = `http://127.0.0.1:${HOOK_PORT}/card-${stamp}.png`
+        await api('PATCH', `/pages/${withGallery}`, { cover: { type: 'gallery', gallery: 'gradient_6' } })
+        await api('PATCH', `/pages/${withImage}`, { cover: { type: 'external', url: imageUrl } })
+        const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery' })).body.view
+        const card = (id) => `[data-testid="db-gallery-card"][data-row-id="${id}"]`
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 3`, 15000)
+        await waitHydrated('[data-testid="db-gallery-layout-button"]')
+        await clickSelector('[data-testid="db-gallery-layout-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-gallery-cover-select"]')`, 3000)
+        check('"카드" 패널의 미리보기에 "페이지 커버" 가 있다',
+          await evaluate(`[...document.querySelectorAll('[data-testid="db-gallery-cover-select"] option')].some((o) => o.value === 'page_cover' && o.textContent === '페이지 커버')`))
+        await setSelect('[data-testid="db-gallery-cover-select"]', 'page_cover')
+        const shown = await waitFor(`(() => {
+          const g = document.querySelector('${card(withGallery)} [data-testid="db-gallery-cover"]')
+          const img = document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')
+          return !!g && g.hasAttribute('data-cover-background') && g.style.background.includes('linear-gradient') && !g.querySelector('img')
+            && !!img && img.getAttribute('src') === ${JSON.stringify(imageUrl)} && img.complete && img.naturalWidth > 0 })()`, 10000)
+        check('★ "페이지 커버" 를 고르면 내장 커버의 카드는 그 그라디언트 · 그림 커버의 카드는 그 그림 — 저장된다',
+          shown && (await api('GET', `/views/${gallery.id}`)).body?.view?.gallery?.cover === 'page_cover',
+          String(await evaluate(`document.querySelector('${card(withGallery)}')?.outerHTML?.slice(0, 300) ?? '(없음)'`)))
+        check('커버가 없는 카드는 같은 높이의 빈 자리', await evaluate(`(() => {
+          const a = document.querySelector('${card(withImage)} [data-testid="db-gallery-cover"]'), b = document.querySelector('${card(plain)} [data-testid="db-gallery-cover"]')
+          return !!a && !!b && !b.querySelector('img') && !b.hasAttribute('data-cover-background') && a.getBoundingClientRect().height === b.getBoundingClientRect().height })()`))
+        await send('Page.reload', {})
+        check('★ 다시 열어도 페이지 커버의 카드다(서버 렌더)', await waitFor(`(() => {
+          const g = document.querySelector('${card(withGallery)} [data-testid="db-gallery-cover"]')
+          return !!g && g.style.background.includes('linear-gradient') && !!document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]') })()`, 15000))
+      } finally {
+        images.closeAllConnections()
+        await new Promise((r) => images.close(() => r()))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

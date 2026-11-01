@@ -25,6 +25,7 @@
  * 자리 `group-lanes.ts` — 표의 덩이 사이 끌기와 같다). 구독은 바깥이 하나로 한다(`live` 거짓).
  */
 
+import type { CardCover, CardCovers } from '@/lib/database/gallery-covers'
 import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
 import { useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
@@ -84,6 +85,10 @@ const CARD_GAP = 12
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
 
+/** 카드 미리보기가 내장 커버(배경)면 그 CSS — 그림 주소 · 없음이면 null. */
+const coverBackgroundOf = (cover: CardCover | undefined): string | null =>
+  cover !== undefined && typeof cover !== 'string' ? cover.background : null
+
 export function DatabaseGallery(props: {
   workspaceId: string
   viewId: string
@@ -110,8 +115,8 @@ export function DatabaseGallery(props: {
   renderedAt?: number
   /** 레이아웃(2f-2) — 미리보기 · 카드 폭 · 맞춤. */
   layout: GalleryLayout
-  /** 첫 페이지의 카드 미리보기(행 id → 이미지 주소). "더 보기"의 것은 응답이 함께 준다. */
-  covers: Readonly<Record<string, string>>
+  /** 첫 페이지의 카드 미리보기(행 id → 이미지 주소 · 내장 커버의 배경 — PC-5). "더 보기"의 것은 응답이 함께 준다. */
+  covers: CardCovers
   /** 첫 페이지의 rollup 값(10n-33 · 서버 렌더가 계산해 준다) — 카드의 배지. 그 뒤에 온 카드의 것은 `useRollupValues` 가 받는다. */
   rollupValues?: RollupPage
   /** 수식의 계획(10n-34 · 서버 렌더가 뷰의 컬럼 전부로 만든다) — 카드의 수식 배지를 그 카드의 칸으로 계산한다. */
@@ -138,7 +143,7 @@ export function DatabaseGallery(props: {
   /** 보낼 카드 옮기기의 줄(10n-61) — 보내는 동안은 서버 렌더를 받아들이지 않는다(옛 차례로 튀지 않게). */
   const moveChain = useRef<Promise<void>>(Promise.resolve())
   const [pendingMoves, setPendingMoves] = useState(0)
-  const [covers, setCovers] = useState<Readonly<Record<string, string>>>(props.covers)
+  const [covers, setCovers] = useState<CardCovers>(props.covers)
   /** 불러오다 깨진 이미지 — 빈 자리로 돌린다(같은 주소를 다시 묻지 않는다). */
   const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set())
   const markBroken = (src: string) => setBroken((current) => (current.has(src) ? current : new Set(current).add(src)))
@@ -465,20 +470,27 @@ export function DatabaseGallery(props: {
               />
             )}
             {showCover && (
-              <div data-testid="db-gallery-cover" className="h-32 w-full shrink-0 bg-neutral-100 dark:bg-neutral-900">
-                {covers[row.id] !== undefined && !broken.has(covers[row.id]!) && (
+              <div
+                data-testid="db-gallery-cover"
+                className="h-32 w-full shrink-0 bg-neutral-100 dark:bg-neutral-900"
+                // 내장 커버(PC-5) — 단색 · 그라디언트는 그림이 아니라 자리의 배경이다
+                {...(coverBackgroundOf(covers[row.id]) === null
+                  ? {}
+                  : { 'data-cover-background': '', style: { background: coverBackgroundOf(covers[row.id]) ?? undefined } })}
+              >
+                {typeof covers[row.id] === 'string' && !broken.has(covers[row.id] as string) && (
                   // eslint-disable-next-line @next/next/no-img-element -- 우리 파일 경로(세션 인증)와 외부 URL 을 그대로 그린다. 썸네일 파이프라인은 아직이다(§7).
                   <img
-                    src={covers[row.id]}
+                    src={covers[row.id] as string}
                     alt=""
                     loading="lazy"
                     data-testid="db-gallery-cover-image"
                     // 화면이 붙기(hydration) 전에 이미 깨진 이미지에는 `onError` 가 오지 않는다 — 붙는 순간 한 번 본다(`complete` 인데 폭이
                     // 0 이면 깨졌다). 서버 렌더가 `<img>` 를 내보내므로 브라우저는 스크립트보다 먼저 그것을 받는다(#219 의 전체 판이 잡았다).
                     ref={(el) => {
-                      if (el !== null && el.complete && el.naturalWidth === 0) markBroken(covers[row.id]!)
+                      if (el !== null && el.complete && el.naturalWidth === 0) markBroken(covers[row.id] as string)
                     }}
-                    onError={() => markBroken(covers[row.id]!)}
+                    onError={() => markBroken(covers[row.id] as string)}
                     className={`h-full w-full ${layout.cover_aspect === 'contain' ? 'object-contain' : 'object-cover'}`}
                   />
                 )}

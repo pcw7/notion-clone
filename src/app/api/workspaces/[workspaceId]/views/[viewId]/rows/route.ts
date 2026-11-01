@@ -38,7 +38,7 @@ import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
 import { readViewerToday } from '@/lib/settings/time-zone-cookie'
-import { readCardCovers } from '@/lib/database/gallery-covers'
+import { readGalleryCovers } from '@/lib/database/gallery-covers'
 import { computeFormulaValues } from '@/lib/database/formula-property'
 import { createRowInView } from '@/lib/database/view-row'
 import { moveViewRow, type MoveViewRowFailure } from '@/lib/database/row-order'
@@ -118,10 +118,10 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
         nest === null ? null : { parentPropertyId: nest.parentPropertyId, scope: view.value.subItemFilterScope })
     : undefined
 
-  // 갤러리의 카드 미리보기(2f-2) — 이 페이지의 행마다 본문의 첫 이미지. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.
+  // 갤러리의 카드 미리보기(2f-2 · PC-5) — 이 페이지의 행마다 본문의 첫 이미지 · 행 페이지의 커버. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.
   const covers =
-    view.value.type === 'gallery' && view.value.gallery.cover === 'page_content'
-      ? await readCardCovers(session.ctx, page.value.rows.map((r) => r.id))
+    view.value.type === 'gallery' && view.value.gallery.cover !== 'none'
+      ? await readGalleryCovers(session.ctx, view.value.gallery.cover, page.value.rows.map((r) => r.id))
       : undefined
 
   // 수식(2i-2 · F-03-12) — 이 페이지의 행마다 계산한다(읽을 때 계산 · 같은 행의 칸만 읽는다). 수식 컬럼이 없으면 싣지 않는다.

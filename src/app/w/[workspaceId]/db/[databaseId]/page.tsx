@@ -103,7 +103,7 @@ import { DatabaseGallery } from './database-gallery'
 import { DatabaseCalendar } from './database-calendar'
 import { isYm, isYmd, monthGrid, weekGrid, weekStartOf } from '@/lib/database/calendar'
 import { queryCalendar } from '@/lib/database/calendar-query'
-import { readCardCovers } from '@/lib/database/gallery-covers'
+import { readGalleryCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel, type DataSourceEntry } from './data-source-panel'
 import { AutomationPanel } from './automation-panel'
@@ -462,7 +462,7 @@ export default async function DatabasePage({
       ? board.value.groups.flatMap((g) => g.rows.map((r) => r.id))
       : (tablePage?.value.rows.map((r) => r.id) ?? [])
   const galleryCovers =
-    isGallery && view.value.gallery.cover === 'page_content' ? await readCardCovers(ctx, galleryCardIds) : {}
+    isGallery && view.value.gallery.cover !== 'none' ? await readGalleryCovers(ctx, view.value.gallery.cover, galleryCardIds) : {}
   const variant = variantOf(view.value.type)
 
   // ── relation 칸의 제목 ──

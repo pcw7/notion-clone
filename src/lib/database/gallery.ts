@@ -8,16 +8,16 @@
  * 사라지므로 JSON 전체 교체 금지"* — 다른 뷰 종류의 키와 섞이지 않게 한 칸 아래에 둔다). 그 안은 **세 키 모두** 늘 쓴다 — 읽는 쪽이
  * 빠진 키를 짐작하지 않게. 모양은 CHECK(`ck_view_gallery_layout` · 0057)이 막는다.
  *
- *   cover         'page_content' — 본문의 첫 이미지(최상위 블록 중 처음) · 'none' — 미리보기 없음
+ *   cover         'page_content' — 본문의 첫 이미지(최상위 블록 중 처음) · 'page_cover' — 행 페이지의 커버(PC-5 · 0125) · 'none' — 미리보기 없음
  *   cover_size    카드 폭 — small · medium · large
  *   cover_aspect  'cover' — 잘라서 채운다 · 'contain' — 전체를 보인다(여백)
  *
- * 노션의 새 갤러리는 미리보기가 "페이지 내용"이다 — 기본값도 그렇다. 페이지 커버(F-02-06) · 파일 속성이 생기면 `cover` 에 더한다.
+ * 노션의 새 갤러리는 미리보기가 "페이지 내용"이다 — 기본값도 그렇다. 페이지 커버(F-02-06)는 34번 트랙 PC-5 가 더했다. 파일 속성이 생기면 더한다.
  */
 
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
-export const GALLERY_COVERS = ['page_content', 'none'] as const
+export const GALLERY_COVERS = ['page_content', 'page_cover', 'none'] as const
 export const GALLERY_SIZES = ['small', 'medium', 'large'] as const
 export const GALLERY_ASPECTS = ['cover', 'contain'] as const
 
