@@ -13666,6 +13666,50 @@ async function main() {
         await waitFor(`!!document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')`, 10000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
+      // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `차트 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const refused = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      check('묶을 속성이 없는 표의 차트는 400 group_required', refused.status === 400 && refused.body?.error === 'group_required', JSON.stringify(refused))
+      const num = (await api('POST', `/data-sources/${ds}/properties`, { name: '금액', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      for (const [n, o] of [[10, ga], [20, ga], [60, na]]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [{ propertyId: num, value: { type: 'number', number: n } }, { propertyId: stage, value: { type: 'select', select: { id: o } } }],
+        })
+      }
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      check('★ 차트를 만들면 묶을 수 있는 첫 속성을 고른다', made.status === 201 && typeof made.body?.view?.groupBy?.property_id === 'string' && made.body?.view?.chart?.kind === 'column', JSON.stringify(made.body?.view?.groupBy))
+      const viewId = made.body.view.id
+      const bucket = (page, key) => page?.groups?.find((g) => g.key === key)
+      const counts = (await api('GET', `/views/${viewId}/chart`)).body
+      check('★ GET /chart — 그룹마다 개수가 행과 맞는다(값은 null)',
+        counts?.ok === true && counts.calculation === null && bucket(counts, ga)?.count === 2 && bucket(counts, na)?.count === 1 && counts.groups.every((g) => g.value === null),
+        JSON.stringify(counts?.groups?.map((g) => [g.key, g.count, g.value])))
+      const grouped = await api('PATCH', `/views/${viewId}`, { groupBy: { property_id: stage, calculation: { property_id: num, function: 'sum' } } })
+      const sums = (await api('GET', `/views/${viewId}/chart`)).body
+      check('★ 합계 계산을 두면 value 가 그룹별 합계',
+        grouped.status === 200 && bucket(sums, ga)?.value?.value === 30 && bucket(sums, na)?.value?.value === 60,
+        JSON.stringify(sums?.groups?.map((g) => [g.key, g.count, g.value])))
+      const donut = await api('PATCH', `/views/${viewId}`, { chart: { kind: 'donut' } })
+      const reread = (await api('GET', `/views/${viewId}`)).body?.view?.chart
+      const badKind = await api('PATCH', `/views/${viewId}`, { chart: { kind: 'pie' } })
+      check('★ 차트 종류는 남고 모르는 종류는 400',
+        donut.status === 200 && reread?.kind === 'donut' && badKind.status === 400,
+        JSON.stringify({ reread, bad: badKind.status }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.

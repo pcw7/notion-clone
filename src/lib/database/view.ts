@@ -55,6 +55,7 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { fitGroupByToType, isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
+import { mergeChartLayout, readChartLayout, validateChartPatch, type ChartLayout } from './chart.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
 import { readFormulaConfig } from './formula-schema.ts'
 import { displayFormula } from '../formula/formula.ts'
@@ -90,7 +91,7 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
  */
 // 갤러리(2f-1 · F-04-05)를 더했다 — `ck_view_type`(0022)이 이미 받는 이름이라 마이그레이션이 없다.
 // 캘린더(2g-1 · F-04-06)도 — 이것도 `ck_view_type` 이 이미 받는 이름이다.
-export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar'] as const
+export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar', 'chart'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
 
 export const DEFAULT_VIEW_NAME = '표'
@@ -137,6 +138,8 @@ export type ViewDetail = {
    * 갤러리로 바꾸면 그대로 쓰인다.
    */
   readonly gallery: GalleryLayout
+  /** 차트 레이아웃(CH-1 · `configuration.chart`) — 저장된 것이 없으면 기본값이다(`readChartLayout`). 차트가 아닌 뷰에도 온다. */
+  readonly chart: ChartLayout
   /**
    * 캘린더 레이아웃(2g-1 · `configuration.calendar`). 날짜 속성이 살아 있는 날짜 컬럼이 아니면(지워졌다 · 타입을 바꿨다) `date_property_id`
    * 가 null 이다 — 저장값은 남는다(그룹 속성과 같은 규칙). 캘린더가 아닌 뷰는 날짜 속성 null · 달.
@@ -487,6 +490,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     defaultTemplateId: row.default_template_page_id,
     columns,
     gallery: readGalleryLayout(row.configuration),
+    chart: readChartLayout(row.configuration),
     calendar: liveCalendarLayout(row.configuration, columns),
     personal: personalFilter === null && personalSorts === null ? null : { filter: personalFilter !== null, sorts: personalSorts !== null },
     effectiveFilter: personalFilter !== null ? personalFilter : sharedFilter,
@@ -772,6 +776,8 @@ export type UpdateViewInput = {
    * 않는다 — 04 *"JSON 전체 교체 금지"*). 뷰의 종류와 무관하게 받는다.
    */
   readonly gallery?: Partial<GalleryLayout>
+  /** 차트 레이아웃의 바꿀 키만(CH-1) — 갤러리와 같은 규칙(지금 값 위에 합쳐 `configuration.chart` 한 키만). */
+  readonly chart?: Partial<ChartLayout>
   /**
    * 캘린더 레이아웃의 바꿀 키만(2g-1) — 갤러리와 같은 규칙(지금 값 위에 합쳐 `configuration.calendar` 한 키만). 날짜 속성은 이 표의 살아 있는
    * 날짜 속성이어야 한다.
@@ -807,9 +813,9 @@ async function resolveGroupBy(
   }
   const kept =
     given === undefined && typeof current === 'object' && current !== null ? (current as GroupBy) : null
-  if (type !== 'board') return kept
+  if (type !== 'board' && type !== 'chart') return kept
 
-  // 보드의 그룹을 "없애라"(null)는 거부다 — 조용히 다른 것을 고르면 사용자가 지운 설정이 되살아난다.
+  // 보드(와 차트 — CH-1)의 그룹을 "없애라"(null)는 거부다 — 조용히 다른 것을 고르면 사용자가 지운 설정이 되살아난다.
   if (given === null) return fail('group_required')
   if (kept !== null && isGroupableType(types.get(kept.property_id))) return kept
   const picked = await pickGroupProperty(tx, dataSourceId)
@@ -863,6 +869,10 @@ export async function updateView(
       const issues = validateGalleryPatch(input.gallery)
       if (issues.length > 0) return fail('invalid_layout', issues)
     }
+    if (input.chart !== undefined) {
+      const issues = validateChartPatch(input.chart)
+      if (issues.length > 0) return fail('invalid_layout', issues)
+    }
     if (input.calendar !== undefined) {
       const issues = validateCalendarPatch(input.calendar, types)
       if (issues.length > 0) return fail('invalid_layout', issues)
@@ -878,6 +888,8 @@ export async function updateView(
     // 갤러리 레이아웃 — 잠근 행의 지금 값 위에 바꿀 키만 얹는다(동시에 다른 키를 바꾼 사람의 것을 덮지 않는다).
     const gallery =
       input.gallery === undefined ? null : mergeGalleryLayout(readGalleryLayout(current.configuration), input.gallery)
+    const chart =
+      input.chart === undefined ? null : mergeChartLayout(readChartLayout(current.configuration), input.chart)
     // 캘린더 레이아웃 — 바꿀 키를 얹거나(2g-1), 캘린더로 **바꿀 때** 날짜 속성을 고른다(저장된 것이 살아 있으면 그대로).
     const storedCalendar = readCalendarLayout(current.configuration)
     const patchedCalendar = input.calendar === undefined ? storedCalendar : { ...storedCalendar, ...input.calendar }
@@ -888,6 +900,7 @@ export async function updateView(
     // `configuration` 은 바뀐 키만 덮는다(최상위 `||`) — 다른 종류의 키는 그대로다.
     const configurationPatch = {
       ...(gallery === null ? {} : { gallery }),
+      ...(chart === null ? {} : { chart }),
       ...(calendar === undefined ? {} : { calendar }),
     }
     const type = input.type ?? current.type

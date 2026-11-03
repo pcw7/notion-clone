@@ -4414,6 +4414,29 @@ CREATE TABLE form_question (                    -- [보강 7a-1] 질문 = 그 �
 >     편집 화면은 질문 목록을 통째로 보내므로 보내기 전에 끊어진 조건을 모두 지운다(근거가 앞에 없다 · 맞지 않는다 — 서버는 끊어진 조건을
 >     받지 않는다). 공개 화면은 같은 판정으로 숨은 질문을 그리지 않고 숨은 질문의 답은 보내지 않는다(서버도 버린다 — 두 번)
 
+
+**[보강 CH-1] 차트 뷰 — 그룹 위의 막대 · 선 · 도넛** ⟨38번 트랙 CH-1 · 04 F-04-08 (F-13-10 이관 · 소유표 G4) / 마이그레이션 0127⟩
+
+> 04 F-04-08 *"X축: 그룹 프로퍼티 + 정렬 + 그룹별 숨김 · Y축: Count 또는 프로퍼티+집계"* · 소유표 G4 *"차트는 독립 제품이 아니라 `view_type`
+> enum 값이고 필터 · 그룹 파이프라인(F-04-09/F-04-11)을 그대로 재사용한다"*. `ck_view_type`(0022)에 `chart` 는 처음부터 있었다.
+>
+> ① **X축은 `view.group_by` 다** — 04 의 권고(`x_axis_property_id` · `x_axis{sort, hidden_groups, omit_zero}` 를 configuration 에 따로)를
+> 따르지 않는다. 그 키들은 이미 `group_by` 에 다 있다(`property_id` · `sort` · `hidden` · `hide_empty` · 날짜 단위 · 숫자 구간 · 글의 첫 글자 ·
+> status 범주) — 따로 두면 속성 삭제 정리 · 타입 맞춤(`fitGroupByToType`) · 검증을 두 벌 갖는다. 보드처럼 **그룹이 반드시 있다**
+>(만들 때 · 차트로 바꿀 때 묶을 수 있는 첫 속성을 고른다 · 없애라는 `group_required`).
+> ② **Y값은 `group_by.calculation` 이다**(보드 그룹 머리의 계산 · 2d-3) — 없으면 개수. 집계 함수의 목록 · 타입별 허용은 열 집계(`calculations.ts`)
+> 그대로. 막대의 값은 머리의 값과 **같은 행**에서 나온다(권한 · 필터 · 검색어 · 하위 항목의 부모만 — `readGroupCounts`).
+> ③ **차트만의 설정은 `view.configuration.chart` 한 키** — `{ kind, data_labels, cumulative }` 셋 다 늘 쓴다(갤러리와 같은 규칙 ·
+>  CHECK `ck_view_chart_layout` · 0127). 없으면 기본값 `{ kind: 'column', data_labels: false, cumulative: false }`.
+>   · `kind` — `column`(세로 막대) · `bar`(가로 막대) · `line`(선) · `donut`(도넛). 04 의 `number`(값 하나)는 그룹이 아니라 전체의 계산이라
+>     뒤로 미룬다(넓히는 마이그레이션 하나).
+>   · `data_labels` — 막대 · 점 · 조각에 값을 적는다. `cumulative` — 앞 그룹까지의 값을 더해 간다(04 *"Y 가 Count/Sum 이고 X 오름차순일
+>     때만"* — 그 밖에는 저장값을 두고 그리지 않는다).
+> ④ **데이터 길** `GET …/views/{id}/chart?q=` — 그룹마다 `{ key, option, statusGroup, count, hidden, value }` 와 축의 설정(속성 · 타입 ·
+> 날짜 단위 · 숫자 구간 · 글의 방식 · status 단위 · 계산). 행은 읽지 않는다. 숨긴 그룹도 싣는다(화면이 숨긴 그룹 목록을 그린다) ·
+> `hide_empty` 면 행이 0개인 그룹은 빠진다. 문은 뷰를 읽는 것과 같다(볼 수 없으면 404 · 그룹이 없으면 `not_grouped`).
+> ⑤ **하위 그룹(쌓기 · 04 `stack_by`)은 아직 없다** — 저장된 `sub_group_by` 는 보드에서만 읽는다(B-4a 그대로).
+
 ---
 
 ### 3.7 동기화 · 버전 ⟨C-11/V-3 · C-12 · V-5 · U-2 · U-9 · X-1 · X-5⟩
