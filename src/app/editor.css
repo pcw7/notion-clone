@@ -1904,3 +1904,18 @@ span.blk-equation {
   font-weight: 600;
   pointer-events: none;
 }
+
+/*
+ * 페이지의 모습(36번 트랙 PL-1 · F-02-07 · 정본 §3.4 [보강 PL-1] ⑤) — 본문 칸의 data 속성이 정한다. 서체는 제목 · 본문 · 속성이 함께 따른다
+ * (코드 블록 · 수식은 제 서체를 지킨다). 작은 글씨는 본문만 한 단계 줄인다(16px → 14px · 줄 높이는 그대로 1.5). 서체 이름은 기기에 있는 것을
+ * 쓴다(묶어 받지 않는다 — 없으면 다음 이름).
+ */
+[data-page-font='serif'] {
+  font-family: 'Lyon-Text', Georgia, 'Noto Serif KR', ui-serif, serif;
+}
+[data-page-font='mono'] {
+  font-family: 'iawriter-mono', Nitti, Menlo, Consolas, 'D2Coding', Courier, monospace;
+}
+[data-page-small-text] .blk-editor {
+  font-size: 14px;
+}

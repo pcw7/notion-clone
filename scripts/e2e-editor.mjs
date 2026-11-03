@@ -27553,6 +27553,83 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지의 모습 (PL-1 · F-02-07)')) { try {
+      // 페이지의 모습(정본 §3.4 [보강 PL-1]) — 페이지 메뉴 맨 위의 서체 셋 · 작은 글씨 · 전체 폭 → 본문의 서체 · 글자 크기 · 칸 너비가 바뀐다(서버에도) ·
+      // 다시 열어도 · 기본 서체로 돌리면 키가 없다 · 볼 수만 있는 사람 · 데이터베이스 행에는 고르개가 없다 · 라우트 거부.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { getPage, createPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { grantAccess } = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `모습 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [textRun('모습을 바꿀 본문')], properties: {}, format: {}, children: [] }] })
+      const TITLE = 'input[aria-label="페이지 제목"]'
+      const editorStyle = () => evaluate(`(() => { const e = document.querySelector('.blk-editor'); const s = e ? getComputedStyle(e) : null
+        return s ? { family: s.fontFamily, size: s.fontSize } : null })()`)
+      const titleWidth = () => evaluate(`document.querySelector('${TITLE}')?.getBoundingClientRect().width ?? 0`)
+      const stored = async () => (await getPage(ctx, page))?.appearance ?? null
+      const openMenu = async () => {
+        await clickSelector('[data-testid="page-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="page-appearance"]') && document.querySelector('[data-testid="page-menu-list"]')?.hidden === false`, 3000)
+      }
+      const until = async (pred) => { for (let i = 0; i < 40; i += 1) { const v = await stored(); if (pred(v)) return v; await sleep(100) } return await stored() }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${TITLE}') && !!document.querySelector('[data-block-id="${first}"]')`, 15000)
+      await waitHydrated('[data-testid="page-menu"]')
+      const base = await editorStyle()
+      const narrow = await titleWidth()
+
+      await openMenu()
+      check('페이지 메뉴 맨 위에 서체 셋 · 작은 글씨 · 전체 폭 — 지금은 기본',
+        await evaluate(`document.querySelectorAll('[data-testid="page-font"]').length === 3 && document.querySelector('[data-testid="page-font"][data-font="default"]').getAttribute('aria-pressed') === 'true'
+          && document.querySelector('[data-testid="page-small-text"]').getAttribute('aria-checked') === 'false'`))
+      await clickSelector('[data-testid="page-font"][data-font="serif"]')
+      const serifSaved = await until((v) => v?.font === 'serif')
+      const serif = await waitFor(`(getComputedStyle(document.querySelector('.blk-editor')).fontFamily).toLowerCase().includes('georgia')`, 8000)
+      check('★ 세리프를 고르면 본문의 서체가 바뀐다 — 서버에도', serif && serifSaved?.font === 'serif', JSON.stringify({ base, now: await editorStyle(), serifSaved }))
+
+      await clickSelector('[data-testid="page-small-text"]')
+      const smallSaved = await until((v) => v?.smallText === true)
+      const small = await waitFor(`getComputedStyle(document.querySelector('.blk-editor')).fontSize === '14px'`, 8000)
+      check('★ 작은 글씨 — 본문이 16px 에서 14px 로 · 서버에도', base?.size === '16px' && small && smallSaved?.smallText === true, JSON.stringify({ base, now: await editorStyle() }))
+
+      await clickSelector('[data-testid="page-full-width"]')
+      const wideSaved = await until((v) => v?.fullWidth === true)
+      const wide = await waitFor(`(document.querySelector('${TITLE}')?.getBoundingClientRect().width ?? 0) > ${narrow} + 100`, 8000)
+      check('★ 전체 폭 — 본문 칸이 넓어진다 · 서버에도', wide && wideSaved?.fullWidth === true, JSON.stringify({ narrow, now: await titleWidth() }))
+
+      await send('Page.reload', {})
+      check('★ 다시 열어도 그 모습이다(서버 렌더)', await waitFor(`!!document.querySelector('[data-page-font="serif"][data-page-small-text]')
+        && getComputedStyle(document.querySelector('.blk-editor')).fontSize === '14px' && (document.querySelector('${TITLE}')?.getBoundingClientRect().width ?? 0) > ${narrow} + 100`, 15000))
+
+      await waitHydrated('[data-testid="page-menu"]')
+      await openMenu()
+      await clickSelector('[data-testid="page-font"][data-font="default"]')
+      await until((v) => v?.font === 'default')
+      const keys = Object.keys((await dbQuery(`SELECT format FROM block WHERE id = $1`, [page]))[0]?.format ?? {}).sort()
+      check('기본 서체로 돌리면 서체의 키가 없다(켠 토글만 남는다)', await waitFor(`!document.querySelector('[data-page-font]')`, 8000)
+        && JSON.stringify(keys) === JSON.stringify(['page_full_width', 'page_small_text']), JSON.stringify(keys))
+
+      // 볼 수만 있는 사람 · 데이터베이스 행 — 고르개가 없다 · 라우트 거부
+      const secret = await createPage(ctx, { title: titleFromPlainText(`모습 비밀 ${stamp}`), privateTop: true })
+      const reader = await joinAs(workspaceId, await createUser(`모습 독자 ${stamp}`), 'member')
+      await grantAccess(ctx, secret.id, { type: 'user', id: reader.userId }, 'view')
+      const asReader = { ...json, cookie: `nc_session=${reader.token}` }
+      const readerHtml = await (await fetch(`${BASE}/w/${workspaceId}/${secret.id}`, { headers: asReader })).text()
+      const db = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `모습 표 ${stamp}` }) })).json()).database
+      const row = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/views/${db.defaultViewId}/rows`, { method: 'POST', headers: authed, body: JSON.stringify({ cells: [] }) })).json()).row.id
+      const rowHtml = await (await fetch(`${BASE}/w/${workspaceId}/${row}`, { headers: authed })).text()
+      const rowPatch = await fetch(`${pagesUrl}/${row}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ appearance: { fullWidth: true } }) })
+      const readerPatch = await fetch(`${pagesUrl}/${secret.id}`, { method: 'PATCH', headers: asReader, body: JSON.stringify({ appearance: { font: 'mono' } }) })
+      const badPatch = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ appearance: { font: 'comic' } }) })
+      check('★ 볼 수만 있는 사람 · 데이터베이스 행에는 고르개가 없다 — 라우트는 403 · 400(행) · 400(모르는 서체)',
+        !readerHtml.includes('data-testid="page-appearance"') && rowHtml.length > 0 && !rowHtml.includes('data-testid="page-appearance"')
+          && readerPatch.status === 403 && rowPatch.status === 400 && badPatch.status === 400,
+        JSON.stringify([readerPatch.status, rowPatch.status, badPatch.status]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
