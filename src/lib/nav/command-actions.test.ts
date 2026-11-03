@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { COMMAND_ACTIONS, COMMAND_ACTION_IDS, formatCommandShortcut, matchCommandActions, normalizeCommandText } from './command-actions.ts'
+import { COMMAND_ACTIONS, COMMAND_ACTION_IDS, appActionsFor, formatCommandShortcut, matchCommandActions, normalizeCommandText, rankByQuery } from './command-actions.ts'
 
 const PAGE = { pageId: '11111111-1111-4111-8111-111111111111' }
 const NO_PAGE = { pageId: null }
@@ -41,5 +41,20 @@ describe('목록 · 단축키', () => {
     assert.equal(formatCommandShortcut({ mod: true, shift: true, key: 'L' }, false), 'Ctrl+Shift+L')
     assert.equal(formatCommandShortcut({ mod: true, key: '\\' }, false), 'Ctrl+\\')
     assert.equal(normalizeCommandText(' 새  페이지 '), '새페이지')
+  })
+})
+
+describe('페이지의 작업과 함께 맞추기(CP-2)', () => {
+  test('★ 앱의 작업과 페이지의 작업이 같은 규칙 · 같은 차례로 맞는다 — 상태대로 바뀐 이름도', () => {
+    const page = [
+      { id: 'toggle-favorite', label: '즐겨찾기에서 빼기', keywords: ['즐겨찾기', 'favorite'] },
+      { id: 'trash-page', label: '휴지통으로 보내기', keywords: ['삭제', 'delete'] },
+    ]
+    const items = [...appActionsFor(PAGE), ...page]
+    assert.deepEqual(rankByQuery('즐겨', items).map((i) => i.id), ['toggle-favorite'])
+    assert.deepEqual(rankByQuery('delete', items).map((i) => i.id), ['trash-page'])
+    // '페이지' — 새 페이지(이름이 앞으로) 다음은 없다 · 이름 안의 것이 낱말보다 앞
+    assert.equal(rankByQuery('페이지', items)[0]?.id, 'new-page')
+    assert.deepEqual(rankByQuery('', items), [])
   })
 })

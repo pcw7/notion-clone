@@ -14,6 +14,10 @@
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useEffect, useState } from 'react'
 import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
+import { usePageCommand } from '../page-commands'
+
+/** 커맨드 팔레트에서 찾는 낱말(CP-2). */
+const LOCK_WORDS = ['잠금', '잠그기', '풀기', 'lock', 'unlock'] as const
 import { useRouter } from 'next/navigation'
 
 export function LockButton({
@@ -23,6 +27,7 @@ export function LockButton({
   reloadOnUnlock,
   hint,
   part = 'both',
+  commandPageId,
 }: {
   /** `PUT` 이 잠그고 `DELETE` 가 푼다 — `…/pages/{id}/lock` · `…/databases/{id}/lock`. */
   lockUrl: string
@@ -34,6 +39,8 @@ export function LockButton({
   hint: string
   /** 무엇을 그리나(디자인-2b) — 상단 바의 "잠김" 표시(`badge`) · 페이지 메뉴의 단추(`toggle`) · 둘 다(데이터베이스 화면). */
   part?: 'badge' | 'toggle' | 'both'
+  /** 커맨드 팔레트에 잠그기 · 풀기를 세울 페이지(CP-2) — 페이지 메뉴의 단추가 넘긴다(바꿀 수 있을 때만). 없으면 세우지 않는다. */
+  commandPageId?: string
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -47,6 +54,10 @@ export function LockButton({
     menu?.hold('lock', error !== null)
   }, [menu, error])
   useEffect(() => () => menu?.hold('lock', false), [menu])
+  // 커맨드 팔레트의 작업(CP-2) — 지금 상태대로 이름이 바뀐다 · 바꿀 수 있을 때만
+  usePageCommand('toggle-lock', canToggle && commandPageId !== undefined ? commandPageId : null, locked ? '페이지 잠금 풀기' : '페이지 잠그기', LOCK_WORDS, () => {
+    if (!busy) void toggle()
+  })
 
   async function toggle(): Promise<void> {
     setBusy(true)

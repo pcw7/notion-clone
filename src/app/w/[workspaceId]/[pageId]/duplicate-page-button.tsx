@@ -13,6 +13,10 @@
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { startTransition, useEffect, useState } from 'react'
 import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
+import { usePageCommand } from '../page-commands'
+
+/** 커맨드 팔레트에서 찾는 낱말(CP-2). */
+const DUPLICATE_WORDS = ['복제', '사본', 'duplicate', 'copy page'] as const
 import { useRouter } from 'next/navigation'
 
 import { requestDuplicate, type DuplicateNote } from '../duplicate-page'
@@ -32,6 +36,10 @@ export function DuplicatePageButton({ workspaceId, pageId }: { workspaceId: stri
     menu?.hold('duplicate', (error !== null || Boolean(done?.note.text)))
   }, [menu, error, done])
   useEffect(() => () => menu?.hold('duplicate', false), [menu])
+  // 커맨드 팔레트의 작업(CP-2) — 이 단추의 복제 그대로(옮겨 가거나 메뉴에 결과를 보인다)
+  usePageCommand('duplicate-page', pageId, '페이지 복제', DUPLICATE_WORDS, () => {
+    if (!busy) void duplicate()
+  })
 
   async function duplicate() {
     setBusy(true)

@@ -11,6 +11,10 @@
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useEffect, useState } from 'react'
 import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
+import { usePageCommand } from '../page-commands'
+
+/** 커맨드 팔레트에서 찾는 낱말(CP-2). */
+const TRASH_WORDS = ['삭제', '지우기', '휴지통', 'delete', 'trash'] as const
 import { useRouter } from 'next/navigation'
 
 export function DeletePageButton({
@@ -19,6 +23,7 @@ export function DeletePageButton({
   childCount,
   parentPageId,
   returnHref,
+  inPalette = false,
 }: {
   workspaceId: string
   pageId: string
@@ -28,6 +33,8 @@ export function DeletePageButton({
   parentPageId: string | null
   /** 돌아갈 곳을 직접 준다(8f-1 — 데이터베이스 행은 그 표로). 주면 `parentPageId` 보다 앞선다. */
   returnHref?: string
+  /** 커맨드 팔레트에 "휴지통으로 보내기" 를 세우는가(CP-2) — 고칠 수 있는 사람에게만(서버의 휴지통도 그것을 본다). */
+  inPalette?: boolean
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -41,6 +48,10 @@ export function DeletePageButton({
     menu?.hold('delete', error !== null)
   }, [menu, error])
   useEffect(() => () => menu?.hold('delete', false), [menu])
+  // 커맨드 팔레트의 작업(CP-2) — 이 단추의 보내기 그대로(하위 페이지가 있으면 묻는다 · 오류는 메뉴가 연다)
+  usePageCommand('trash-page', inPalette ? pageId : null, '휴지통으로 보내기', TRASH_WORDS, () => {
+    if (!busy) void remove()
+  })
 
   async function remove() {
     if (childCount > 0) {

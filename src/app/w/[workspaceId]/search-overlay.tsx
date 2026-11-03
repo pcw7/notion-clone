@@ -75,7 +75,8 @@ import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import type { PeopleNames } from './db/[databaseId]/cell-view'
 import { PeopleEditor } from './db/[databaseId]/people-editor'
 import { PageIconView } from './page-icon-view'
-import { formatCommandShortcut, matchCommandActions, type CommandAction } from '@/lib/nav/command-actions'
+import { appActionsFor, formatCommandShortcut, rankByQuery, type CommandAction, type CommandShortcut } from '@/lib/nav/command-actions'
+import { usePageCommands, type PageCommand } from './page-commands'
 import { requestSidebarToggle, toggleThemeNow } from './app-commands'
 
 /** 사이드바 버튼처럼 오버레이 밖에서 여는 경로. */
@@ -169,6 +170,12 @@ const TEAMSPACE_PLAN_NOTE = '팀스페이스로 좁히기는 Plus · Business ·
 
 const CHIP = 'rounded-full border px-2 py-0.5 aria-pressed:border-blue-500 aria-pressed:bg-blue-50 aria-pressed:text-blue-700 dark:aria-pressed:bg-blue-950 dark:aria-pressed:text-blue-300'
 
+/** 오버레이의 작업 줄 하나 — 앱의 작업(CP-1) · 페이지의 작업(CP-2 · 단추가 등록한다). */
+type OverlayAction = { readonly key: string; readonly label: string; readonly keywords: readonly string[]; readonly shortcut: CommandShortcut | null } & (
+  | { readonly kind: 'app'; readonly action: CommandAction }
+  | { readonly kind: 'page'; readonly command: PageCommand }
+)
+
 export function SearchOverlay({
   workspaceId,
   recent,
@@ -247,7 +254,18 @@ export function SearchOverlay({
   }, [searching, result, recent])
 
   // 작업(CP-1 · F-07-11) — 입력이 있을 때만 · 결과 위에 선다(07 *"액션 우선"*). 고르는 차례는 작업 → 결과가 한 줄로 잇는다.
-  const actions = useMemo(() => (open ? matchCommandActions(query, { pageId: currentPageId }) : []), [open, query, currentPageId])
+  // 페이지의 작업(CP-2) — 지금 주소의 페이지에서 단추가 등록한 것(권한이 없으면 단추가 등록하지 않는다). 앱의 작업과 같은 규칙으로 맞춘다.
+  const pageCommands = usePageCommands()
+  const actions = useMemo((): OverlayAction[] => {
+    if (!open) return []
+    const app = appActionsFor({ pageId: currentPageId }).map((action): OverlayAction => ({
+      kind: 'app', key: action.id, label: action.label, keywords: action.keywords, shortcut: action.shortcut, action,
+    }))
+    const page = pageCommands
+      .filter((command) => command.pageId === currentPageId)
+      .map((command): OverlayAction => ({ kind: 'page', key: command.id, label: command.label, keywords: command.keywords, shortcut: null, command }))
+    return rankByQuery(query, [...app, ...page])
+  }, [open, query, currentPageId, pageCommands])
   const count = actions.length + rows.length
   /** 작업을 한 뒤의 짧은 알림(링크 복사 · 실패) — 오버레이를 닫은 뒤에도 몇 초 남는다. */
   const [notice, setNotice] = useState<{ readonly text: string; readonly error: boolean } | null>(null)
@@ -384,8 +402,14 @@ export function SearchOverlay({
    * 거부하면 조용히 넘기지 않고 말한다(07 엣지).
    */
   const runAction = useCallback(
-    (action: CommandAction) => {
+    (item: OverlayAction) => {
       close()
+      // 페이지의 작업(CP-2) — 등록한 단추의 함수 그대로
+      if (item.kind === 'page') {
+        item.command.run()
+        return
+      }
+      const action = item.action
       switch (action.id) {
         case 'new-page':
           void fetch(`/api/workspaces/${workspaceId}/pages`, {
@@ -734,13 +758,13 @@ export function SearchOverlay({
               <p className="px-4 pt-3 text-xs font-medium text-neutral-400">작업</p>
               <ul role="listbox" aria-label="작업" data-testid="command-actions">
                 {actions.map((action, i) => (
-                  <li key={action.id}>
+                  <li key={action.key}>
                     <button
                       type="button"
                       role="option"
                       aria-selected={i === index}
                       data-testid="command-action"
-                      data-action={action.id}
+                      data-action={action.key}
                       onMouseEnter={() => setIndex(i)}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => runAction(action)}
