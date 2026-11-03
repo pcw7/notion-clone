@@ -8,6 +8,9 @@
  * 화면 전체를 404 로 만들지 않는다). 세션 · 워크스페이스 밖의 사람 · id 해석은 부르는 쪽(`page.tsx` · 데이터베이스 화면)이 한다.
  */
 
+import { editorLabel, editorNames, formatEditStamp } from '@/lib/block/edit-info'
+import { readViewerTimeZone } from '@/lib/settings/time-zone-cookie'
+import { canListMembers } from '@/lib/workspace/list'
 import Link from '@/app/link'
 import { notFound } from 'next/navigation'
 
@@ -181,6 +184,10 @@ export async function PageContent({
   // 행 페이지의 페이지 설정(3b-2 · F-16-09 · F-16-10) — 레이아웃의 것이다(데이터베이스의 모든 행에 같다 · 정본 [보강] 페이지 설정 ③).
   // 일반 페이지는 null — 지금의 모양(좁게 · 접은 백링크 · 코멘트 단추 · 칠한 코멘트)이 그대로다.
   const settings = rowPage?.settings ?? null
+  // 편집 이력(ED-1 · F-11-15) — 만든 사람 · 마지막으로 고친 사람 · 시각(열람자의 시간대). 이름은 게스트에게 보이지 않는다(`canListMembers`)
+  const editNames = await editorNames(ctx, [page.createdBy, page.lastEditedBy])
+  const seesNames = canListMembers(ctx.role)
+  const viewerTimeZone = await readViewerTimeZone()
   const rowRelation =
     rowPage === null || rowRelationIds.length === 0
       ? { labels: {}, icons: {} }
@@ -317,6 +324,16 @@ export async function PageContent({
               // 커맨드 팔레트의 "휴지통으로 보내기"(CP-2) — 고칠 수 있는 사람에게만
               inPalette={access === 'edit'}
             />
+            {/* 편집 이력(ED-1 · F-11-15) — 노션의 "···" 맨 아래 · 이력이 아니라 최신 1건 */}
+            <PageMenuDivider />
+            <div data-testid="page-edit-info" className="flex flex-col gap-0.5 px-2 py-1.5 text-xs leading-snug text-neutral-400">
+              <span data-testid="page-edit-last">
+                마지막 편집 {editorLabel(page.lastEditedBy, editNames, seesNames)} · {formatEditStamp(page.lastEditedAt, viewerTimeZone)}
+              </span>
+              <span data-testid="page-edit-created">
+                만든 사람 {editorLabel(page.createdBy, editNames, seesNames)} · {formatEditStamp(page.createdAt, viewerTimeZone)}
+              </span>
+            </div>
           </PageMenu>
         </div>
       </div>
