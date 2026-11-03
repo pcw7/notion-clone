@@ -27686,6 +27686,42 @@ async function main() {
       await fetch(`${pagesUrl}/${page}/publish`, { method: 'DELETE', headers: authed })
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('편집 이력 표시 (ED-1 · F-11-15)')) { try {
+      // 편집 이력(정본 §3.4 [보강 ED-1]) — 페이지 메뉴 맨 아래에 "마지막 편집 이름 · 시각" · "만든 사람 이름 · 시각" · 다른 사람이 제목을 고치면 그 사람으로 ·
+      // 게스트에게는 이름이 없다("멤버").
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `이력 ${stamp}` }) })).json()).page.id
+      const ownerName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name
+      const mateName = `고친 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const text = (id) => evaluate(`document.querySelector('[data-testid="${id}"]')?.textContent ?? null`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-edit-info"]')`, 15000)
+      const mine = { last: await text('page-edit-last'), created: await text('page-edit-created') }
+      check('★ 페이지 메뉴 맨 아래 — 마지막 편집 · 만든 사람이 나(이름 · 시각)', !!ownerName && mine.last?.startsWith(`마지막 편집 ${ownerName} · `)
+        && mine.created?.startsWith(`만든 사람 ${ownerName} · `) && /\d/.test(mine.last ?? ''), JSON.stringify({ ownerName, mine }))
+
+      const renamed = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ title: `이력 고침 ${stamp}` }) })
+      await send('Page.reload', {})
+      await waitFor(`(document.querySelector('[data-testid="page-edit-last"]')?.textContent ?? '').includes(${JSON.stringify(mateName)})`, 15000)
+      const after = { last: await text('page-edit-last'), created: await text('page-edit-created') }
+      check('★ 동료가 제목을 고치면 마지막 편집이 그 사람 — 만든 사람은 그대로', renamed.ok && after.last?.startsWith(`마지막 편집 ${mateName} · `) && after.created?.startsWith(`만든 사람 ${ownerName} · `),
+        JSON.stringify({ status: renamed.status, after }))
+
+      const outsider = await createUser(`이력 손님 ${stamp}`)
+      await fetch(`${pagesUrl}/${page}/guests`, { method: 'POST', headers: authed, body: JSON.stringify({ email: outsider.email, level: 'view' }) })
+      const { createSession } = await import(new URL('../src/lib/auth/session.ts', import.meta.url).href)
+      const { withTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const guestSession = await withTransaction((tx) => createSession(tx, { userId: outsider.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e' }))
+      // 서버 렌더는 글자 조각 사이에 `<!-- -->` 표지를 넣는다 — 걷고 견준다
+      const guestHtml = (await (await fetch(`${BASE}/w/${workspaceId}/${page}`, { headers: { ...json, cookie: `nc_session=${guestSession.token}` } })).text()).replace(/<!-- -->/g, '')
+      check('★ 게스트에게는 이름이 없다 — "멤버"', guestHtml.includes('data-testid="page-edit-info"') && guestHtml.includes('마지막 편집 멤버') && !guestHtml.includes(mateName),
+        JSON.stringify({ length: guestHtml.length, hasInfo: guestHtml.includes('page-edit-info') }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

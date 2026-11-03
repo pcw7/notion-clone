@@ -134,6 +134,9 @@ export type PageDetail = PageSummary & {
   readonly coverPosition: number
   /** 페이지의 모습(PL-1 · `format.page_font` · `page_small_text` · `page_full_width`) — 데이터베이스 행은 늘 기본(레이아웃이 정한다 · R5). */
   readonly appearance: PageAppearance
+  /** 만든 사람 · 마지막으로 고친 사람의 id(ED-1 · F-11-15) — 이름은 보여 줄 수 있는 사람에게만 따로 찾는다(`edit-info.ts`). 없으면 null. */
+  readonly createdBy: string | null
+  readonly lastEditedBy: string | null
   /** 루트→부모까지의 조상 페이지. breadcrumb 용. 루트 페이지면 빈 배열. */
   readonly ancestors: readonly BlockId[]
   readonly permScopeId: string
@@ -145,7 +148,8 @@ export type PageDetail = PageSummary & {
  * 싣는다 — 페이지 행의 `format` 에는 모습(아이콘)만 있다(본문은 행이 아니라 Y.Doc 이다).
  */
 const PAGE_COLUMNS = `id, properties, format, parent_type, parent_id, order_key,
-                      ancestor_path, perm_scope_id, owner_user_id, created_at, last_edited_at, version`
+                      ancestor_path, perm_scope_id, owner_user_id, created_at, last_edited_at, version,
+                      created_by, last_edited_by`
 
 type PageRow = {
   id: string
@@ -160,6 +164,8 @@ type PageRow = {
   created_at: Date
   last_edited_at: Date
   version: string
+  created_by: string | null
+  last_edited_by: string | null
 }
 
 /** 페이지 하나의 상세 — 요약 + 커버 · 조상 · 스코프 · 버전. */
@@ -169,6 +175,8 @@ function toDetail(row: PageRow): PageDetail {
     cover: pageCoverOfFormat(row.format),
     coverPosition: coverPositionOfFormat(row.format),
     appearance: pageAppearanceOfFormat(row.format),
+    createdBy: row.created_by,
+    lastEditedBy: row.last_edited_by,
     ancestors: row.ancestor_path.map(asBlockId),
     permScopeId: row.perm_scope_id,
     version: row.version,
