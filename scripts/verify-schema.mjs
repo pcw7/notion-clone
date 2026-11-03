@@ -5011,6 +5011,42 @@ try {
     }
   }
 
+  console.log('\n[84] 페이지의 모습 (0126 / §3.4 [보강 PL-1] · PL-1조각)')
+  {
+    // format.page_font · page_small_text · page_full_width — 페이지 행만 · 서체는 serif · mono · 토글은 true 하나(기본값이면 키가 없다).
+    const pageId = randomUUID()
+    const paraId = randomUUID()
+    for (const [id, type, key] of [[pageId, 'page', 'look'], [paraId, 'paragraph', 'look-para']]) {
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, $3, 'workspace', $2, $4, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, wsId, type, `${key}-${id}`],
+      )
+    }
+    const set = `UPDATE block SET format = $2::jsonb WHERE id = $1`
+    await client.query(set, [pageId, JSON.stringify({ page_font: 'serif', page_small_text: true, page_full_width: true, page_icon: { type: 'emoji', emoji: '🌱' } })])
+    await client.query(set, [pageId, JSON.stringify({ page_font: 'mono' })])
+    ok('★ 서체 serif · mono · 두 토글 true — 페이지 행에서 통과한다')
+    const rejects = async (label, id, format) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(set, [id, JSON.stringify(format)])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'block_page_appearance') ok(`${label} — block_page_appearance 가 거부함`)
+        else fail(`${label} — block_page_appearance 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 페이지가 아닌 블록의 모습', paraId, { page_font: 'serif' })
+    await rejects('모르는 서체', pageId, { page_font: 'comic' })
+    await rejects('기본 서체를 적었다(키가 없어야 한다)', pageId, { page_font: 'default' })
+    await rejects('★ 끈 토글을 적었다(false — 키를 지워야 한다)', pageId, { page_small_text: false })
+    await rejects('토글이 글이다', pageId, { page_full_width: 'true' })
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

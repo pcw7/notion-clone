@@ -54,6 +54,13 @@ import {
   samePageCover,
   type PageCover,
 } from './page-cover.ts'
+import {
+  PAGE_APPEARANCE_KEYS,
+  appearanceFormatEntries,
+  pageAppearanceOfFormat,
+  samePageAppearance,
+  type PageAppearance,
+} from './page-appearance.ts'
 import { isUsableIcon, isWorkspaceImage, moveFileReference, moveIconFileReference } from '../file/icon-reference.ts'
 import {
   normalizeRichText,
@@ -83,6 +90,7 @@ export type PageErrorCode =
   | 'invalid_icon' // 아이콘이 이모지 한 글자가 아니다(8c-1)
   | 'invalid_cover' // 커버가 내장 커버 · 이미지 주소 · 이 워크스페이스에 올린 이미지가 아니다(PC-1 · PC-2)
   | 'invalid_cover_position' // 위치가 0~1 의 수가 아니거나 그림 커버가 없다(PC-3)
+  | 'invalid_appearance' // 모습의 값이 틀렸거나 데이터베이스 행이다(PL-1)
 
 export class PageError extends Error {
   // 파라미터 프로퍼티(`constructor(readonly code: ...)`)를 쓰지 않는다 —
@@ -124,6 +132,8 @@ export type PageDetail = PageSummary & {
   readonly cover: PageCover | null
   /** 커버의 세로 위치(PC-3 · `format.page_cover_position`) — 0~1 · 없으면 가운데(0.5). */
   readonly coverPosition: number
+  /** 페이지의 모습(PL-1 · `format.page_font` · `page_small_text` · `page_full_width`) — 데이터베이스 행은 늘 기본(레이아웃이 정한다 · R5). */
+  readonly appearance: PageAppearance
   /** 루트→부모까지의 조상 페이지. breadcrumb 용. 루트 페이지면 빈 배열. */
   readonly ancestors: readonly BlockId[]
   readonly permScopeId: string
@@ -158,6 +168,7 @@ function toDetail(row: PageRow): PageDetail {
     ...toSummary(row),
     cover: pageCoverOfFormat(row.format),
     coverPosition: coverPositionOfFormat(row.format),
+    appearance: pageAppearanceOfFormat(row.format),
     ancestors: row.ancestor_path.map(asBlockId),
     permScopeId: row.perm_scope_id,
     version: row.version,
@@ -859,5 +870,46 @@ export async function setPageCoverPosition(ctx: SessionContext, pageId: BlockId,
       [pageId, ctx.workspaceId, parsed, ctx.userId],
     )
     return parsed
+  })
+}
+
+// ── 모습 ────────────────────────────────────────────────────────────
+
+/**
+ * 페이지의 모습을 바꾼다 — 서체 · 작은 글씨 · 전체 폭(36번 트랙 PL-1 · F-02-07 · 정본 §3.4 [보강 PL-1] ④). 준 칸만 바꾸고 합친 모습을 돌려준다.
+ *
+ * 권한 · 잠금 · 같으면 쓰지 않음 · `last_edited_*` · `version` 은 커버와 같다. **데이터베이스 행은 받지 않는다**(`invalid_appearance` — 행 페이지의
+ * 폭은 레이아웃이 정한다 · 정본 §3.6 R5). 기본값인 칸은 키를 지운다(0126 이 그 모양만 받는다).
+ */
+export async function setPageAppearance(ctx: SessionContext, pageId: BlockId, patch: Partial<PageAppearance>): Promise<PageAppearance> {
+  return withTransaction(async (tx) => {
+    const target = await tx.queryMaybe<{ format: Record<string, unknown> | null; parent_type: string }>(
+      `SELECT format, parent_type FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (target === null) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
+    if (target.parent_type === 'data_source') throw new PageError('invalid_appearance', '데이터베이스 행의 모습은 레이아웃이 정합니다.')
+    if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 모습을 바꿀 수 있습니다.')
+
+    const current = pageAppearanceOfFormat(target.format)
+    const next: PageAppearance = { ...current, ...patch }
+    if (samePageAppearance(current, next)) return current
+    const entries = appearanceFormatEntries(next)
+    const set = Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== null))
+    await tx.query(
+      `UPDATE block
+          SET format = (format - $3::text[]) || $4::jsonb,
+              last_edited_by = $5,
+              last_edited_at = now(),
+              version = version + 1
+        WHERE id = $1 AND workspace_id = $2`,
+      [pageId, ctx.workspaceId, [...PAGE_APPEARANCE_KEYS], JSON.stringify(set), ctx.userId],
+    )
+    return next
   })
 }

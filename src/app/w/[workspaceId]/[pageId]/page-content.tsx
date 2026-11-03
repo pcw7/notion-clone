@@ -46,6 +46,7 @@ import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageMenu, PageMenuDivider } from './page-menu'
+import { PageAppearanceControl } from './page-appearance-control'
 import { PageHistoryButton } from './page-history'
 import { PageUpdatesButton } from './page-updates'
 import { canViewPageHistory } from '@/lib/history/version'
@@ -267,6 +268,13 @@ export async function PageContent({
             카드 자리에 연다(`page-menu.tsx`).
           */}
           <PageMenu>
+            {/* 페이지의 모습(PL-1 · F-02-07) — 노션의 "···" 맨 위 · 고칠 수 있는 사람만 · 데이터베이스 행은 레이아웃이 정한다 */}
+            {rowPage === null && access === 'edit' && (
+              <>
+                <PageAppearanceControl workspaceId={workspaceId} pageId={page.id} initial={page.appearance} />
+                <PageMenuDivider />
+              </>
+            )}
             <LockButton
               lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
               locked={lock?.locked ?? false}
@@ -327,9 +335,12 @@ export async function PageContent({
       <div
         className={
           frame === 'page'
-            ? `mx-auto flex w-full ${settings?.fullWidth ? 'max-w-none' : 'max-w-3xl'} flex-1 flex-col gap-6 px-6 pb-12 pt-12`
+            ? `mx-auto flex w-full ${(rowPage === null ? page.appearance.fullWidth : settings?.fullWidth) ? 'max-w-none' : 'max-w-3xl'} flex-1 flex-col gap-6 px-6 pb-12 pt-12`
             : 'contents'
         }
+        // 페이지의 모습(PL-1) — 서체 · 작은 글씨는 CSS 가 그린다(`editor.css` 의 `[data-page-font]` · `[data-page-small-text]`). 행은 쓰지 않는다(R5)
+        data-page-font={rowPage === null && page.appearance.font !== 'default' ? page.appearance.font : undefined}
+        data-page-small-text={rowPage === null && page.appearance.smallText ? '' : undefined}
       >
       {/*
         아이콘(8c-1)은 제목 위에 선다 — "아이콘 추가"는 이 머리에 마우스를 올리면 보인다(`group/header`). 간격은 아이콘 칸이 쥔다(디자인-4e —
