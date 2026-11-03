@@ -27439,6 +27439,120 @@ async function main() {
       check('마우스로 고른 작업도 한다 — 설정 열기', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)}`, 10000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검색 오버레이의 페이지 작업 (CP-2 · F-07-11)')) { try {
+      // 페이지의 작업(정본 §3.9 [보강 CP-2]) — 즐겨찾기(이름이 상태대로 · 서버) · 잠그기 · 풀기 · 복제(사본으로 옮겨 간다) · 휴지통(떠난다 · 서버) ·
+      // 볼 수만 있는 사람에게는 휴지통 · 잠금이 없다(단추가 등록하지 않는다).
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { createPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { grantAccess } = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const title = `팔레트 작업 ${stamp}`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const ACTION = (id) => `[data-testid="command-action"][data-action="${id}"]`
+      const TITLE = 'input[aria-label="페이지 제목"]'
+      const palette = async (text) => {
+        await key('k', MOD)
+        await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 5000)
+        await typeText(text)
+      }
+      const label = (id) => evaluate(`document.querySelector('${ACTION(id)}')?.querySelector('span')?.textContent ?? null`)
+      const openPage = async (id) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${id}` })
+        await waitFor(`!!document.querySelector('${TITLE}')`, 15000)
+        await waitHydrated(TITLE)
+      }
+      const favorited = async () => (await dbQuery(`SELECT 1 FROM favorite WHERE user_id = $1 AND block_id = $2`, [ctx.userId, page])).length === 1
+
+      await openPage(page)
+      // ① 즐겨찾기 — 이름이 상태대로 · 서버에도
+      await palette('즐겨찾기')
+      const before = await waitFor(`!!document.querySelector('${ACTION('toggle-favorite')}')`, 3000) ? await label('toggle-favorite') : null
+      await key('Enter')
+      let saved = false
+      for (let i = 0; i < 40 && !saved; i += 1) { saved = await favorited(); if (!saved) await sleep(100) }
+      await palette('즐겨찾기')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-favorite')}')`, 3000)
+      const after = await label('toggle-favorite')
+      check('★ 즐겨찾기 — "즐겨찾기에 넣기" 로 넣으면 서버에도 · 다시 열면 이름이 "즐겨찾기에서 빼기"', before === '즐겨찾기에 넣기' && saved && after === '즐겨찾기에서 빼기',
+        JSON.stringify({ before, saved, after }))
+      await key('Enter')
+      let removed = false
+      for (let i = 0; i < 40 && !removed; i += 1) { removed = !(await favorited()); if (!removed) await sleep(100) }
+      check('즐겨찾기에서 빼기 — 서버에서도 빠진다', removed)
+
+      // ② 잠그기 · 풀기
+      await palette('잠그기')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-lock')}')`, 3000)
+      const lockLabel = await label('toggle-lock')
+      await key('Enter')
+      let locked = false
+      for (let i = 0; i < 40 && !locked; i += 1) {
+        locked = (await dbQuery(`SELECT 1 FROM page_lock WHERE page_id = $1`, [page]).catch(() => [])).length === 1
+          || (await dbQuery(`SELECT 1 FROM block WHERE id = $1 AND (format ->> 'page_locked') = 'true'`, [page]).catch(() => [])).length === 1
+        if (!locked) await sleep(100)
+      }
+      const lockedRead = await fetch(`${pagesUrl}/${page}/lock`, { headers: authed }).then((r) => r.json()).catch(() => null)
+      await palette('잠금')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-lock')}')`, 3000)
+      const unlockLabel = await label('toggle-lock')
+      check('★ 잠그기 — "페이지 잠그기" 로 잠기고 이름이 "페이지 잠금 풀기" 로 바뀐다', lockLabel === '페이지 잠그기' && unlockLabel === '페이지 잠금 풀기',
+        JSON.stringify({ lockLabel, unlockLabel, locked, lockedRead }))
+      await key('Enter')
+      // 풀면 화면을 다시 연다(협업 편집기 — LockButton 의 reloadOnUnlock)
+      check('잠금 풀기 — 화면이 다시 열리고 본문을 고칠 수 있다',
+        await waitFor(`!!document.querySelector('${TITLE}') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000))
+      await waitHydrated(TITLE)
+
+      // ③ 복제 — 사본으로 옮겨 간다
+      await palette('복제')
+      await waitFor(`!!document.querySelector('${ACTION('duplicate-page')}')`, 3000)
+      await key('Enter')
+      const moved = await waitFor(`/^\\/w\\/${workspaceId}\\/[0-9a-f-]{36}$/.test(location.pathname) && location.pathname !== ${JSON.stringify(`/w/${workspaceId}/${page}`)}
+        && (document.querySelector('${TITLE}')?.value ?? '').includes(${JSON.stringify(title)})`, 15000)
+      const copy = (await evaluate('location.pathname')).split('/').pop()
+      check('★ 페이지 복제 — 사본을 만들고 그리로 옮겨 간다', moved, JSON.stringify({ copy }))
+
+      // ④ 휴지통 — 사본을 보내면 떠나고 서버에서도 휴지통
+      await waitHydrated(TITLE)
+      await palette('휴지통')
+      await waitFor(`!!document.querySelector('${ACTION('trash-page')}')`, 3000)
+      await key('Enter')
+      const left = await waitFor(`location.pathname !== ${JSON.stringify(`/w/${workspaceId}/${copy}`)}`, 10000)
+      let trashed = false
+      for (let i = 0; i < 40 && !trashed; i += 1) {
+        trashed = (await dbQuery(`SELECT lifecycle FROM block WHERE id = $1`, [copy]))[0]?.lifecycle !== 'live'
+        if (!trashed) await sleep(100)
+      }
+      check('★ 휴지통으로 보내기 — 페이지를 떠나고 서버에서도 휴지통', left && trashed, JSON.stringify({ left, trashed }))
+
+      // ⑤ 볼 수만 있는 사람 — 휴지통 · 잠금이 없다(복제 · 즐겨찾기는 있다)
+      const secret = await createPage(ctx, { title: titleFromPlainText(`팔레트 비밀 ${stamp}`), privateTop: true })
+      const reader = await joinAs(workspaceId, await createUser(`팔레트 독자 ${stamp}`), 'member')
+      await grantAccess(ctx, secret.id, { type: 'user', id: reader.userId }, 'view')
+      await send('Network.setCookie', { name: 'nc_session', value: reader.token, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="search-input"], ${TITLE}, h1')`, 15000)
+        await waitHydrated('body')
+        await sleep(300)
+        await palette('휴지통')
+        const noTrash = await waitFor(`!!document.querySelector('[data-testid="search-results"]')`, 3000) && !(await evaluate(`!!document.querySelector('${ACTION('trash-page')}')`))
+        await key('Escape')
+        await palette('잠그기')
+        await sleep(300)
+        const noLock = !(await evaluate(`!!document.querySelector('${ACTION('toggle-lock')}')`))
+        await key('Escape')
+        await palette('즐겨찾기')
+        const hasFavorite = await waitFor(`!!document.querySelector('${ACTION('toggle-favorite')}')`, 3000)
+        await key('Escape')
+        check('★ 볼 수만 있는 사람 — 휴지통 · 잠금이 없다 · 즐겨찾기는 있다(단추가 등록하지 않는다)', noTrash && noLock && hasFavorite,
+          JSON.stringify({ noTrash, noLock, hasFavorite }))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

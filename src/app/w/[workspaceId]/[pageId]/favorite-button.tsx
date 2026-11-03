@@ -12,6 +12,11 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { usePageCommand } from '../page-commands'
+
+/** 커맨드 팔레트에서 찾는 낱말(CP-2). */
+const FAVORITE_WORDS = ['즐겨찾기', '별표', 'favorite', 'star'] as const
+
 export function FavoriteButton({
   workspaceId,
   pageId,
@@ -45,6 +50,11 @@ export function FavoriteButton({
       setBusy(false)
     }
   }
+
+  // 커맨드 팔레트의 작업(CP-2) — 지금 상태대로 이름이 바뀐다
+  usePageCommand('toggle-favorite', pageId, on ? '즐겨찾기에서 빼기' : '즐겨찾기에 넣기', FAVORITE_WORDS, () => {
+    if (!busy) void toggle()
+  })
 
   return (
     <button

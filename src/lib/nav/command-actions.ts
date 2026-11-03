@@ -47,19 +47,31 @@ export function normalizeCommandText(text: string): string {
   return text.normalize('NFC').toLowerCase().replace(/\s+/g, '')
 }
 
-/** 입력에 맞는 작업 — 차례대로. 입력이 비면 없다 · 지금 맥락에 맞지 않는 작업은 숨긴다. */
-export function matchCommandActions(query: string, ctx: CommandContext): CommandAction[] {
+/** 맞출 수 있는 것 — 앱의 작업 · 페이지의 작업(CP-2 · 단추가 등록한다)이 같은 규칙으로 맞는다. */
+export type Matchable = { readonly label: string; readonly keywords: readonly string[] }
+
+/** 입력에 맞는 것만 차례대로 — 이름 앞 → 이름 안 → 낱말 앞 → 낱말 안, 같으면 받은 차례. 입력이 비면 없다. */
+export function rankByQuery<T extends Matchable>(query: string, items: readonly T[]): T[] {
   const q = normalizeCommandText(query)
   if (q === '') return []
-  const scored: { action: CommandAction; score: number; order: number }[] = []
-  COMMAND_ACTIONS.forEach((action, order) => {
-    if (action.needsPage && ctx.pageId === null) return
-    const label = normalizeCommandText(action.label)
-    const words = action.keywords.map(normalizeCommandText)
+  const scored: { item: T; score: number; order: number }[] = []
+  items.forEach((item, order) => {
+    const label = normalizeCommandText(item.label)
+    const words = item.keywords.map(normalizeCommandText)
     const score = label.startsWith(q) ? 0 : label.includes(q) ? 1 : words.some((w) => w.startsWith(q)) ? 2 : words.some((w) => w.includes(q)) ? 3 : -1
-    if (score >= 0) scored.push({ action, score, order })
+    if (score >= 0) scored.push({ item, score, order })
   })
-  return scored.sort((a, b) => a.score - b.score || a.order - b.order).map((s) => s.action)
+  return scored.sort((a, b) => a.score - b.score || a.order - b.order).map((s) => s.item)
+}
+
+/** 지금 맥락에서 쓸 수 있는 앱의 작업 — 페이지가 없으면 "링크 복사" 같은 것은 숨긴다. */
+export function appActionsFor(ctx: CommandContext): CommandAction[] {
+  return COMMAND_ACTIONS.filter((action) => !action.needsPage || ctx.pageId !== null)
+}
+
+/** 입력에 맞는 앱의 작업 — 차례대로. 입력이 비면 없다 · 지금 맥락에 맞지 않는 작업은 숨긴다. */
+export function matchCommandActions(query: string, ctx: CommandContext): CommandAction[] {
+  return rankByQuery(query, appActionsFor(ctx))
 }
 
 /** 단축키를 글로 — 맥은 ⌘ · ⇧, 다른 기기는 Ctrl+ · Shift+. */

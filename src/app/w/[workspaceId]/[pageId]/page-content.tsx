@@ -274,6 +274,7 @@ export async function PageContent({
               reloadOnUnlock
               hint="잠긴 페이지 — 본문과 제목을 고칠 수 없습니다"
               part="toggle"
+              commandPageId={page.id}
             />
             {rowPage === null && (
               <MovePageControl
@@ -305,6 +306,8 @@ export async function PageContent({
               parentPageId={page.parentPageId}
               // 행을 지우면 그 표로 돌아간다(행에는 부모 페이지가 없다).
               returnHref={rowPage === null || !rowPage.databaseOpenable ? undefined : `/w/${workspaceId}/db/${rowPage.databaseId}`}
+              // 커맨드 팔레트의 "휴지통으로 보내기"(CP-2) — 고칠 수 있는 사람에게만
+              inPalette={access === 'edit'}
             />
           </PageMenu>
         </div>
