@@ -22922,7 +22922,8 @@ async function main() {
       const opened = await waitFor(`!document.querySelector('${LIST}').hidden`, 3000)
       const card = await evaluate(`(() => {
         const c = document.querySelector('${LIST}'); const cs = getComputedStyle(c); const r = c.getBoundingClientRect()
-        const rows = [...c.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().height > 0)
+        // 맨 위의 서체 칸(PL-1)은 줄이 아니라 칸이다(노션도 "Ag" 큰 칸) — 줄 높이는 그 밖의 단추로 본다
+        const rows = [...c.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().height > 0 && !b.matches('[data-testid="page-font"]'))
         return { width: Math.round(r.width), radius: cs.borderRadius, shadow: cs.boxShadow !== 'none', rowHeights: [...new Set(rows.map((b) => Math.round(b.getBoundingClientRect().height)))], labels: rows.map((b) => b.textContent.trim()) }
       })()`)
       check('★ "···" 을 누르면 메뉴 — 폭 256 · 둥글기 10px · 그림자 · 줄 높이 28 · 옮기기 · 복제 · 버전 기록 · 업데이트 · 내보내기 · 휴지통으로 이동',
