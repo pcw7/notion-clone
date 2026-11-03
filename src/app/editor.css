@@ -1526,6 +1526,16 @@ span.blk-equation {
   position: relative;
 }
 
+/* 블록 메뉴 맨 아래의 마지막 편집(ED-2) — 고르는 항목이 아니다. */
+.blk-menu-foot {
+  margin-top: 4px;
+  border-top: 1px solid var(--divider-color);
+  padding: 6px 8px 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--foreground-muted);
+}
+
 /* 하위 메뉴는 상위 항목의 오른쪽에 붙는다. */
 .blk-submenu {
   top: -0.3rem;

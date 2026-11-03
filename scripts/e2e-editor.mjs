@@ -27722,6 +27722,60 @@ async function main() {
         JSON.stringify({ length: guestHtml.length, hasInfo: guestHtml.includes('page-edit-info') }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('블록마다의 마지막 편집 (ED-2 · F-11-15)')) { try {
+      // 블록 메뉴 맨 아래(정본 §3.4 [보강 ED-2]) — 블록 하나에 열면 "마지막 편집 이름 · 시각" · 블록마다 다르다 · 게스트에게는 "멤버" ·
+      // 그 페이지의 본문이 아닌 블록은 답이 없다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const newPage = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const page = await newPage(`블록 이력 ${stamp}`)
+      const otherPage = await newPage(`블록 이력 남 ${stamp}`)
+      const ownerName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name
+      const mateName = `블록 고친 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const mine = randomUUID()
+      const theirs = randomUUID()
+      await saveBody(page, { blocks: [block(mine, 'paragraph', '내가 쓴 줄'), block(theirs, 'paragraph', '동료가 고칠 줄')] })
+      const matesSave = await savePageBody(mate.ctx, page, { blocks: [block(mine, 'paragraph', '내가 쓴 줄'), block(theirs, 'paragraph', '동료가 고친 줄')] })
+
+      const inEditor = `document.activeElement === document.querySelector('.blk-editor')`
+      const MENU = `[role="menu"][aria-label="블록 메뉴"]`
+      const footOf = async (id) => {
+        await clickSelector(`[data-block-id="${id}"] p`)
+        await waitFor(inEditor, 3000)
+        await key('/', MOD)
+        await waitFor(`!!document.querySelector('${MENU}')`, 3000)
+        await waitFor(`!!document.querySelector('${MENU} [data-testid="block-edit-info"]')`, 5000)
+        const text = await evaluate(`document.querySelector('${MENU} [data-testid="block-edit-info"]')?.textContent ?? null`)
+        await key('Escape')
+        await waitFor(`!document.querySelector('${MENU}')`, 3000)
+        return text
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${theirs}"] p')`, 15000)
+      await sleep(500)
+      const theirsFoot = await footOf(theirs)
+      check('★ 동료가 고친 블록의 메뉴 맨 아래 — 마지막 편집이 동료(이름 · 시각)', matesSave.ok && theirsFoot?.startsWith(`마지막 편집 ${mateName} · `) && /\d/.test(theirsFoot ?? ''),
+        JSON.stringify({ ok: matesSave.ok, theirsFoot }))
+      const mineFoot = await footOf(mine)
+      check('★ 내가 쓴 블록은 나 — 블록마다 다르다', !!ownerName && mineFoot?.startsWith(`마지막 편집 ${ownerName} · `), JSON.stringify({ ownerName, mineFoot }))
+
+      const outsider = await createUser(`블록 이력 손님 ${stamp}`)
+      await fetch(`${pagesUrl}/${page}/guests`, { method: 'POST', headers: authed, body: JSON.stringify({ email: outsider.email, level: 'view' }) })
+      const { createSession } = await import(new URL('../src/lib/auth/session.ts', import.meta.url).href)
+      const { withTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const guestSession = await withTransaction((tx) => createSession(tx, { userId: outsider.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e' }))
+      const asGuest = await (await fetch(`${pagesUrl}/${page}/edit-info?block=${theirs}`, { headers: { ...json, cookie: `nc_session=${guestSession.token}` } })).json().catch(() => null)
+      check('★ 게스트에게는 이름이 없다 — "멤버"', asGuest?.edited?.label === '멤버' && !JSON.stringify(asGuest).includes(mateName), JSON.stringify(asGuest))
+
+      const elsewhere = await fetch(`${pagesUrl}/${otherPage}/edit-info?block=${theirs}`, { headers: authed })
+      const elsewhereBody = await elsewhere.json().catch(() => null)
+      check('★ 다른 페이지에 물으면 답이 없다(edited null)', elsewhere.status === 200 && elsewhereBody?.ok === true && elsewhereBody.edited === null,
+        JSON.stringify({ status: elsewhere.status, elsewhereBody }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
