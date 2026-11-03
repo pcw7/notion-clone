@@ -5047,6 +5047,40 @@ try {
     await rejects('토글이 글이다', pageId, { page_full_width: 'true' })
   }
 
+  console.log('\n[85] 차트 뷰의 레이아웃 (0127 / §3.6 [보강 CH-1] ③ · CH-1조각)')
+  {
+    // configuration.chart = { kind, data_labels, cumulative } — 정확히 이 세 키 · kind 네 값 · 둘은 boolean.
+    const viewRow = (await client.query(`SELECT id FROM view LIMIT 1`)).rows[0]
+    const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = 'ck_view_chart_layout'`)).rowCount
+    if (has === 1) ok('ck_view_chart_layout 이 있다')
+    else fail('ck_view_chart_layout 이 없다')
+    if (!viewRow) {
+      ok('뷰가 없다 — 건너뛴다(CHECK 은 마이그레이션이 세웠다)')
+    } else {
+      const set = `UPDATE view SET configuration = jsonb_set(coalesce(configuration, '{}'::jsonb), '{chart}', $2::jsonb, true) WHERE id = $1`
+      const chart = (over) => JSON.stringify({ kind: 'column', data_labels: false, cumulative: false, ...over })
+      await client.query(set, [viewRow.id, chart({ kind: 'donut', data_labels: true, cumulative: true })])
+      ok('★ 세 키 모두 올바른 값 — 통과한다')
+      const rejects = async (label, json) => {
+        await client.query('SAVEPOINT probe')
+        try {
+          await client.query(set, [viewRow.id, json])
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          fail(`${label} — 거부되어야 하는데 통과했다`)
+        } catch (e) {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          if (e.code === '23514' && e.constraint === 'ck_view_chart_layout') ok(`${label} — ck_view_chart_layout 가 거부함`)
+          else fail(`${label} — ck_view_chart_layout 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+        }
+      }
+      await rejects('★ 모르는 종류(pie)', chart({ kind: 'pie' }))
+      await rejects('★ 모르는 키(stack)', chart({ stack: true }))
+      await rejects('★ data_labels 가 boolean 이 아니다', chart({ data_labels: 'yes' }))
+      await rejects('★ cumulative 가 빠졌다(NULL 이면 통과하는 구멍)', JSON.stringify({ kind: 'bar', data_labels: true }))
+      await rejects('차트 키가 객체가 아니다', JSON.stringify('column'))
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

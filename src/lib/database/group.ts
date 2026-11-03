@@ -995,6 +995,63 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
   })
 }
 
+/** 차트의 한 그룹(CH-1) — 행은 없다. `value` 는 `group_by.calculation` 의 값(없으면 null — 화면은 `count` 를 쓴다). */
+export type GroupSummary = {
+  readonly key: string
+  readonly option: SelectOption | null
+  readonly statusGroup: StatusGroupKind | null
+  readonly count: number
+  readonly hidden: boolean
+  readonly value: CalculationResult | null
+}
+
+export type GroupSummaryPage = Pick<
+  GroupsPage,
+  'propertyId' | 'propertyType' | 'calculation' | 'statusBy' | 'dateUnit' | 'numberSize' | 'textMode' | 'today'
+> & { readonly groups: readonly GroupSummary[] }
+
+/**
+ * 그룹마다 개수와 계산 값만(차트 · CH-1 · 정본 §3.6 [보강 CH-1] ④) — 행은 읽지 않는다. `queryGroups` 의 머리와 같은 질의(`readGroupCounts`)라
+ * 막대의 값과 보드 머리의 값은 같은 행에서 나온다(권한 · 필터 · 검색어 · 하위 항목의 부모만). 숨긴 그룹도 싣는다 · `hide_empty` 면 행이 0개인 그룹은 뺀다.
+ */
+export async function queryGroupSummary(
+  ctx: SessionContext,
+  viewId: string,
+  input: BoardReadInput = {},
+): Promise<GroupResult<GroupSummaryPage>> {
+  await refreshDerivedForView(ctx, viewId)
+  return withReadTransaction(async (tx) => {
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
+    if (isFailure(board)) return board
+    const counted = await readGroupCounts(tx, board)
+    const hidden = new Set(board.groupBy.hidden ?? [])
+    const groups: GroupSummary[] = catalogOf(board, counted)
+      .map((g) => ({
+        key: g.key,
+        option: g.option,
+        statusGroup: g.statusGroup,
+        count: counted.get(g.key)?.n ?? 0,
+        hidden: hidden.has(g.key),
+        value: board.calculation === null ? null : groupCalculationOf(board, counted.get(g.key)),
+      }))
+      .filter((g) => !(board.groupBy.hide_empty && g.count === 0))
+    return {
+      ok: true,
+      value: {
+        propertyId: board.groupBy.property_id,
+        propertyType: board.propertyType,
+        calculation: board.calculation,
+        statusBy: board.statusByGroup ? 'group' : 'option',
+        dateUnit: board.dateUnit,
+        numberSize: board.numberSize,
+        textMode: board.textMode,
+        today: board.dateUnit === 'relative' ? board.today : null,
+        groups,
+      },
+    } as const
+  })
+}
+
 /**
  * 그룹 머리의 계산만 다시 낸다(2d-3) — 카드를 옮기거나 만든 뒤 화면이 부른다. 카운트와 같은 질의 하나(`readGroupCounts`)라
  * 머리의 값과 카드 수가 같은 행들을 본다. 그룹 목록(옵션)에 있는 키만 낸다 — 행이 없는 그룹도(빈 통계).

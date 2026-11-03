@@ -37,8 +37,8 @@ import * as api from './table-api'
 
 /** 탭의 종류 아이콘. 장식이다 — 이름이 곧 종류를 말한다. */
 export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡', gallery: '⊞', calendar: '▤', form: '✎' }
-const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록', gallery: '갤러리', calendar: '캘린더' }
-/** 이 화면이 만들 수 있는 종류 — 서버가 받는 것 전부(`MVP_VIEW_TYPES`). */
+const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록', gallery: '갤러리', calendar: '캘린더', chart: '차트' }
+/** 이 화면이 만들 수 있는 종류. 차트(CH-1)는 서버만 받는다 — 차트 화면이 들어오는 다음 조각(CH-2)에서 여기에 더한다. */
 const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list', 'gallery', 'calendar']
 
 const MENU_ITEM =
