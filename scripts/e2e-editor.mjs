@@ -27631,6 +27631,61 @@ async function main() {
         JSON.stringify([readerPatch.status, rowPatch.status, badPatch.status]))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지의 모습 — 공개 화면 · 팔레트 (PL-2 · F-02-07)')) { try {
+      // 공개 화면의 모습 · 팔레트의 작업(정본 §3.4 [보강 PL-2]) — 팔레트로 서체(다음 서체) · 작은 글씨 · 전체 폭을 바꾸면 이름이 상태대로 바뀌고 본문이 따른다 ·
+      // 게시한 공개 화면도 같은 서체 · 글씨 · 폭으로 그린다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `공개 모습 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [textRun('공개 본문')], properties: {}, format: {}, children: [] }] })
+      const ACTION = (id) => `[data-testid="command-action"][data-action="${id}"]`
+      const TITLE = 'input[aria-label="페이지 제목"]'
+      const palette = async (text) => {
+        await key('k', MOD)
+        await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 5000)
+        await typeText(text)
+      }
+      const label = (id) => evaluate(`document.querySelector('${ACTION(id)}')?.querySelector('span')?.textContent ?? null`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${TITLE}') && !!document.querySelector('[data-block-id="${first}"]')`, 15000)
+      await waitHydrated('[data-testid="page-menu"]')
+      await palette('서체')
+      await waitFor(`!!document.querySelector('${ACTION('cycle-font')}')`, 3000)
+      const fontLabel = await label('cycle-font')
+      await key('Enter')
+      const serif = await waitFor(`!!document.querySelector('[data-page-font="serif"]')`, 8000)
+      await palette('서체')
+      await waitFor(`!!document.querySelector('${ACTION('cycle-font')}')`, 3000)
+      const nextLabel = await label('cycle-font')
+      await key('Escape')
+      check('★ 팔레트의 "서체 바꾸기" — 다음 서체로(기본 → 세리프) · 이름이 그다음(고정폭)으로', fontLabel === '서체 바꾸기 — 세리프' && serif && nextLabel === '서체 바꾸기 — 고정폭',
+        JSON.stringify({ fontLabel, serif, nextLabel }))
+      await palette('작은 글씨')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-small-text')}')`, 3000)
+      const smallLabel = await label('toggle-small-text')
+      await key('Enter')
+      const small = await waitFor(`getComputedStyle(document.querySelector('.blk-editor')).fontSize === '14px'`, 8000)
+      await palette('전체 폭')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-full-width')}')`, 3000)
+      const wideLabel = await label('toggle-full-width')
+      await key('Enter')
+      const wide = await waitFor(`!!document.querySelector('[data-page-font="serif"][data-page-small-text]') && (document.querySelector('${TITLE}')?.getBoundingClientRect().width ?? 0) > 900`, 8000)
+      check('★ 팔레트의 "작은 글씨 켜기" · "전체 폭 켜기" — 본문이 따른다', smallLabel === '작은 글씨 켜기' && small && wideLabel === '전체 폭 켜기' && wide,
+        JSON.stringify({ smallLabel, small, wideLabel, wide }))
+
+      const token = (await (await fetch(`${pagesUrl}/${page}/publish`, { method: 'PUT', headers: authed })).json()).token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      await waitFor(`!!document.querySelector('[data-testid="public-title"]')`, 15000)
+      const pub = await evaluate(`(() => { const m = document.querySelector('[data-testid="public-page"]'); const b = document.querySelector('[data-testid="public-body"]')
+        return { font: m.getAttribute('data-page-font'), small: m.hasAttribute('data-page-small-text'), wide: m.hasAttribute('data-page-full-width'),
+          family: getComputedStyle(document.querySelector('[data-testid="public-title"]')).fontFamily.toLowerCase(), size: getComputedStyle(b).fontSize, width: Math.round(m.getBoundingClientRect().width) } })()`)
+      check('★ 공개 화면도 같은 모습 — 세리프 · 본문 14px · 768px 보다 넓은 칸',
+        pub.font === 'serif' && pub.small && pub.wide && pub.family.includes('georgia') && pub.size === '14px' && pub.width > 768, JSON.stringify(pub))
+      await fetch(`${pagesUrl}/${page}/publish`, { method: 'DELETE', headers: authed })
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -13,6 +13,12 @@ import { useRouter } from 'next/navigation'
 
 import { DEFAULT_PAGE_APPEARANCE, type PageAppearance, type PageFont } from '@/lib/block/page-appearance'
 import { MENU_ROW } from './page-menu'
+import { usePageCommand } from '../page-commands'
+
+/** 커맨드 팔레트에서 찾는 낱말(PL-2). */
+const FONT_WORDS = ['서체', '글꼴', 'font'] as const
+const SMALL_WORDS = ['작은 글씨', '글자 크기', 'small text'] as const
+const WIDE_WORDS = ['전체 폭', '넓게', 'full width'] as const
 
 const FONTS: readonly { readonly font: PageFont; readonly label: string; readonly sample: string }[] = [
   { font: 'default', label: '기본', sample: 'font-sans' },
@@ -47,6 +53,12 @@ export function PageAppearanceControl({ workspaceId, pageId, initial }: { worksp
       setLook(before)
     }
   }
+
+  // 커맨드 팔레트의 작업(PL-2) — 이 고르개가 등록한다(고칠 수 있는 사람에게만 그려진다). 서체는 다음 서체로 돌린다 · 토글은 지금 상태대로 이름이 바뀐다
+  const nextFont = FONTS[(FONTS.findIndex((f) => f.font === look.font) + 1) % FONTS.length]!
+  usePageCommand('cycle-font', pageId, `서체 바꾸기 — ${nextFont.label}`, FONT_WORDS, () => void save({ font: nextFont.font }))
+  usePageCommand('toggle-small-text', pageId, look.smallText ? '작은 글씨 끄기' : '작은 글씨 켜기', SMALL_WORDS, () => void save({ smallText: !look.smallText }))
+  usePageCommand('toggle-full-width', pageId, look.fullWidth ? '전체 폭 끄기' : '전체 폭 켜기', WIDE_WORDS, () => void save({ fullWidth: !look.fullWidth }))
 
   return (
     <div className="flex flex-col" data-testid="page-appearance">

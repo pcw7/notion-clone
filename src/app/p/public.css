@@ -190,3 +190,7 @@
 .pub-form-submit { align-self: flex-start; border-radius: 4px; padding: 0.375rem 1rem; background: #2563eb; color: #fff; }
 .pub-form-submit:disabled { opacity: 0.5; }
 .pub-form-again { display: inline-block; margin-top: 1rem; }
+
+/* 페이지의 모습(PL-2 · 정본 §3.4 [보강 PL-2]) — 서체는 editor.css 의 [data-page-font] · 작은 글씨는 본문만 16 → 14px · 전체 폭은 칸의 너비 제한을 푼다 */
+.pub-page[data-page-small-text] .pub-body { font-size: 14px; }
+.pub-page[data-page-full-width] { max-width: none; }
