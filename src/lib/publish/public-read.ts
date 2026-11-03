@@ -16,6 +16,7 @@
 import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { coverPositionOfFormat, pageCoverOfFormat, type PageCover } from '../block/page-cover.ts'
+import { DEFAULT_PAGE_APPEARANCE, pageAppearanceOfFormat, type PageAppearance } from '../block/page-appearance.ts'
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { DATABASE_TYPE, PAGE_TYPE, isRefType } from '../block/types.ts'
@@ -45,6 +46,8 @@ export type PublicPageView = {
   readonly cover: PageCover | null
   /** 커버의 세로 위치(PC-3) — 0~1 · 가운데 0.5. */
   readonly coverPosition: number
+  /** 페이지의 모습(PL-2 · 정본 §3.4 [보강 PL-2]) — 데이터베이스 · 행 페이지는 기본(행은 레이아웃이 정한다 · R5). */
+  readonly appearance: PageAppearance
   readonly doc: EditorDoc
   /** 이 토큰으로 열 수 있는 페이지의 제목 — 사슬 · 하위 페이지 참조 · 페이지 멘션. **없는 id 는 열 수 없다**(가린다). */
   readonly pages: ReadonlyMap<string, readonly RichTextRun[]>
@@ -85,8 +88,8 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
     if (!access.ok) return access
     const target = access.value
 
-    const page = await tx.queryOne<{ type: string; properties: Record<string, unknown> | null; format: Record<string, unknown> | null }>(
-      `SELECT type, properties, format FROM block WHERE id = $1`,
+    const page = await tx.queryOne<{ type: string; parent_type: string; properties: Record<string, unknown> | null; format: Record<string, unknown> | null }>(
+      `SELECT type, parent_type, properties, format FROM block WHERE id = $1`,
       [target.pageId],
     )
     // 게시된 데이터베이스(6a-2c-2) — 본문이 없고 표다. 아이콘은 데이터베이스의 칸(`database.icon` · 8c-3b)이다.
@@ -151,6 +154,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         icon: await liveIconIn(tx, target.workspaceId, isDatabase ? databaseIcon : pageIconOfFormat(page.format)),
         cover: isDatabase ? null : pageCoverOfFormat(page.format),
         coverPosition: coverPositionOfFormat(page.format),
+        appearance: isDatabase || page.parent_type === 'data_source' ? DEFAULT_PAGE_APPEARANCE : pageAppearanceOfFormat(page.format),
         doc,
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),

@@ -349,3 +349,24 @@ describe('커버 — 페이지의 올린 이미지 커버(PC-4)', () => {
     assert.equal(await readPublicBlockFile(token, doc, 'cover'), null, '해제하면 없다')
   })
 })
+
+// ── 모습(PL-2) ───────────────────────────────────────────────────────
+
+describe('모습 — 공개 읽기가 페이지의 모습을 싣는다(PL-2)', () => {
+  test('★ 서체 · 작은 글씨 · 전체 폭을 싣는다 · 기본이면 기본', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const doc = await pageNamed(boss, unique('모습 문서'))
+    await query(`UPDATE block SET format = coalesce(format, '{}'::jsonb) || $2::jsonb WHERE id = $1`, [
+      doc,
+      JSON.stringify({ page_font: 'mono', page_small_text: true, page_full_width: true }),
+    ])
+    const plain = await pageNamed(boss, unique('기본 문서'))
+    const read = await readPublicPage(await tokenOf(boss, doc))
+    assert.ok(read.ok)
+    assert.deepEqual(read.value.appearance, { font: 'mono', smallText: true, fullWidth: true })
+    const plainRead = await readPublicPage(await tokenOf(boss, plain))
+    assert.ok(plainRead.ok)
+    assert.deepEqual(plainRead.value.appearance, { font: 'default', smallText: false, fullWidth: false })
+  })
+})

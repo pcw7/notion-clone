@@ -93,7 +93,13 @@ function PublicView({ read }: { read: PublicRead }): ReactNode {
         )}
       </div>
     )}
-    <main className={cover === null ? 'pub-page' : 'pub-page pub-page-covered'} data-testid="public-page" data-page-id={view.target.pageId}>
+    <main
+      className={cover === null ? 'pub-page' : 'pub-page pub-page-covered'}
+      // 페이지의 모습(PL-2) — 앱과 같은 data 속성 · 서체는 editor.css 의 규칙 · 작은 글씨 · 전체 폭은 public.css
+      data-page-font={view.appearance.font === 'default' ? undefined : view.appearance.font}
+      data-page-small-text={view.appearance.smallText ? '' : undefined}
+      data-page-full-width={view.appearance.fullWidth ? '' : undefined}
+ data-testid="public-page" data-page-id={view.target.pageId}>
       {view.target.chain.length > 1 && (
         <nav className="pub-trail" aria-label="이동 경로" data-testid="public-trail">
           <Trail view={view} />
