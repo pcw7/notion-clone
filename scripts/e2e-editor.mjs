@@ -13778,8 +13778,11 @@ async function main() {
           && (await evaluate(`[...document.querySelectorAll('[data-testid="chart-mark"] title')].every((t) => / · /.test(t.textContent))`)) === true)
 
       // 종류 — 도넛 · 새로고침 뒤에도
-      await clickOn('[data-testid="chart-settings"]')
-      await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 5000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-kind-donut"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 1500)
+      }
       await clickOn('[data-testid="chart-kind-donut"]')
       check('★ 종류를 도넛으로 — 조각(path)이 서고 data-kind=donut',
         await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 10000)
@@ -13790,8 +13793,11 @@ async function main() {
           && (await marks()).length === visible.filter((g) => g.count > 0).length)
 
       // Y값 = 금액의 합계
-      await clickOn('[data-testid="chart-settings"]')
-      await waitFor(`!!document.querySelector('[data-testid="chart-y-axis"]')`, 5000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-y-axis"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-y-axis"]')`, 1500)
+      }
       await setSelect('[data-testid="chart-y-axis"]', num)
       const sumsDrawn = await waitFor(`(() => {
         const m = Object.fromEntries([...document.querySelectorAll('[data-testid="chart-mark"]')].map((e) => [e.dataset.key, Number(e.dataset.value)]))
@@ -13814,6 +13820,120 @@ async function main() {
       check('★ 볼 수만 있는 사람에게는 "차트" 단추가 없다(차트는 보인다)',
         shared.ok && viewerHtml.includes('data-testid="db-chart"') && !viewerHtml.includes('data-testid="chart-settings"'),
         JSON.stringify([shared.status, viewerHtml.includes('data-testid="db-chart"'), viewerHtml.includes('data-testid="chart-settings"')]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('차트 — 데이터 라벨 · 누적 (CH-3 · F-04-08)')) { try {
+      // 데이터 라벨(마크마다 값 글자) · 누적(개수 · 오름차순일 때만 그린다 — 도넛이면 저장값은 두고 그리지 않는다 · 되돌리면 다시 선다)
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const marks = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value)]))`).then((s) => JSON.parse(s))
+      const labels = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-label"]')].map((m) => [m.dataset.key, m.textContent]))`).then((s) => JSON.parse(s))
+      const db = (await api('POST', '/databases', { name: `차트 라벨 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      const da = await opt('다')
+      for (const o of [ga, ga, ga, na, da, da]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: stage, value: { type: 'select', select: { id: o } } }] })
+      }
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      const chartId = made.body?.view?.id
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage } })
+      const summary = (await api('GET', `/views/${chartId}/chart`)).body
+      const visible = (summary?.groups ?? []).filter((g) => !g.hidden)
+      let run = 0
+      const plain = visible.map((g) => [g.key, g.count])
+      const running = visible.map((g) => [g.key, (run += g.count)])
+      const fmt = (n) => n.toLocaleString('ko-KR')
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+        return waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 20000)
+      }
+      // 토글 하나 — 하이드레이션 전의 클릭은 아무 일이 없다(복사본 판에서 데이터 라벨이 저장되지 않은 적이 있다). 패널이 열릴 때까지 몇 번 누르고,
+      // 누른 뒤에는 서버의 값이 바뀔 때까지 기다린다 — 안 바뀌면 한 번 더 누른다.
+      const storedChart = async () => (await api('GET', `/views/${chartId}`)).body?.view?.chart ?? null
+      const toggle = async (testId) => {
+        const key = testId === 'chart-data-labels' ? 'data_labels' : 'cumulative'
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="${testId}"]')`)); i += 1) {
+          await clickOn('[data-testid="chart-settings"]')
+          await waitFor(`!!document.querySelector('[data-testid="${testId}"]')`, 1500)
+        }
+        const before = (await storedChart())?.[key] ?? false
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await clickOn(`[data-testid="${testId}"]`)
+          for (let i = 0; i < 20; i += 1) {
+            if (((await storedChart())?.[key] ?? false) !== before) return
+            await sleep(250)
+          }
+        }
+      }
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+      await open()
+      check('데이터 라벨이 꺼져 있으면 글자가 없다', (await labels()).length === 0)
+      await toggle('chart-data-labels')
+      check('★ 데이터 라벨 켜기 — 보이는 그룹마다 라벨 하나 · 글자는 값',
+        await waitFor(`document.querySelectorAll('[data-testid="chart-label"]').length === ${visible.length}`, 20000)
+          && same(await labels(), plain.map(([k, v]) => [k, fmt(v)])),
+        JSON.stringify({ labels: await labels(), plain }))
+      await open()
+      check('데이터 라벨은 새로고침 뒤에도 남는다', (await labels()).length === visible.length)
+
+      // 누적 — 개수 · 오름차순
+      await toggle('chart-cumulative')
+      check('★ 누적 켜기 — 마크의 data-value 가 앞 그룹까지의 합(개수)',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value)])) === ${JSON.stringify(JSON.stringify(running))}`, 20000),
+        JSON.stringify({ marks: await marks(), running }))
+      check('누적이면 라벨도 누적한 값', same(await labels(), running.map(([k, v]) => [k, fmt(v)])), JSON.stringify(await labels()))
+      await open()
+      check('★ 누적은 새로고침 뒤에도 선다', same(await marks(), running), JSON.stringify(await marks()))
+
+      // 도넛 — 누적 토글은 꺼진 채 잠기고 마크는 원래 값 · 저장값은 그대로 true
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-kind-donut"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 1500)
+      }
+      await clickOn('[data-testid="chart-kind-donut"]')
+      check('★ 도넛으로 바꾸면 마크는 원래 값(누적을 그리지 않는다)',
+        await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 20000)
+          && (await waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 5000))
+          && same(await marks(), plain.filter(([, v]) => v > 0)),
+        JSON.stringify({ marks: await marks(), plain }))
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-cumulative"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-cumulative"]')`, 1500)
+      }
+      const locked = await evaluate(`(() => { const e = document.querySelector('[data-testid="chart-cumulative"]'); return e ? [e.disabled, e.checked] : null })()`)
+      const stored = (await api('GET', `/views/${chartId}`)).body?.view?.chart
+      check('★ 도넛이면 누적 토글은 꺼진 채 잠기고 저장값(cumulative)은 true 로 남는다',
+        same(locked, [true, false]) && stored?.cumulative === true && stored?.kind === 'donut', JSON.stringify({ locked, stored }))
+
+      // 되돌리면 다시 선다
+      await clickOn('[data-testid="chart-kind-column"]')
+      check('★ 세로 막대로 되돌리면 누적을 다시 그린다',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value)])) === ${JSON.stringify(JSON.stringify(running))}`, 20000),
+        JSON.stringify({ marks: await marks(), running }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {

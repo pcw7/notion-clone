@@ -18,9 +18,12 @@ import { useMemo } from 'react'
 import type { ChartKind } from '@/lib/database/chart'
 import {
   ACCENT_FILL,
+  accumulate,
   arcPath,
   chartData,
   chartSummaryLabel,
+  cumulativeAllowed,
+  donutLabelVisible,
   donutSlices,
   donutUsesOptionColors,
   fillOf,
@@ -41,6 +44,9 @@ export function DatabaseChart({
   dataSourceId,
   renderedAt,
   kind,
+  dataLabels,
+  cumulative,
+  groupSort,
   summary,
 }: {
   workspaceId: string
@@ -48,11 +54,17 @@ export function DatabaseChart({
   /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
   renderedAt: number
   kind: ChartKind
+  /** 값 글자를 마크에 적는다(CH-3). */
+  dataLabels: boolean
+  /** 저장된 누적 — 그릴 수 있을 때만 그린다(`cumulativeAllowed`). */
+  cumulative: boolean
+  groupSort: string | null
   summary: SummaryInput
 }) {
   useLiveServerRefresh(workspaceId, dataSourceId, false, renderedAt)
   const chart = useMemo(() => chartData(summary), [summary])
-  const { data } = chart
+  const drawCumulative = cumulative && cumulativeAllowed(kind, summary.calculation?.function ?? null, groupSort)
+  const data = useMemo(() => (drawCumulative ? accumulate(chart.data) : chart.data), [chart.data, drawCumulative])
 
   return (
     <div data-testid="db-chart" data-kind={kind} className="flex flex-col gap-2">
@@ -66,20 +78,22 @@ export function DatabaseChart({
           데이터가 없습니다
         </p>
       ) : kind === 'donut' ? (
-        <Donut data={data} />
+        <Donut data={data} labels={dataLabels} />
       ) : kind === 'bar' ? (
-        <HBars data={data} integer={chart.integer} />
+        <HBars data={data} integer={chart.integer} labels={dataLabels} />
       ) : (
-        <VChart data={data} integer={chart.integer} line={kind === 'line'} />
+        <VChart data={data} integer={chart.integer} line={kind === 'line'} labels={dataLabels} />
       )}
     </div>
   )
 }
 
+const LABEL_FONT = 11
+
 const markTitle = (d: ChartDatum) => `${d.label} · ${d.text}`
 
 /** 세로 막대 · 선 — 같은 축을 쓴다. */
-function VChart({ data, integer, line }: { data: readonly ChartDatum[]; integer: boolean; line: boolean }) {
+function VChart({ data, integer, line, labels }: { data: readonly ChartDatum[]; integer: boolean; line: boolean; labels: boolean }) {
   const rotate = data.length > 8
   const m = { l: 56, r: 16, t: 16, b: rotate ? 72 : 44 }
   const H = 320
@@ -166,12 +180,27 @@ function VChart({ data, integer, line }: { data: readonly ChartDatum[]; integer:
           </rect>
         ))
       )}
+      {labels &&
+        data.map((d, i) => (
+          <text
+            key={d.key}
+            data-testid="chart-label"
+            data-key={d.key}
+            x={cx(i)}
+            y={(d.value < 0 ? Math.max(y(d.value), zero) + LABEL_FONT + 3 : Math.min(y(d.value), zero) - (line ? 9 : 4))}
+            textAnchor="middle"
+            fontSize={LABEL_FONT}
+            fill="currentColor"
+          >
+            {d.text}
+          </text>
+        ))}
     </svg>
   )
 }
 
 /** 가로 막대. */
-function HBars({ data, integer }: { data: readonly ChartDatum[]; integer: boolean }) {
+function HBars({ data, integer, labels }: { data: readonly ChartDatum[]; integer: boolean; labels: boolean }) {
   const m = { l: 128, r: 24, t: 8, b: 28 }
   const row = 30
   const H = m.t + m.b + data.length * row
@@ -212,6 +241,20 @@ function HBars({ data, integer }: { data: readonly ChartDatum[]; integer: boolea
             >
               <title>{markTitle(d)}</title>
             </rect>
+            {labels && (
+              <text
+                data-testid="chart-label"
+                data-key={d.key}
+                x={d.value < 0 ? Math.min(x(d.value), zero) - 4 : Math.max(x(d.value), zero) + 4}
+                y={top + row / 2}
+                textAnchor={d.value < 0 ? 'end' : 'start'}
+                dominantBaseline="middle"
+                fontSize={LABEL_FONT}
+                fill="currentColor"
+              >
+                {d.text}
+              </text>
+            )}
           </g>
         )
       })}
@@ -220,7 +263,7 @@ function HBars({ data, integer }: { data: readonly ChartDatum[]; integer: boolea
 }
 
 /** 도넛 — 양수인 값만 조각이 된다(0 은 호가 없다). 조각 이름 · 값은 옆의 범례에도 모두 적는다. */
-function Donut({ data }: { data: readonly ChartDatum[] }) {
+function Donut({ data, labels }: { data: readonly ChartDatum[]; labels: boolean }) {
   const size = 240
   const c = size / 2
   const slices = donutSlices(data.map((d) => d.value))
@@ -248,6 +291,31 @@ function Donut({ data }: { data: readonly ChartDatum[] }) {
             </path>
           )
         })}
+        {labels &&
+          slices
+            .filter((s) => donutLabelVisible(s.fraction))
+            .map((s) => {
+              const mid = (s.start + s.end) / 2
+              const r = (108 + 64) / 2
+              return (
+                <text
+                  key={data[s.index].key}
+                  data-testid="chart-label"
+                  data-key={data[s.index].key}
+                  x={c + r * Math.sin(mid)}
+                  y={c - r * Math.cos(mid)}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize={LABEL_FONT}
+                  fill="white"
+                  stroke="rgba(0,0,0,0.45)"
+                  strokeWidth={2.5}
+                  paintOrder="stroke"
+                >
+                  {data[s.index].text}
+                </text>
+              )
+            })}
         <text x={c} y={c} textAnchor="middle" dominantBaseline="middle" fontSize={18} fill="currentColor" className={TEXT}>
           {total.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}
         </text>
