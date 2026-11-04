@@ -62,7 +62,7 @@ import { cardParentsOnlyPair, filterColumnsOf, isCardView, nestsSubItems, showsP
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
-import { queryGroupColumnCalculations, queryGroups } from '@/lib/database/group'
+import { queryGroupColumnCalculations, queryGroups, queryGroupSummary } from '@/lib/database/group'
 import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { usesRelativeDate } from '@/lib/database/relative-date'
 import { ViewerTodaySync } from './viewer-today-sync'
@@ -97,10 +97,11 @@ import { DuplicateDatabaseButton } from './duplicate-database-button'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { ViewTabs } from './view-tabs'
 import { FormEditor } from './form-editor'
-import { ViewToolbar, type BoardSettings } from './view-toolbar'
+import { ViewToolbar, type BoardSettings, type ChartSettings } from './view-toolbar'
 import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
 import { DatabaseCalendar } from './database-calendar'
+import { DatabaseChart } from './database-chart-lazy'
 import { isYm, isYmd, monthGrid, weekGrid, weekStartOf } from '@/lib/database/calendar'
 import { queryCalendar } from '@/lib/database/calendar-query'
 import { readGalleryCovers } from '@/lib/database/gallery-covers'
@@ -248,6 +249,8 @@ export default async function DatabasePage({
   // 갤러리의 그룹(G-3a · 정본 [보강 G-3]) — 그룹마다 한 덩이의 카드 격자
   const isGroupedGallery = isGallery && view.value.groupBy !== null
   const isCalendar = view.value.type === 'calendar'
+  // 차트(CH-2) — 행을 그리지 않는다. X축 = 묶는 속성 · Y값 = 그 그룹의 계산(없으면 개수)을 그룹 요약 하나로 받아 SVG 로 그린다
+  const isChart = view.value.type === 'chart'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
   const isForm = view.value.type === 'form'
   const form = isForm ? await readForm(ctx, view.value.id) : null
@@ -264,8 +267,8 @@ export default async function DatabasePage({
   const parentsOnly = showsParentsOnly(view.value.type) ? cardParentsOnlyPair(view.value.columns, view.value.subItemDisplay) : null
   // 보는 사람의 오늘(시간대 쿠키 · `time-zone-cookie.tsx` 가 쓴다) — 상대 날짜 그룹(B-3)과 상대 날짜 필터(R-1)가 같은 날을 쓴다
   const viewerToday = await readViewerToday()
-  const [tablePage, catalog, board] = await Promise.all([
-    isBoard || isCalendar || isForm
+  const [tablePage, catalog, board, chartPage] = await Promise.all([
+    isBoard || isCalendar || isForm || isChart
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
           // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
@@ -284,10 +287,12 @@ export default async function DatabasePage({
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
     isBoard || isGroupedRows || isGroupedGallery ? queryGroups(ctx, view.value.id, { search, today: viewerToday }) : null,
+    isChart ? queryGroupSummary(ctx, view.value.id, { search, today: viewerToday }) : null,
   ])
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
   if (board !== null && !board.ok && board.reason !== 'not_grouped') notFound()
+  if (chartPage !== null && !chartPage.ok && chartPage.reason !== 'not_grouped') notFound()
 
   const { name, icon, access: granted } = database.value
 
@@ -402,6 +407,28 @@ export default async function DatabasePage({
           : {}),
       }
     : undefined
+
+  // ── 차트 ── 도구줄의 "차트" 패널(종류 · X축 · Y값 · 그룹 보이기)은 구조를 고칠 수 있는 사람에게만(CH-2 ⑤)
+  const chartSummary =
+    chartPage !== null && chartPage.ok && groupColumn !== undefined && isGroupableType(groupColumn.type)
+      ? { ...chartPage.value, propertyName: groupColumn.name }
+      : null
+  const chartSettings: ChartSettings | undefined =
+    isChart && access.canEditStructure
+      ? {
+          layout: view.value.chart,
+          groupBy,
+          groups:
+            chartSummary === null
+              ? []
+              : chartSummary.groups.map((g) => ({
+                  key: g.key,
+                  label: groupLabel(chartSummary.propertyType, chartSummary.propertyName, g, chartSummary),
+                  count: g.count,
+                  hidden: g.hidden,
+                })),
+        }
+      : undefined
 
   // 표 · 보드를 새로 마운트하는 기준. 뷰 · 종류 · 필터 · 정렬 · 그룹 · 컬럼(이름 · 보임)이 바뀌면
   // 불러온 행과 커서가 무효다(F-04-15) — 옛 커서로 이어 붙이면 순서가 섞인다.
@@ -655,6 +682,7 @@ export default async function DatabasePage({
             search={search}
             {...(isGallery ? { gallery: view.value.gallery } : {})}
             {...(isCalendar ? { calendar: view.value.calendar } : {})}
+            {...(chartSettings !== undefined ? { chart: chartSettings } : {})}
             personal={view.value.personal}
             peopleNames={filterPeopleNames}
             rowTitles={filterRowTitles}
@@ -764,6 +792,23 @@ export default async function DatabasePage({
             {access.canEditStructure
               ? '도구줄의 "그룹"에서 그룹 기준을 다시 고르세요.'
               : '고칠 수 있는 사람이 그룹 기준을 다시 골라야 합니다.'}
+          </p>
+        )
+      ) : isChart ? (
+        chartSummary !== null ? (
+          <DatabaseChart
+            workspaceId={workspaceId}
+            dataSourceId={view.value.dataSourceId}
+            renderedAt={renderedAt}
+            kind={view.value.chart.kind}
+            summary={chartSummary}
+          />
+        ) : (
+          <p className="px-2 text-sm text-neutral-500" data-testid="db-chart-needs-group">
+            X축으로 쓸 속성이 없습니다.{' '}
+            {access.canEditStructure
+              ? '도구줄의 "차트"에서 X축을 다시 고르세요.'
+              : '고칠 수 있는 사람이 X축을 다시 골라야 합니다.'}
           </p>
         )
       ) : isCalendar ? (

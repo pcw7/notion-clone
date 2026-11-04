@@ -16,6 +16,7 @@ import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
+import type { ChartLayout } from '@/lib/database/chart'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
@@ -1041,6 +1042,8 @@ export function updateView(
     readonly defaultTemplateId?: string | null
     /** 갤러리 레이아웃의 바꿀 키만(2f-2). */
     readonly gallery?: Partial<GalleryLayout>
+    /** 차트 레이아웃의 바꿀 키만(CH-2). */
+    readonly chart?: Partial<ChartLayout>
     /** 캘린더 레이아웃의 바꿀 키만(2g-2). */
     readonly calendar?: Partial<CalendarLayout>
     /** 행을 여는 방식(8n-2 · F-02-20). */
