@@ -13862,10 +13862,23 @@ async function main() {
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
         return waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 20000)
       }
+      // 토글 하나 — 하이드레이션 전의 클릭은 아무 일이 없다(복사본 판에서 데이터 라벨이 저장되지 않은 적이 있다). 패널이 열릴 때까지 몇 번 누르고,
+      // 누른 뒤에는 서버의 값이 바뀔 때까지 기다린다 — 안 바뀌면 한 번 더 누른다.
+      const storedChart = async () => (await api('GET', `/views/${chartId}`)).body?.view?.chart ?? null
       const toggle = async (testId) => {
-        await clickOn('[data-testid="chart-settings"]')
-        await waitFor(`!!document.querySelector('[data-testid="${testId}"]')`, 5000)
-        await clickOn(`[data-testid="${testId}"]`)
+        const key = testId === 'chart-data-labels' ? 'data_labels' : 'cumulative'
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="${testId}"]')`)); i += 1) {
+          await clickOn('[data-testid="chart-settings"]')
+          await waitFor(`!!document.querySelector('[data-testid="${testId}"]')`, 1500)
+        }
+        const before = (await storedChart())?.[key] ?? false
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await clickOn(`[data-testid="${testId}"]`)
+          for (let i = 0; i < 20; i += 1) {
+            if (((await storedChart())?.[key] ?? false) !== before) return
+            await sleep(250)
+          }
+        }
       }
       const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
