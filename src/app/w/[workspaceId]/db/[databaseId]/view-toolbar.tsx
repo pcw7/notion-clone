@@ -101,8 +101,10 @@ import {
   type SubItemFilterScope,
 } from '@/lib/database/sub-item-scope'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
+import { CHART_KINDS, type ChartLayout } from '@/lib/database/chart'
+import { CHART_KIND_LABEL, chartCalculationsFor, defaultChartCalculation, isNumericCalculation } from '@/lib/database/chart-geometry'
 
-type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'open'
+type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'chart' | 'open'
 
 /**
  * 보드의 그룹 설정(보드 4b조각). 보드 뷰일 때만 온다 — "그룹" 버튼과 패널이 그때만 그려진다.
@@ -127,6 +129,16 @@ export type BoardSettings = {
   }
 }
 
+/**
+ * 차트의 설정(CH-2 · 정본 [보강 CH-2] ⑤). 차트 뷰이고 구조를 고칠 수 있는 사람에게만 온다 — "차트" 단추와 패널이 그때만 그려진다.
+ * `groups` 는 서버가 읽은 그룹 전부(숨긴 것 포함)다. 고르는 즉시 저장하고 서버 렌더를 다시 받는다.
+ */
+export type ChartSettings = {
+  readonly layout: ChartLayout
+  readonly groupBy: GroupBy | null
+  readonly groups: readonly { readonly key: string; readonly label: string; readonly count: number; readonly hidden: boolean }[]
+}
+
 const FIELD =
   'rounded border border-neutral-300 bg-transparent px-1.5 py-1 text-sm disabled:opacity-60 dark:border-neutral-700'
 
@@ -143,6 +155,7 @@ export function ViewToolbar({
   search,
   gallery,
   calendar,
+  chart,
   personal,
   peopleNames = {},
   rowTitles = {},
@@ -170,6 +183,8 @@ export function ViewToolbar({
   gallery?: GalleryLayout
   /** 캘린더 뷰의 레이아웃(2g-2). 캘린더일 때만 온다 — "달력" 버튼과 패널이 그때만 그려진다. */
   calendar?: LiveCalendarLayout
+  /** 차트 뷰의 설정(CH-2). 차트이고 구조를 고칠 수 있을 때만 온다 — "차트" 단추와 패널이 그때만 그려진다. */
+  chart?: ChartSettings
   /**
    * 이 사람의 개인 필터 · 정렬(2h-2 · F-04-17) — 어느 쪽을 덮어썼는지. 있으면 "나만 보는" 표시와 초기화 · (편집자) 모두에게 저장이 선다.
    * `filter` · `sorts` 로 받는 것은 이미 "실제로 쓰는" 것이다(서버 렌더가 개인 것을 얹었다).
@@ -290,6 +305,9 @@ export function ViewToolbar({
         {calendar !== undefined && (
           <ToolbarButton label="달력" count={0} active={panel === 'calendar'} testId="db-cal-layout-button" panel="calendar" onClick={() => toggle('calendar')} />
         )}
+        {canEdit && chart !== undefined && (
+          <ToolbarButton label="차트" count={0} active={panel === 'chart'} testId="chart-settings" panel="chart" onClick={() => toggle('chart')} />
+        )}
         {canEdit && openPagesIn !== undefined && (
           <ToolbarButton label="열기" count={0} active={panel === 'open'} testId="db-open-mode-button" panel="open" onClick={() => toggle('open')} />
         )}
@@ -394,6 +412,16 @@ export function ViewToolbar({
             layout={calendar}
             locked={!canEdit || busy}
             onSave={(patch) => run(() => updateView(workspaceId, viewId, { calendar: patch }))}
+            onClose={close}
+          />
+        )}
+        {panel === 'chart' && canEdit && chart !== undefined && (
+          <ChartPanel
+            columns={columns}
+            chart={chart}
+            locked={busy}
+            onSaveLayout={(patch) => run(() => updateView(workspaceId, viewId, { chart: patch }))}
+            onSaveGroupBy={(next) => run(() => updateView(workspaceId, viewId, { groupBy: next }))}
             onClose={close}
           />
         )}
@@ -1028,6 +1056,189 @@ function SortPanel({
  * 속성을 고르면 그 타입의 기본 함수(`defaultCalculationFor`)가 붙고 함수 칸이 열린다. 그룹 기준을 바꿔도 계산은 남는다(다른 속성의
  * 일이다). 저장값이 맞지 않게 됐으면(타입을 바꾼 뒤) 머리가 카드 수를 그리므로 여기도 "카드 수"로 보인다.
  */
+/**
+ * 차트 패널(CH-2) — 종류 넷 · X축(= 묶을 속성 · 보드의 그룹 기준과 같은 후보 · 같은 버킷 고르개) · Y값(개수 또는 속성 + 수로 나오는 계산) · 그룹 보이기.
+ * 고치는 것은 PATCH 뷰의 `chart` · `groupBy` 그대로다. Y값은 `groupBy.calculation` 이라 X축을 바꿔도 남긴다.
+ */
+function ChartPanel({
+  columns,
+  chart,
+  locked,
+  onSaveLayout,
+  onSaveGroupBy,
+  onClose,
+}: {
+  columns: ViewColumn[]
+  chart: ChartSettings
+  locked: boolean
+  onSaveLayout: (patch: Partial<ChartLayout>) => Promise<boolean>
+  onSaveGroupBy: (next: GroupBy) => Promise<boolean>
+  onClose: () => void
+}) {
+  const groupable = columns.filter((c) => isGroupableType(c.type))
+  const current = chart.groupBy
+  const dead = current !== null && !groupable.some((c) => c.propertyId === current.property_id)
+  // Y값으로 고를 수 있는 속성 — 수로 나오는 계산이 하나라도 있는 타입
+  const calculable = columns.filter((c) => chartCalculationsFor(c.type).length > 0)
+  const calc = current?.calculation ?? null
+  const calcColumn = calc === null ? undefined : calculable.find((c) => c.propertyId === calc.property_id)
+  const liveCalc = calc !== null && calcColumn !== undefined && chartCalculationsFor(calcColumn.type).includes(calc.function) ? calc : null
+  // 저장된 계산이 수가 아니면(날짜 · 기간) 고르개에 내지 않는다 — 개수로 보이고 화면이 "다시 고르세요" 를 적는다
+  const savedNonNumeric = calc !== null && !isNumericCalculation(calc.function)
+
+  const toggleHidden = (key: string, hidden: boolean) => {
+    if (current === null) return
+    const next = new Set(current.hidden ?? [])
+    if (hidden) next.add(key)
+    else next.delete(key)
+    void onSaveGroupBy({ ...current, hidden: [...next] })
+  }
+
+  return (
+    <Popover label="차트" testId="chart-panel" onClose={onClose}>
+      <div className="flex flex-wrap items-center gap-1 text-sm" role="group" aria-label="차트 종류">
+        <span className="mr-1">종류</span>
+        {CHART_KINDS.map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            data-testid={`chart-kind-${kind}`}
+            aria-pressed={chart.layout.kind === kind}
+            disabled={locked}
+            onClick={() => {
+              if (chart.layout.kind !== kind) void onSaveLayout({ kind })
+            }}
+            className={`rounded-md px-2 py-1 text-sm disabled:opacity-50 ${
+              chart.layout.kind === kind
+                ? 'bg-[rgba(33,27,23,0.1)] font-medium dark:bg-white/15'
+                : 'hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5'
+            }`}
+          >
+            {CHART_KIND_LABEL[kind]}
+          </button>
+        ))}
+      </div>
+
+      <label className="flex items-center gap-2 text-sm">
+        X축
+        <select
+          aria-label="X축"
+          data-testid="chart-x-axis"
+          value={current?.property_id ?? ''}
+          disabled={locked}
+          onChange={(e) => {
+            if (e.target.value === '') return
+            void onSaveGroupBy({
+              property_id: e.target.value,
+              ...(current?.hide_empty ? { hide_empty: true } : {}),
+              ...(current?.calculation ? { calculation: current.calculation } : {}),
+            })
+          }}
+          className={FIELD}
+        >
+          {current === null && <option value="">속성을 고르세요…</option>}
+          {dead && <option value={current.property_id}>지워진 속성</option>}
+          {groupable.map((c) => (
+            <option key={c.propertyId} value={c.propertyId}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {groupable.length === 0 && (
+        <p className="text-sm text-neutral-400">선택 · 상태 · 체크박스 · 날짜 · 숫자 · 글 속성이 없습니다. 속성을 먼저 만드세요.</p>
+      )}
+
+      {current !== null && !dead && (
+        // X축의 버킷 고르개(날짜 단위 · 숫자 구간 · 글 방식 · 순서) — 그룹 패널과 같은 것
+        <BucketControls
+          type={groupable.find((c) => c.propertyId === current.property_id)?.type}
+          value={current}
+          locked={locked}
+          testPrefix="chart-x"
+          axisLabel="X축의 "
+          onChange={(patch) =>
+            void onSaveGroupBy({
+              property_id: current.property_id,
+              ...(current.hide_empty ? { hide_empty: true } : {}),
+              ...(current.calculation ? { calculation: current.calculation } : {}),
+              ...patch,
+            })
+          }
+        />
+      )}
+
+      {current !== null && !dead && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            Y값
+            <select
+              aria-label="Y값"
+              data-testid="chart-y-axis"
+              value={liveCalc?.property_id ?? ''}
+              disabled={locked}
+              onChange={(e) => {
+                const column = calculable.find((c) => c.propertyId === e.target.value)
+                if (column === undefined) {
+                  // 개수로 — `calculation` 만 뺀다(나머지는 그대로)
+                  void onSaveGroupBy({ ...current, calculation: null })
+                  return
+                }
+                void onSaveGroupBy({ ...current, calculation: { property_id: column.propertyId, function: defaultChartCalculation(column.type) } })
+              }}
+              className={FIELD}
+            >
+              <option value="">{savedNonNumeric ? '개수 (Y값을 다시 고르세요)' : '개수'}</option>
+              {calculable.map((c) => (
+                <option key={c.propertyId} value={c.propertyId}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            {liveCalc !== null && calcColumn !== undefined && (
+              <select
+                aria-label="Y값의 계산"
+                data-testid="chart-y-function"
+                value={liveCalc.function}
+                disabled={locked}
+                onChange={(e) =>
+                  void onSaveGroupBy({ ...current, calculation: { property_id: liveCalc.property_id, function: e.target.value as Calculation } })
+                }
+                className={FIELD}
+              >
+                {chartCalculationsFor(calcColumn.type).map((fn) => (
+                  <option key={fn} value={fn}>
+                    {CALCULATION_LABEL[fn]}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <ul aria-label="그룹 표시" className="flex flex-col gap-1">
+            {chart.groups.map((g) => (
+              <li key={g.key}>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    data-testid="chart-group-visible"
+                    data-group-key={g.key}
+                    checked={!g.hidden}
+                    disabled={locked}
+                    onChange={(e) => toggleHidden(g.key, !e.target.checked)}
+                  />
+                  {g.label}
+                  <span className="text-xs tabular-nums text-neutral-400">{g.count}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Popover>
+  )
+}
+
 function GroupPanel({
   columns,
   board,

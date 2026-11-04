@@ -13710,6 +13710,112 @@ async function main() {
         JSON.stringify({ reread, bad: badKind.status }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('차트 — 화면 (CH-2 · F-04-08)')) { try {
+      // 뷰 추가의 "차트" → 그룹마다 막대 하나(값 = 개수) · 도구줄 "차트" 패널의 종류(도넛 · 새로고침 뒤에도) · Y값(합계) · 숨긴 그룹은 안 그린다 ·
+      // 볼 수만 있는 사람에게는 패널 단추가 없다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const marks = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value), m.tagName.toLowerCase()]))`).then((s) => JSON.parse(s))
+      const db = (await api('POST', '/databases', { name: `차트 화면 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const num = (await api('POST', `/data-sources/${ds}/properties`, { name: '금액', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      for (const [n, o] of [[10, ga], [20, ga], [60, na]]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [{ propertyId: num, value: { type: 'number', number: n } }, { propertyId: stage, value: { type: 'select', select: { id: o } } }],
+        })
+      }
+      const viewer = await joinAs(workspaceId, await createUser(`차트 보는 사람 ${stamp}`), 'member')
+      const shared = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${db.id}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' }),
+      })
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      await clickOn('[data-testid="db-view-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add-chart"]')`, 3000)
+      await clickOn('[data-testid="db-view-add-chart"]')
+      check('★ 뷰 추가의 "차트" — 세로 막대가 선다(data-kind=column)',
+        await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'column' && document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 15000))
+      const chartId = await evaluate(`new URLSearchParams(location.search).get('v')`)
+      const summary = (await api('GET', `/views/${chartId}/chart`)).body
+      const visible = (summary?.groups ?? []).filter((g) => !g.hidden)
+      const drawn = await marks()
+      check('★ 그룹마다 막대 하나 — data-value 는 그룹의 개수(가 2 · 나 1)',
+        drawn.length === visible.length && drawn.every(([k, v, tag]) => tag === 'rect' && v === visible.find((g) => g.key === k)?.count)
+          && drawn.find(([k]) => k === ga)?.[1] === 2 && drawn.find(([k]) => k === na)?.[1] === 1,
+        JSON.stringify({ drawn, visible: visible.map((g) => [g.key, g.count]) }))
+      check('접근성 — svg role="img" 한 줄 요약 · 막대마다 <title>',
+        (await evaluate(`document.querySelector('[data-testid="db-chart"] svg[role="img"]')?.getAttribute('aria-label')`)) === `세로 막대 · 그룹 ${visible.length}개`
+          && (await evaluate(`[...document.querySelectorAll('[data-testid="chart-mark"] title')].every((t) => / · /.test(t.textContent))`)) === true)
+
+      // 종류 — 도넛 · 새로고침 뒤에도
+      await clickOn('[data-testid="chart-settings"]')
+      await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 5000)
+      await clickOn('[data-testid="chart-kind-donut"]')
+      check('★ 종류를 도넛으로 — 조각(path)이 서고 data-kind=donut',
+        await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 10000)
+          && (await waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0 && [...document.querySelectorAll('[data-testid="chart-mark"]')].every((m) => m.tagName.toLowerCase() === 'path')`, 5000)))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+      check('★ 새로고침 뒤에도 도넛이다(저장됨)',
+        await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 15000)
+          && (await marks()).length === visible.filter((g) => g.count > 0).length)
+
+      // Y값 = 금액의 합계
+      await clickOn('[data-testid="chart-settings"]')
+      await waitFor(`!!document.querySelector('[data-testid="chart-y-axis"]')`, 5000)
+      await setSelect('[data-testid="chart-y-axis"]', num)
+      const sumsDrawn = await waitFor(`(() => {
+        const m = Object.fromEntries([...document.querySelectorAll('[data-testid="chart-mark"]')].map((e) => [e.dataset.key, Number(e.dataset.value)]))
+        return m[${JSON.stringify(ga)}] === 30 && m[${JSON.stringify(na)}] === 60
+      })()`, 20000)
+      // 저장 뒤 서버가 화면 전체를 다시 그린다(router.refresh) — 무거운 판에서는 10초를 넘긴 적이 있다. 떨어지면 서버에 저장된 계산도 남긴다
+      check('★ Y값 = 금액(합계) — data-value 가 그룹별 합계(가 30 · 나 60)', sumsDrawn,
+        JSON.stringify({ marks: await marks(), saved: (await api('GET', `/views/${chartId}`)).body?.view?.groupBy?.calculation ?? null }))
+
+      // 숨긴 그룹은 안 그린다 — 합계 계산은 남긴 채
+      const hid = await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage, calculation: { property_id: num, function: 'sum' }, hidden: [na] } })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+      await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 15000)
+      const afterHide = await marks()
+      check('★ 숨긴 그룹은 그리지 않는다', hid.status === 200 && !afterHide.some(([k]) => k === na) && afterHide.some(([k]) => k === ga),
+        JSON.stringify({ status: hid.status, afterHide }))
+
+      // 볼 수만 있는 사람 — 차트는 보이고 "차트" 단추는 없다
+      const viewerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}`, { headers: { ...json, cookie: `nc_session=${viewer.token}` } })).text()
+      check('★ 볼 수만 있는 사람에게는 "차트" 단추가 없다(차트는 보인다)',
+        shared.ok && viewerHtml.includes('data-testid="db-chart"') && !viewerHtml.includes('data-testid="chart-settings"'),
+        JSON.stringify([shared.status, viewerHtml.includes('data-testid="db-chart"'), viewerHtml.includes('data-testid="chart-settings"')]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.

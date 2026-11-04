@@ -8,6 +8,7 @@ import { cellText } from '@/lib/database/cell-format'
 import type { PageIcon } from '@/lib/block/page-icon'
 import { PageIconView } from '../../page-icon-view'
 import { optionIdOf } from '@/lib/database/property-types'
+import { OPTION_DOT_CLASS } from '@/lib/database/option-dot'
 import { LEFT_USER } from '@/lib/database/cell-format'
 import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
 import type { FormulaValue } from '@/lib/formula/formula'
@@ -72,18 +73,7 @@ const OPTION_CLASS: Readonly<Record<OptionColor, string>> = {
 }
 
 /** status 칩의 점 — 같은 색 계열의 진한 쪽(노션 앱 실측 6색 · default · brown · orange · purple 은 재지 못해 가까운 값). */
-const DOT_CLASS: Readonly<Record<OptionColor, string>> = {
-  default: 'bg-[rgb(166,163,158)]',
-  gray: 'bg-[rgb(142,139,134)]',
-  brown: 'bg-[rgb(186,133,111)]',
-  orange: 'bg-[rgb(224,124,57)]',
-  yellow: 'bg-[rgb(216,163,47)]',
-  green: 'bg-[rgb(70,161,113)]',
-  blue: 'bg-[rgb(39,131,222)]',
-  purple: 'bg-[rgb(157,104,211)]',
-  pink: 'bg-[rgb(219,105,153)]',
-  red: 'bg-[rgb(229,100,88)]',
-}
+const DOT_CLASS = OPTION_DOT_CLASS
 
 /**
  * 옵션 칩. **status 옵션(그룹이 있다)은 색 점 + 둥근 알약**으로 그린다 — F-03-05: *"셀에는 색 점 + 이름 표시
