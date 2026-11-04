@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  accumulate,
+  cumulativeAllowed,
+  donutLabelVisible,
   OPTION_FILL,
   DONUT_CYCLE,
   arcPath,
@@ -224,4 +227,29 @@ test('★ 도넛은 조각 색이 겹치면 도는 색 — 모두 다르면 옵�
   assert.equal(donutUsesOptionColors([d('a', 'red'), d('b', null)]), false)
   // 막대는 그대로 옵션 색
   assert.equal(fillOf(same[0], 0, false, false), fillOf(same[1], 1, false, false))
+})
+
+test('cumulativeAllowed — 도넛 · 내림차순 · 개수/합계 아닌 계산은 그리지 않는다', () => {
+  assert.equal(cumulativeAllowed('column', null, undefined), true)
+  assert.equal(cumulativeAllowed('line', 'count_values', 'ascending'), true)
+  assert.equal(cumulativeAllowed('bar', 'count_all', null), true)
+  assert.equal(cumulativeAllowed('column', 'sum', undefined), true)
+  assert.equal(cumulativeAllowed('donut', null, undefined), false)
+  assert.equal(cumulativeAllowed('column', null, 'descending'), false)
+  assert.equal(cumulativeAllowed('column', 'average', undefined), false)
+  assert.equal(cumulativeAllowed('column', 'max', undefined), false)
+})
+
+test('accumulate — 그리는 차례로 더해 간다 · 글자는 같은 서식', () => {
+  const d = (key: string, value: number) => ({ key, label: key, value, text: String(value), color: null })
+  const out = accumulate([d('a', 2), d('b', 0), d('c', 1500.1), d('d', 0.2)])
+  assert.deepEqual(out.map((x) => x.value), [2, 2, 1502.1, 1502.3])
+  assert.deepEqual(out.map((x) => x.text), ['2', '2', '1,502.1', '1,502.3'])
+  assert.deepEqual(out.map((x) => x.key), ['a', 'b', 'c', 'd'])
+})
+
+test('donutLabelVisible — 10% 이상만', () => {
+  assert.equal(donutLabelVisible(0.1), true)
+  assert.equal(donutLabelVisible(0.0999), false)
+  assert.equal(donutLabelVisible(0.5), true)
 })

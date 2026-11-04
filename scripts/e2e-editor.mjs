@@ -13816,6 +13816,101 @@ async function main() {
         JSON.stringify([shared.status, viewerHtml.includes('data-testid="db-chart"'), viewerHtml.includes('data-testid="chart-settings"')]))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('차트 — 데이터 라벨 · 누적 (CH-3 · F-04-08)')) { try {
+      // 데이터 라벨(마크마다 값 글자) · 누적(개수 · 오름차순일 때만 그린다 — 도넛이면 저장값은 두고 그리지 않는다 · 되돌리면 다시 선다)
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const marks = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value)]))`).then((s) => JSON.parse(s))
+      const labels = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-label"]')].map((m) => [m.dataset.key, m.textContent]))`).then((s) => JSON.parse(s))
+      const db = (await api('POST', '/databases', { name: `차트 라벨 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      const da = await opt('다')
+      for (const o of [ga, ga, ga, na, da, da]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: stage, value: { type: 'select', select: { id: o } } }] })
+      }
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      const chartId = made.body?.view?.id
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage } })
+      const summary = (await api('GET', `/views/${chartId}/chart`)).body
+      const visible = (summary?.groups ?? []).filter((g) => !g.hidden)
+      let run = 0
+      const plain = visible.map((g) => [g.key, g.count])
+      const running = visible.map((g) => [g.key, (run += g.count)])
+      const fmt = (n) => n.toLocaleString('ko-KR')
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+        return waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 20000)
+      }
+      const toggle = async (testId) => {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="${testId}"]')`, 5000)
+        await clickOn(`[data-testid="${testId}"]`)
+      }
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+      await open()
+      check('데이터 라벨이 꺼져 있으면 글자가 없다', (await labels()).length === 0)
+      await toggle('chart-data-labels')
+      check('★ 데이터 라벨 켜기 — 보이는 그룹마다 라벨 하나 · 글자는 값',
+        await waitFor(`document.querySelectorAll('[data-testid="chart-label"]').length === ${visible.length}`, 20000)
+          && same(await labels(), plain.map(([k, v]) => [k, fmt(v)])),
+        JSON.stringify({ labels: await labels(), plain }))
+      await open()
+      check('데이터 라벨은 새로고침 뒤에도 남는다', (await labels()).length === visible.length)
+
+      // 누적 — 개수 · 오름차순
+      await toggle('chart-cumulative')
+      check('★ 누적 켜기 — 마크의 data-value 가 앞 그룹까지의 합(개수)',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value)])) === ${JSON.stringify(JSON.stringify(running))}`, 20000),
+        JSON.stringify({ marks: await marks(), running }))
+      check('누적이면 라벨도 누적한 값', same(await labels(), running.map(([k, v]) => [k, fmt(v)])), JSON.stringify(await labels()))
+      await open()
+      check('★ 누적은 새로고침 뒤에도 선다', same(await marks(), running), JSON.stringify(await marks()))
+
+      // 도넛 — 누적 토글은 꺼진 채 잠기고 마크는 원래 값 · 저장값은 그대로 true
+      if (!(await evaluate(`!!document.querySelector('[data-testid="chart-kind-donut"]')`))) await clickOn('[data-testid="chart-settings"]')
+      await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 5000)
+      await clickOn('[data-testid="chart-kind-donut"]')
+      check('★ 도넛으로 바꾸면 마크는 원래 값(누적을 그리지 않는다)',
+        await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 20000)
+          && (await waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 5000))
+          && same(await marks(), plain.filter(([, v]) => v > 0)),
+        JSON.stringify({ marks: await marks(), plain }))
+      if (!(await evaluate(`!!document.querySelector('[data-testid="chart-cumulative"]')`))) await clickOn('[data-testid="chart-settings"]')
+      await waitFor(`!!document.querySelector('[data-testid="chart-cumulative"]')`, 5000)
+      const locked = await evaluate(`(() => { const e = document.querySelector('[data-testid="chart-cumulative"]'); return e ? [e.disabled, e.checked] : null })()`)
+      const stored = (await api('GET', `/views/${chartId}`)).body?.view?.chart
+      check('★ 도넛이면 누적 토글은 꺼진 채 잠기고 저장값(cumulative)은 true 로 남는다',
+        same(locked, [true, false]) && stored?.cumulative === true && stored?.kind === 'donut', JSON.stringify({ locked, stored }))
+
+      // 되돌리면 다시 선다
+      await clickOn('[data-testid="chart-kind-column"]')
+      check('★ 세로 막대로 되돌리면 누적을 다시 그린다',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-mark"]')].map((m) => [m.dataset.key, Number(m.dataset.value)])) === ${JSON.stringify(JSON.stringify(running))}`, 20000),
+        JSON.stringify({ marks: await marks(), running }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.

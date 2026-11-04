@@ -801,6 +801,9 @@ export default async function DatabasePage({
             dataSourceId={view.value.dataSourceId}
             renderedAt={renderedAt}
             kind={view.value.chart.kind}
+            dataLabels={view.value.chart.data_labels}
+            cumulative={view.value.chart.cumulative}
+            groupSort={groupBy?.sort ?? null}
             summary={chartSummary}
           />
         ) : (

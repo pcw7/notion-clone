@@ -252,3 +252,33 @@ export const CHART_KIND_LABEL = { column: '세로 막대', bar: '가로 막대',
 export function chartSummaryLabel(kind: keyof typeof CHART_KIND_LABEL, groupCount: number): string {
   return `${CHART_KIND_LABEL[kind]} · 그룹 ${groupCount}개`
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 데이터 라벨 · 누적 (CH-3 · 정본 [보강 CH-3])
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 누적을 그릴 수 있는가 — 종류가 도넛이 아니고, Y값이 개수(계산 없음 · `count_all` · `count_values`) 또는 합계(`sum`)이고,
+ * 그룹 순서가 내림차순이 아닐 때. 아니면 저장값은 두고 그리지 않는다.
+ */
+export function cumulativeAllowed(kind: string, calculationFunction: Calculation | null, groupSort: string | null | undefined): boolean {
+  if (kind === 'donut') return false
+  if (groupSort === 'descending') return false
+  return calculationFunction === null || calculationFunction === 'count_all' || calculationFunction === 'count_values' || calculationFunction === 'sum'
+}
+
+/** 앞 그룹까지의 값을 더해 간다(자료의 차례 그대로 · 숨긴 그룹은 이미 빠져 있다). 글자는 합계 글자와 같은 서식(소수 둘까지 · 쉼표). */
+export function accumulate(data: readonly ChartDatum[]): ChartDatum[] {
+  let sum = 0
+  return data.map((d) => {
+    sum = clean(sum + d.value)
+    return { ...d, value: sum, text: sum.toLocaleString('ko-KR', { maximumFractionDigits: 2 }) }
+  })
+}
+
+/** 도넛은 조각이 전체의 이 몫 이상일 때만 조각 안에 값을 적는다. */
+export const DONUT_LABEL_MIN_FRACTION = 0.1
+
+export function donutLabelVisible(fraction: number): boolean {
+  return fraction >= DONUT_LABEL_MIN_FRACTION - 1e-9
+}

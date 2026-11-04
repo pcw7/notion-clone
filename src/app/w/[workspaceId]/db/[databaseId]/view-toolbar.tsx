@@ -102,7 +102,7 @@ import {
 } from '@/lib/database/sub-item-scope'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
 import { CHART_KINDS, type ChartLayout } from '@/lib/database/chart'
-import { CHART_KIND_LABEL, chartCalculationsFor, defaultChartCalculation, isNumericCalculation } from '@/lib/database/chart-geometry'
+import { CHART_KIND_LABEL, chartCalculationsFor, cumulativeAllowed, defaultChartCalculation, isNumericCalculation } from '@/lib/database/chart-geometry'
 
 type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'chart' | 'open'
 
@@ -1084,6 +1084,7 @@ function ChartPanel({
   const calcColumn = calc === null ? undefined : calculable.find((c) => c.propertyId === calc.property_id)
   const liveCalc = calc !== null && calcColumn !== undefined && chartCalculationsFor(calcColumn.type).includes(calc.function) ? calc : null
   // 저장된 계산이 수가 아니면(날짜 · 기간) 고르개에 내지 않는다 — 개수로 보이고 화면이 "다시 고르세요" 를 적는다
+  const cumulativeOk = cumulativeAllowed(chart.layout.kind, calc?.function ?? null, current?.sort)
   const savedNonNumeric = calc !== null && !isNumericCalculation(calc.function)
 
   const toggleHidden = (key: string, hidden: boolean) => {
@@ -1118,6 +1119,28 @@ function ChartPanel({
           </button>
         ))}
       </div>
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          data-testid="chart-data-labels"
+          checked={chart.layout.data_labels}
+          disabled={locked}
+          onChange={(e) => void onSaveLayout({ data_labels: e.target.checked })}
+        />
+        데이터 라벨
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          data-testid="chart-cumulative"
+          checked={cumulativeOk && chart.layout.cumulative}
+          disabled={locked || !cumulativeOk}
+          onChange={(e) => void onSaveLayout({ cumulative: e.target.checked })}
+        />
+        누적
+        {!cumulativeOk && <span className="text-xs text-neutral-400">개수 · 합계를 오름차순으로 볼 때만</span>}
+      </label>
 
       <label className="flex items-center gap-2 text-sm">
         X축
