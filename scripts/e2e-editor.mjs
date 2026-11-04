@@ -13778,8 +13778,11 @@ async function main() {
           && (await evaluate(`[...document.querySelectorAll('[data-testid="chart-mark"] title')].every((t) => / · /.test(t.textContent))`)) === true)
 
       // 종류 — 도넛 · 새로고침 뒤에도
-      await clickOn('[data-testid="chart-settings"]')
-      await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 5000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-kind-donut"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 1500)
+      }
       await clickOn('[data-testid="chart-kind-donut"]')
       check('★ 종류를 도넛으로 — 조각(path)이 서고 data-kind=donut',
         await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 10000)
@@ -13790,8 +13793,11 @@ async function main() {
           && (await marks()).length === visible.filter((g) => g.count > 0).length)
 
       // Y값 = 금액의 합계
-      await clickOn('[data-testid="chart-settings"]')
-      await waitFor(`!!document.querySelector('[data-testid="chart-y-axis"]')`, 5000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-y-axis"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-y-axis"]')`, 1500)
+      }
       await setSelect('[data-testid="chart-y-axis"]', num)
       const sumsDrawn = await waitFor(`(() => {
         const m = Object.fromEntries([...document.querySelectorAll('[data-testid="chart-mark"]')].map((e) => [e.dataset.key, Number(e.dataset.value)]))
@@ -13902,16 +13908,22 @@ async function main() {
       check('★ 누적은 새로고침 뒤에도 선다', same(await marks(), running), JSON.stringify(await marks()))
 
       // 도넛 — 누적 토글은 꺼진 채 잠기고 마크는 원래 값 · 저장값은 그대로 true
-      if (!(await evaluate(`!!document.querySelector('[data-testid="chart-kind-donut"]')`))) await clickOn('[data-testid="chart-settings"]')
-      await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 5000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-kind-donut"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-kind-donut"]')`, 1500)
+      }
       await clickOn('[data-testid="chart-kind-donut"]')
       check('★ 도넛으로 바꾸면 마크는 원래 값(누적을 그리지 않는다)',
         await waitFor(`document.querySelector('[data-testid="db-chart"]')?.dataset.kind === 'donut'`, 20000)
           && (await waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 5000))
           && same(await marks(), plain.filter(([, v]) => v > 0)),
         JSON.stringify({ marks: await marks(), plain }))
-      if (!(await evaluate(`!!document.querySelector('[data-testid="chart-cumulative"]')`))) await clickOn('[data-testid="chart-settings"]')
-      await waitFor(`!!document.querySelector('[data-testid="chart-cumulative"]')`, 5000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다(무거운 판에서 새로고침 직후 패널이 안 열린 적이 있다)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-cumulative"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-cumulative"]')`, 1500)
+      }
       const locked = await evaluate(`(() => { const e = document.querySelector('[data-testid="chart-cumulative"]'); return e ? [e.disabled, e.checked] : null })()`)
       const stored = (await api('GET', `/views/${chartId}`)).body?.view?.chart
       check('★ 도넛이면 누적 토글은 꺼진 채 잠기고 저장값(cumulative)은 true 로 남는다',
