@@ -13796,8 +13796,10 @@ async function main() {
       const sumsDrawn = await waitFor(`(() => {
         const m = Object.fromEntries([...document.querySelectorAll('[data-testid="chart-mark"]')].map((e) => [e.dataset.key, Number(e.dataset.value)]))
         return m[${JSON.stringify(ga)}] === 30 && m[${JSON.stringify(na)}] === 60
-      })()`, 10000)
-      check('★ Y값 = 금액(합계) — data-value 가 그룹별 합계(가 30 · 나 60)', sumsDrawn, JSON.stringify(await marks()))
+      })()`, 20000)
+      // 저장 뒤 서버가 화면 전체를 다시 그린다(router.refresh) — 무거운 판에서는 10초를 넘긴 적이 있다. 떨어지면 서버에 저장된 계산도 남긴다
+      check('★ Y값 = 금액(합계) — data-value 가 그룹별 합계(가 30 · 나 60)', sumsDrawn,
+        JSON.stringify({ marks: await marks(), saved: (await api('GET', `/views/${chartId}`)).body?.view?.groupBy?.calculation ?? null }))
 
       // 숨긴 그룹은 안 그린다 — 합계 계산은 남긴 채
       const hid = await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage, calculation: { property_id: num, function: 'sum' }, hidden: [na] } })
