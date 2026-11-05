@@ -27992,6 +27992,84 @@ async function main() {
         JSON.stringify({ length: guestHtml.length, hasInfo: guestHtml.includes('page-edit-info') }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 알림 받기 (NM-1 · F-05-17)')) { try {
+      // 알림 받기(정본 §3.8 [보강 NM-1]) — 페이지 메뉴의 라디오 셋 · 기본은 "답글과 멘션" · 고르면 explicit 로 저장 · 새로고침해도 남는다 ·
+      // "모든 코멘트"면 동료의 새 스레드가 인박스로 오고 "끄기"면 오지 않는다 · 못 보는 페이지는 404. 동료가 만든 페이지라 나는 구독 행이 없다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const mate = await joinAs(workspaceId, await createUser(`알림 동료 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: asMate, body: JSON.stringify({ title: `알림 받기 ${stamp}` }) })).json()).page.id
+      const subUrl = `${pagesUrl}/${page}/subscription`
+      const text = (id) => evaluate(`document.querySelector('[data-testid="${id}"]')?.textContent ?? null`)
+      const getSub = async () => (await (await fetch(subUrl, { headers: authed })).json().catch(() => null))
+      const checkedLevel = () => evaluate(`['all_comments','replies_and_mentions','none'].find((l) => document.querySelector('[data-testid="notify-me-' + l + '"]')?.getAttribute('aria-checked') === 'true') ?? null`)
+      const { getValkey } = await import(new URL('../src/lib/valkey.ts', import.meta.url).href)
+      const { presenceKey } = await import(new URL('../src/lib/collab/presence-registry.ts', import.meta.url).href)
+      // 보고 있는 동안 온 알림은 읽음으로 만들어진다(AW-2) — 그 페이지를 떠나고 협업 서버의 기록이 지워질 때까지 기다린 뒤 동료가 단다
+      const mateOpensThread = async (text) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        for (let i = 0; i < 150 && (await getValkey().hget(presenceKey(page), ctx.userId)) !== null; i += 1) await sleep(100)
+        return createDiscussion(mate.ctx, { pageId: page, richText: [textRun(text)] })
+      }
+      const myItems = async () => ((await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()).items ?? []).filter((i) => i.pageId === page)
+      // 하이드레이션 전의 클릭은 사라진다 — 서버 값이 바뀔 때까지 다시 누른다
+      const choose = async (level) => {
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          await clickSelector(`[data-testid="notify-me-${level}"]`)
+          for (let i = 0; i < 10; i += 1) {
+            if ((await getSub())?.level === level) return true
+            await sleep(150)
+          }
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="notify-me"]')`, 15000)
+      const first = await getSub()
+      check('★ 페이지 메뉴에 "알림 받기" — "답글과 멘션"이 기본으로 표시된다', first?.level === 'replies_and_mentions' && first.source === null
+        && (await checkedLevel()) === 'replies_and_mentions' && (await text('notify-me'))?.includes('알림 받기') && (await text('notify-me'))?.includes('멘션과 답글도 받지 않습니다'),
+        JSON.stringify({ first, checked: await checkedLevel() }))
+
+      const picked = await choose('all_comments')
+      const afterPick = await getSub()
+      check('★ "모든 코멘트"를 누르면 저장된다(explicit)', picked && afterPick?.level === 'all_comments' && afterPick.source === 'explicit', JSON.stringify(afterPick))
+      await send('Page.reload', {})
+      await waitFor(`!!document.querySelector('[data-testid="notify-me"]')`, 15000)
+      check('★ 새로고침해도 "모든 코멘트"가 표시돼 있다', (await checkedLevel()) === 'all_comments', String(await checkedLevel()))
+
+      const made = await mateOpensThread('모든 코멘트로 받는 스레드')
+      await sleep(500)
+      const whenAll = await myItems()
+      check('★ 모든 코멘트 — 동료의 새 스레드가 내 인박스에 온다', made.ok && whenAll.length === 1, JSON.stringify({ made: made.ok, count: whenAll.length }))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="notify-me"]')`, 15000)
+      const muted = await choose('none')
+      check('"끄기"를 누르면 저장된다', muted && (await getSub())?.level === 'none' && (await checkedLevel()) === 'none', JSON.stringify(await getSub()))
+      // 앞 검사의 결과(1개)에 기대지 않는다 — 끄기 직전의 개수와 비교한다(앞이 떨어지면 함께 떨어지지 않게)
+      const beforeNone = (await myItems()).length
+      const madeAgain = await mateOpensThread('끈 뒤의 스레드')
+      await sleep(800)
+      const whenNone = await myItems()
+      check('★ 끄기 — 동료의 새 스레드가 인박스에 오지 않는다', madeAgain.ok && whenNone.length === beforeNone, JSON.stringify({ made: madeAgain.ok, before: beforeNone, count: whenNone.length }))
+
+      const bad = await fetch(subUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ level: 'everything' }) })
+      check('모르는 수준은 400 invalid_level', bad.status === 400 && (await bad.json()).error === 'invalid_level', String(bad.status))
+
+      const secret = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `알림 비공개 ${stamp}` }) })).json()).page.id
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const hidden = [
+        await aclMod.stopInheriting(ctx, secret),
+        await aclMod.grantAccess(ctx, secret, { type: 'user', id: ctx.userId }, 'full_access'),
+        await aclMod.revokeAccess(ctx, secret, { type: 'workspace_everyone', id: null }),
+      ].every((r) => r.ok)
+      const hiddenGet = await fetch(`${pagesUrl}/${secret}/subscription`, { headers: asMate })
+      const hiddenPut = await fetch(`${pagesUrl}/${secret}/subscription`, { method: 'PUT', headers: asMate, body: JSON.stringify({ level: 'none' }) })
+      check('★ 볼 수 없는 페이지는 읽기도 고르기도 404', hidden && hiddenGet.status === 404 && hiddenPut.status === 404, JSON.stringify({ hidden, get: hiddenGet.status, put: hiddenPut.status }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('블록마다의 마지막 편집 (ED-2 · F-11-15)')) { try {
       // 블록 메뉴 맨 아래(정본 §3.4 [보강 ED-2]) — 블록 하나에 열면 "마지막 편집 이름 · 시각" · 블록마다 다르다 · 게스트에게는 "멤버" ·
       // 그 페이지의 본문이 아닌 블록은 답이 없다.
