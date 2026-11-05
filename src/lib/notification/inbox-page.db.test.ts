@@ -122,3 +122,27 @@ test('⑤ 남은 줄이 쪽 크기와 꼭 같으면 next 가 null — 빈 쪽을
   assert.equal(empty.items.length, 2)
   assert.notEqual(empty.next, null, '더 있으면 next 가 있다')
 })
+
+test('muted — 내 구독이 none 인 페이지의 항목만 참이다 (NM-2 · 정본 §3.8 [보강 NM-2] ①)', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const { owner, pageId: quiet } = await me()
+  const other = await createPage(owner.ctx, { parentPageId: null, title: titleFromPlainText('다른 수준') })
+  const loud = await createPage(owner.ctx, { parentPageId: null, title: titleFromPlainText('행 없음') })
+  await notify(owner, quiet, 'g-quiet', '2026-03-01 10:00:00+00')
+  await notify(owner, other.id, 'g-other', '2026-03-01 10:00:01+00')
+  await notify(owner, loud.id, 'g-loud', '2026-03-01 10:00:02+00')
+  const put = (page: string, level: string) =>
+    query(
+      `INSERT INTO subscription (id, user_id, page_id, page_kind, level, source, created_at)
+       VALUES ($1, $2, $3, 'page', $4, 'explicit', now())
+       ON CONFLICT (user_id, page_id) DO UPDATE SET level = EXCLUDED.level`,
+      [randomUUID(), owner.userId, page, level],
+    )
+  await put(quiet, 'none')
+  await put(other.id, 'all_comments')
+  const muted = new Map((await listInbox(owner.ctx)).map((i) => [i.groupKey, i.muted]))
+  assert.deepEqual([...muted], [['g-loud', false], ['g-other', false], ['g-quiet', true]])
+  // 다시 켜면(replies_and_mentions) 거짓이다
+  await put(quiet, 'replies_and_mentions')
+  assert.equal((await listInbox(owner.ctx)).find((i) => i.groupKey === 'g-quiet')?.muted, false)
+})

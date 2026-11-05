@@ -63,6 +63,8 @@ export type InboxRow = {
   reminder: { propertyName: string | null } | null
   /** 담당(6h) — 회원님을 넣은 사람 속성의 지금 이름. 다른 알림은 null. */
   assignment: { propertyName: string | null } | null
+  /** 내가 이 페이지의 알림을 껐는가(NM-2) — 서버가 내 구독 행에서 읽어 준다. */
+  muted: boolean
 }
 
 const FILTERS: readonly { value: string; label: string }[] = [
@@ -109,6 +111,8 @@ export function InboxList({
   /** 지금 필터 · 마지막 다시 읽기의 번호 — 늦게 온 답이 지금 목록을 덮지 않게(머리말). */
   const filterRef = useRef(filter)
   const latestLoad = useRef(0)
+  /** 알림 끄기 · 켜기가 도는 중인 페이지 — 같은 페이지를 연달아 누르지 않게. */
+  const [muting, setMuting] = useState<string | null>(null)
   /** 다음 쪽을 받은 적이 있는가 — 읽음 · 보관 뒤의 다시 읽기가 펼친 만큼을 받게(머리말). */
   const grownRef = useRef(false)
   const moreRef = useRef<HTMLButtonElement>(null)
@@ -159,6 +163,38 @@ export function InboxList({
       }
     },
     [load, url, items.length],
+  )
+
+  /**
+   * 이 페이지의 알림을 끄거나 켠다(NM-2 · 정본 §3.8 [보강 NM-2] ②) — 길은 NM-1 의 PUT 그대로. 끄기는 `none`, 켜기는 기본값
+   * (`replies_and_mentions`). 되면 같은 페이지의 보이는 항목을 모두 고친다. 볼 수 없게 된 페이지면 404 — 상태를 바꾸지 않고 알린다.
+   */
+  const setMuted = useCallback(
+    async (pageId: string, muted: boolean) => {
+      setMuting(pageId)
+      setError(null)
+      try {
+        const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/subscription`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ level: muted ? 'none' : 'replies_and_mentions' }),
+        })
+        if (res.status === 404) {
+          setError('이 페이지를 볼 수 없습니다.')
+          return
+        }
+        if (!res.ok) {
+          setError('알림 설정을 저장하지 못했습니다.')
+          return
+        }
+        setItems((current) => current.map((i) => (i.pageId === pageId ? { ...i, muted } : i)))
+      } catch {
+        setError('연결에 실패했습니다.')
+      } finally {
+        setMuting(null)
+      }
+    },
+    [workspaceId],
   )
 
   /** 다음 쪽 — 다시 읽기 번호를 올리지 않는다: 그 사이에 다시 읽기가 오면 이 답은 옛 목록의 뒤라 버린다(머리말). */
@@ -306,6 +342,16 @@ export function InboxList({
                   className={SMALL_BUTTON}
                 >
                   {filter === 'archived' ? '보관 해제' : '보관'}
+                </button>
+                <button
+                  type="button"
+                  data-testid="inbox-mute"
+                  data-muted={item.muted ? 'true' : 'false'}
+                  disabled={muting === item.pageId}
+                  onClick={() => void setMuted(item.pageId, !item.muted)}
+                  className={SMALL_BUTTON}
+                >
+                  {item.muted ? '알림 켜기' : '알림 끄기'}
                 </button>
               </div>
             </li>
