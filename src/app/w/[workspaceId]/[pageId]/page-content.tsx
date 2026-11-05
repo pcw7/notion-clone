@@ -50,6 +50,8 @@ import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageMenu, PageMenuDivider } from './page-menu'
 import { PageAppearanceControl } from './page-appearance-control'
+import { NotifyMeControl } from './notify-me-control'
+import { DEFAULT_LEVEL, readSubscription } from '@/lib/notification/subscription'
 import { PageHistoryButton } from './page-history'
 import { PageUpdatesButton } from './page-updates'
 import { canViewPageHistory } from '@/lib/history/version'
@@ -117,7 +119,7 @@ export async function PageContent({
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage] = await Promise.all([
+  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage, subscription] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -134,6 +136,8 @@ export async function PageContent({
     canViewPageHistory(ctx, page.id),
     // 데이터베이스 행이면 속성 묶음 · 제목 셀 · 그 데이터베이스(8f-1). 보통 페이지면 null.
     readRowPage(ctx, page.id),
+    // 알림 받기(NM-1) — 지금 수준을 서버가 읽어 내려 준다(화면이 따로 부르지 않는다)
+    readSubscription(ctx, page.id),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -282,6 +286,9 @@ export async function PageContent({
                 <PageMenuDivider />
               </>
             )}
+            {/* 알림 받기(NM-1 · F-05-17) — 볼 수 있는 사람 모두(게스트도) · 행도 */}
+            <NotifyMeControl workspaceId={workspaceId} pageId={page.id} initial={subscription.ok ? subscription.level : DEFAULT_LEVEL} />
+            <PageMenuDivider />
             <LockButton
               lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
               locked={lock?.locked ?? false}

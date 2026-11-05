@@ -116,6 +116,27 @@ export async function subscriptionOf(
   })
 }
 
+/**
+ * 화면 · 라우트용 읽기(NM-1) — 이 페이지를 볼 수 있는 사람에게만 답한다. 없는 · 지워진 · 못 보는 페이지는 모두 `not_found`
+ * (`setSubscription` 과 같은 문 — 존재를 알리지 않는다). `subscriptionOf` 는 권한을 묻지 않으니 화면은 이쪽을 쓴다.
+ */
+export async function readSubscription(
+  ctx: SessionContext,
+  pageId: string,
+): Promise<SubscriptionResult<{ readonly level: PageSubscriptionLevel; readonly source: SubscriptionSource | null }>> {
+  const visible = await withTransaction(async (tx: Transaction) => {
+    if (!isUuid(pageId)) return false
+    const page = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+      [pageId, ctx.workspaceId],
+    )
+    if (page === null) return false
+    return can(await effectiveCaps(tx, ctx, pageId), 'view')
+  })
+  if (!visible) return { ok: false, reason: 'not_found' }
+  return { ok: true, ...(await subscriptionOf(ctx, pageId)) }
+}
+
 /** 이 페이지의 구독 행 전부 — 팬아웃이 대상자를 고를 때 읽는다. */
 export async function subscribersOf(tx: Tx, pageId: string): Promise<Map<string, PageSubscriptionLevel>> {
   const rows = await tx.query<{ user_id: string; level: string }>(
