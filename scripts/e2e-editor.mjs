@@ -28070,6 +28070,106 @@ async function main() {
       check('★ 볼 수 없는 페이지는 읽기도 고르기도 404', hidden && hiddenGet.status === 404 && hiddenPut.status === 404, JSON.stringify({ hidden, get: hiddenGet.status, put: hiddenPut.status }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('인박스 · 팔레트에서 알림 끄기 (NM-2 · F-05-17)')) { try {
+      // 인박스 항목의 "알림 끄기 · 켜기"(정본 §3.8 [보강 NM-2] ①②) — 끄기는 none · 켜기는 replies_and_mentions · 새로고침해도 남는다 ·
+      // 페이지의 팔레트 "이 페이지 알림 끄기"(③)는 고르개의 라디오와 같은 저장 길이다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const mate = await joinAs(workspaceId, await createUser(`알림 끄기 동료 ${stamp}`), 'member')
+      const title = `인박스 끄기 ${stamp}`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ title }) })).json()).page.id
+      const subUrl = `${pagesUrl}/${page}/subscription`
+      const getSub = async () => (await (await fetch(subUrl, { headers: authed })).json().catch(() => null))
+      const level = async () => (await getSub())?.level ?? null
+      const untilLevel = async (want) => { for (let i = 0; i < 40; i += 1) { if ((await level()) === want) return true; await sleep(150) } return false }
+      const checkedLevel = () => evaluate(`['all_comments','replies_and_mentions','none'].find((l) => document.querySelector('[data-testid="notify-me-' + l + '"]')?.getAttribute('aria-checked') === 'true') ?? null`)
+      const { getValkey } = await import(new URL('../src/lib/valkey.ts', import.meta.url).href)
+      const { presenceKey } = await import(new URL('../src/lib/collab/presence-registry.ts', import.meta.url).href)
+      // 모든 코멘트로 받아 두면(내 구독 행이 생긴다) 동료의 새 스레드가 인박스로 온다 — 보고 있는 동안은 읽음이 되므로 페이지를 떠난 뒤 단다
+      await fetch(subUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ level: 'all_comments' }) })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      for (let i = 0; i < 150 && (await getValkey().hget(presenceKey(page), ctx.userId)) !== null; i += 1) await sleep(100)
+      const made = await createDiscussion(mate.ctx, { pageId: page, richText: [textRun('끄기 · 켜기 스레드')] })
+      await sleep(500)
+
+      const BTN = `[data-e2e-mine="1"] [data-testid="inbox-mute"]`
+      const markMine = () => evaluate(`(() => {
+        document.querySelectorAll('[data-e2e-mine]').forEach((e) => e.removeAttribute('data-e2e-mine'))
+        const li = [...document.querySelectorAll('[data-testid="inbox-item"]')].find((e) => e.textContent.includes(${JSON.stringify(title)}))
+        if (li) li.setAttribute('data-e2e-mine', '1')
+        return !!li
+      })()`)
+      const muteState = () => evaluate(`document.querySelector('${BTN}')?.getAttribute('data-muted') ?? null`)
+      const muteText = () => evaluate(`document.querySelector('${BTN}')?.textContent ?? null`)
+      const itemShown = `[...document.querySelectorAll('[data-testid="inbox-item"]')].some((e) => e.textContent.includes(${JSON.stringify(title)}))`
+      // 하이드레이션 전의 클릭은 사라진다 — 서버 값이 바뀔 때까지 다시 누른다
+      const pressMute = async (want) => {
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          await markMine()
+          await clickSelector(BTN)
+          for (let i = 0; i < 10; i += 1) {
+            if ((await level()) === want) return true
+            await sleep(150)
+          }
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+      await waitFor(itemShown, 15000)
+      await markMine()
+      await sleep(500)
+      const before = { state: await muteState(), text: await muteText() }
+      check('★ 인박스 항목에 "알림 끄기"(data-muted=false)', made.ok && before.state === 'false' && before.text === '알림 끄기', JSON.stringify({ made: made.ok, before }))
+
+      const turnedOff = await pressMute('none')
+      await waitFor(`document.querySelector('${BTN}')?.getAttribute('data-muted') === 'true'`, 5000)
+      const afterOff = { level: await level(), state: await muteState(), text: await muteText() }
+      check('★ "알림 끄기" — 구독이 none · 단추가 "알림 켜기"(data-muted=true)', turnedOff && afterOff.level === 'none' && afterOff.state === 'true' && afterOff.text === '알림 켜기', JSON.stringify(afterOff))
+
+      await send('Page.reload', {})
+      await waitFor(itemShown, 15000)
+      await markMine()
+      const reloaded = { state: await muteState(), text: await muteText() }
+      check('★ 새로고침해도 "알림 켜기"(data-muted=true)', reloaded.state === 'true' && reloaded.text === '알림 켜기', JSON.stringify(reloaded))
+
+      await sleep(500)
+      const turnedOn = await pressMute('replies_and_mentions')
+      await waitFor(`document.querySelector('${BTN}')?.getAttribute('data-muted') === 'false'`, 5000)
+      const afterOn = { level: await level(), state: await muteState(), text: await muteText() }
+      check('★ "알림 켜기" — 구독이 replies_and_mentions · 단추가 다시 "알림 끄기"', turnedOn && afterOn.level === 'replies_and_mentions' && afterOn.state === 'false' && afterOn.text === '알림 끄기', JSON.stringify(afterOn))
+
+      // ③ 팔레트 — 페이지에서 "이 페이지 알림 끄기"
+      const ACTION = `[data-testid="command-action"][data-action="toggle-page-notify"]`
+      const actionLabel = () => evaluate(`document.querySelector('${ACTION}')?.querySelector('span')?.textContent ?? null`)
+      const palette = async () => {
+        await key('k', MOD)
+        await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 5000)
+        await typeText('알림')
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="notify-me"]')`, 15000)
+      await sleep(800)
+      let listed = null
+      for (let attempt = 0; attempt < 8 && listed === null; attempt += 1) {
+        await palette()
+        if (await waitFor(`!!document.querySelector('${ACTION}')`, 3000)) listed = await actionLabel()
+        else { await key('Escape'); await sleep(400) }
+      }
+      check('★ 팔레트 — 페이지에서 "이 페이지 알림 끄기"가 보인다', listed === '이 페이지 알림 끄기', String(listed))
+      await key('Enter')
+      const palMuted = await untilLevel('none')
+      await waitFor(`document.querySelector('[data-testid="notify-me-none"]')?.getAttribute('aria-checked') === 'true'`, 5000)
+      check('★ 팔레트로 끄면 구독이 none · 페이지 메뉴의 "끄기"가 선택된다', palMuted && (await checkedLevel()) === 'none', JSON.stringify({ palMuted, checked: await checkedLevel() }))
+
+      await palette()
+      await waitFor(`!!document.querySelector('${ACTION}')`, 3000)
+      const flipped = await actionLabel()
+      check('끈 뒤의 팔레트 이름은 "이 페이지 알림 켜기"', flipped === '이 페이지 알림 켜기', String(flipped))
+      await key('Enter')
+      check('팔레트로 켜면 구독이 replies_and_mentions', await untilLevel('replies_and_mentions') && (await checkedLevel()) === 'replies_and_mentions', String(await level()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('블록마다의 마지막 편집 (ED-2 · F-11-15)')) { try {
       // 블록 메뉴 맨 아래(정본 §3.4 [보강 ED-2]) — 블록 하나에 열면 "마지막 편집 이름 · 시각" · 블록마다 다르다 · 게스트에게는 "멤버" ·
       // 그 페이지의 본문이 아닌 블록은 답이 없다.

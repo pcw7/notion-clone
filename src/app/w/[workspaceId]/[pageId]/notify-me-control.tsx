@@ -13,7 +13,11 @@
 import { useRef, useState } from "react";
 
 import type { PageSubscriptionLevel } from "@/lib/notification/subscription";
+import { usePageCommand } from "../page-commands";
 import { MENU_ROW } from "./page-menu";
+
+/** 커맨드 팔레트에서 찾는 낱말(NM-2). */
+const NOTIFY_WORDS = ["알림", "끄기", "켜기", "구독", "notify", "mute"] as const;
 
 const OPTIONS: readonly {
   readonly level: PageSubscriptionLevel;
@@ -65,6 +69,17 @@ export function NotifyMeControl({
       }
     }
   };
+
+  // 커맨드 팔레트의 작업(NM-2 · CP-2 의 등록소) — 지금 수준에 따라 하나: 꺼져 있으면 켜기(기본값), 아니면 끄기. 라디오와 같은 저장 길이다
+  usePageCommand(
+    "toggle-page-notify",
+    pageId,
+    level === "none" ? "이 페이지 알림 켜기" : "이 페이지 알림 끄기",
+    NOTIFY_WORDS,
+    () => {
+      void choose(level === "none" ? "replies_and_mentions" : "none");
+    },
+  );
 
   return (
     <div

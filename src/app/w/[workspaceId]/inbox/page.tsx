@@ -52,5 +52,6 @@ function toRow(item: Awaited<ReturnType<typeof listInboxPage>>['items'][number])
     access: item.access,
     reminder: item.reminder,
     assignment: item.assignment,
+    muted: item.muted,
   }
 }

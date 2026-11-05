@@ -94,6 +94,11 @@ export type InboxItem = {
    * null 이고, 담당 알림이 아니면 항목 자체가 null 이다.
    */
   readonly assignment: { readonly propertyName: string | null } | null
+  /**
+   * 내가 이 페이지의 알림을 껐는가(NM-2 · 정본 §3.8 [보강 NM-2] ①) — 내 `subscription` 이 `none` 이면 참, 행이 없거나 다른 수준이면 거짓.
+   * 같은 질의에서 함께 읽는다(항목마다 따로 묻지 않는다).
+   */
+  readonly muted: boolean
 }
 
 type GroupRow = {
@@ -107,6 +112,7 @@ type GroupRow = {
   kind: string
   latest_event: string | null
   ids: string[]
+  muted: boolean
 }
 
 const WHERE: Record<InboxFilter, string> = {
@@ -162,10 +168,12 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
               count(*) FILTER (WHERE n.read_at IS NULL)::int AS unread,
               (array_agg(n.kind ORDER BY n.created_at DESC))[1] AS kind,
               (array_agg(n.event_ids[1] ORDER BY n.created_at DESC))[1] AS latest_event,
-              array_agg(n.id) AS ids
+              array_agg(n.id) AS ids,
+              coalesce(bool_or(s.level = 'none'), false) AS muted
          FROM notification n
          JOIN block b ON b.id = n.page_id AND b.lifecycle = 'live'
          LEFT JOIN page p ON p.id = n.page_id
+         LEFT JOIN subscription s ON s.user_id = n.recipient_id AND s.page_id = n.page_id
         WHERE n.recipient_id = $1 AND n.workspace_id = $2
           AND ${CAN_SEE}
           AND ${WHERE[filter]}
@@ -255,6 +263,7 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
                   typeof event?.payload.property_id === 'string' ? (propertyNames.get(event.payload.property_id) ?? null) : null,
               }
             : null,
+        muted: g.muted,
       }
     })
     return { items, next }
