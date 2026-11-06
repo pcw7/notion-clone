@@ -27972,7 +27972,10 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="page-edit-info"]')`, 15000)
       const mine = { last: await text('page-edit-last'), created: await text('page-edit-created') }
       check('★ 페이지 메뉴 맨 아래 — 마지막 편집 · 만든 사람이 나(이름 · 시각)', !!ownerName && mine.last?.startsWith(`마지막 편집 ${ownerName} · `)
-        && mine.created?.startsWith(`만든 사람 ${ownerName} · `) && /\d/.test(mine.last ?? ''), JSON.stringify({ ownerName, mine }))
+        && mine.created?.startsWith(`만든 사람 ${ownerName} · `) && /방금|\d+분 전/.test(mine.last ?? ''), JSON.stringify({ ownerName, mine }))
+
+      const lastTitle = await evaluate(`document.querySelector('[data-testid="page-edit-last"]')?.getAttribute('title') ?? ''`)
+      check("★ 방금 고친 것은 '방금' · 마우스를 올리면 절대 시각", /방금|\d+분 전/.test(mine.last ?? '') && lastTitle.includes(String(new Date().getFullYear())), JSON.stringify({ last: mine.last, lastTitle }))
 
       const renamed = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ title: `이력 고침 ${stamp}` }) })
       await send('Page.reload', {})
@@ -28205,8 +28208,16 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-block-id="${theirs}"] p')`, 15000)
       await sleep(500)
       const theirsFoot = await footOf(theirs)
-      check('★ 동료가 고친 블록의 메뉴 맨 아래 — 마지막 편집이 동료(이름 · 시각)', matesSave.ok && theirsFoot?.startsWith(`마지막 편집 ${mateName} · `) && /\d/.test(theirsFoot ?? ''),
+      check('★ 동료가 고친 블록의 메뉴 맨 아래 — 마지막 편집이 동료(이름 · 시각)', matesSave.ok && theirsFoot?.startsWith(`마지막 편집 ${mateName} · `) && /방금|\d+분 전/.test(theirsFoot ?? ''),
         JSON.stringify({ ok: matesSave.ok, theirsFoot }))
+      await clickSelector(`[data-block-id="${theirs}"] p`)
+      await waitFor(inEditor, 3000)
+      await key('/', MOD)
+      await waitFor(`!!document.querySelector('${MENU} [data-testid="block-edit-info"]')`, 5000)
+      const footTitle = await evaluate(`document.querySelector('${MENU} [data-testid="block-edit-info"]')?.getAttribute('title') ?? ''`)
+      await key('Escape')
+      await waitFor(`!document.querySelector('${MENU}')`, 3000)
+      check("★ 방금 고친 것은 '방금' · 마우스를 올리면 절대 시각", /방금|\d+분 전/.test(theirsFoot ?? '') && footTitle.includes(String(new Date().getFullYear())), JSON.stringify({ theirsFoot, footTitle }))
       const mineFoot = await footOf(mine)
       check('★ 내가 쓴 블록은 나 — 블록마다 다르다', !!ownerName && mineFoot?.startsWith(`마지막 편집 ${ownerName} · `), JSON.stringify({ ownerName, mineFoot }))
 

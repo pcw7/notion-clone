@@ -8,7 +8,7 @@
  * 화면 전체를 404 로 만들지 않는다). 세션 · 워크스페이스 밖의 사람 · id 해석은 부르는 쪽(`page.tsx` · 데이터베이스 화면)이 한다.
  */
 
-import { editorLabel, editorNames, formatEditStamp } from '@/lib/block/edit-info'
+import { editorLabel, editorNames, formatEditStamp, formatEditStampRelative } from '@/lib/block/edit-info'
 import { readViewerTimeZone } from '@/lib/settings/time-zone-cookie'
 import { canListMembers } from '@/lib/workspace/list'
 import Link from '@/app/link'
@@ -192,6 +192,7 @@ export async function PageContent({
   const editNames = await editorNames(ctx, [page.createdBy, page.lastEditedBy])
   const seesNames = canListMembers(ctx.role)
   const viewerTimeZone = await readViewerTimeZone()
+  const editNow = new Date() // 편집 시각 상대 표기의 "지금"(ED-3 — 그릴 때 한 번)
   const rowRelation =
     rowPage === null || rowRelationIds.length === 0
       ? { labels: {}, icons: {} }
@@ -334,11 +335,11 @@ export async function PageContent({
             {/* 편집 이력(ED-1 · F-11-15) — 노션의 "···" 맨 아래 · 이력이 아니라 최신 1건 */}
             <PageMenuDivider />
             <div data-testid="page-edit-info" className="flex flex-col gap-0.5 px-2 py-1.5 text-xs leading-snug text-neutral-400">
-              <span data-testid="page-edit-last">
-                마지막 편집 {editorLabel(page.lastEditedBy, editNames, seesNames)} · {formatEditStamp(page.lastEditedAt, viewerTimeZone)}
+              <span data-testid="page-edit-last" title={formatEditStamp(page.lastEditedAt, viewerTimeZone)}>
+                마지막 편집 {editorLabel(page.lastEditedBy, editNames, seesNames)} · {formatEditStampRelative(page.lastEditedAt, editNow, viewerTimeZone)}
               </span>
-              <span data-testid="page-edit-created">
-                만든 사람 {editorLabel(page.createdBy, editNames, seesNames)} · {formatEditStamp(page.createdAt, viewerTimeZone)}
+              <span data-testid="page-edit-created" title={formatEditStamp(page.createdAt, viewerTimeZone)}>
+                만든 사람 {editorLabel(page.createdBy, editNames, seesNames)} · {formatEditStampRelative(page.createdAt, editNow, viewerTimeZone)}
               </span>
             </div>
           </PageMenu>
