@@ -38,6 +38,29 @@ export function formatEditStamp(at: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(at)
 }
 
+/** 해당 시간대의 달력 날짜(Y-M-D)를 하루 단위 정수로 — 하루 차이를 구할 때 쓴다. */
+function zonedDayNumber(d: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(d)
+  const get = (type: string): number => Number(parts.find((p) => p.type === type)?.value)
+  return Math.floor(Date.UTC(get('year'), get('month') - 1, get('day')) / 86_400_000)
+}
+
+/**
+ * 가까운 편집은 상대로(37번 트랙 ED-3 · 정본 §3.4 [보강 ED-3] ①) — 1분 안 "방금"(앞날도) · 1시간 안 "N분 전" ·
+ * 열람자의 오늘 "오늘 오후 3:21" · 어제 "어제 오후 3:21" · 그보다 오래면 절대 시각. 오늘 · 어제는 **열람자 시간대의 날짜**로 가른다.
+ */
+export function formatEditStampRelative(at: Date, now: Date, timeZone: string): string {
+  const diff = now.getTime() - at.getTime()
+  if (diff < 60_000) return '방금'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}분 전`
+  const days = zonedDayNumber(now, timeZone) - zonedDayNumber(at, timeZone)
+  if (days === 0 || days === 1) {
+    const time = new Intl.DateTimeFormat('ko-KR', { timeStyle: 'short', timeZone }).format(at)
+    return `${days === 0 ? '오늘' : '어제'} ${time}`
+  }
+  return formatEditStamp(at, timeZone)
+}
+
 /** 블록 하나의 마지막 편집(ED-2) — 이름표와 시각. */
 export type BlockEditInfo = { readonly label: string; readonly at: Date }
 

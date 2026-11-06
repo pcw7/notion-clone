@@ -6,7 +6,7 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { formatEditStamp, readBlockEditInfo } from '@/lib/block/edit-info'
+import { formatEditStamp, formatEditStampRelative, readBlockEditInfo } from '@/lib/block/edit-info'
 import { readViewerTimeZone } from '@/lib/settings/time-zone-cookie'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/pages/[pageId]/edit-info'>
@@ -22,6 +22,6 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const timeZone = await readViewerTimeZone()
   return Response.json({
     ok: true,
-    edited: { label: read.edited.label, at: read.edited.at.toISOString(), stamp: formatEditStamp(read.edited.at, timeZone) },
+    edited: { label: read.edited.label, at: read.edited.at.toISOString(), stamp: formatEditStampRelative(read.edited.at, new Date(), timeZone), absolute: formatEditStamp(read.edited.at, timeZone) },
   })
 }

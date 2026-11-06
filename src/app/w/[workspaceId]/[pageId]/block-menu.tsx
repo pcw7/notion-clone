@@ -72,15 +72,15 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
   const rootRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef(new Map<string, HTMLButtonElement>())
   // 블록 하나에 열었으면 그 블록의 마지막 편집(ED-2 · F-11-15) — 메뉴 맨 아래 · 저장되지 않은 블록 · 여러 블록이면 없다.
-  const [editInfo, setEditInfo] = useState<string | null>(null)
+  const [editInfo, setEditInfo] = useState<{ text: string; absolute: string } | null>(null)
   useEffect(() => {
     const sel = view.state.selection
     if (!isBlockSelection(sel) || sel.blockIds.length !== 1) return
     const controller = new AbortController()
     fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/edit-info?block=${encodeURIComponent(sel.blockIds[0])}`, { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : null))
-      .then((body: { edited?: { label: string; stamp: string } | null } | null) => {
-        if (body?.edited) setEditInfo(`마지막 편집 ${body.edited.label} · ${body.edited.stamp}`)
+      .then((body: { edited?: { label: string; stamp: string; absolute?: string } | null } | null) => {
+        if (body?.edited) setEditInfo({ text: `마지막 편집 ${body.edited.label} · ${body.edited.stamp}`, absolute: body.edited.absolute ?? '' })
       })
       .catch(() => {})
     return () => controller.abort()
@@ -249,8 +249,8 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
         )
       })}
       {editInfo !== null && (
-        <div role="none" data-testid="block-edit-info" className="blk-menu-foot">
-          {editInfo}
+        <div role="none" data-testid="block-edit-info" className="blk-menu-foot" title={editInfo.absolute}>
+          {editInfo.text}
         </div>
       )}
     </div>
