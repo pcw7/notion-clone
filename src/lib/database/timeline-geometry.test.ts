@@ -5,6 +5,9 @@ import { daysBetween } from './calendar.ts'
 import { MAX_TIMELINE_SPAN_DAYS, TIMELINE_ZOOMS } from './timeline.ts'
 import {
   DAY_PX,
+  dayAtX,
+  dayDeltaFromPx,
+  dragDate,
   headerTicks,
   placeBar,
   shiftWindow,
@@ -93,4 +96,37 @@ test('눈금 — 줌마다 날 · 주 · 달 · 분기 · 해이고 폭의 합�
     headerTicks(win, 'year').map((t) => t.label),
     ['2026년', '2027년'],
   )
+})
+
+test('끌기 거리는 줌의 하루 폭으로 반올림한 날수다', () => {
+  assert.equal(dayDeltaFromPx(36 * 3 + 10, 'day'), 3)
+  assert.equal(dayDeltaFromPx(-(36 * 2 + 20), 'day'), -3)
+  assert.equal(dayDeltaFromPx(17, 'day'), 0)
+  assert.equal(dayDeltaFromPx(14 * 5, 'week'), 5)
+  assert.equal(dayDeltaFromPx(11, 'month'), 2)
+  assert.equal(Object.is(dayDeltaFromPx(-1, 'day'), -0), false)
+})
+
+test('x 가 가리키는 날 — 창 안만', () => {
+  const win = { from: '2026-11-01', to: '2026-11-10' }
+  assert.equal(dayAtX(0, win, 'day'), '2026-11-01')
+  assert.equal(dayAtX(36 * 2 + 5, win, 'day'), '2026-11-03')
+  assert.equal(dayAtX(36 * 10 - 1, win, 'day'), '2026-11-10')
+  assert.equal(dayAtX(36 * 10, win, 'day'), null)
+  assert.equal(dayAtX(-1, win, 'day'), null)
+})
+
+test('옮기기는 기간 · 시각을 지킨다', () => {
+  assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'move', 4), { start: '2026-11-07', end: '2026-11-09' })
+  assert.deepEqual(dragDate({ start: '2026-11-03T09:00:00+09:00' }, 'move', -1), { start: '2026-11-02T09:00:00+09:00' })
+  assert.equal(dragDate({ start: '2026-11-03' }, 'move', 0), null)
+})
+
+test('늘이기 — 하루짜리의 오른쪽 끝은 기간이 되고 끝은 시작 앞으로 가지 않는다', () => {
+  assert.deepEqual(dragDate({ start: '2026-11-03' }, 'end', 2), { start: '2026-11-03', end: '2026-11-05' })
+  assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'end', -9), { start: '2026-11-03' })
+  assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'end', -2), { start: '2026-11-03' })
+  assert.equal(dragDate({ start: '2026-11-03' }, 'end', -2), null)
+  assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'start', 9), { start: '2026-11-05' })
+  assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'start', -2), { start: '2026-11-01', end: '2026-11-05' })
 })

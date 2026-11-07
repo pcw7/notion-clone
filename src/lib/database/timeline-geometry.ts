@@ -7,7 +7,7 @@
  * 하루의 폭은 줌마다 고정이고, 창(서버에 묻는 기간)은 줌마다 한 화면 남짓이다. 모든 창은 서버 상한(`MAX_TIMELINE_SPAN_DAYS`) 안이다.
  */
 
-import { addDays, daysBetween, weekStartOf } from './calendar.ts'
+import { addDays, daysBetween, resizeDateValue, shiftDateValue, weekStartOf } from './calendar.ts'
 import { MAX_TIMELINE_SPAN_DAYS, type TimelineZoom } from './timeline.ts'
 
 /** 하루의 폭(px) — day 넓음 → year 좁음. */
@@ -131,4 +131,32 @@ export function headerTicks(win: TimelineWindow, zoom: TimelineZoom): Tick[] {
     start = next
   }
   return ticks
+}
+
+/** 끌어 움직인 가로 거리(px)를 온전한 날수로 — 줌이 넓어도 하루의 폭으로 반올림한다(TL-3 ①). */
+export const dayDeltaFromPx = (dx: number, zoom: TimelineZoom): number => {
+  const d = Math.round(dx / DAY_PX[zoom])
+  return d === 0 ? 0 : d
+}
+
+/** 시간축 안의 x(창 왼쪽 끝 기준 px)가 가리키는 날 — 창 밖이면 null(TL-3 ③ 날짜 없는 행 놓기). */
+export function dayAtX(x: number, win: TimelineWindow, zoom: TimelineZoom): string | null {
+  if (x < 0) return null
+  const day = addDays(win.from, Math.floor(x / DAY_PX[zoom]))
+  return day > win.to ? null : day
+}
+
+export type DragMode = 'move' | 'start' | 'end'
+type DateParts = { readonly start: string; readonly end?: string | null }
+
+/**
+ * 끌기(또는 키)로 바뀐 날짜 값 — `move` 는 둘 다 `days` 만큼, `start` · `end` 는 그 쪽만(끝은 시작 앞으로, 시작은 끝 뒤로 가지 않고 같아지면 끝을
+ * 지운다). 하루짜리의 오른쪽 끝을 늘이면 기간이 된다. 바뀌지 않으면 null(TL-3 ① ②).
+ */
+export function dragDate(date: DateParts, mode: DragMode, days: number): { start: string; end?: string } | null {
+  if (days === 0) return null
+  if (mode === 'move') return shiftDateValue(date, days)
+  const startDay = date.start.slice(0, 10)
+  const endDay = typeof date.end === 'string' ? date.end.slice(0, 10) : startDay
+  return resizeDateValue(date, mode, addDays(mode === 'start' ? startDay : endDay, days))
 }
