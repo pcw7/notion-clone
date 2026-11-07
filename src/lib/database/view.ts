@@ -55,6 +55,7 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { fitGroupByToType, isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
+import { mergeTimelineLayout, readTimelineLayout, validateTimelinePatch, type LiveTimelineLayout, type TimelineLayout } from './timeline.ts'
 import { mergeChartLayout, readChartLayout, validateChartPatch, type ChartLayout } from './chart.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
 import { readFormulaConfig } from './formula-schema.ts'
@@ -91,7 +92,7 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
  */
 // 갤러리(2f-1 · F-04-05)를 더했다 — `ck_view_type`(0022)이 이미 받는 이름이라 마이그레이션이 없다.
 // 캘린더(2g-1 · F-04-06)도 — 이것도 `ck_view_type` 이 이미 받는 이름이다.
-export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar', 'chart'] as const
+export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar', 'chart', 'timeline'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
 
 export const DEFAULT_VIEW_NAME = '표'
@@ -145,6 +146,11 @@ export type ViewDetail = {
    * 가 null 이다 — 저장값은 남는다(그룹 속성과 같은 규칙). 캘린더가 아닌 뷰는 날짜 속성 null · 달.
    */
   readonly calendar: LiveCalendarLayout
+  /**
+   * 타임라인 레이아웃(TL-1 · `configuration.timeline`) — 캘린더와 같은 규칙: 날짜 속성이 살아 있는 날짜 컬럼이 아니면(저장 전 · 지워졌다)
+   * `date_property_id` 가 null 이다. 타임라인이 아닌 뷰에도 온다(기본 줌 · 표 보임).
+   */
+  readonly timeline: LiveTimelineLayout
   /**
    * 이 사람의 개인 필터 · 정렬(2h-1 · F-04-17 · `view_user_override`) — 어느 쪽을 덮어썼는지. 없으면 null. `filter` · `sorts` 는 늘
    * **공유** 것이고, 행을 고를 때는 `effectiveFilter` · `effectiveSorts` 를 쓴다(개인 것이 공유 것을 **대체**한다).
@@ -492,6 +498,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     gallery: readGalleryLayout(row.configuration),
     chart: readChartLayout(row.configuration),
     calendar: liveCalendarLayout(row.configuration, columns),
+    timeline: liveTimelineLayout(row.configuration, columns),
     personal: personalFilter === null && personalSorts === null ? null : { filter: personalFilter !== null, sorts: personalSorts !== null },
     effectiveFilter: personalFilter !== null ? personalFilter : sharedFilter,
     effectiveSorts: personalSorts ?? sharedSorts,
@@ -505,6 +512,33 @@ function liveCalendarLayout(configuration: unknown, columns: readonly ViewColumn
   return id !== null && columns.some((c) => c.propertyId === id && c.type === 'date') ? stored : { ...stored, date_property_id: null }
 }
 
+/** 저장된 타임라인 레이아웃 — 날짜 속성이 살아 있는 날짜 컬럼일 때만 그 id(`ViewDetail.timeline` 주석). */
+function liveTimelineLayout(configuration: unknown, columns: readonly ViewColumn[]): LiveTimelineLayout {
+  const stored = readTimelineLayout(configuration)
+  const id = stored.date_property_id
+  return id !== null && columns.some((c) => c.propertyId === id && c.type === 'date') ? stored : { ...stored, date_property_id: null }
+}
+
+/**
+ * 날짜 뷰(캘린더 · 타임라인)가 쓸 날짜 속성 — 저장된 것이 살아 있는 날짜 속성이면 그대로, 아니면 **첫 날짜 속성**(스키마 순서), 그것도
+ * 없으면 null(호출자가 `date_required` 로 거부한다).
+ */
+async function pickDateProperty(tx: Tx, dataSourceId: string, stored: string | null): Promise<string | null> {
+  const types = await readPropertyTypes(tx, dataSourceId)
+  if (stored !== null && types.get(stored) === 'date') return stored
+  const first = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM property WHERE data_source_id = $1 AND deleted_at IS NULL AND type = 'date' ORDER BY order_idx, id LIMIT 1`,
+    [dataSourceId],
+  )
+  return first?.id ?? null
+}
+
+/** 타임라인으로 만들거나 바꿀 때의 레이아웃(TL-1) — 날짜 속성은 `pickDateProperty`, 없으면 null. 세 키 모두 싣는다. */
+async function resolveTimelineLayout(tx: Tx, dataSourceId: string, stored: LiveTimelineLayout): Promise<TimelineLayout | null> {
+  const id = await pickDateProperty(tx, dataSourceId, stored.date_property_id)
+  return id === null ? null : { date_property_id: id, zoom: stored.zoom, show_table: stored.show_table }
+}
+
 /**
  * 캘린더로 만들거나 바꿀 때의 레이아웃 — 저장된 날짜 속성이 살아 있으면 그대로, 아니면 **첫 날짜 속성**(스키마 순서), 그것도 없으면
  * null(호출자가 `date_required` 로 거부한다). 보드가 첫 select 를 고르는 것과 같은 태도다.
@@ -514,20 +548,13 @@ async function resolveCalendarLayout(
   dataSourceId: string,
   stored: Pick<LiveCalendarLayout, 'date_property_id' | 'view_range'> & Partial<Pick<LiveCalendarLayout, 'week_start' | 'show_weekends'>>,
 ): Promise<CalendarLayout | null> {
-  const types = await readPropertyTypes(tx, dataSourceId)
   // 주의 시작 · 주말(C-3) — 기본값(일요일 · 그린다)은 싣지 않는다
   const week = {
     ...(stored.week_start === 'monday' ? { week_start: 'monday' as const } : {}),
     ...(stored.show_weekends === false ? { show_weekends: false } : {}),
   }
-  if (stored.date_property_id !== null && types.get(stored.date_property_id) === 'date') {
-    return { date_property_id: stored.date_property_id, view_range: stored.view_range, ...week }
-  }
-  const first = await tx.queryMaybe<{ id: string }>(
-    `SELECT id FROM property WHERE data_source_id = $1 AND deleted_at IS NULL AND type = 'date' ORDER BY order_idx, id LIMIT 1`,
-    [dataSourceId],
-  )
-  return first === null ? null : { date_property_id: first.id, view_range: stored.view_range, ...week }
+  const id = await pickDateProperty(tx, dataSourceId, stored.date_property_id)
+  return id === null ? null : { date_property_id: id, view_range: stored.view_range, ...week }
 }
 
 /** 저장된 `sub_group_by` 가 보드의 · 살아 있는 · 그룹 기준과 다른 컬럼을 가리킬 때만(B-4a · `ViewDetail.subGroupBy` 주석). 계산은 뺀다. */
@@ -666,6 +693,9 @@ export async function createView(
     // 캘린더는 날짜 속성이 필수다(2g-1) — 첫 날짜 속성을 고르고, 없으면 거부한다.
     const calendar = type === 'calendar' ? await resolveCalendarLayout(tx, dataSourceId, readCalendarLayout(null)) : null
     if (type === 'calendar' && calendar === null) return fail('date_required')
+    // 타임라인도 날짜 속성이 필수다(TL-1) — 같은 규칙. 세 키를 모두 쓴다.
+    const timeline = type === 'timeline' ? await resolveTimelineLayout(tx, dataSourceId, readTimelineLayout(null)) : null
+    if (type === 'timeline' && timeline === null) return fail('date_required')
 
     // 맨 뒤 키 — 동시에 만들거나 옮기는 다른 쓰기와 한 줄로(10n-18 `lockTabs` — 그렇지 않으면 같은 키가 둘 생긴다)
     await lockTabs(tx, databaseId)
@@ -689,7 +719,7 @@ export async function createView(
         type,
         orderKeyBetween(last?.order_idx ?? null, null),
         grouped === null ? null : JSON.stringify(grouped),
-        JSON.stringify(calendar === null ? {} : { calendar }),
+        JSON.stringify(calendar !== null ? { calendar } : timeline !== null ? { timeline } : {}),
       ],
     )
 
@@ -783,6 +813,8 @@ export type UpdateViewInput = {
    * 날짜 속성이어야 한다.
    */
   readonly calendar?: Partial<CalendarLayout>
+  /** 타임라인 레이아웃의 바꿀 키만(TL-1) — 캘린더와 같은 규칙(지금 값 위에 합쳐 `configuration.timeline` 한 키만 · 날짜 속성은 살아 있는 날짜 속성). */
+  readonly timeline?: Partial<TimelineLayout>
   /** 행을 여는 방식(8n-1 · F-02-20) — 사이드 피크 · 가운데 피크 · 전체 페이지. 생략하면 그대로 둔다. */
   readonly openPagesIn?: OpenPagesIn
   /** 하위 항목의 표시 범위(P-1) — 부모만 · 부모와 하위 · 하위만. 생략하면 그대로 둔다. `both` 는 NULL 로 저장한다. */
@@ -877,6 +909,10 @@ export async function updateView(
       const issues = validateCalendarPatch(input.calendar, types)
       if (issues.length > 0) return fail('invalid_layout', issues)
     }
+    if (input.timeline !== undefined) {
+      const issues = validateTimelinePatch(input.timeline, types)
+      if (issues.length > 0) return fail('invalid_layout', issues)
+    }
 
     // 타입 · 그룹은 서로에 기댄다(보드 ⇒ 그룹) — 지금 값과 합쳐서 본다.
     const current = await tx.queryOne<{ type: string; group_by: unknown; configuration: unknown }>(
@@ -897,11 +933,23 @@ export async function updateView(
     const calendar =
       input.calendar !== undefined || becomesCalendar ? await resolveCalendarLayout(tx, gate.dataSourceId, patchedCalendar) : undefined
     if (calendar === null) return fail('date_required')
+    // 타임라인 레이아웃 — 캘린더와 같다(TL-1): 바꿀 키를 얹거나, 타임라인으로 **바꿀 때** 날짜 속성을 고른다.
+    const becomesTimeline = input.type === 'timeline' && current.type !== 'timeline'
+    const timeline =
+      input.timeline !== undefined || becomesTimeline
+        ? await resolveTimelineLayout(
+            tx,
+            gate.dataSourceId,
+            mergeTimelineLayout(readTimelineLayout(current.configuration), input.timeline ?? {}),
+          )
+        : undefined
+    if (timeline === null) return fail('date_required')
     // `configuration` 은 바뀐 키만 덮는다(최상위 `||`) — 다른 종류의 키는 그대로다.
     const configurationPatch = {
       ...(gallery === null ? {} : { gallery }),
       ...(chart === null ? {} : { chart }),
       ...(calendar === undefined ? {} : { calendar }),
+      ...(timeline === undefined ? {} : { timeline }),
     }
     const type = input.type ?? current.type
     const touchesGroup = input.groupBy !== undefined || input.type !== undefined

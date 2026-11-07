@@ -13666,6 +13666,47 @@ async function main() {
         await waitFor(`!!document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')`, 10000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('타임라인 — 서버 (TL-1 · F-04-07)')) { try {
+      // 타임라인 뷰는 캘린더처럼 첫 날짜 속성을 고르고(없으면 400 date_required) 기본 레이아웃(줌 week · 표 보임)을 준다.
+      // GET /timeline 은 같은 질의를 넓은 창(732일)으로 — 창에 걸친 기간 · 날짜 없는 행은 개수만. 줌은 configuration.timeline 에 남는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `타임라인 ${stamp}` })).body.database
+      const refused = await api('POST', `/databases/${db.id}/views`, { type: 'timeline' })
+      check('★ 날짜 속성이 없는 표의 타임라인은 400 date_required', refused.status === 400 && refused.body?.error === 'date_required', JSON.stringify(refused))
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '일정', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, date) => api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...(date ? [{ propertyId: due, value: { type: 'date', date } }] : [])],
+      })
+      await row('봄 일', { start: '2026-03-10' })
+      await row('걸친 일', { start: '2025-12-20', end: '2026-01-05' })
+      await row('가을 일', { start: '2026-10-15' })
+      await row('먼 일', { start: '2028-05-01' })
+      await row('날짜 없는 일', null)
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'timeline' })
+      const layout = made.body?.view?.timeline
+      check('★ 타임라인을 만들면 첫 날짜 속성을 고르고 기본 레이아웃을 준다',
+        made.status === 201 && layout?.date_property_id === due && layout?.zoom === 'week' && layout?.show_table === true, JSON.stringify(layout))
+      const viewId = made.body.view.id
+      const year = (await api('GET', `/views/${viewId}/timeline?from=2026-01-01&to=2026-12-31`)).body
+      check('★ 1년 창 — 창 시작을 걸친 기간까지 시작일 순 · 창 밖은 빠지고 날짜 없는 행은 개수만',
+        JSON.stringify(year?.rows?.map((r) => r.title)) === JSON.stringify(['걸친 일', '봄 일', '가을 일']) && year?.undated === 1 && year?.truncated === false && year?.datePropertyId === due,
+        JSON.stringify({ rows: year?.rows?.map((r) => r.title), undated: year?.undated }))
+      const tooWide = await api('GET', `/views/${viewId}/timeline?from=2026-01-01&to=2028-01-04`)
+      check('733일 창은 400 invalid_value', tooWide.status === 400 && tooWide.body?.error === 'invalid_value', JSON.stringify(tooWide))
+      const zoom = await api('PATCH', `/views/${viewId}`, { timeline: { zoom: 'month' } })
+      const reread = (await api('GET', `/views/${viewId}`)).body?.view?.timeline
+      check('★ 줌은 남고 날짜 속성은 그대로', zoom.status === 200 && reread?.zoom === 'month' && reread?.date_property_id === due && reread?.show_table === true, JSON.stringify(reread))
+      const badZoom = await api('PATCH', `/views/${viewId}`, { timeline: { zoom: 'hour' } })
+      check('★ 모르는 줌은 400', badZoom.status === 400, JSON.stringify(badZoom))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
       const stamp = Date.now()
