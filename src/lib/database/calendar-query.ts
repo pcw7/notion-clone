@@ -16,7 +16,8 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
-import { isValidSpan, MAX_CALENDAR_ROWS } from './calendar.ts'
+import { daysBetween, isYmd, MAX_CALENDAR_ROWS, MAX_CALENDAR_SPAN_DAYS } from './calendar.ts'
+import { MAX_TIMELINE_ROWS, MAX_TIMELINE_SPAN_DAYS } from './timeline.ts'
 import { compileFilter, ParamBag, propertyIdsIn, type FilterNode } from './filter.ts'
 import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
@@ -41,6 +42,8 @@ export type CalendarFailure =
   | 'not_found'
   /** 캘린더 뷰가 아니다. */
   | 'not_calendar'
+  /** 타임라인 뷰가 아니다(TL-1 — `queryTimeline` 의 실패). */
+  | 'not_timeline'
   /** 날짜 속성이 지워졌다(저장값은 남는다) — 화면이 "날짜 속성을 고르라"를 그린다. */
   | 'no_date_property'
   /** 기간이 날짜가 아니거나 거꾸로거나 너무 길다. */
@@ -57,7 +60,7 @@ export const UNDATED_PAGE_SIZE = 50
 
 export type UndatedResult =
   | { readonly ok: true; readonly value: QueryPage }
-  | { readonly ok: false; readonly reason: Exclude<CalendarFailure, 'invalid_value'> }
+  | { readonly ok: false; readonly reason: Exclude<CalendarFailure, 'invalid_value' | 'not_timeline'> }
 
 /**
  * 날짜 없는 행(C-2 · 정본 §3.6 [보강] 캘린더 ⑥) — 머리의 "날짜 없음 N개" 가 여는 목록. 행 질의(`queryRows`)에 날짜 칸의 "비어 있음" 규칙을
@@ -71,8 +74,9 @@ export async function queryUndatedRows(
 ): Promise<UndatedResult> {
   const view = await getView(ctx, viewId)
   if (!view.ok) return { ok: false, reason: 'not_found' }
-  if (view.value.type !== 'calendar') return { ok: false, reason: 'not_calendar' }
-  const dateProperty = view.value.calendar.date_property_id
+  // 타임라인 뷰에도 연다(TL-1 · 정본 [보강 TL-1] ③) — 날짜 속성만 그 뷰의 설정에서 읽는다
+  if (view.value.type !== 'calendar' && view.value.type !== 'timeline') return { ok: false, reason: 'not_calendar' }
+  const dateProperty = view.value.type === 'timeline' ? view.value.timeline.date_property_id : view.value.calendar.date_property_id
   if (dateProperty === null) return { ok: false, reason: 'no_date_property' }
   // 수와 같은 조건 — 날짜 칸이 비어 있다(필터의 "비어 있음" 과 같은 술어 · 사이드카의 `date_start` 가 없다)
   const undated: FilterNode = { property_id: dateProperty, operator: 'is_empty' }
@@ -93,18 +97,33 @@ export async function queryUndatedRows(
   return page.ok ? page : { ok: false, reason: 'not_found' }
 }
 
-export async function queryCalendar(
-  ctx: SessionContext,
-  viewId: string,
-  /** `today` — 보는 사람의 오늘(R-1 · 상대 날짜 필터 · 없으면 UTC). */
-  input: { readonly from: string; readonly to: string; readonly search?: string | null; readonly today?: string | null },
-): Promise<CalendarResult> {
-  if (!isValidSpan(input.from, input.to)) return fail('invalid_value')
+/** `today` — 보는 사람의 오늘(R-1 · 상대 날짜 필터 · 없으면 UTC). */
+export type WindowInput = { readonly from: string; readonly to: string; readonly search?: string | null; readonly today?: string | null }
+
+export function queryCalendar(ctx: SessionContext, viewId: string, input: WindowInput): Promise<CalendarResult> {
+  return queryWindow(ctx, viewId, input, 'calendar')
+}
+
+/** 타임라인의 행(TL-1) — 캘린더와 같은 질의를 넓은 창(732일)으로. 정본 [보강 TL-1] ③. */
+export function queryTimeline(ctx: SessionContext, viewId: string, input: WindowInput): Promise<CalendarResult> {
+  return queryWindow(ctx, viewId, input, 'timeline')
+}
+
+const WINDOW_LIMITS = {
+  calendar: { maxSpan: MAX_CALENDAR_SPAN_DAYS, maxRows: MAX_CALENDAR_ROWS, wrong: 'not_calendar' },
+  timeline: { maxSpan: MAX_TIMELINE_SPAN_DAYS, maxRows: MAX_TIMELINE_ROWS, wrong: 'not_timeline' },
+} as const
+
+/** 창에 걸친 행 — 캘린더와 타임라인이 나눠 쓰는 한 질의(창의 상한 · 뷰 종류만 다르다). */
+async function queryWindow(ctx: SessionContext, viewId: string, input: WindowInput, kind: 'calendar' | 'timeline'): Promise<CalendarResult> {
+  const { maxSpan, maxRows, wrong } = WINDOW_LIMITS[kind]
+  const spanOk = isYmd(input.from) && isYmd(input.to) && daysBetween(input.from, input.to) >= 0 && daysBetween(input.from, input.to) <= maxSpan
+  if (!spanOk) return fail('invalid_value')
   // 뷰를 여는 것은 데이터베이스 단위다 — 행의 범위("만들기만" 이면 자기가 열 수 있는 행만 · 6f-2b-1)는 아래 트랜잭션에서 정한다.
   const view = await getView(ctx, viewId)
   if (!view.ok) return fail('not_found')
-  if (view.value.type !== 'calendar') return fail('not_calendar')
-  const dateProperty = view.value.calendar.date_property_id
+  if (view.value.type !== kind) return fail(wrong)
+  const dateProperty = kind === 'timeline' ? view.value.timeline.date_property_id : view.value.calendar.date_property_id
   if (dateProperty === null) return fail('no_date_property')
   // 이 사람이 실제로 보는 필터(2h-1 — 개인 필터가 있으면 그것)
   const { dataSourceId, effectiveFilter: filter, columns } = view.value
@@ -141,7 +160,7 @@ export async function queryCalendar(
     // 기간에 걸친 행 — 양끝을 하루씩 넓혀 묻는다(머리말)
     const fromParam = params.bind(input.from)
     const toParam = params.bind(input.to)
-    const limitParam = params.bind(MAX_CALENDAR_ROWS + 1)
+    const limitParam = params.bind(maxRows + 1)
     const rows = await tx.query<RowRow>(
       `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
               p.unique_seq, b.created_at, b.last_edited_at, b.version
@@ -160,9 +179,9 @@ export async function queryCalendar(
       ok: true,
       value: {
         datePropertyId: dateProperty,
-        rows: rows.slice(0, MAX_CALENDAR_ROWS).map(toQueriedRow),
+        rows: rows.slice(0, maxRows).map(toQueriedRow),
         undated: undated.n,
-        truncated: rows.length > MAX_CALENDAR_ROWS,
+        truncated: rows.length > maxRows,
       },
     } as const
   })

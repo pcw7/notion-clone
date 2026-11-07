@@ -21,6 +21,7 @@ import { deleteView, getView, moveView, updateView, type MvpViewType } from '@/l
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
 import type { ChartLayout } from '@/lib/database/chart'
+import type { TimelineLayout } from '@/lib/database/timeline'
 import { viewFailureStatus } from '@/lib/database/http'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
@@ -55,6 +56,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     gallery?: unknown
     calendar?: unknown
     chart?: unknown
+    timeline?: unknown
     position?: unknown
   }
 
@@ -89,6 +91,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('chart' in body ? { chart: body.chart as Partial<ChartLayout> } : {}),
     // 캘린더 레이아웃(2g-1) — 바꿀 키만. 날짜 속성이 이 표의 것인지는 명령이 본다.
     ...('calendar' in body ? { calendar: body.calendar as Partial<CalendarLayout> } : {}),
+    // 타임라인 레이아웃(TL-1) — 바꿀 키만. 날짜 속성이 이 표의 것인지는 명령이 본다.
+    ...('timeline' in body ? { timeline: body.timeline as Partial<TimelineLayout> } : {}),
     // 행을 여는 방식(8n-1 · F-02-20) — 값은 명령이 본다(틀리면 invalid_layout)
     ...('openPagesIn' in body ? { openPagesIn: body.openPagesIn as OpenPagesIn } : {}),
     // 하위 항목의 표시 범위(P-1) — 값은 명령이 본다(틀리면 invalid_layout)

@@ -19,6 +19,7 @@ type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/calendar'>
 const STATUS: Readonly<Record<CalendarFailure, number>> = {
   not_found: 404,
   not_calendar: 400,
+  not_timeline: 400,
   no_date_property: 409,
   invalid_value: 400,
 }
