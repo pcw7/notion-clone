@@ -13707,6 +13707,144 @@ async function main() {
       check('★ 모르는 줌은 400', badZoom.status === 400, JSON.stringify(badZoom))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('타임라인 — 화면 (TL-2 · F-04-07)')) { try {
+      // 뷰 추가의 "타임라인" → 행마다 한 줄 · 날짜 기간이 막대(끝일 포함) · 날짜 없음 개수 · 줌(편집자는 저장) · 이전/다음이 창을 옮김 ·
+      // 표 보이기 토글(저장) · 볼 수만 있는 사람에게도 타임라인이 보인다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 오늘 근처의 날짜 — 첫 창(주 줌: 오늘 28일 전 ~ 83일 뒤)에 모두 들어온다
+      const dayOf = (offset) => {
+        const d = new Date()
+        d.setDate(d.getDate() + offset)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const db = (await api('POST', '/databases', { name: `타임라인 화면 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '일정', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, date) => api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...(date ? [{ propertyId: due, value: { type: 'date', date } }] : [])],
+      })
+      const single = { start: dayOf(3) }
+      const range = { start: dayOf(5), end: dayOf(12) }
+      await row('하루 일', single)
+      await row('기간 일', range)
+      await row('날짜 없는 일', null)
+      const viewer = await joinAs(workspaceId, await createUser(`타임라인 보는 사람 ${stamp}`), 'member')
+      const shared = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${db.id}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' }),
+      })
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 타임라인이 설 때까지 몇 번 누른다
+      for (let i = 0; i < 8 && !(await evaluate(`!!document.querySelector('[data-testid="db-timeline"]')`)); i += 1) {
+        await clickOn('[data-testid="db-view-add"]')
+        if (await waitFor(`!!document.querySelector('[data-testid="db-view-add-timeline"]')`, 2000)) await clickOn('[data-testid="db-view-add-timeline"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-timeline"]')`, 4000)
+      }
+      check('★ 뷰 추가의 "타임라인" — db-timeline 이 서고 날짜 있는 행마다 한 줄(2)',
+        await waitFor(`document.querySelector('[data-testid="db-timeline"]') && document.querySelectorAll('[data-testid="timeline-row"]').length === 2`, 15000))
+      check('오늘 세로선이 선다', (await evaluate(`!!document.querySelector('[data-testid="timeline-today"]')`)) === true)
+      const timelineId = await evaluate(`new URLSearchParams(location.search).get('v')`)
+      const bars = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="timeline-bar"]')].map((b) => [b.dataset.start, b.dataset.end, b.getBoundingClientRect().width]))`).then((s) => JSON.parse(s))
+      const drawn = await bars()
+      const one = drawn.find(([s, e]) => s === single.start && e === single.start)
+      const many = drawn.find(([s, e]) => s === range.start && e === range.end)
+      check('★ 막대의 data-start/data-end 가 행의 날짜와 맞다(하루 · 기간)', drawn.length === 2 && !!one && !!many, JSON.stringify(drawn))
+      check('★ 기간 막대가 하루 막대보다 넓다', !!one && !!many && many[2] > one[2], JSON.stringify(drawn))
+      check('★ "날짜 없음 N" — 개수가 적힌다(1)',
+        (await evaluate(`document.querySelector('[data-testid="timeline-undated"]')?.textContent`))?.replace(/\s+/g, ' ').trim() === '날짜 없음 1')
+      check('막대에 aria-label("제목 · 시작 ~ 끝")',
+        (await evaluate(`[...document.querySelectorAll('[data-testid="timeline-bar"]')].map((b) => b.getAttribute('aria-label')).sort().join('|')`))
+          === [`하루 일 · ${single.start} ~ ${single.start}`, `기간 일 · ${range.start} ~ ${range.end}`].sort().join('|'))
+
+      // 줌 — 편집자의 변경은 저장된다(새로고침 뒤에도)
+      for (let i = 0; i < 6 && (await evaluate(`document.querySelector('[data-testid="db-timeline"]')?.dataset.zoom`)) !== 'month'; i += 1) {
+        await setSelect('[data-testid="timeline-zoom"]', 'month')
+        await waitFor(`document.querySelector('[data-testid="db-timeline"]')?.dataset.zoom === 'month'`, 2000)
+      }
+      let savedZoom = null
+      for (let i = 0; i < 20 && savedZoom !== 'month'; i += 1) {
+        savedZoom = (await api('GET', `/views/${timelineId}`)).body?.view?.timeline?.zoom ?? null
+        if (savedZoom !== 'month') await new Promise((r) => setTimeout(r, 500))
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${timelineId}` })
+      check('★ 줌을 월로 — 저장되고(timeline.zoom) 새로고침 뒤에도 data-zoom=month',
+        savedZoom === 'month' && await waitFor(`document.querySelector('[data-testid="db-timeline"]')?.dataset.zoom === 'month'`, 15000), String(savedZoom))
+
+      // 다음 → 이전 — 창(data-from)이 앞으로 갔다 돌아온다
+      await waitFor(`!!document.querySelector('[data-testid="timeline-next"]')`, 15000)
+      const from0 = await evaluate(`document.querySelector('[data-testid="db-timeline"]')?.dataset.from`)
+      for (let i = 0; i < 8 && (await evaluate(`document.querySelector('[data-testid="db-timeline"]')?.dataset.from`)) === from0; i += 1) {
+        await clickOn('[data-testid="timeline-next"]')
+        await waitFor(`document.querySelector('[data-testid="db-timeline"]')?.dataset.from !== ${JSON.stringify(from0)}`, 2500)
+      }
+      const from1 = await evaluate(`document.querySelector('[data-testid="db-timeline"]')?.dataset.from`)
+      await waitFor(`document.querySelector('[data-testid="db-timeline"]')?.dataset.loading === 'false' || document.querySelector('[data-testid="db-timeline"]')?.getAttribute('data-loading') === 'false'`, 10000)
+      await clickOn('[data-testid="timeline-prev"]')
+      const back = await waitFor(`document.querySelector('[data-testid="db-timeline"]')?.dataset.from === ${JSON.stringify(from0)}`, 10000)
+      check('★ 다음 → 이전 — data-from 이 앞으로 갔다가 돌아온다', typeof from1 === 'string' && from1 > from0 && back, JSON.stringify({ from0, from1 }))
+
+      // 표 토글 — 왼쪽 표가 사라지고(저장) 다시 켜면 돌아온다
+      check('왼쪽 표가 처음에 보인다', (await evaluate(`!!document.querySelector('[data-testid="timeline-table"]')`)) === true)
+      for (let i = 0; i < 8 && (await evaluate(`!!document.querySelector('[data-testid="timeline-table"]')`)); i += 1) {
+        await clickOn('[data-testid="timeline-table-toggle"]')
+        await waitFor(`!document.querySelector('[data-testid="timeline-table"]')`, 2500)
+      }
+      let savedTable = null
+      for (let i = 0; i < 20 && savedTable !== false; i += 1) {
+        savedTable = (await api('GET', `/views/${timelineId}`)).body?.view?.timeline?.show_table ?? null
+        if (savedTable !== false) await new Promise((r) => setTimeout(r, 500))
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${timelineId}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-timeline"]')`, 15000)
+      const hiddenAfterReload = (await evaluate(`!document.querySelector('[data-testid="timeline-table"]')`)) === true
+      check('★ 표 토글 — 표가 숨고 저장된다(show_table=false · 새로고침 뒤에도)', savedTable === false && hiddenAfterReload, String(savedTable))
+      await waitFor(`!!document.querySelector('[data-testid="timeline-table-toggle"]')`, 15000)
+      for (let i = 0; i < 8 && !(await evaluate(`!!document.querySelector('[data-testid="timeline-table"]')`)); i += 1) {
+        await clickOn('[data-testid="timeline-table-toggle"]')
+        await waitFor(`!!document.querySelector('[data-testid="timeline-table"]')`, 2500)
+      }
+      let savedTable2 = null
+      for (let i = 0; i < 20 && savedTable2 !== true; i += 1) {
+        savedTable2 = (await api('GET', `/views/${timelineId}`)).body?.view?.timeline?.show_table ?? null
+        if (savedTable2 !== true) await new Promise((r) => setTimeout(r, 500))
+      }
+      check('다시 켜면 표가 돌아오고 저장된다', savedTable2 === true && (await evaluate(`!!document.querySelector('[data-testid="timeline-table"]')`)) === true)
+
+      // 볼 수만 있는 사람 — 타임라인이 보인다(서버 렌더 HTML)
+      const viewerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${db.id}?v=${timelineId}`, { headers: { ...json, cookie: `nc_session=${viewer.token}` } })).text()
+      check('★ 볼 수만 있는 사람에게도 타임라인이 보인다(서버 렌더에 db-timeline)',
+        shared.ok && viewerHtml.includes('data-testid="db-timeline"') && !viewerHtml.includes('data-testid="timeline-date-property"'),
+        JSON.stringify([shared.status, viewerHtml.includes('data-testid="db-timeline"')]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
       const stamp = Date.now()
