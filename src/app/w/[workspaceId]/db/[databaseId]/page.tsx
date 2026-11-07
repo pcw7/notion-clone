@@ -102,8 +102,10 @@ import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
 import { DatabaseCalendar } from './database-calendar'
 import { DatabaseChart } from './database-chart-lazy'
+import { DatabaseTimeline } from './database-timeline-lazy'
 import { isYm, isYmd, monthGrid, weekGrid, weekStartOf } from '@/lib/database/calendar'
-import { queryCalendar } from '@/lib/database/calendar-query'
+import { queryCalendar, queryTimeline } from '@/lib/database/calendar-query'
+import { windowForToday } from '@/lib/database/timeline-geometry'
 import { readGalleryCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel, type DataSourceEntry } from './data-source-panel'
@@ -251,6 +253,8 @@ export default async function DatabasePage({
   const isCalendar = view.value.type === 'calendar'
   // 차트(CH-2) — 행을 그리지 않는다. X축 = 묶는 속성 · Y값 = 그 그룹의 계산(없으면 개수)을 그룹 요약 하나로 받아 SVG 로 그린다
   const isChart = view.value.type === 'chart'
+  // 타임라인(TL-2) — 날짜 속성의 기간을 가로 막대로. 처음 창은 보는 사람의 오늘 근처(이후의 창은 화면이 따로 묻는다)
+  const isTimeline = view.value.type === 'timeline'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
   const isForm = view.value.type === 'form'
   const form = isForm ? await readForm(ctx, view.value.id) : null
@@ -268,7 +272,7 @@ export default async function DatabasePage({
   // 보는 사람의 오늘(시간대 쿠키 · `time-zone-cookie.tsx` 가 쓴다) — 상대 날짜 그룹(B-3)과 상대 날짜 필터(R-1)가 같은 날을 쓴다
   const viewerToday = await readViewerToday()
   const [tablePage, catalog, board, chartPage] = await Promise.all([
-    isBoard || isCalendar || isForm || isChart
+    isBoard || isCalendar || isForm || isChart || isTimeline
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
           // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
@@ -478,6 +482,11 @@ export default async function DatabasePage({
     view.value.calendar.view_range === 'week'
       ? weekGrid(calendarWeek, view.value.calendar.week_start)
       : monthGrid(calendarMonth, view.value.calendar.week_start)
+  const timelineWindow = isTimeline ? windowForToday(viewerToday, view.value.timeline.zoom) : null
+  const timelinePage =
+    timelineWindow !== null && view.value.timeline.date_property_id !== null
+      ? await queryTimeline(ctx, view.value.id, { from: timelineWindow.from, to: timelineWindow.to, search, today: viewerToday })
+      : null
   const calendarPage =
     isCalendar && view.value.calendar.date_property_id !== null
       ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search, today: viewerToday })
@@ -500,7 +509,11 @@ export default async function DatabasePage({
   const firstRows = tablePage !== null ? tablePage.value.rows : groups.flatMap((g) => g.rows)
   // 피크의 이전 · 다음 행(8n-3a · 정본 §3.6 [보강] 페이지 열기 모드 ⑦) — 이 화면이 그린 행의 순서(첫 페이지 · 보드는 그룹 차례대로 · 캘린더는
   // 그 달의 행). 그 순서에 없는 행(검색 · 필터에 빠졌다 · "더 보기" 뒤 · 펼친 하위 항목)이면 둘 다 없다.
-  const drawnOrder = (calendarPage !== null && calendarPage.ok ? calendarPage.value.rows : firstRows).map((r) => r.id as string)
+  const drawnOrder = (calendarPage !== null && calendarPage.ok
+    ? calendarPage.value.rows
+    : timelinePage !== null && timelinePage.ok
+      ? timelinePage.value.rows
+      : firstRows).map((r) => r.id as string)
   const neighbors = peekRow === null || peekBase === null ? { prev: null, next: null } : peekNeighbors(drawnOrder, peekRow)
   const peekNeighborHrefs = {
     prev: neighbors.prev === null || peekBase === null ? null : rowOpenHref(workspaceId, neighbors.prev, peekBase),
@@ -812,6 +825,33 @@ export default async function DatabasePage({
             {access.canEditStructure
               ? '도구줄의 "차트"에서 X축을 다시 고르세요.'
               : '고칠 수 있는 사람이 X축을 다시 골라야 합니다.'}
+          </p>
+        )
+      ) : isTimeline ? (
+        timelinePage !== null && timelinePage.ok && timelineWindow !== null ? (
+          <DatabaseTimeline
+            key={contentKey}
+            workspaceId={workspaceId}
+            dataSourceId={view.value.dataSourceId}
+            viewId={view.value.id}
+            today={viewerToday}
+            from={timelineWindow.from}
+            to={timelineWindow.to}
+            zoom={view.value.timeline.zoom}
+            showTable={view.value.timeline.show_table}
+            datePropertyId={timelinePage.value.datePropertyId}
+            dateProperties={columns.filter((c) => c.type === 'date').map((c) => ({ id: c.propertyId, name: c.name }))}
+            rows={timelinePage.value.rows.map(rowJson)}
+            undated={timelinePage.value.undated}
+            truncated={timelinePage.value.truncated}
+            canEditStructure={access.canEditStructure}
+            search={search}
+            peekBase={peekBase}
+            renderedAt={renderedAt}
+          />
+        ) : (
+          <p className="px-2 text-sm text-neutral-500" data-testid="db-timeline-needs-date">
+            이 타임라인의 날짜 속성이 지워졌습니다. 고칠 수 있는 사람이 날짜 속성을 다시 골라야 합니다.
           </p>
         )
       ) : isCalendar ? (

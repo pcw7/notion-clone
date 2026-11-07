@@ -16,6 +16,7 @@ import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
+import type { TimelineLayout } from '@/lib/database/timeline'
 import type { ChartLayout } from '@/lib/database/chart'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
@@ -1046,6 +1047,8 @@ export function updateView(
     readonly chart?: Partial<ChartLayout>
     /** 캘린더 레이아웃의 바꿀 키만(2g-2). */
     readonly calendar?: Partial<CalendarLayout>
+    /** 타임라인 레이아웃의 바꿀 키만(TL-2). */
+    readonly timeline?: Partial<TimelineLayout>
     /** 행을 여는 방식(8n-2 · F-02-20). */
     readonly openPagesIn?: OpenPagesIn
     /** 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 필터를 거는 층. */
