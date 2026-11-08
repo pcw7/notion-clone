@@ -21,7 +21,8 @@ RUN set -eux; \
         curl \
         ca-certificates; \
     \
-    curl -fsSL -o /tmp/pg_bigm.tar.gz \
+    # GitHub 의 묶음 주소가 가끔 503 · 504 를 준다(2026-11-08 CI 두 번) — 몇 번 다시 받는다
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/pg_bigm.tar.gz \
         "https://github.com/pgbigm/pg_bigm/archive/refs/tags/v${PG_BIGM_VERSION}.tar.gz"; \
     mkdir -p /tmp/pg_bigm; \
     tar -xzf /tmp/pg_bigm.tar.gz -C /tmp/pg_bigm --strip-components=1; \
