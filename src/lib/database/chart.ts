@@ -7,14 +7,14 @@
  * (갤러리와 같은 규칙: 다른 뷰 종류의 키와 섞이지 않게 · JSON 전체 교체 금지). 그 안은 **세 키 모두** 늘 쓴다.
  * 모양은 CHECK(`ck_view_chart_layout` · 0127)이 막는다.
  *
- *   kind         'column' 세로 막대 · 'bar' 가로 막대 · 'line' 선 · 'donut' 도넛
+ *   kind         'column' 세로 막대 · 'bar' 가로 막대 · 'line' 선 · 'donut' 도넛 · 'number' 값 하나(CH-4 · 뷰의 모든 행의 계산)
  *   data_labels  막대 · 점 · 조각에 값을 적는다
  *   cumulative   앞 그룹까지의 값을 더해 간다(Y 가 개수/합이고 X 오름차순일 때만 그린다 — 그 밖에는 저장값만 둔다)
  */
 
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
-export const CHART_KINDS = ['column', 'bar', 'line', 'donut'] as const
+export const CHART_KINDS = ['column', 'bar', 'line', 'donut', 'number'] as const
 export type ChartKind = (typeof CHART_KINDS)[number]
 
 export type ChartLayout = {

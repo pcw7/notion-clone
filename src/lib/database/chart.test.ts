@@ -20,6 +20,8 @@ test('readChartLayout — 저장된 값을 읽는다', () => {
 
 test('validateChartPatch — 올바른 부분 · 거부', () => {
   assert.deepEqual(validateChartPatch({ kind: 'line' }), [])
+  assert.deepEqual(validateChartPatch({ kind: 'number' }), [])
+  assert.deepEqual(readChartLayout({ chart: { kind: 'number', data_labels: false, cumulative: false } }).kind, 'number')
   assert.deepEqual(validateChartPatch({ data_labels: true, cumulative: false }), [])
   assert.equal(validateChartPatch(null).length, 1)
   assert.equal(validateChartPatch([]).length, 1)

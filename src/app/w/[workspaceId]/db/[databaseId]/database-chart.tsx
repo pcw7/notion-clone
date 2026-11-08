@@ -16,6 +16,7 @@
 import { useMemo } from 'react'
 
 import type { ChartKind } from '@/lib/database/chart'
+import { CALCULATION_LABEL, formatCalculation } from '@/lib/database/calculations'
 import {
   ACCENT_FILL,
   accumulate,
@@ -73,7 +74,9 @@ export function DatabaseChart({
           Y값을 다시 고르세요
         </p>
       )}
-      {chart.empty ? (
+      {kind === 'number' ? (
+        <NumberTile summary={summary} />
+      ) : chart.empty ? (
         <p data-testid="db-chart-empty" className="px-2 py-8 text-center text-sm text-neutral-500">
           데이터가 없습니다
         </p>
@@ -84,6 +87,24 @@ export function DatabaseChart({
       ) : (
         <VChart data={data} integer={chart.integer} line={kind === 'line'} labels={dataLabels} />
       )}
+    </div>
+  )
+}
+
+/** 값 하나(CH-4) — 뷰의 모든 행의 계산. 큰 글자 + 작은 이름줄. 날짜 계산은 값 고르개에서 빠지지만 저장돼 있으면 글자만 보인다. */
+function NumberTile({ summary }: { summary: SummaryInput }) {
+  const total = summary.total
+  const fn = summary.calculation?.function ?? null
+  const numeric = total !== undefined && total.kind !== 'date' && total.value !== null ? total.value : null
+  const caption = fn === null || summary.calculationName === null || summary.calculationName === undefined ? '행 개수' : `${CALCULATION_LABEL[fn]} · ${summary.calculationName}`
+  return (
+    <div className="flex flex-col items-center gap-1 px-2 py-10">
+      <span data-testid="chart-number" data-value={numeric ?? undefined} className="text-6xl font-semibold tabular-nums">
+        {total === undefined ? '—' : formatCalculation(total)}
+      </span>
+      <span data-testid="chart-number-caption" className={`text-sm ${TEXT}`}>
+        {caption}
+      </span>
     </div>
   )
 }
