@@ -429,12 +429,23 @@ export default async function DatabasePage({
                 },
         }
       : null
+  const chartSub = chartSummary === null ? null : chartSummary.sub
   const chartSettings: ChartSettings | undefined =
     isChart && access.canEditStructure
       ? {
           layout: view.value.chart,
           groupBy,
           subGroupBy: view.value.subGroupBy,
+          // 쌓기의 하위 그룹들(CH-6) — 패널의 "쌓기 표시"
+          stackGroups:
+            chartSub === null
+              ? []
+              : chartSub.groups.map((g) => ({
+                  key: g.key,
+                  label: groupLabel(chartSub.propertyType, chartSub.propertyName, g, chartSub),
+                  count: g.count,
+                  hidden: g.hidden,
+                })),
           groups:
             chartSummary === null
               ? []
