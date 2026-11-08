@@ -29,6 +29,10 @@ import {
   donutUsesOptionColors,
   fillOf,
   niceScale,
+  stackSpans,
+  stackedData,
+  type StackBar,
+  type StackedData,
   scaleLinear,
   truncateLabel,
   type ChartDatum,
@@ -64,7 +68,9 @@ export function DatabaseChart({
 }) {
   useLiveServerRefresh(workspaceId, dataSourceId, false, renderedAt)
   const chart = useMemo(() => chartData(summary), [summary])
-  const drawCumulative = cumulative && cumulativeAllowed(kind, summary.calculation?.function ?? null, groupSort)
+  // 쌓기(CH-5) — 세로 · 가로 막대만 읽는다(저장값은 두고 종류를 되돌리면 다시 쌓인다)
+  const stack = useMemo(() => (kind === 'column' || kind === 'bar' ? stackedData(summary) : null), [kind, summary])
+  const drawCumulative = cumulative && cumulativeAllowed(kind, summary.calculation?.function ?? null, groupSort, stack !== null)
   const data = useMemo(() => (drawCumulative ? accumulate(chart.data) : chart.data), [chart.data, drawCumulative])
 
   return (
@@ -76,6 +82,8 @@ export function DatabaseChart({
       )}
       {kind === 'number' ? (
         <NumberTile summary={summary} />
+      ) : stack !== null && !chart.empty ? (
+        <Stacked stack={stack} horizontal={kind === 'bar'} labels={dataLabels} />
       ) : chart.empty ? (
         <p data-testid="db-chart-empty" className="px-2 py-8 text-center text-sm text-neutral-500">
           데이터가 없습니다
@@ -347,6 +355,124 @@ function Donut({ data, labels }: { data: readonly ChartDatum[]; labels: boolean 
             <span aria-hidden className="inline-block size-3 shrink-0 rounded-sm" style={{ background: fillOf(d, i, true, optionColors) }} />
             <span className="truncate">{d.label}</span>
             <span className="tabular-nums text-neutral-500">{d.text}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+const spanTitle = (bar: StackBar, label: string, text: string) => `${bar.label} · ${label} · ${text}`
+
+/** 쌓은 막대(CH-5) — 세로 · 가로. 조각은 하위 그룹 차례로 · 막대 꼭대기의 라벨은 조각의 합(합할 수 있는 계산일 때만). */
+function Stacked({ stack, horizontal, labels }: { stack: StackedData; horizontal: boolean; labels: boolean }) {
+  const { bars } = stack
+  const spans = bars.map((b) => stackSpans(b.segments))
+  const extents = spans.flatMap((sp) => [Math.max(0, ...sp.map((x) => x.to)), Math.min(0, ...sp.map((x) => x.from))])
+  const scale = niceScale(extents, stack.integer)
+  const rotate = !horizontal && bars.length > 8
+  const m = horizontal ? { l: 128, r: 40, t: 8, b: 28 } : { l: 56, r: 16, t: 20, b: rotate ? 72 : 44 }
+  const row = 30
+  const H = horizontal ? m.t + m.b + bars.length * row : 320
+  const v = horizontal ? scaleLinear(scale, m.l, W - m.r) : scaleLinear(scale, H - m.b, m.t)
+  const band = (W - m.l - m.r) / bars.length
+  const cx = (i: number) => m.l + band * (i + 0.5)
+  const barW = Math.min(band * 0.6, 56)
+  const maxChars = rotate ? 10 : Math.max(2, Math.floor(band / 9))
+
+  return (
+    <div className="flex flex-wrap items-start gap-4">
+      <svg
+        role="img"
+        aria-label={chartSummaryLabel(horizontal ? 'bar' : 'column', bars.length)}
+        viewBox={`0 0 ${W} ${H}`}
+        className={`h-auto w-full max-w-3xl ${TEXT}`}
+      >
+        {scale.ticks.map((t) => (
+          <g key={t}>
+            {horizontal ? (
+              <>
+                <line x1={v(t)} x2={v(t)} y1={m.t} y2={H - m.b} stroke="currentColor" strokeOpacity={t === 0 ? 0.5 : 0.15} />
+                <text x={v(t)} y={H - m.b + 16} textAnchor="middle" fontSize={11} fill="currentColor">
+                  {tickText(t)}
+                </text>
+              </>
+            ) : (
+              <>
+                <line x1={m.l} x2={W - m.r} y1={v(t)} y2={v(t)} stroke="currentColor" strokeOpacity={t === 0 ? 0.5 : 0.15} />
+                <text x={m.l - 6} y={v(t)} textAnchor="end" dominantBaseline="middle" fontSize={11} fill="currentColor">
+                  {tickText(t)}
+                </text>
+              </>
+            )}
+          </g>
+        ))}
+        {bars.map((b, i) => {
+          const top = m.t + i * row
+          const topEnd = Math.max(0, ...spans[i].map((x) => x.to))
+          return (
+            <g key={b.key}>
+              {horizontal ? (
+                <text x={m.l - 8} y={top + row / 2} textAnchor="end" dominantBaseline="middle" fontSize={11} fill="currentColor">
+                  {truncateLabel(b.label, 14)}
+                </text>
+              ) : (
+                <text
+                  x={cx(i)}
+                  y={H - m.b + 16}
+                  textAnchor={rotate ? 'end' : 'middle'}
+                  fontSize={11}
+                  fill="currentColor"
+                  transform={rotate ? `rotate(-35 ${cx(i)} ${H - m.b + 16})` : undefined}
+                >
+                  {truncateLabel(b.label, maxChars)}
+                </text>
+              )}
+              {b.segments.map((seg, k) => {
+                const { from, to } = spans[i][k]
+                const [a, z] = [v(from), v(to)]
+                return (
+                  <rect
+                    key={seg.sub}
+                    data-testid="chart-segment"
+                    data-key={b.key}
+                    data-sub={seg.sub}
+                    data-value={seg.value}
+                    x={horizontal ? Math.min(a, z) : cx(i) - barW / 2}
+                    y={horizontal ? top + 5 : Math.min(a, z)}
+                    width={horizontal ? Math.abs(z - a) : barW}
+                    height={horizontal ? row - 10 : Math.abs(z - a)}
+                    fill={stack.legend[seg.index]?.fill}
+                    stroke="var(--background, white)"
+                    strokeWidth={0.75}
+                  >
+                    <title>{spanTitle(b, seg.label, seg.text)}</title>
+                  </rect>
+                )
+              })}
+              {labels && b.totalText !== null && b.segments.length > 0 && (
+                <text
+                  data-testid="chart-label"
+                  data-key={b.key}
+                  x={horizontal ? v(topEnd) + 4 : cx(i)}
+                  y={horizontal ? top + row / 2 : v(topEnd) - 4}
+                  textAnchor={horizontal ? 'start' : 'middle'}
+                  dominantBaseline={horizontal ? 'middle' : undefined}
+                  fontSize={LABEL_FONT}
+                  fill="currentColor"
+                >
+                  {b.totalText}
+                </text>
+              )}
+            </g>
+          )
+        })}
+      </svg>
+      <ul aria-label="범례" className="flex min-w-0 flex-col gap-1 text-sm" data-testid="chart-legend">
+        {stack.legend.map((l) => (
+          <li key={l.key} className="flex items-center gap-2" data-sub={l.key}>
+            <span aria-hidden className="inline-block size-3 shrink-0 rounded-sm" style={{ background: l.fill }} />
+            <span className="truncate">{l.label}</span>
           </li>
         ))}
       </ul>

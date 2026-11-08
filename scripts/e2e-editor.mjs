@@ -14841,6 +14841,140 @@ async function main() {
       check('★ 종류 number 는 저장되어 새로고침 뒤에도 남는다', stored?.kind === 'number' && (await numberValue()) === 20, JSON.stringify(stored))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('차트 — 쌓기 (CH-5 · F-04-08)')) { try {
+      // 쌓기 — 하위 그룹(sub_group_by)으로 막대를 조각으로 나눈다. 조각 값 = 칸의 개수/합계, 막대 꼭대기 라벨 = 조각의 합.
+      // 도넛이면 쌓지 않고(저장값은 둔다) 되돌리면 다시 쌓는다. 쌓기가 있으면 누적 토글은 잠긴다. 새로고침 뒤에도 남는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const segments = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-segment"]')].map((m) => [m.dataset.key, m.dataset.sub, Number(m.dataset.value)]))`).then((v) => JSON.parse(v))
+      const labels = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-label"]')].map((m) => [m.dataset.key, m.textContent]))`).then((v) => JSON.parse(v))
+      const db = (await api('POST', '/databases', { name: `차트 쌓기 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const team = (await api('POST', `/data-sources/${ds}/properties`, { name: '팀', type: 'select' })).body.property.id
+      const amount = (await api('POST', `/data-sources/${ds}/properties`, { name: '금액', type: 'number' })).body.property.id
+      const opt = async (prop, name) => (await api('POST', `/data-sources/${ds}/properties/${prop}/options`, { name })).body.option.id
+      const ga = await opt(stage, '가')
+      const na = await opt(stage, '나')
+      const tx = await opt(team, 'X')
+      const ty = await opt(team, 'Y')
+      // 가·X = 10 · 20, 가·Y = 30, 나·Y = 100  → 개수: 가X 2 · 가Y 1 · 나Y 1 / 합계: 가X 30 · 가Y 30 · 나Y 100
+      for (const [o, t, n] of [[ga, tx, 10], [ga, tx, 20], [ga, ty, 30], [na, ty, 100]]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [
+            { propertyId: stage, value: { type: 'select', select: { id: o } } },
+            { propertyId: team, value: { type: 'select', select: { id: t } } },
+            { propertyId: amount, value: { type: 'number', number: n } },
+          ],
+        })
+      }
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      const chartId = made.body?.view?.id
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage }, chart: { kind: 'column', data_labels: true } })
+      const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+        return waitFor(`!!document.querySelector('[data-testid="db-chart"]')`, 20000)
+      }
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다
+      const openPanel = async (testId) => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="${testId}"]')`)); i += 1) {
+          await clickOn('[data-testid="chart-settings"]')
+          await waitFor(`!!document.querySelector('[data-testid="${testId}"]')`, 1500)
+        }
+      }
+      const waitSegments = (n) => waitFor(`document.querySelectorAll('[data-testid="chart-segment"]').length === ${n}`, 20000)
+
+      await open()
+      check('쌓기 전에는 조각이 없다(chart-mark 막대만)', (await segments()).length === 0 && (await evaluate(`document.querySelectorAll('[data-testid="chart-mark"]').length`)) >= 2)
+      await openPanel('chart-stack')
+      const choices = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-stack"] option')].map((o) => o.textContent))`))
+      check('★ "쌓기" 고르개는 없음 + X축이 아닌 묶을 수 있는 속성(팀)', choices.includes('없음') && choices.includes('팀') && !choices.includes('단계'), JSON.stringify(choices))
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await setSelect('[data-testid="chart-stack"]', team)
+        if (await waitSegments(3)) break
+      }
+      const counts = await segments()
+      const cells = (await api('GET', `/views/${chartId}/chart`)).body?.sub?.cells ?? {}
+      const fromApi = Object.entries(cells).flatMap(([g, subs]) => Object.entries(subs).filter(([, c]) => c.count > 0).map(([k, c]) => [g, k, c.count]))
+      const row = (c) => c.join('|')
+      check('★ 하위 그룹을 고르면 chart-segment 가 서고 data-value 는 칸의 개수(가X 2 · 가Y 1 · 나Y 1)',
+        counts.length === 3 && same(counts.map(row), [[ga, tx, 2], [ga, ty, 1], [na, ty, 1]].map(row)) && same(counts.map(row), fromApi.map(row)),
+        JSON.stringify({ counts, fromApi }))
+      check('★ 저장된 subGroupBy 가 팀', (await api('GET', `/views/${chartId}`)).body?.view?.subGroupBy?.property_id === team)
+      const legend = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="chart-legend"] li')].map((l) => l.textContent))`))
+      check('범례에 하위 그룹(X · Y)', legend.includes('X') && legend.includes('Y'), JSON.stringify(legend))
+      check('★ 데이터 라벨 = 막대 꼭대기에 조각의 합(가 3 · 나 1)', same((await labels()).map(row), [`${ga}:3`, `${na}:1`].map((x) => x.replace(':', '|'))), JSON.stringify(await labels()))
+      const cum = await evaluate(`document.querySelector('[data-testid="chart-cumulative"]')?.disabled`)
+      check('★ 쌓기가 있으면 누적 토글이 잠긴다', cum === true, String(cum))
+
+      // 합계 — 조각은 칸의 합 · 라벨 = 막대의 합
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage, calculation: { property_id: amount, function: 'sum' } } })
+      await open()
+      await waitSegments(3)
+      const sums = await segments()
+      check('★ Y = 합계 — 조각이 칸의 합(가X 30 · 가Y 30 · 나Y 100)',
+        same(sums.map(row), [[ga, tx, 30], [ga, ty, 30], [na, ty, 100]].map(row)), JSON.stringify(sums))
+      const totals = {}
+      for (const [g, , v] of sums) totals[g] = (totals[g] ?? 0) + v
+      const tops = await labels()
+      check('★ 꼭대기 라벨 = 막대의 합(가 60 · 나 100)',
+        tops.length === 2 && tops.every(([g, text]) => Number(text.replace(/,/g, '')) === totals[g]) && totals[ga] === 60 && totals[na] === 100,
+        JSON.stringify({ tops, totals }))
+      // 평균 — 합할 수 없어 라벨이 없다
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage, calculation: { property_id: amount, function: 'average' } } })
+      await open()
+      await waitSegments(3)
+      check('평균이면 꼭대기 라벨을 적지 않는다', (await labels()).length === 0, JSON.stringify(await labels()))
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage } })
+
+      // 도넛 — 쌓지 않는다(저장값은 둔다) · 되돌리면 다시 쌓인다
+      await api('PATCH', `/views/${chartId}`, { chart: { kind: 'donut' } })
+      await open()
+      await waitFor(`document.querySelectorAll('[data-testid="chart-mark"]').length > 0`, 20000)
+      check('★ 도넛이면 조각(chart-segment)이 없고 평범한 조각(chart-mark)만',
+        (await segments()).length === 0 && (await evaluate(`document.querySelectorAll('[data-testid="chart-mark"]').length`)) === 2)
+      check('도넛이어도 저장된 subGroupBy 는 남는다', (await api('GET', `/views/${chartId}`)).body?.view?.subGroupBy?.property_id === team)
+      await api('PATCH', `/views/${chartId}`, { chart: { kind: 'bar' } })
+      await open()
+      check('★ 가로 막대로 되돌리면 다시 쌓인다(같은 조각 셋)', (await waitSegments(3)) && (await segments()).length === 3)
+      await api('PATCH', `/views/${chartId}`, { chart: { kind: 'column' } })
+
+      // 새로고침 뒤에도 남는다 · 없음으로 풀면 쌓기가 사라진다
+      await open()
+      await openPanel('chart-stack')
+      check('★ 새로고침 뒤에도 쌓기가 남는다(조각 셋 · 고르개 = 팀)',
+        (await waitSegments(3)) && (await evaluate(`document.querySelector('[data-testid="chart-stack"]')?.value`)) === team)
+      await setSelect('[data-testid="chart-stack"]', '')
+      check('★ 없음을 고르면 쌓기가 풀린다',
+        (await waitFor(`document.querySelectorAll('[data-testid="chart-segment"]').length === 0 && document.querySelectorAll('[data-testid="chart-mark"]').length >= 2`, 20000))
+          && (await api('GET', `/views/${chartId}`)).body?.view?.subGroupBy === null)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.

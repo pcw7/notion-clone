@@ -585,7 +585,7 @@ async function openBoard(
   // 하위 그룹(B-4a) — 보드에서만 · 살아 있는 · 그룹 기준과 다른 속성일 때만(아니면 저장값은 두고 읽지 않는다)
   const rawSub = view.sub_group_by as GroupBy | null
   const sub =
-    view.type === 'board' && rawSub !== null && typeof rawSub === 'object' && typeof rawSub.property_id === 'string' && rawSub.property_id !== groupBy.property_id
+    (view.type === 'board' || view.type === 'chart') && rawSub !== null && typeof rawSub === 'object' && typeof rawSub.property_id === 'string' && rawSub.property_id !== groupBy.property_id
       ? await readAxis(tx, rawSub, types, todayKey)
       : null
 
@@ -1012,6 +1012,24 @@ export type GroupSummaryPage = Pick<
   readonly groups: readonly GroupSummary[]
   /** 값 하나 차트(CH-4)의 값 — 뷰를 지나는 모든 행에 `calculation`(없으면 모두 세기)을 한 번. 그룹 값을 더하지 않는다. */
   readonly total: CalculationResult
+  /** 쌓기(CH-5) — 하위 그룹이 있을 때만. 칸(그룹 × 하위 그룹)마다 행 수와 계산 값. 숨긴 하위 그룹도 싣는다(`hidden`) — 그리지는 않는다. */
+  readonly sub: {
+    readonly propertyId: string
+    readonly propertyType: GroupsPage['propertyType']
+    readonly statusBy: 'group' | 'option'
+    readonly dateUnit: GroupsPage['dateUnit']
+    readonly numberSize: GroupsPage['numberSize']
+    readonly textMode: GroupsPage['textMode']
+    readonly today: string | null
+    readonly groups: readonly {
+      readonly key: string
+      readonly option: SelectOption | null
+      readonly statusGroup: StatusGroupKind | null
+      readonly count: number
+      readonly hidden: boolean
+    }[]
+    readonly cells: Readonly<Record<string, Readonly<Record<string, { readonly count: number; readonly value: CalculationResult | null }>>>>
+  } | null
 }
 
 /**
@@ -1029,6 +1047,7 @@ export async function queryGroupSummary(
     if (isFailure(board)) return board
     const counted = await readGroupCounts(tx, board)
     const total = await readTotal(tx, board)
+    const subPage = await readSubSummary(tx, board)
     const hidden = new Set(board.groupBy.hidden ?? [])
     const groups: GroupSummary[] = catalogOf(board, counted)
       .map((g) => ({
@@ -1053,9 +1072,57 @@ export async function queryGroupSummary(
         today: board.dateUnit === 'relative' ? board.today : null,
         groups,
         total,
+        sub: subPage,
       },
     } as const
   })
+}
+
+/**
+ * 쌓기(CH-5)의 하위 그룹 목록과 칸 값 — 칸(그룹 × 하위 그룹)마다 행 수와 계산을 같은 통계 식(`statsJsonSql`)으로 **한 질의**에 묶는다.
+ * 하위 그룹 목록은 보드의 가로줄과 같은 규칙(숨김 · 빈 줄 숨기기).
+ */
+async function readSubSummary(tx: Tx, board: Board): Promise<GroupSummaryPage['sub']> {
+  const sub = board.sub
+  if (sub === null) return null
+  const params = new ParamBag(2)
+  const c = compileBoard(board, params, false)
+  if (c.subKeyExpr === null) return null
+  const calc = board.calculation
+  const prop = calc === null ? null : params.bind(calc.property_id)
+  const completeParam =
+    calc !== null && board.types.get(calc.property_id) === 'status'
+      ? params.bind((await completeIdsOf(tx, [calc.property_id])).get(calc.property_id) ?? [])
+      : null
+  const rows = await tx.query<{ key: string; sub: string; n: number; s: StatsRow | null }>(
+    `SELECT ${c.keyExpr} AS key, ${c.subKeyExpr} AS sub, count(*)::int AS n${prop === null ? '' : `, ${statsJsonSql('cv', completeParam)} AS s`}
+       ${c.from}${prop === null ? '' : `
+       LEFT JOIN page_property_value cv ON cv.page_id = p.id AND cv.property_id = ${prop}`}
+      WHERE ${c.where} GROUP BY 1, 2`,
+    [board.dataSourceId, ...params.values],
+  )
+  const totals = new Map<string, number>()
+  const cells: Record<string, Record<string, { count: number; value: CalculationResult | null }>> = {}
+  for (const r of rows) {
+    totals.set(r.sub, (totals.get(r.sub) ?? 0) + r.n)
+    const value = calc === null ? null : calculationResult(calc.function, columnStatsOf(r.n, r.s ?? EMPTY_STATS_ROW))
+    ;(cells[r.key] ??= {})[r.sub] = { count: r.n, value }
+  }
+  const hidden = new Set(sub.groupBy.hidden ?? [])
+  const groups = catalogOf(sub, totals)
+    .map((l) => ({ key: l.key, option: l.option, statusGroup: l.statusGroup, count: totals.get(l.key) ?? 0, hidden: hidden.has(l.key) }))
+    .filter((l) => !(sub.groupBy.hide_empty && l.count === 0))
+  return {
+    propertyId: sub.groupBy.property_id,
+    propertyType: sub.propertyType,
+    statusBy: sub.statusByGroup ? 'group' : 'option',
+    dateUnit: sub.dateUnit,
+    numberSize: sub.numberSize,
+    textMode: sub.textMode,
+    today: sub.dateUnit === 'relative' ? sub.today : null,
+    groups,
+    cells,
+  }
 }
 
 /**

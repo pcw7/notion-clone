@@ -559,7 +559,7 @@ async function resolveCalendarLayout(
 
 /** 저장된 `sub_group_by` 가 보드의 · 살아 있는 · 그룹 기준과 다른 컬럼을 가리킬 때만(B-4a · `ViewDetail.subGroupBy` 주석). 계산은 뺀다. */
 function liveSubGroupBy(type: string, groupRaw: unknown, raw: unknown, columns: readonly ViewColumn[]): GroupBy | null {
-  if (type !== 'board') return null
+  if (type !== 'board' && type !== 'chart') return null
   const sub = liveGroupBy(raw, columns)
   if (sub === null) return null
   const group = typeof groupRaw === 'object' && groupRaw !== null ? (groupRaw as GroupBy) : null
@@ -961,7 +961,7 @@ export async function updateView(
     const touchesSub = input.subGroupBy !== undefined
     let subGrouped: GroupBy | null = null
     if (input.subGroupBy !== undefined && input.subGroupBy !== null) {
-      if (type !== 'board') return fail('invalid_group', [{ path: 'subGroupBy', message: '보드에서만 하위 그룹을 둘 수 있습니다' }])
+      if (type !== 'board' && type !== 'chart') return fail('invalid_group', [{ path: 'subGroupBy', message: '보드 · 차트에서만 하위 그룹을 둘 수 있습니다' }])
       const issues = validateGroupBy(input.subGroupBy, await readPropertyTypes(tx, gate.dataSourceId)).map((i) => ({
         ...i,
         path: i.path.replace(/^groupBy/, 'subGroupBy'),
