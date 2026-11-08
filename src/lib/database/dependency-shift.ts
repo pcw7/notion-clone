@@ -40,6 +40,26 @@ export type ShiftInput = {
   readonly edges: readonly ShiftEdge[]
   /** 간선에 닿는 행들의 지금 값(바뀐 행은 쓸 필요 없다). 없거나 null 이면 빈 값이다. */
   readonly values: ReadonlyMap<string, DateValue | null>
+  /** 주말 피하기(TL-6) — 자동으로 옮긴 행의 시작 · 끝이 토 · 일이면 다음 월요일로. 사람이 직접 고친 행에는 걸지 않는다. */
+  readonly avoidWeekends?: boolean
+}
+
+/** 날짜 부분(YYYY-MM-DD)이 토 · 일이면 다음 월요일까지의 날수(아니면 0). UTC 로 센다 — 날짜 값이 이미 그 사람의 날이다. */
+function daysToMonday(ymd: string): number {
+  const dow = new Date(Date.parse(`${ymd}T00:00:00Z`)).getUTCDay()
+  return dow === 6 ? 2 : dow === 0 ? 1 : 0
+}
+
+/** 정본 [보강 TL-6] ② — 시작이 주말이면 기간 그대로 월요일로, 그 뒤 끝이 주말이면 끝만 월요일로. */
+function avoidWeekend(v: DateValue): DateValue {
+  let out = v
+  const push = daysToMonday(dayOf(out.start))
+  if (push > 0) out = shifted(out, push)
+  if (typeof out.end === 'string' && out.end.length > 0) {
+    const extend = daysToMonday(dayOf(out.end))
+    if (extend > 0) out = { ...out, end: `${addDays(dayOf(out.end), extend)}${out.end.slice(10)}` }
+  }
+  return out
 }
 
 const dayOf = (s: string): string => s.slice(0, 10)
@@ -54,6 +74,7 @@ function shifted(v: DateValue, days: number): DateValue {
 export function planShift(input: ShiftInput): ShiftPlan {
   const none: ShiftPlan = { ok: true, moves: new Map() }
   const { mode, newValue, oldValue } = input
+  const fix = (v: DateValue): DateValue => (input.avoidWeekends === true ? avoidWeekend(v) : v)
   if (mode === null || mode === 'never' || newValue === null) return none
 
   const blockedBy = new Map<string, string[]>()
@@ -78,7 +99,7 @@ export function planShift(input: ShiftInput): ShiftPlan {
         seen.add(next)
         const value = input.values.get(next) ?? null
         if (value === null) continue
-        moves.set(next, shifted(value, delta))
+        moves.set(next, fix(shifted(value, delta)))
         if (moves.size > MAX_SHIFTED_ROWS) return { ok: false, reason: 'shift_too_large' }
         queue.push(next)
       }
@@ -105,7 +126,7 @@ export function planShift(input: ShiftInput): ShiftPlan {
       if (value === null) continue
       const start = dayOf(value.start)
       if (daysBetween(start, end) < 0) continue // 시작이 E 보다 뒤 — 겹치지 않는다
-      moves.set(next, shifted(value, daysBetween(start, floor)))
+      moves.set(next, fix(shifted(value, daysBetween(start, floor))))
       if (moves.size > MAX_SHIFTED_ROWS) return { ok: false, reason: 'shift_too_large' }
       queue.push(next)
     }

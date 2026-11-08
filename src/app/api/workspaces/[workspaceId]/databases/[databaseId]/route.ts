@@ -15,7 +15,7 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { renameDatabase, setDatabaseIcon, setDependencyShiftMode } from '@/lib/database/database'
+import { renameDatabase, setAvoidWeekends, setDatabaseIcon, setDependencyShiftMode } from '@/lib/database/database'
 import { databaseFailureStatus, failureResponse } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/databases/[databaseId]'>
@@ -29,14 +29,23 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
   // 객체가 아닌 몸체(문자열 · 숫자)에 `in` 을 쓰면 던진다 — 빈 몸체와 같이 다룬다.
-  const body = (typeof parsed.body === 'object' && parsed.body !== null ? parsed.body : {}) as { name?: unknown; icon?: unknown; dependencyShiftMode?: unknown }
+  const body = (typeof parsed.body === 'object' && parsed.body !== null ? parsed.body : {}) as { name?: unknown; icon?: unknown; dependencyShiftMode?: unknown; avoidWeekends?: unknown }
 
   // 종속 관계의 날짜 이동 방식(TL-5) — 이름 · 아이콘과 따로 온다
   if ('dependencyShiftMode' in body) {
     const saved = await setDependencyShiftMode(session.ctx, databaseId, body.dependencyShiftMode)
     if (!saved.ok) return failureResponse(databaseFailureStatus(saved.reason), saved)
-    if (body.name === undefined && !('icon' in body)) {
+    if (body.name === undefined && !('icon' in body) && !('avoidWeekends' in body)) {
       return Response.json({ ok: true, database: { id: databaseId, dependencyShiftMode: saved.value } })
+    }
+  }
+
+  // 주말 피하기(TL-6)
+  if ('avoidWeekends' in body) {
+    const saved = await setAvoidWeekends(session.ctx, databaseId, body.avoidWeekends)
+    if (!saved.ok) return failureResponse(databaseFailureStatus(saved.reason), saved)
+    if (body.name === undefined && !('icon' in body)) {
+      return Response.json({ ok: true, database: { id: databaseId, avoidWeekends: saved.value } })
     }
   }
 

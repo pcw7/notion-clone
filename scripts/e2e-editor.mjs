@@ -14406,6 +14406,85 @@ async function main() {
         await waitFor(`document.querySelector(${JSON.stringify(BAR(g.b))})?.dataset.start === ${JSON.stringify(dayOf(11))}`, 15000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('타임라인 — 주말 피하기 (TL-6 · F-04-07)')) { try {
+      // 자동 이동이 정한 막힌 행의 시작이 토 · 일이면 다음 월요일로(기간 그대로), 끝이 토 · 일이면 끝만 월요일로. 사람이 직접 고친 행은 그대로.
+      // 머리의 "주말 피하기" 체크가 데이터베이스에 저장된다. 정본 [보강 TL-6].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      // 고정 날짜 — 2030-01-01 이후 첫 월요일을 UTC 로 구해 그 주를 기준으로 쓴다(오늘 요일에 기대지 않는다)
+      const base = new Date(Date.UTC(2030, 0, 1))
+      while (base.getUTCDay() !== 1) base.setUTCDate(base.getUTCDate() + 1)
+      const day = (n) => new Date(base.getTime() + n * 86_400_000).toISOString().slice(0, 10)
+      const build = async (label, avoid, shiftMode = 'overlap_only') => {
+        const db = (await api('POST', '/databases', { name: `주말 피하기 ${label} ${stamp}`, privateTop: true })).body.database
+        const ds = db.dataSourceId
+        const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '일정', type: 'date' })).body.property.id
+        const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const row = async (title, s, e) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, { propertyId: due, value: { type: 'date', date: { start: day(s), end: day(e) } } }],
+        })).body.row.id
+        const a = await row('주말 막는 행', 0, 1)
+        const b = await row('주말 막힌 행', 2, 4)
+        const blockedBy = (await api('POST', `/data-sources/${ds}/dependencies`, {})).body?.blockedByPropertyId
+        await api('POST', `/rows/${b}/relations/${blockedBy}`, { add: [a] })
+        const timelineId = (await api('POST', `/databases/${db.id}/views`, { type: 'timeline', name: '시간축' })).body?.view?.id
+        await api('PATCH', `/databases/${db.id}`, { dependencyShiftMode: shiftMode })
+        if (avoid !== undefined) await api('PATCH', `/databases/${db.id}`, { avoidWeekends: avoid })
+        return { db, due, a, b, timelineId }
+      }
+      const put = (f, id, s, e) => api('PATCH', `/rows/${id}`, { cells: [{ propertyId: f.due, value: { type: 'date', date: { start: day(s), end: day(e) } } }] })
+      const serverDate = async (f, id) => {
+        const r = ((await api('GET', `/views/${f.db.defaultViewId}/rows`)).body?.rows ?? []).find((x) => x.id === id)
+        const d = r?.properties?.[f.due]?.date
+        return d ? `${d.start}~${d.end ?? ''}` : ''
+      }
+      const span = (s, e) => `${day(s)}~${day(e)}`
+
+      const bad = await api('PATCH', `/databases/${(await build('검사', undefined)).db.id}`, { avoidWeekends: 'yes' })
+      check('주말 피하기에 불리언이 아닌 값은 400', bad.status === 400, JSON.stringify(bad))
+
+      // A 의 끝을 금요일(+4)로 → B 는 토요일(+5)부터 3일: 켜면 월요일(+7)~+9, 끄면 토요일 그대로
+      const on = await build('켬', true)
+      const hitOn = await put(on, on.a, 3, 4)
+      check('★ 켬 — 토요일에 닿는 B 는 다음 월요일로 밀린다(기간 그대로 · 응답 shifted 에 B)',
+        hitOn.status === 200 && hitOn.body?.shifted?.includes(on.b) && (await serverDate(on, on.b)) === span(7, 9),
+        JSON.stringify({ shifted: hitOn.body?.shifted, b: await serverDate(on, on.b) }))
+      const off = await build('끔', false)
+      await put(off, off.a, 3, 4)
+      check('★ 끔 — B 는 토요일에 시작한다(+5~+7)', (await serverDate(off, off.b)) === span(5, 7), await serverDate(off, off.b))
+
+      // 사람이 직접 고친 행은 조정하지 않는다 — A 를 토요일(+5)에 끝나게 옮겨도 A 는 그대로
+      const own = await build('직접', true)
+      const ownHit = await put(own, own.a, 3, 5)
+      check('★ 사람이 직접 토요일로 옮긴 A 는 그대로 남는다', ownHit.status === 200 && (await serverDate(own, own.a)) === span(3, 5), await serverDate(own, own.a))
+      check('A 끝이 토요일이면 B 는 일요일(+6)이 아니라 월요일(+7)부터', (await serverDate(own, own.b)) === span(7, 9), await serverDate(own, own.b))
+
+      // 화면 — 체크가 저장되고 새로고침해도 켜져 있다
+      const g = await build('화면', undefined, 'never')
+      const url = `${BASE}/w/${workspaceId}/db/${g.db.id}?v=${g.timelineId}`
+      await send('Page.navigate', { url })
+      await waitFor(`document.querySelectorAll('[data-testid="timeline-bar"]').length === 2`, 20000)
+      const T = '[data-testid="timeline-avoid-weekends"]'
+      check('★ 머리에 "주말 피하기" 체크가 있고 처음엔 꺼져 있다', await waitFor(`document.querySelector(${JSON.stringify(T)})?.checked === false`, 15000))
+      await waitHydrated(T)
+      const savedAvoid = async () => (await api('GET', `/views/${g.timelineId}/timeline?from=2029-12-01&to=2030-03-01`)).body?.dependencyShift?.avoidWeekends
+      let saved = await savedAvoid()
+      for (let i = 0; i < 6 && saved !== true; i += 1) {
+        await evaluate(`document.querySelector(${JSON.stringify(T)})?.click()`)
+        await sleep(600)
+        saved = await savedAvoid()
+        if (saved !== true) { await send('Page.navigate', { url }); await waitFor(`document.querySelector(${JSON.stringify(T)}) !== null`, 15000); await waitHydrated(T) }
+      }
+      check('★ 체크를 켜면 데이터베이스에 저장된다(API)', saved === true, String(saved))
+      await send('Page.navigate', { url })
+      check('★ 새로고침해도 체크가 켜져 있다', await waitFor(`document.querySelector(${JSON.stringify(T)})?.checked === true`, 15000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
       const stamp = Date.now()
