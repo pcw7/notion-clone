@@ -27,6 +27,7 @@ import { LeavePanel } from '../leave-panel'
 import { MemberPanel } from '../member-panel'
 import { PendingInviteList } from '../pending-invite-list'
 import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
+import { AccountDeletePanel } from './account-delete-panel'
 import { AccessibilityPanel } from './accessibility-panel'
 import { AuditPanel } from './audit-panel'
 import { EmojiPanel } from './emoji-panel'
@@ -45,6 +46,9 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       const status = await passwordStatus(ctx)
       return <PasswordPanel workspaceId={ctx.workspaceId} hasPassword={status.hasPassword} currentRequired={status.currentRequired} />
     }
+    case 'account-delete':
+      // 계정 삭제(AD-3) — 미리보기는 확인 창이 열릴 때 읽는다. 내보내기 링크가 이 워크스페이스의 설정을 가리키려고 id 만 받는다
+      return <AccountDeletePanel workspaceId={ctx.workspaceId} />
     case 'mfa': {
       // 2단계 인증(8i-2b) — 켜졌는가 · 수단 · 남은 백업 코드 · 비밀번호가 있는가는 서버가 판정한다.
       const status = await mfaStatus(ctx)
