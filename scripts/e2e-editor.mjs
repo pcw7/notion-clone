@@ -13991,6 +13991,97 @@ async function main() {
         viewerHtml.includes('data-testid="timeline-bar"') && !viewerHtml.includes('data-testid="timeline-bar-start"') && !viewerHtml.includes('data-testid="timeline-bar-end"'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('타임라인 — 종속 관계 화살표 (TL-4 · F-04-07)')) { try {
+      // 종속 관계가 켜져 있으면 막는 행 막대의 오른쪽 끝에서 막힌 행 막대의 왼쪽 끝으로 화살표(timeline-arrow)가 선다 — 막는 행이 막힌 행의 시작보다
+      // 늦게 끝나면(겹침) data-overlap="true". 한쪽이 창 밖이면 없고, 끄면 없다. 값은 서버에서 읽는다. 정본 [보강 TL-4].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const dayOf = (offset) => {
+        const d = new Date()
+        d.setDate(d.getDate() + offset)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const db = (await api('POST', '/databases', { name: `타임라인 화살표 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '일정', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (title, date) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, { propertyId: due, value: { type: 'date', date } }],
+      })).body.row.id
+      const aId = await row('화살표 막는 행', { start: dayOf(2), end: dayOf(4) })
+      const bId = await row('화살표 막힌 행', { start: dayOf(8) })
+      const cId = await row('화살표 먼 행', { start: dayOf(400) })
+      const enabled = await api('POST', `/data-sources/${ds}/dependencies`, {})
+      const blockedBy = enabled.body?.blockedByPropertyId
+      check('종속 관계를 켠다(200 · 선행 작업 속성)', enabled.status === 200 && typeof blockedBy === 'string', JSON.stringify(enabled.body && { status: enabled.status }))
+      const linkB = await api('POST', `/rows/${bId}/relations/${blockedBy}`, { add: [aId] })
+      const linkC = await api('POST', `/rows/${cId}/relations/${blockedBy}`, { add: [aId] })
+      check('선행 작업을 잇는다(B ← A · C ← A)', linkB.status === 200 && linkC.status === 200, JSON.stringify({ b: linkB.status, c: linkC.status }))
+      const timelineId = (await api('POST', `/databases/${db.id}/views`, { type: 'timeline', name: '시간축' })).body?.view?.id
+      const serverDate = async (id) => {
+        const r = ((await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []).find((x) => x.id === id)
+        const d = r?.properties?.[due]?.date
+        return d ? `${d.start}~${d.end ?? ''}` : ''
+      }
+      const waitServer = async (id, want, ms = 20000) => {
+        let got = ''
+        for (let t = Date.now(); Date.now() - t < ms && got !== want; ) {
+          got = await serverDate(id)
+          if (got !== want) await sleep(250)
+        }
+        return got
+      }
+      const BAR = (id) => `[data-testid="timeline-bar"][data-row-id="${id}"]`
+      const ARROWS = `[data-testid="timeline-arrow"]`
+      const arrowsJson = () => evaluate(`JSON.stringify([...document.querySelectorAll(${JSON.stringify(ARROWS)})].map((a) => [a.dataset.from, a.dataset.to, a.dataset.overlap]))`)
+      const url = `${BASE}/w/${workspaceId}/db/${db.id}?v=${timelineId}`
+      const open = async () => {
+        await send('Page.navigate', { url })
+        await waitFor(`document.querySelectorAll('[data-testid="timeline-bar"]').length === 2`, 20000)
+      }
+
+      await open()
+      check('★ A 가 B 를 막으면(A 가 B 시작 전에 끝난다) 화살표가 하나 선다 — data-from=A · data-to=B · data-overlap=false',
+        await waitFor(`document.querySelectorAll(${JSON.stringify(ARROWS)}).length === 1 && document.querySelector(${JSON.stringify(ARROWS)}).dataset.from === ${JSON.stringify(aId)} && document.querySelector(${JSON.stringify(ARROWS)}).dataset.to === ${JSON.stringify(bId)} && document.querySelector(${JSON.stringify(ARROWS)}).dataset.overlap === 'false'`, 15000),
+        await arrowsJson())
+      check('★ 막는 행이 창 밖(먼 행 C 는 막대가 없다)이면 그 간선의 화살표는 없다', (await evaluate(`document.querySelectorAll(${JSON.stringify(ARROWS)}).length`)) === 1)
+      check('화살표는 장식이다(aria-hidden 인 svg 안)', (await evaluate(`document.querySelector(${JSON.stringify(ARROWS)})?.closest('svg')?.getAttribute('aria-hidden') === 'true'`)) === true)
+
+      // 같은 화면에서 B 를 Alt+← 로 당겨 A 의 끝(dayOf(4)) 앞에서 시작하게 — 화살표가 따라가며 빨강(겹침)이 된다
+      await waitHydrated(BAR(bId))
+      const want = `${dayOf(3)}~`
+      let got = await serverDate(bId)
+      for (let i = 0; i < 3 && got !== want; i += 1) {
+        await evaluate(`document.querySelector(${JSON.stringify(BAR(bId))})?.focus()`)
+        for (let n = 0; n < 5; n += 1) {
+          await key('ArrowLeft', 1)
+          await sleep(120)
+        }
+        got = await waitServer(bId, want, i === 2 ? 20000 : 6000)
+      }
+      if (got !== want) {
+        await api('PATCH', `/rows/${bId}`, { cells: [{ propertyId: due, value: { type: 'date', date: { start: dayOf(3) } } }] })
+        await open()
+      }
+      check('★ B 가 A 의 끝보다 먼저 시작하면 같은 화살표가 data-overlap=true 가 된다',
+        await waitFor(`document.querySelector(${JSON.stringify(ARROWS)})?.dataset.overlap === 'true'`, 15000), await arrowsJson())
+      await open()
+      check('다시 열어도 겹침 화살표다(서버 값에서 나온다)',
+        await waitFor(`document.querySelectorAll(${JSON.stringify(ARROWS)}).length === 1 && document.querySelector(${JSON.stringify(ARROWS)}).dataset.overlap === 'true'`, 15000), await arrowsJson())
+
+      // 끄면 화살표가 없다
+      const off = await api('DELETE', `/data-sources/${ds}/dependencies`)
+      check('종속 관계를 끈다(200)', off.status === 200, JSON.stringify(off))
+      await open()
+      await sleep(1500)
+      check('★ 종속 관계를 끄면 다시 열어도 화살표가 없다(막대는 그대로)', (await evaluate(`document.querySelectorAll(${JSON.stringify(ARROWS)}).length === 0 && document.querySelectorAll('[data-testid="timeline-bar"]').length === 2`)) === true)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
       const stamp = Date.now()

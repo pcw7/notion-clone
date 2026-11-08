@@ -20,6 +20,8 @@ import { addProperty, getSchema } from './property.ts'
 import type { CellValue } from './property-types.ts'
 import { createRow } from './row.ts'
 import { createView, getView, updateView } from './view.ts'
+import { disableDependencies, enableDependencies } from './dependencies.ts'
+import { linkRows } from './relation.ts'
 import { queryCalendar, queryTimeline, queryUndatedRows } from './calendar-query.ts'
 import type { TimelineLayout } from './timeline.ts'
 
@@ -148,5 +150,32 @@ describe('③ 창의 상한 · 종류', () => {
 
     const undated = unwrap(await queryUndatedRows(fx.owner.ctx, tl.id))
     assert.deepEqual(undated.rows.map((r) => r.title).sort(), ['날짜 없음', '날짜 없음 2'])
+  })
+})
+
+describe('④ 종속 관계 간선 (TL-4)', () => {
+  test('★ 켜져 있으면 창 안 두 행의 간선이 막는 행 → 막힌 행으로 · 한쪽이 창 밖이면 빠지고 · 꺼지면 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { databaseId } = await table()
+    const view = unwrap(await createView(fx.owner.ctx, databaseId, { type: 'timeline' }))
+    const win = { from: '2026-01-01', to: '2026-12-31' }
+    const page0 = unwrap(await queryTimeline(fx.owner.ctx, view.id, win))
+    assert.deepEqual(page0.dependencies, [], '꺼져 있으면 없다')
+    const ds = unwrap(await getView(fx.owner.ctx, view.id)).dataSourceId
+    const pair = unwrap(await enableDependencies(fx.owner.ctx, ds))
+    const idOf = (rows: readonly { id: string; title: string }[], title: string) => rows.find((r) => r.title === title)!.id
+    const spring = idOf(page0.rows, '봄 일')
+    const autumn = idOf(page0.rows, '가을 일')
+    const far = unwrap(await queryTimeline(fx.owner.ctx, view.id, { from: '2028-01-01', to: '2028-12-31' })).rows[0]!.id
+    // 가을 일은 봄 일에 막힌다(선행 작업 = 봄 일) · 먼 일(창 밖)은 봄 일에 막힌다
+    unwrap(await linkRows(fx.owner.ctx, autumn, pair.blockedByPropertyId, { add: [spring] }))
+    unwrap(await linkRows(fx.owner.ctx, far, pair.blockedByPropertyId, { add: [spring] }))
+    const page = unwrap(await queryTimeline(fx.owner.ctx, view.id, win))
+    assert.deepEqual(page.dependencies, [{ from: spring, to: autumn }], '방향 = from 막는 행, to 막힌 행 · 창 밖 끝은 빠진다')
+    // 캘린더는 늘 비어 있다
+    const cal = unwrap(await createView(fx.owner.ctx, databaseId, { type: 'calendar' }))
+    assert.deepEqual(unwrap(await queryCalendar(fx.owner.ctx, cal.id, { from: '2026-03-01', to: '2026-03-31' })).dependencies, [])
+    unwrap(await disableDependencies(fx.owner.ctx, ds))
+    assert.deepEqual(unwrap(await queryTimeline(fx.owner.ctx, view.id, win)).dependencies, [], '끄면 간선이 있어도 없다')
   })
 })

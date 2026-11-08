@@ -45,5 +45,6 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     rows: result.value.rows.map(rowJson),
     undated: result.value.undated,
     truncated: result.value.truncated,
+    dependencies: result.value.dependencies,
   })
 }
