@@ -16,7 +16,7 @@
  */
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
-import { recordForContextIn } from '../audit/audit.ts'
+import { recordAuditIn, recordForContextIn } from '../audit/audit.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import { DEFAULT_TEAMSPACE_ROLES, joinDefaultTeamspaces, lastOwnedTeamspaces } from './teamspace.ts'
 // 누가 누구를 무엇으로 — 화면과 같은 함수(DB 없는 순수 모듈 · 정본 ⑧)
@@ -129,7 +129,7 @@ export async function removeMember(
     const role = await lockTarget(tx, ctx.workspaceId, userId)
     if (role === null) return refuse('not_found')
     if (actor === null || !mayManage(actor, role)) return refuse('forbidden')
-    return retireIn(tx, ctx, userId, role, owners, {})
+    return retireIn(tx, auditActorOf(ctx), userId, role, owners, {})
   })
 }
 
@@ -143,8 +143,54 @@ export async function leaveWorkspace(ctx: SessionContext): Promise<MemberManageR
     const owners = await lockOwners(tx, ctx.workspaceId)
     const role = await lockTarget(tx, ctx.workspaceId, ctx.userId)
     if (role === null) return refuse('not_found')
-    return retireIn(tx, ctx, ctx.userId, role, owners, { left: true })
+    return retireIn(tx, auditActorOf(ctx), ctx.userId, role, owners, { left: true })
   })
+}
+
+/** 감사에 남길 행위자 — 세션이 있으면 그 세션(IP), 계정 삭제처럼 세션 밖이면 null. */
+export type RetireActor = { readonly workspaceId: string; readonly userId: string; readonly sessionId: string | null }
+
+const auditActorOf = (ctx: SessionContext): RetireActor => ({
+  workspaceId: ctx.workspaceId,
+  userId: ctx.userId,
+  sessionId: ctx.delegation === undefined ? ctx.sessionId : null,
+})
+
+/**
+ * 나가지(내보내지) 못하게 하는 까닭 — 남는 활성 owner 가 없다(②) · 그 사람이 마지막 owner 인 teamspace 가 있다(③). 없으면 null.
+ * 나가기 · 내보내기 · 계정 삭제 미리보기가 **같은 판정**을 쓴다. `owners` 는 활성 owner 의 id(잠갔든 아니든).
+ */
+export async function leaveBlocker(
+  tx: Tx,
+  workspaceId: string,
+  userId: string,
+  role: string,
+  owners: readonly string[],
+): Promise<{ readonly reason: 'last_owner' } | { readonly reason: 'teamspace_last_owner'; readonly teamspaces: readonly string[] } | null> {
+  if (role === 'owner' && owners.filter((id) => id !== userId).length === 0) return { reason: 'last_owner' }
+  const orphaned = await lastOwnedTeamspaces(tx, workspaceId, { type: 'user', id: userId })
+  if (orphaned.length > 0) return { reason: 'teamspace_last_owner', teamspaces: orphaned.map((t) => t.name) }
+  return null
+}
+
+/**
+ * 계정 삭제의 나가기(AD-2 ②) — `leaveWorkspace` 와 같은 몸을 부른 쪽의 트랜잭션 안에서 돈다. 세션 밖이라 감사의 IP 는 비운다.
+ * 게스트는 `lockTarget` 이 모르는 사람이므로 멤버 행만 닫는다(부여는 그 사람이 지워지면 쓸 곳이 없다).
+ */
+export async function leaveWorkspaceForAccountIn(tx: Tx, workspaceId: string, userId: string): Promise<MemberManageResult<{ readonly role: string }>> {
+  const owners = await lockOwners(tx, workspaceId)
+  const actor: RetireActor = { workspaceId, userId, sessionId: null }
+  const role = await lockTarget(tx, workspaceId, userId)
+  if (role !== null) return retireIn(tx, actor, userId, role, owners, { left: true })
+  const guest = await tx.queryMaybe<{ role: string }>(
+    `SELECT role FROM workspace_member WHERE workspace_id = $1 AND user_id = $2 AND status = 'active' FOR UPDATE`,
+    [workspaceId, userId],
+  )
+  if (guest === null) return refuse('not_found')
+  await tx.query(`UPDATE workspace_member SET status = 'removed', removed_at = now() WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, userId])
+  await membershipChanged(tx, workspaceId, userId)
+  await recordAuditIn(tx, { type: 'workspace.member_removed', workspaceId, actorUserId: userId, target: { type: 'user', id: userId }, metadata: { role: guest.role, left: true } })
+  return { ok: true, value: { role: guest.role } } as const
 }
 
 /**
@@ -153,21 +199,27 @@ export async function leaveWorkspace(ctx: SessionContext): Promise<MemberManageR
  */
 async function retireIn(
   tx: Tx,
-  ctx: SessionContext,
+  actor: RetireActor,
   userId: string,
   role: MemberRole,
   owners: readonly string[],
   extra: { readonly left?: true },
 ): Promise<MemberManageResult<{ readonly role: MemberRole }>> {
-  if (role === 'owner' && owners.filter((id) => id !== userId).length === 0) return refuse('last_owner')
-  const orphaned = await lastOwnedTeamspaces(tx, ctx.workspaceId, { type: 'user', id: userId })
-  if (orphaned.length > 0) return refuse('teamspace_last_owner', orphaned.map((t) => t.name))
+  const blocked = await leaveBlocker(tx, actor.workspaceId, userId, role, owners)
+  if (blocked !== null) return refuse(blocked.reason, blocked.reason === 'teamspace_last_owner' ? blocked.teamspaces : undefined)
 
   await tx.query(
     `UPDATE workspace_member SET status = 'removed', removed_at = now() WHERE workspace_id = $1 AND user_id = $2`,
-    [ctx.workspaceId, userId],
+    [actor.workspaceId, userId],
   )
-  await membershipChanged(tx, ctx.workspaceId, userId)
-  await recordForContextIn(tx, ctx, 'workspace.member_removed', { target: { type: 'user', id: userId }, metadata: { role, ...extra } })
+  await membershipChanged(tx, actor.workspaceId, userId)
+  await recordAuditIn(tx, {
+    type: 'workspace.member_removed',
+    workspaceId: actor.workspaceId,
+    actorUserId: actor.userId,
+    sessionId: actor.sessionId,
+    target: { type: 'user', id: userId },
+    metadata: { role, ...extra },
+  })
   return { ok: true, value: { role } } as const
 }
