@@ -24,6 +24,7 @@
  * 재료(표마다의 속성 · 템플릿 · 데이터베이스 목록)는 이 부품이 읽는다 — 이 표와, 초안이 가리키는 다른 표를 처음 볼 때 한 번.
  */
 
+import dynamic from 'next/dynamic'
 import { useEffect, useState } from 'react'
 
 import type { PropertySummary } from '@/lib/database/property'
@@ -32,6 +33,11 @@ import { emptyValue, isAutomationCellType, type CellValue, type MvpPropertyType,
 import { textRun, toPlainText } from '@/lib/contracts/rich-text'
 import * as api from './table-api'
 
+/** 알림 보내기의 편집 칸(AN-2 · ③) — 지연 로드: 그 액션을 그릴 때만 받는다(데이터베이스 화면의 번들 예산). `other` 로 서서 설정을 그대로 주고받는다. */
+const NotifyEditor = dynamic(() => import('./notify-editor'))
+/** 웹훅의 편집 칸도 같은 까닭으로 지연 로드한다(AN-2 — 알림 보내기 조각이 번들 예산을 넘기지 않게 · 웹훅은 드물게 고친다). */
+const Webhook = dynamic(() => import('./webhook-editor'))
+
 /** 동적 값의 출처(⑯ — 서버 `DynamicSource` 와 같은 모양). */
 type Source = { readonly kind: 'now' } | { readonly kind: 'row_property'; readonly propertyId: string }
 /** 셀 초안 — 고정 값 또는 동적 값(서버 `ActionCell` 과 같은 모양). */
@@ -39,7 +45,7 @@ type CellDraft = { readonly propertyId: string; readonly value: CellValue } | { 
 /** 일하는 행의 속성으로 채울 수 없는 타입 — 옵션이 속성마다 다르다(서버와 같다). */
 const NOT_COPYABLE: ReadonlySet<string> = new Set(['select', 'status'])
 /** 헤더 초안 — 저장된 것(`saved`)은 값을 모른다: 비워 두면 서버가 옮긴다. */
-type HeaderDraft = { readonly name: string; readonly value: string; readonly saved: boolean }
+export type HeaderDraft = { readonly name: string; readonly value: string; readonly saved: boolean }
 export type ActionDraft =
   | { readonly kind: 'edit'; readonly cells: readonly CellDraft[] }
   | { readonly kind: 'add'; readonly dataSourceId: string; readonly templateId: string | null; readonly cells: readonly CellDraft[] }
@@ -57,7 +63,7 @@ export type ActionDraft =
   | { readonly kind: 'other'; readonly raw: api.ButtonActionJson }
 
 /** 값을 넣을 수 있는 속성(셀 타입) — 이름 · 타입 · 선택지. */
-type Field = { readonly id: string; readonly name: string; readonly type: MvpPropertyType; readonly options: readonly SelectOption[] }
+export type Field = { readonly id: string; readonly name: string; readonly type: MvpPropertyType; readonly options: readonly SelectOption[] }
 /** 표 하나의 값 칸 재료 — 속성들과 템플릿들. */
 type Table = { readonly fields: readonly Field[]; readonly templates: readonly { readonly id: string; readonly title: string }[] }
 
@@ -112,13 +118,11 @@ const blocksOf = (rows: readonly InsertRow[]) =>
     children: [],
   }))
 
-/** 웹훅의 헤더 상한(서버 `MAX_WEBHOOK_HEADERS` 와 같다). */
-const MAX_HEADERS = 10
-
 const OTHER_LABEL: Record<string, string> = {
   insert_blocks: '블록 넣기',
   define_variables: '변수 정하기',
   show_confirmation: '확인 묻기',
+  send_notification: '알림 보내기',
 }
 
 export const toDraft = (action: api.ButtonActionJson): ActionDraft => {
@@ -281,7 +285,18 @@ export function ActionListEditor({
                 지우기
               </button>
             </div>
-            {draft.kind === 'other' && <p className="text-neutral-500">이 편집기에서는 고치지 않습니다 — 저장해도 그대로 남습니다.</p>}
+            {draft.kind === 'other' &&
+              (draft.raw.type === 'send_notification' ? (
+                <NotifyEditor
+                  p={p}
+                  workspaceId={workspaceId}
+                  dataSourceId={dataSourceId}
+                  config={draft.raw.config}
+                  onChange={(config) => update(index, { kind: 'other', raw: { type: 'send_notification', config } })}
+                />
+              ) : (
+                <p className="text-neutral-500">이 편집기에서는 고치지 않습니다 — 저장해도 그대로 남습니다.</p>
+              ))}
             {draft.kind === 'edit' && (
               <Cells p={p} fields={own} sources={own} rowLabel={rowLabel} cells={draft.cells} require onChange={(cells) => update(index, { ...draft, cells })} />
             )}
@@ -387,6 +402,14 @@ export function ActionListEditor({
         >
           + 웹훅 보내기
         </button>
+        <button
+          type="button"
+          data-testid={`${p}-add-notify-action`}
+          onClick={() => onChange([...drafts, { kind: 'other', raw: { type: 'send_notification', config: {} } }])}
+          className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        >
+          + 알림 보내기
+        </button>
       </div>
     </div>
   )
@@ -462,100 +485,6 @@ function InsertRows({
           + 줄
         </button>
       )}
-    </div>
-  )
-}
-
-/** 웹훅 칸 — 받는 주소 · 헤더 · 보낼 속성(⑭). 저장된 주소 · 헤더 값은 보이지 않는다 — 비워 두면 그대로. */
-function Webhook({
-  p,
-  fields,
-  draft,
-  onChange,
-}: {
-  p: string
-  fields: readonly Field[]
-  draft: Extract<ActionDraft, { kind: 'webhook' }>
-  onChange: (next: Extract<ActionDraft, { kind: 'webhook' }>) => void
-}) {
-  const box = 'min-w-0 flex-1 rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900'
-  const setHeader = (i: number, next: HeaderDraft | null) =>
-    onChange({ ...draft, headers: next === null ? draft.headers.filter((_, j) => j !== i) : draft.headers.map((h, j) => (j === i ? next : h)) })
-  return (
-    <div className="flex flex-col gap-1">
-      <label className="flex items-center gap-1">
-        <span className="w-10 shrink-0 text-neutral-500">주소</span>
-        <input
-          type="url"
-          aria-label="받는 주소"
-          data-testid={`${p}-webhook-url`}
-          value={draft.url}
-          placeholder={draft.urlHint === null ? 'https://…' : `지금: ${draft.urlHint} — 비우면 그대로`}
-          autoComplete="off"
-          onChange={(e) => onChange({ ...draft, url: e.target.value })}
-          className={box}
-        />
-      </label>
-      {draft.headers.map((h, i) => (
-        <div key={i} className="flex items-center gap-1" data-testid={`${p}-webhook-header`}>
-          <input
-            type="text"
-            aria-label="헤더 이름"
-            data-testid={`${p}-webhook-header-name`}
-            value={h.name}
-            disabled={h.saved}
-            onChange={(e) => setHeader(i, { ...h, name: e.target.value })}
-            className={`${box} max-w-[8rem]`}
-          />
-          <input
-            type="text"
-            aria-label={`${h.name || '헤더'} 값`}
-            data-testid={`${p}-webhook-header-value`}
-            value={h.value}
-            placeholder={h.saved ? '저장된 값 — 비우면 그대로' : '값'}
-            autoComplete="off"
-            onChange={(e) => setHeader(i, { ...h, value: e.target.value })}
-            className={box}
-          />
-          <button type="button" aria-label="이 헤더 빼기" onClick={() => setHeader(i, null)} className="px-1 text-neutral-400 hover:text-red-600">
-            ×
-          </button>
-        </div>
-      ))}
-      {draft.headers.length < MAX_HEADERS && (
-        <button
-          type="button"
-          data-testid={`${p}-webhook-add-header`}
-          onClick={() => onChange({ ...draft, headers: [...draft.headers, { name: '', value: '', saved: false }] })}
-          className="self-start text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
-        >
-          + 헤더
-        </button>
-      )}
-      {fields.length === 0 ? (
-        <p className="text-neutral-500">보낼 속성이 없습니다 — 페이지의 id 와 주소만 갑니다.</p>
-      ) : (
-      <fieldset className="flex flex-col gap-0.5">
-        <legend className="text-neutral-500">보낼 속성 — 고르지 않으면 행의 id 와 주소만</legend>
-        {fields.map((f) => (
-          <label key={f.id} className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              data-testid={`${p}-webhook-property`}
-              data-property-id={f.id}
-              checked={draft.properties.includes(f.id)}
-              onChange={(e) =>
-                onChange({ ...draft, properties: e.target.checked ? [...draft.properties, f.id] : draft.properties.filter((x) => x !== f.id) })
-              }
-            />
-            {f.name}
-          </label>
-        ))}
-      </fieldset>
-      )}
-      <p className="text-neutral-500">
-        몸은 <code>{'{ run_id, page, properties }'}</code> — 받는 쪽은 <code>run_id</code> 로 겹친 것을 거르세요. 네 번 실패하면 멈춥니다.
-      </p>
     </div>
   )
 }

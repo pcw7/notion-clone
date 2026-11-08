@@ -41,7 +41,7 @@ import Link from '@/app/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
-import { assignmentInboxLine, automationInboxLine, reminderInboxLine } from './inbox-messages'
+import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -64,7 +64,7 @@ export type InboxRow = {
   /** 담당(6h) — 회원님을 넣은 사람 속성의 지금 이름. 다른 알림은 null. */
   assignment: { propertyName: string | null } | null
   /** 알림 보내기(AN-1) — 보낸 방식과 메시지. 다른 알림은 null. */
-  automation?: { via: 'automation' | 'button'; message: string } | null
+  automation?: { via: 'automation' | 'button'; message: string; senderName: string | null } | null
   /** 내가 이 페이지의 알림을 껐는가(NM-2) — 서버가 내 구독 행에서 읽어 준다. */
   muted: boolean
 }
@@ -314,7 +314,7 @@ export function InboxList({
                   {item.pageTitle || UNTITLED}
                 </Link>
                 <span className="flex-none text-xs text-[rgb(125,122,117)] dark:text-[#ada9a3]">
-                  {KIND_LABEL[item.kind] ?? item.kind}
+                  {item.automation ? automationInboxLabel(item.automation) : (KIND_LABEL[item.kind] ?? item.kind)}
                   {item.count > 1 && ` ${item.count}`}
                   {item.unreadCount > 0 && <span className="ml-1 text-neutral-900 dark:text-neutral-100">●</span>}
                 </span>

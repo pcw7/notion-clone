@@ -17784,6 +17784,135 @@ async function main() {
       await rejected('사람 칸이 아닌 속성', [notifyAction([], [qty], '')], 'unknown_property')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('알림 보내기 액션 — 화면 (AN-2 · F-08-07)')) { try {
+      // DB automation 편집기에서 "알림 보내기" — 멤버를 고르고 · 사람 칸을 고르고 · 메시지에 "값 넣기"로 속성 칩을 끼워 저장하면 서버 설정에
+      // 멤버 · 속성 id · `{{row:…}}` 토큰이 남고, 행이 추가되면 그 멤버의 인박스에 "자동화" 항목이 채워진 메시지로 선다. 버튼 블록의 편집기는
+      // 사람 칸을 주지 않고, 멤버는 20명에서 더 고를 수 없다. 정본 §3.10 [보강 AN-2]. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const { runAutomationDispatch } = await import(new URL('../src/lib/automation/dispatch.ts', import.meta.url).href)
+      const pickName = `선택 동료 ${stamp}`
+      const fixedMate = await joinAs(workspaceId, await createUser(pickName), 'member')
+      const assignee = await joinAs(workspaceId, await createUser('담당자 동료'), 'member')
+      const text = (content) => ({ type: 'text', plain_text: content, href: null, text: { content, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' } })
+      const fill = async (selector, value) => {
+        const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus(); el.select(); return true })()`)
+        if (found) await typeText(value)
+      }
+
+      const db = (await api('POST', '/databases', { name: `알림 화면 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      const note = await prop('메모', 'rich_text')
+      const who = await prop('담당', 'people')
+      const EDITOR = '[data-testid="db-automation-editor"]'
+      const name = `알림 ${stamp}`
+
+      // ① DB automation 편집기
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-automations-button"]')`, 15000)
+      await clickUntil('[data-testid="db-automations-button"]', `!!document.querySelector('[data-testid="db-automations-new"]')`)
+      await clickUntil('[data-testid="db-automations-new"]', `!!document.querySelector('${EDITOR} [data-testid="db-automation-trigger-type"]')`)
+      await fill(`${EDITOR} [data-testid="db-automation-editor-name"]`, name)
+      await clickUntil(`${EDITOR} [data-testid="db-automation-add-notify-action"]`, `!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-search"]')`, 6, 4000)
+      // 멤버 — 이름으로 찾아 고른다(게스트는 후보에 없다)
+      await fill(`${EDITOR} [data-testid="db-automation-notify-search"]`, pickName)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-candidate"][data-user-id="${fixedMate.userId}"]')`, 8000)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-notify-candidate"][data-user-id="${fixedMate.userId}"]`)
+      // 사람 칸 — 행이 있는 편집기라 서 있다
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-people"][data-property-id="${who}"]')`, 8000)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-notify-people"][data-property-id="${who}"]`)
+      // 메시지 — 글 + 값 넣기(메모)
+      await fill(`${EDITOR} [data-testid="db-automation-notify-text"]`, '새 행: ')
+      await clickSelector(`${EDITOR} [data-testid="db-automation-notify-slot-add"]`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-slot-option"][data-property-id="${note}"]')`, 5000)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-notify-slot-option"][data-property-id="${note}"]`)
+      const chipShown = await waitFor(`document.querySelector('${EDITOR} [data-testid="db-automation-notify-chip"][data-property-id="${note}"]')?.textContent?.startsWith('메모')`, 5000)
+      const chipOnly = await evaluate(`!(document.querySelector('${EDITOR} [data-testid="db-automation-notify-message"]')?.textContent ?? '').includes('{{row:')`)
+      const selected = await evaluate(`[...document.querySelectorAll('${EDITOR} [data-testid="db-automation-notify-user"]')].map((e) => e.dataset.userId).join(',')`)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
+      const closed = await waitFor(`!document.querySelector('${EDITOR}') && !!document.querySelector('[data-testid="db-automation-item"]')`, 8000)
+      const listed = async () => (await api('GET', `/data-sources/${ds}/automations`)).body?.automations ?? []
+      let made = null
+      for (let i = 0; i < 20 && made === null; i += 1) {
+        made = (await listed()).find((a) => a.name === name) ?? null
+        if (made === null) await sleep(300)
+      }
+      const cfg = made?.actions?.[0]?.config
+      const plain = (cfg?.message ?? []).map((r) => r.plain_text ?? r.text?.content ?? '').join('')
+      check('★ 편집기에서 알림 보내기를 저장한다 — 서버 설정에 멤버 · 사람 칸 · `{{row:메모}}` 토큰이 남는다',
+        closed && made?.actions?.length === 1 && made.actions[0].type === 'send_notification'
+          && JSON.stringify(cfg?.to?.users) === JSON.stringify([fixedMate.userId]) && JSON.stringify(cfg?.to?.people_property_ids) === JSON.stringify([who])
+          && plain === `새 행: {{row:${note}}}`,
+        JSON.stringify([closed, made?.actions]))
+      check('★ 편집 중 값 슬롯은 속성 이름의 칩으로 보이고 토큰 글은 보이지 않는다 · 고른 멤버가 칩으로 선다',
+        chipShown && chipOnly && selected === fixedMate.userId, JSON.stringify([chipShown, chipOnly, selected, await evaluate(`document.querySelector('${EDITOR} [data-testid="db-automation-notify-message"]')?.innerHTML ?? null`)]))
+
+      // 다시 열면 칩 · 멤버 · 사람 칸이 그대로
+      const item = `[data-testid="db-automation-item"][data-automation-id="${made?.id}"]`
+      await clickUntil(`${item} [data-testid="db-automation-edit"]`, `!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-chip"]')`, 5, 4000)
+      const reopened = await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-chip"][data-property-id="${note}"]') && document.querySelector('${EDITOR} [data-testid="db-automation-notify-user"]')?.textContent?.includes(${JSON.stringify(pickName)}) && document.querySelector('${EDITOR} [data-testid="db-automation-notify-people"][data-property-id="${who}"]')?.checked === true`, 8000)
+      check('다시 열면 칩 · 고른 멤버(이름) · 사람 칸이 그대로 선다', reopened)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-cancel"]`)
+
+      // ② 행이 추가되면 — 그 멤버의 인박스에 "자동화" 항목(채워진 메시지)
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        { propertyId: note, value: { type: 'rich_text', rich_text: [text('견적서')] } },
+        { propertyId: who, value: { type: 'people', people: [{ id: assignee.userId }] } },
+      ] })).body.row.id
+      await runAutomationDispatch(new Date(Date.now() + 10_000), { workspaces: [workspaceId] })
+      try {
+        await send('Network.setCookie', { name: 'nc_session', value: fixedMate.token, domain: 'localhost', path: '/', httpOnly: true })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        const shown = await waitFor(`[...document.querySelectorAll('[data-testid="inbox-item"]')].some((li) => li.textContent.includes('새 행: 견적서'))`, 15000)
+        const li = await evaluate(`(() => { const e = [...document.querySelectorAll('[data-testid="inbox-item"]')].find((x) => x.textContent.includes('새 행: 견적서')); return e ? { text: e.textContent, href: e.querySelector('a')?.getAttribute('href') } : null })()`)
+        check('★ 행이 추가되면 고른 멤버의 인박스에 "자동화" 항목이 선다 — 보낸 이 · 채워진 메시지 · 그 페이지로 가는 링크',
+          shown && li?.text.includes('자동화') && li.text.includes('새 행: 견적서') && li.href === `/w/${workspaceId}/${row}` && !li.text.includes('{{'),
+          JSON.stringify(li))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+
+      // ③ 버튼 블록 — 사람 칸이 없다 · 멤버는 20명에서 막힌다
+      for (let i = 0; i < 20; i += 1) await joinAs(workspaceId, await createUser(`여럿 ${stamp} ${i}`), 'member')
+      const page = (await api('POST', '/pages', { title: `알림 버튼 ${stamp}` })).body.page.id
+      const line = randomUUID()
+      await saveBody(page, { blocks: [{ id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      const SETTINGS = '[data-testid="button-block-settings"]'
+      await typeText('/')
+      await typeText('버튼')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      await waitFor(`!!document.querySelector('${SETTINGS}')`, 8000)
+      await clickUntil(`${SETTINGS} [data-testid="button-block-add-notify-action"]`, `!!document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')`, 6, 4000)
+      check('★ 버튼 블록의 알림 보내기 — 사람 칸과 값 넣기가 없다(일하는 행이 없다)',
+        await evaluate(`!document.querySelector('${SETTINGS} [data-testid="button-block-notify-people"]') && !document.querySelector('${SETTINGS} [data-testid="button-block-notify-slot-add"]')`))
+      let count = 0
+      for (let i = 0; i < 24; i += 1) {
+        await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]') || document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')?.disabled === true`, 5000)
+        const clicked = await evaluate(`(() => { const c = document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]'); if (!c) return false; c.click(); return true })()`)
+        if (!clicked) break
+        count += 1
+        await waitFor(`document.querySelectorAll('${SETTINGS} [data-testid="button-block-notify-user"]').length === ${count}`, 3000)
+      }
+      const chips = await evaluate(`document.querySelectorAll('${SETTINGS} [data-testid="button-block-notify-user"]').length`)
+      check('★ 멤버는 20명에서 더 고를 수 없다 — 칸이 잠기고 후보가 사라진다',
+        chips === 20 && (await evaluate(`document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')?.disabled === true && !document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]')`)),
+        String(chips))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('값 슬롯 — 화면 (5d-2 · F-08-11)')) { try {
       // 버튼 설정의 값 칸 옆에서 출처를 고른다 — 날짜는 "지금", 숫자는 "누른 행의 수량". 출처 목록은 저장 검사와 같은 규칙(지금은 날짜에만 ·
       // 같은 타입끼리). 저장하면 서버에 동적 값으로 남고, 다시 열면 그대로 보이고, 누르면 그때의 값으로 채워진다.
