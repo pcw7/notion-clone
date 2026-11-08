@@ -14975,6 +14975,107 @@ async function main() {
           && (await api('GET', `/views/${chartId}`)).body?.view?.subGroupBy === null)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('차트 — 쌓기의 세부 (CH-6 · F-04-08)')) { try {
+      // 쌓기의 세부 고르개(차트 패널 안 · 지연 로드) — 하위 그룹의 날짜 단위를 바꾸면 PATCH subGroupBy.date_unit 이 가고 조각이 다시 묶인다.
+      // 조각을 숨기면 그 조각이 사라지고, 새로고침 뒤에도 남는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const subs = () => evaluate(`JSON.stringify([...new Set([...document.querySelectorAll('[data-testid="chart-segment"]')].map((m) => m.dataset.sub))].sort())`).then((v) => JSON.parse(v))
+      const db = (await api('POST', '/databases', { name: `차트 쌓기 세부 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const when = (await api('POST', `/data-sources/${ds}/properties`, { name: '날짜', type: 'date' })).body.property.id
+      const opt = async (prop, name) => (await api('POST', `/data-sources/${ds}/properties/${prop}/options`, { name })).body.option.id
+      const ga = await opt(stage, '가')
+      const na = await opt(stage, '나')
+      // 가: 3월 · 4월 / 나: 3월 · 4월 → 월별이면 조각 4 · 하위 키 2, 연별이면 조각 2 · 하위 키 1
+      for (const [o, d] of [[ga, '2026-03-10'], [ga, '2026-04-05'], [na, '2026-03-20'], [na, '2026-04-06']]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [
+            { propertyId: stage, value: { type: 'select', select: { id: o } } },
+            { propertyId: when, value: { type: 'date', date: { start: d } } },
+          ],
+        })
+      }
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      const chartId = made.body?.view?.id
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage }, subGroupBy: { property_id: when, date_unit: 'month' }, chart: { kind: 'column' } })
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+        return waitFor(`!!document.querySelector('[data-testid="db-chart"]')`, 20000)
+      }
+      // 하이드레이션 전의 클릭은 아무 일이 없고, 패널 조각은 지연 로드다 — 세부 고르개가 설 때까지 몇 번 누른다
+      const openPanel = async (testId) => {
+        for (let i = 0; i < 8 && !(await evaluate(`!!document.querySelector('[data-testid="${testId}"]')`)); i += 1) {
+          if (!(await evaluate(`!!document.querySelector('[data-testid="chart-panel"]')`))) await clickOn('[data-testid="chart-settings"]')
+          await waitFor(`!!document.querySelector('[data-testid="${testId}"]')`, 2500)
+        }
+      }
+      const waitSegments = (n) => waitFor(`document.querySelectorAll('[data-testid="chart-segment"]').length === ${n}`, 20000)
+      const savedSub = async () => (await api('GET', `/views/${chartId}`)).body?.view?.subGroupBy
+
+      await open()
+      check('월별로 쌓으면 조각 넷 · 하위 키 둘', (await waitSegments(4)) && (await subs()).length === 2, JSON.stringify(await subs()))
+      await openPanel('chart-stack-date-unit')
+      check('★ 쌓기의 세부 고르개가 선다(chart-stack-detail · 날짜 단위 = 월)',
+        (await evaluate(`!!document.querySelector('[data-testid="chart-stack-detail"]')`)) && (await evaluate(`document.querySelector('[data-testid="chart-stack-date-unit"]')?.value`)) === 'month')
+      const monthKeys = await subs()
+
+      // 단위를 년으로 — PATCH 가 가고 조각이 다시 묶인다
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await setSelect('[data-testid="chart-stack-date-unit"]', 'year')
+        if (await waitSegments(2)) break
+      }
+      const yearKeys = await subs()
+      check('★ 단위를 년으로 바꾸면 subGroupBy.date_unit = year · 조각 둘 · 하위 키 하나(키가 바뀐다)',
+        (await savedSub())?.date_unit === 'year' && (await segmentsCount()) === 2 && yearKeys.length === 1 && yearKeys[0] !== monthKeys[0], JSON.stringify({ monthKeys, yearKeys, saved: await savedSub() }))
+      async function segmentsCount() { return Number(await evaluate(`document.querySelectorAll('[data-testid="chart-segment"]').length`)) }
+
+      // 월로 되돌리고 하위 그룹 하나를 숨긴다
+      await openPanel('chart-stack-date-unit')
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await setSelect('[data-testid="chart-stack-date-unit"]', 'month')
+        if (await waitSegments(4)) break
+      }
+      await waitFor(`document.querySelectorAll('[data-testid="chart-stack-visible"][data-lane-key^="2026"]').length === 2`, 20000)
+      const hideKey = await evaluate(`document.querySelector('[data-testid="chart-stack-visible"][data-lane-key^="2026"]')?.dataset.laneKey`)
+      await clickOn(`[data-testid="chart-stack-visible"][data-lane-key="${hideKey}"]`)
+      const hidden = await waitSegments(2)
+      const left = await subs()
+      check('★ 하위 그룹을 숨기면 그 조각이 사라진다(조각 둘 · 숨긴 키 없음) · hidden 이 저장된다',
+        hidden && left.length === 1 && !left.includes(hideKey) && ((await savedSub())?.hidden ?? []).includes(hideKey), JSON.stringify({ hideKey, left, saved: await savedSub() }))
+
+      // 새로고침 뒤에도 남는다
+      await open()
+      check('★ 새로고침 뒤에도 숨김이 남는다(조각 둘)', await waitSegments(2))
+      await openPanel('chart-stack-visible')
+      check('고르개의 체크가 풀려 있다', (await evaluate(`document.querySelector('[data-testid="chart-stack-visible"][data-lane-key="${hideKey}"]')?.checked`)) === false)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.
