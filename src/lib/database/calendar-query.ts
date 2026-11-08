@@ -27,6 +27,7 @@ import { restrictedRowsSql, rowsAccessForDataSource } from './row-access.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { getView } from './view.ts'
 import { cardParentsOnlyPair } from './view-columns.ts'
+import { readDependencyPair } from './dependencies.ts'
 
 export type CalendarPage = {
   readonly datePropertyId: string
@@ -36,6 +37,10 @@ export type CalendarPage = {
   readonly undated: number
   /** 상한에 걸려 더 있다. */
   readonly truncated: boolean
+  /**
+   * 종속 관계 간선(TL-4 · 타임라인만) — `from` = 막는 행, `to` = 막힌 행. 종속 관계가 켜져 있고 둘 다 `rows` 에 있을 때만. 캘린더는 늘 빈 배열.
+   */
+  readonly dependencies: readonly { readonly from: string; readonly to: string }[]
 }
 
 export type CalendarFailure =
@@ -175,11 +180,26 @@ async function queryWindow(ctx: SessionContext, viewId: string, input: WindowInp
       [dataSourceId, ...params.values],
     )
 
+    const shown = rows.slice(0, maxRows)
+    // 종속 관계 간선(TL-4 ①②) — 켜져 있을 때만 · 간선 질의 하나 · 둘 다 이 응답의 행인 것만. 엣지는 막힌 행(from) → 막는 행(to)이다(0052)
+    let dependencies: { from: string; to: string }[] = []
+    if (kind === 'timeline' && shown.length > 1 && (await readDependencyPair(tx, dataSourceId)) !== null) {
+      const ids = shown.map((r) => r.id)
+      const edges = await tx.query<{ blocked: string; blocker: string }>(
+        `SELECT from_page_id AS blocked, to_page_id AS blocker FROM relation_edge
+          WHERE role = 'dependency' AND from_page_id = ANY($1::uuid[]) AND to_page_id = ANY($1::uuid[])
+          ORDER BY from_page_id, to_page_id`,
+        [ids],
+      )
+      dependencies = edges.map((e) => ({ from: e.blocker, to: e.blocked }))
+    }
+
     return {
       ok: true,
       value: {
         datePropertyId: dateProperty,
-        rows: rows.slice(0, maxRows).map(toQueriedRow),
+        rows: shown.map(toQueriedRow),
+        dependencies,
         undated: undated.n,
         truncated: rows.length > maxRows,
       },

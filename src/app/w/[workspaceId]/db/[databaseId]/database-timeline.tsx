@@ -38,6 +38,10 @@ import { MOVED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import type { RowJson } from '@/lib/database/http'
 import { TIMELINE_ZOOMS, type TimelineZoom } from '@/lib/database/timeline'
 import {
+  arrowHeadPoints,
+  arrowPoints,
+  pathOf,
+  dependencyOverlaps,
   DAY_PX,
   dayAtX,
   dayDeltaFromPx,
@@ -72,8 +76,13 @@ const DRAG_THRESHOLD_PX = 4
 
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
 
+/** 종속 간선 — from = 막는 행, to = 막힌 행(TL-4). */
+type Dependency = { from: string; to: string }
 type DateJson = { start: string; end?: string | null }
 type DragState = { rowId: string; mode: DragMode; startX: number; startY: number; moved: boolean; delta: number; before: DateJson }
+
+/** 종속 화살표 — 막대에서 나와 꺾이는 폭(px). */
+const ARROW_GAP_PX = 8
 
 const BUTTON =
   'rounded border border-neutral-300 px-2 py-0.5 text-sm hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800'
@@ -90,7 +99,7 @@ function useToday(serverToday: string): string {
   )
 }
 
-type TimelineBody = { ok?: boolean; datePropertyId?: string; rows?: RowJson[]; undated?: number; truncated?: boolean; error?: string }
+type TimelineBody = { ok?: boolean; datePropertyId?: string; rows?: RowJson[]; undated?: number; truncated?: boolean; dependencies?: Dependency[]; error?: string }
 
 export function DatabaseTimeline(props: {
   workspaceId: string
@@ -108,6 +117,8 @@ export function DatabaseTimeline(props: {
   rows: RowJson[]
   undated: number
   truncated: boolean
+  /** 종속 관계 간선(TL-4) — 종속 관계가 꺼져 있으면 비어 있다. */
+  dependencies?: readonly Dependency[]
   /** 뷰의 설정을 고칠 수 있다(`edit_structure`) — 아니면 줌 · 표 보이기는 이 화면에서만 바뀐다. */
   canEditStructure: boolean
   /** 행의 내용을 고칠 수 있다(`edit_content`) — 막대 끌기 · 키 · 날짜 없는 행 놓기(TL-3). 캘린더 카드와 같은 판정. */
@@ -129,6 +140,7 @@ export function DatabaseTimeline(props: {
   const [rows, setRowsState] = useState<readonly RowJson[]>(props.rows)
   const [undated, setUndated] = useState(props.undated)
   const [truncated, setTruncated] = useState(props.truncated)
+  const [dependencies, setDependencies] = useState<readonly Dependency[]>(props.dependencies ?? [])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -167,6 +179,7 @@ export function DatabaseTimeline(props: {
           setRows(() => incoming)
           setUndated(body.undated ?? 0)
           setTruncated(body.truncated === true)
+          setDependencies(body.dependencies ?? [])
           if (body.datePropertyId !== undefined) setDatePropertyId(body.datePropertyId)
         }
       } catch {
@@ -344,6 +357,22 @@ export function DatabaseTimeline(props: {
   const ticks = headerTicks(win, zoom)
   const nowX = todayX(today, win, zoom)
   const bodyHeight = rows.length * ROW_PX
+
+  // 종속 화살표(TL-4) — 막대와 같은 그리기(끄는 중의 미리보기 포함)에서 나온다
+  const bars = new Map<string, { place: NonNullable<ReturnType<typeof placeBar>>; lane: number; start: string; end: string }>()
+  rows.forEach((row, lane) => {
+    const shown = preview !== null && preview.rowId === row.id ? { type: 'date', date: preview.date } : row.properties[datePropertyId]
+    const days = cellDays(shown)
+    const place = days === null ? null : placeBar(days.start, days.end, win, zoom)
+    if (days !== null && place !== null) bars.set(row.id, { place, lane, start: days.start, end: days.end })
+  })
+  const arrows = dependencies.flatMap((dep) => {
+    const from = bars.get(dep.from)
+    const to = bars.get(dep.to)
+    if (from === undefined || to === undefined) return []
+    const points = arrowPoints(from, to, { rowPx: ROW_PX, headPx: HEAD_PX, gap: ARROW_GAP_PX })
+    return [{ dep, points, overlap: dependencyOverlaps(from.end, to.start) }]
+  })
 
   return (
     <div
@@ -532,6 +561,24 @@ export function DatabaseTimeline(props: {
                 </div>
               )
             })}
+            {/* 종속 관계 화살표(TL-4) — 장식이다(같은 정보가 행의 "선행 작업" 칸에 있다) */}
+            {arrows.length > 0 && (
+              <svg aria-hidden className="pointer-events-none absolute top-0 left-0" width={width} height={HEAD_PX + bodyHeight}>
+                {arrows.map(({ dep, points, overlap }) => (
+                  <g
+                    key={`${dep.from}>${dep.to}`}
+                    data-testid="timeline-arrow"
+                    data-from={dep.from}
+                    data-to={dep.to}
+                    data-overlap={overlap ? 'true' : 'false'}
+                    className={overlap ? 'text-red-500' : 'text-neutral-400 dark:text-neutral-500'}
+                  >
+                    <path d={pathOf(points)} fill="none" stroke="currentColor" strokeWidth={1.5} />
+                    <polygon points={arrowHeadPoints(points[points.length - 1]!)} fill="currentColor" />
+                  </g>
+                ))}
+              </svg>
+            )}
             {/* 날짜 없는 행을 놓을 날 */}
             {dropDay !== null && (
               <div

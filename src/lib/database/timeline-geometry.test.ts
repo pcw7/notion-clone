@@ -4,6 +4,10 @@ import { test } from 'node:test'
 import { daysBetween } from './calendar.ts'
 import { MAX_TIMELINE_SPAN_DAYS, TIMELINE_ZOOMS } from './timeline.ts'
 import {
+  arrowHeadPoints,
+  arrowPoints,
+  dependencyOverlaps,
+  pathOf,
   DAY_PX,
   dayAtX,
   dayDeltaFromPx,
@@ -129,4 +133,45 @@ test('늘이기 — 하루짜리의 오른쪽 끝은 기간이 되고 끝은 시
   assert.equal(dragDate({ start: '2026-11-03' }, 'end', -2), null)
   assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'start', 9), { start: '2026-11-05' })
   assert.deepEqual(dragDate({ start: '2026-11-03', end: '2026-11-05' }, 'start', -2), { start: '2026-11-01', end: '2026-11-05' })
+})
+
+test('종속 화살표 — 오른쪽 끝에서 왼쪽 끝으로 · 줄이 다르면 한 번 꺾는다', () => {
+  const layout = { rowPx: 32, headPx: 32, gap: 8 }
+  const a = { place: { left: 0, width: 50, clippedStart: false, clippedEnd: false }, lane: 0 }
+  const b = { place: { left: 100, width: 40, clippedStart: false, clippedEnd: false }, lane: 2 }
+  assert.deepEqual(arrowPoints(a, b, layout), [
+    { x: 50, y: 48 },
+    { x: 58, y: 48 },
+    { x: 58, y: 112 },
+    { x: 100, y: 112 },
+  ])
+  // 같은 줄이면 곧은 선
+  assert.deepEqual(arrowPoints(a, { ...b, lane: 0 }, layout), [{ x: 50, y: 48 }, { x: 100, y: 48 }])
+})
+
+test('종속 화살표 — 겹치면(도착점이 출발점 가까이/왼쪽) 줄 사이로 돌아 들어간다 · 마지막 구간은 오른쪽을 향한다', () => {
+  const layout = { rowPx: 32, headPx: 32, gap: 8 }
+  const a = { place: { left: 100, width: 50, clippedStart: false, clippedEnd: false }, lane: 0 }
+  const b = { place: { left: 120, width: 40, clippedStart: false, clippedEnd: false }, lane: 1 }
+  const pts = arrowPoints(a, b, layout)
+  assert.deepEqual(pts, [
+    { x: 150, y: 48 },
+    { x: 158, y: 48 },
+    { x: 158, y: 64 },
+    { x: 112, y: 64 },
+    { x: 112, y: 80 },
+    { x: 120, y: 80 },
+  ])
+  // 위쪽 줄로 가면 위로 돈다
+  const up = arrowPoints({ ...a, lane: 1 }, { ...b, lane: 0 }, layout)
+  assert.ok(up[2]!.y < up[0]!.y)
+  assert.equal(pathOf(pts.slice(0, 2)), 'M150 48 L158 48')
+  assert.equal(arrowHeadPoints({ x: 20, y: 10 }), '20,10 14,6 14,14')
+})
+
+test('종속 겹침 — 막는 행이 막힌 행의 시작보다 늦게 끝날 때만', () => {
+  assert.equal(dependencyOverlaps('2026-11-05', '2026-11-06'), false)
+  assert.equal(dependencyOverlaps('2026-11-06', '2026-11-06'), false)
+  assert.equal(dependencyOverlaps('2026-11-07', '2026-11-06'), true)
+  assert.equal(dependencyOverlaps('2026-11-07T09:00:00+09:00', '2026-11-06'), true)
 })

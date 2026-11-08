@@ -160,3 +160,40 @@ export function dragDate(date: DateParts, mode: DragMode, days: number): { start
   const endDay = typeof date.end === 'string' ? date.end.slice(0, 10) : startDay
   return resizeDateValue(date, mode, addDays(mode === 'start' ? startDay : endDay, days))
 }
+
+export type ArrowEnd = { readonly place: BarPlacement; readonly lane: number }
+export type Point = { readonly x: number; readonly y: number }
+export type ArrowLayout = { readonly rowPx: number; readonly headPx: number; readonly gap: number }
+
+/** 화살촉의 길이 · 반폭(px) — 마지막 구간(`gap`)이 이보다 길어야 촉이 선 위에 선다. */
+export const ARROW_HEAD_LEN = 6
+export const ARROW_HEAD_HALF = 4
+
+/**
+ * 종속 관계 화살표의 꺾은선(TL-4 ③) — 막는 행 막대의 오른쪽 끝에서 막힌 행 막대의 왼쪽 끝으로. 막대의 세로 가운데를 잇는다(`lane` = 줄 번호).
+ * 도착점이 출발점보다 충분히 오른쪽이면 세로 한 번(┐└), 아니면(겹침 · 거꾸로) 줄 사이로 돌아 들어간다. 마지막 구간은 늘 오른쪽을 향한다.
+ */
+export function arrowPoints(from: ArrowEnd, to: ArrowEnd, layout: ArrowLayout): Point[] {
+  const { rowPx, headPx, gap } = layout
+  const sx = from.place.left + Math.max(from.place.width, 3)
+  const ex = to.place.left
+  const sy = headPx + from.lane * rowPx + rowPx / 2
+  const ey = headPx + to.lane * rowPx + rowPx / 2
+  if (ex - sx >= gap * 2) {
+    return sy === ey
+      ? [{ x: sx, y: sy }, { x: ex, y: ey }]
+      : [{ x: sx, y: sy }, { x: sx + gap, y: sy }, { x: sx + gap, y: ey }, { x: ex, y: ey }]
+  }
+  const ym = ey >= sy ? sy + rowPx / 2 : sy - rowPx / 2
+  return [{ x: sx, y: sy }, { x: sx + gap, y: sy }, { x: sx + gap, y: ym }, { x: ex - gap, y: ym }, { x: ex - gap, y: ey }, { x: ex, y: ey }]
+}
+
+/** SVG `points`/`d` 로 쓰는 글자 — `M x y L x y …`. */
+export const pathOf = (points: readonly Point[]): string => points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' ')
+
+/** 도착점(막힌 막대의 왼쪽 끝)에 오른쪽을 가리키는 삼각형의 `points`. */
+export const arrowHeadPoints = (tip: Point): string =>
+  `${tip.x},${tip.y} ${tip.x - ARROW_HEAD_LEN},${tip.y - ARROW_HEAD_HALF} ${tip.x - ARROW_HEAD_LEN},${tip.y + ARROW_HEAD_HALF}`
+
+/** 겹침 — 막는 행이 막힌 행의 시작보다 늦게 끝난다(일정이 어긋났다). 날짜는 `YYYY-MM-DD`. */
+export const dependencyOverlaps = (blockerEnd: string, blockedStart: string): boolean => blockerEnd.slice(0, 10) > blockedStart.slice(0, 10)

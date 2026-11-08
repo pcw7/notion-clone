@@ -844,6 +844,7 @@ export default async function DatabasePage({
             rows={timelinePage.value.rows.map(rowJson)}
             undated={timelinePage.value.undated}
             truncated={timelinePage.value.truncated}
+            dependencies={timelinePage.value.dependencies}
             canEditStructure={access.canEditStructure}
             canEditContent={access.canEditContent}
             search={search}
