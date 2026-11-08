@@ -28742,6 +28742,174 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('주소 붙여넣기 메뉴 (EM-2 · F-09-18)')) { try {
+      // 주소 붙여넣기(정본 §3.4 [보강 EM-2]) — 평문이 주소 하나면 링크 글자로 넣고 그 아래에 메뉴(링크로 두기 · 북마크 · 임베드 · 페이지 멘션) ·
+      // 글자 선택이 있으면 그 선택에 링크만(메뉴 없음) · 고르면 한 트랜잭션(되돌리기 한 번이면 링크로) · Esc / 링크로 두기는 아무것도 바꾸지 않는다.
+      // 이 PC 의 헤드리스 브라우저는 시스템 클립보드를 못 쓴다 — `ClipboardEvent('paste')` 를 직접 보낸다. 바깥 네트워크에 기대지 않는다.
+      const stamp = Date.now().toString(36)
+      const mk = async (title) => (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const page = await mk(`주소 붙여넣기 ${stamp}`)
+      const target = await mk(`붙일 쪽 ${stamp}`)
+      const para = (id, text = '') => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
+      const P = Object.fromEntries(['yt', 'bm', 'esc', 'keep', 'sel', 'men', 'own', 'undo'].map((k) => [k, randomUUID()]))
+      await saveBody(page, { blocks: [para(P.yt), para(P.bm, '앞글 '), para(P.esc), para(P.keep), para(P.sel, '가나다라'), para(P.men), para(P.own), para(P.undo)] })
+      await send('Network.setBlockedURLs', { urls: ['*youtube.com*', '*youtube-nocookie.com*', '*example.com*'] })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${P.yt}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+        await waitHydrated(`[data-block-id="${P.yt}"]`)
+        const MENU = '[data-testid="paste-url-menu"]'
+        const OPT = '[data-testid="paste-url-option"]'
+        const focusEnd = async (id) => {
+          for (let i = 0; i < 20; i += 1) {
+            await clickSelector(`[data-block-id="${id}"] p`)
+            if (await waitFor(`document.activeElement?.classList.contains('ProseMirror') && !!document.querySelector('[data-block-id="${id}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 1000)) break
+          }
+          await key('End')
+        }
+        const paste = (text) => evaluate(`(() => {
+          const dt = new DataTransfer()
+          dt.setData('text/plain', ${JSON.stringify(text)})
+          const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+          document.querySelector('.ProseMirror').dispatchEvent(ev)
+          return ev.defaultPrevented
+        })()`)
+        const options = () => evaluate(`[...document.querySelectorAll('${OPT}')].map((e) => ({ choice: e.dataset.choice, label: e.textContent.trim() }))`)
+        const menuUp = () => waitFor(`!!document.querySelector('${MENU}') && document.querySelectorAll('${OPT}').length > 0`, 5000)
+        const menuGone = () => waitFor(`!document.querySelector('${MENU}')`, 3000)
+        const clickChoice = async (choice) => {
+          for (let i = 0; i < 10; i += 1) {
+            await evaluate(`document.querySelector('${OPT}[data-choice="${choice}"]')?.click()`)
+            if (await menuGone()) return true
+          }
+          return false
+        }
+        const blocksOnServer = async (pred) => {
+          for (let i = 0; i < 60; i += 1) {
+            const blocks = (await readBody(page)).doc.blocks
+            if (pred(blocks)) return blocks
+            await sleep(250)
+          }
+          return null
+        }
+        const textOf = (b) => (b?.title ?? []).map((r) => r.text?.content ?? '').join('')
+
+        // 1) 빈 문단에 YouTube 주소 → 링크 + 메뉴
+        const yt = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        await focusEnd(P.yt)
+        await paste(yt)
+        const up1 = await menuUp()
+        const opts1 = await options()
+        const linked1 = await waitFor(`!!document.querySelector('[data-block-id="${P.yt}"] a[href="${yt}"]')`, 5000)
+        check('★ 빈 문단에 YouTube 주소를 붙이면 링크 글자가 들어가고 메뉴가 열린다 — 링크로 두기가 첫 항목 · 임베드에 서비스 이름',
+          up1 && linked1 && opts1[0]?.choice === 'link' && opts1[0].label === '링크로 두기' && opts1.some((o) => o.choice === 'embed' && o.label.includes('유튜브')) && opts1.some((o) => o.choice === 'bookmark') && !opts1.some((o) => o.choice === 'mention'),
+          JSON.stringify({ up1, linked1, opts1 }))
+        const aria1 = await evaluate(`(() => { const r = document.querySelector('.ProseMirror'); return { c: r.getAttribute('aria-controls'), a: r.getAttribute('aria-activedescendant'), list: document.querySelector('${MENU}')?.id, first: document.querySelector('${OPT}')?.id } })()`)
+        check('메뉴가 열린 동안 편집기 루트가 목록과 지금 항목을 가리킨다(접근성)', aria1.c === aria1.list && aria1.a === aria1.first && !!aria1.a, JSON.stringify(aria1))
+        // ↓ 로 옮기고 다시 ↑ — 지금 항목이 따라간다
+        await key('ArrowDown')
+        const moved = await waitFor(`document.querySelector('${OPT}[aria-selected="true"]')?.dataset.choice === 'bookmark'`, 3000)
+        await key('ArrowUp')
+        const back = await waitFor(`document.querySelector('${OPT}[aria-selected="true"]')?.dataset.choice === 'link'`, 3000)
+        check('↑↓ 로 지금 항목이 옮겨 다닌다', moved && back, JSON.stringify({ moved, back }))
+        // 임베드를 고른다
+        const embedClicked = await clickChoice('embed')
+        const embedOnServer = await blocksOnServer((bs) => bs.some((b) => b.id === P.yt && b.type === 'embed' && b.properties?.url === yt))
+        check('★ 임베드를 고르면 그 문단이 임베드 블록이 되고 서버에 주소가 남는다', embedClicked && embedOnServer !== null, JSON.stringify({ embedClicked, found: embedOnServer?.find((b) => b.id === P.yt) }))
+
+        // 2) 다른 글이 있는 문단에서 북마크 — 링크 글자는 지워지고 글은 남고 북마크가 바로 뒤에
+        const site = `https://www.example.com/a-${stamp}`
+        await focusEnd(P.bm)
+        await paste(site)
+        const up2 = await menuUp()
+        const clicked2 = await clickChoice('bookmark')
+        const after2 = await blocksOnServer((bs) => {
+          const i = bs.findIndex((b) => b.id === P.bm)
+          return i >= 0 && bs[i + 1]?.type === 'bookmark' && bs[i + 1].properties?.url === site && !textOf(bs[i]).includes('http')
+        })
+        const bmIdx = after2?.findIndex((b) => b.id === P.bm) ?? -1
+        check('★ 글이 있는 문단에서 북마크를 고르면 링크 글자는 지워지고 글은 남고 북마크가 문단 바로 뒤에 선다',
+          up2 && clicked2 && after2 !== null && textOf(after2[bmIdx]) === '앞글 ' && after2[bmIdx + 1].properties.url === site,
+          JSON.stringify({ up2, clicked2, bm: after2?.slice(bmIdx, bmIdx + 2) }))
+
+        // 3) Esc — 링크가 남고 블록은 생기지 않는다
+        const escUrl = `https://www.example.com/esc-${stamp}`
+        await focusEnd(P.esc)
+        await paste(escUrl)
+        const up3 = await menuUp()
+        await key('Escape')
+        const gone3 = await menuGone()
+        const kept3 = await evaluate(`!!document.querySelector('[data-block-id="${P.esc}"] a[href="${escUrl}"]')`)
+        const sv3 = await blocksOnServer((bs) => bs.some((b) => b.id === P.esc && (b.title ?? []).some((r) => r.text?.link?.url === escUrl)))
+        check('★ Esc 는 링크를 그대로 두고 블록을 만들지 않는다', up3 && gone3 && kept3 && sv3 !== null && sv3.filter((b) => b.properties?.url === escUrl).length === 0, JSON.stringify({ up3, gone3, kept3 }))
+
+        // 4) 링크로 두기 항목 · 다른 입력은 닫기만
+        const keepUrl = `https://www.example.com/keep-${stamp}`
+        await focusEnd(P.keep)
+        await paste(keepUrl)
+        const up4 = await menuUp()
+        const clicked4 = await clickChoice('link')
+        const sv4 = await blocksOnServer((bs) => bs.some((b) => b.id === P.keep && (b.title ?? []).some((r) => r.text?.link?.url === keepUrl)))
+        await paste(`https://www.example.com/typed-${stamp}`)
+        const up4b = await menuUp()
+        await typeText('x')
+        const gone4b = await menuGone()
+        check('★ 링크로 두기를 고르면 링크만 남는다 — 다른 입력(글자)이면 메뉴가 닫힌다',
+          up4 && clicked4 && sv4 !== null && up4b && gone4b && sv4.filter((b) => b.id === P.keep).length === 1 && sv4.find((b) => b.id === P.keep).type === 'paragraph',
+          JSON.stringify({ up4, clicked4, up4b, gone4b }))
+
+        // 5) 글자 선택 위에 붙이면 그 선택에 링크 — 메뉴 없음
+        const selUrl = `https://www.example.com/sel-${stamp}`
+        await focusEnd(P.sel)
+        // 뒤의 두 글자('다라')를 고른다 — DOM 선택을 직접 세운다(편집기가 selectionchange 로 읽는다)
+        await evaluate(`(() => { const t = document.querySelector('[data-block-id="${P.sel}"] p').firstChild; window.getSelection().setBaseAndExtent(t, 2, t, 4) })()`)
+        await waitFor(`window.getSelection()?.toString() === '다라'`, 3000)
+        await sleep(200)
+        await paste(selUrl)
+        const linkedSel = await waitFor(`(() => { const a = document.querySelector('[data-block-id="${P.sel}"] a[href="${selUrl}"]'); return !!a && a.textContent === '다라' })()`, 5000)
+        await sleep(300)
+        const noMenu5 = !(await evaluate(`!!document.querySelector('${MENU}')`))
+        const sv5 = await blocksOnServer((bs) => bs.some((b) => b.id === P.sel && textOf(b) === '가나다라' && (b.title ?? []).some((r) => r.text?.link?.url === selUrl && r.text.content === '다라')))
+        check('★ 글자를 선택하고 주소를 붙이면 그 선택에 링크가 걸리고 메뉴는 없다', linkedSel && noMenu5 && sv5 !== null, JSON.stringify({ linkedSel, noMenu5 }))
+
+        // 6) 이 워크스페이스의 페이지 주소 → 페이지 멘션
+        const pageUrl = `${BASE}/w/${workspaceId}/${target}`
+        await focusEnd(P.men)
+        await paste(pageUrl)
+        const up6 = await menuUp()
+        const opts6 = await options()
+        const clicked6 = await clickChoice('mention')
+        const sv6 = await blocksOnServer((bs) => bs.some((b) => b.id === P.men && (b.title ?? []).some((r) => r.type === 'mention' && r.mention?.page?.id === target) && !textOf(b).includes('http')))
+        check('★ 이 워크스페이스의 페이지 주소를 붙이면 페이지 멘션을 내놓고, 고르면 그 페이지의 멘션 원자가 된다',
+          up6 && opts6.some((o) => o.choice === 'mention' && o.label === '페이지 멘션') && !opts6.some((o) => o.choice === 'embed') && clicked6 && sv6 !== null,
+          JSON.stringify({ up6, opts6, clicked6 }))
+
+        // 7) 자기 출처의 페이지가 아닌 주소 — 임베드를 내놓지 않는다
+        await focusEnd(P.own)
+        await paste(`${BASE}/w/${workspaceId}`)
+        const up7 = await menuUp()
+        const opts7 = await options()
+        check('자기 출처의 페이지가 아닌 주소에는 임베드도 페이지 멘션도 없다', up7 && opts7.map((o) => o.choice).join() === 'link,bookmark', JSON.stringify(opts7))
+        await key('Escape')
+        await menuGone()
+
+        // 8) 되돌리기 한 번 → 링크로 돌아간다
+        const undoUrl = `https://www.example.com/undo-${stamp}`
+        await focusEnd(P.undo)
+        await paste(undoUrl)
+        await menuUp()
+        await sleep(700)
+        const clicked8 = await clickChoice('bookmark')
+        const became = await blocksOnServer((bs) => bs.some((b) => b.id === P.undo && b.type === 'bookmark'))
+        await key('z', MOD)
+        const backToLink = await waitFor(`!!document.querySelector('[data-block-id="${P.undo}"] a[href="${undoUrl}"]') && !document.querySelector('[data-block-id="${P.undo}"] .blk-bookmark')`, 5000)
+        const sv8 = await blocksOnServer((bs) => bs.some((b) => b.id === P.undo && b.type === 'paragraph' && (b.title ?? []).some((r) => r.text?.link?.url === undoUrl)))
+        check('★ 고른 뒤 되돌리기 한 번이면 링크로 돌아간다', clicked8 && became !== null && backToLink && sv8 !== null, JSON.stringify({ clicked8, backToLink }))
+      } finally {
+        await send('Network.setBlockedURLs', { urls: [] }).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('접속자 표시 (AW-1 · F-05-03)')) { try {
       // 접속자 표시(정본 §3.7 presence [보강 AW-1]) — 두 번째 사람(Node 의 provider · 쿠키 헤더)이 이름을 사칭한 awareness 로 한 블록에 서면
       // 브라우저의 상단 바에 **그 사람의 진짜 이름**으로 아바타가 서고(서버가 덮어쓴다) 그 블록에 표시가 붙는다 · 누르면 그 블록으로 · 브라우저의

@@ -26,10 +26,10 @@
  * 접힘 상태는 여전히 이 컴포넌트의 `useRef` 에 있다(F-01-13: *"문서 데이터로 저장하면 상대 화면이 멋대로 접힘"*).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
-import { NodeSelection, TextSelection } from '@tiptap/pm/state'
+import { NodeSelection, TextSelection, type EditorState } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 import type * as Y from 'yjs'
 
@@ -37,7 +37,7 @@ import { textRun } from '@/lib/contracts/rich-text'
 import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
-import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand, type CodeBlockInfo } from '@/lib/editor/code-block'
+import { codeBlockInfo, separateUndoStep, setCodeCaptionCommand, setCodeLanguageCommand, type CodeBlockInfo } from '@/lib/editor/code-block'
 import { equationBlockInfo, setEquationExpressionCommand } from '@/lib/editor/equation-block'
 import {
   findInlineEquation,
@@ -120,7 +120,8 @@ import { PageIconView } from '../page-icon-view'
 import { customEmojiIdOf, type EmojiLabel } from '@/lib/editor/mention-label'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
 import { collapsedAncestorsAt, findCounter, findStateOf, setFindQuery, stepFind } from '@/lib/editor/find-in-page'
-import { MENU_IDS, comboboxStateOf, comboboxTarget, sameTarget, setComboboxTarget } from '@/lib/editor/combobox-a11y'
+import { MENU_IDS, comboboxKey, comboboxStateOf, comboboxTarget, sameTarget, setComboboxTarget } from '@/lib/editor/combobox-a11y'
+import { pasteUrlKey, pasteUrlState, type PasteUrlRange } from '@/lib/editor/paste-url'
 import { MENTION_NODE } from '@/lib/editor/schema'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
@@ -160,6 +161,11 @@ function mergePageIcons(map: Map<string, PageIcon>, asked: Iterable<string>, ico
 type MentionUi = { open: boolean; query: string; index: number; left: number; top: number }
 
 const CLOSED_MENTION: MentionUi = { open: false, query: '', index: 0, left: 0, top: 0 }
+
+// 주소를 붙여넣은 뒤의 메뉴(EM-2) — 판은 붙여넣은 때만 받는다(번들 예산). 열린 범위는 플러그인이 쥔다.
+type PasteUrlMenuProps = { view: EditorView; range: PasteUrlRange; workspaceId: string; env: { key: typeof pasteUrlKey; comboboxKey: typeof comboboxKey; separate: (state: EditorState) => void } }
+const PASTE_URL_ENV = { key: pasteUrlKey, comboboxKey, separate: separateUndoStep }
+const loadPasteUrlMenu = () => import('./paste-url-menu')
 
 /** `:` 커스텀 이모지 메뉴(7c-3b) — 자리 · 쿼리 · 고른 줄. 후보는 이모지 목록에서 곧바로 찾는다(`searchCustomEmoji`). */
 type EmojiUi = { open: boolean; query: string; index: number; left: number; top: number }
@@ -497,6 +503,8 @@ export function BodyEditor({
   const [selectedBlocks, setSelectedBlocks] = useState(0)
   /** `@` 멘션 메뉴 — 트리거 · 쿼리는 플러그인이(`editor/mention-menu.ts`), 후보 · 팝업 · 키는 여기가. */
   const [mentionUi, setMentionUi] = useState<MentionUi>(CLOSED_MENTION)
+  const [pasteRange, setPasteRange] = useState<PasteUrlRange | null>(null)
+  const [PasteUrlMenu, setPasteUrlMenu] = useState<ComponentType<PasteUrlMenuProps> | null>(null)
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
   const [emojiUi, setEmojiUi] = useState<EmojiUi>(CLOSED_EMOJI)
   /** 이 워크스페이스의 살아 있는 이모지 — `:` 메뉴가 열릴 때마다 다시 읽는다(다른 사람이 방금 올린 것도). 아직 모르면 null. */
@@ -958,6 +966,19 @@ export function BodyEditor({
     },
     [loadEmojiList],
   )
+
+  // 처음 주소를 붙여넣을 때 한 번 받는다(`embed-view.ts` 와 같은 길 — 첫 번들에 싣지 않는다).
+  const pasteOpen = pasteRange !== null
+  useEffect(() => {
+    if (!pasteOpen || PasteUrlMenu !== null) return
+    let gone = false
+    void loadPasteUrlMenu().then((m) => {
+      if (!gone) setPasteUrlMenu(() => m.default)
+    })
+    return () => {
+      gone = true
+    }
+  }, [pasteOpen, PasteUrlMenu])
 
   const syncMentionMenu = useCallback(
     (view: EditorView) => {
@@ -1583,6 +1604,7 @@ export function BodyEditor({
         onTransaction: (v) => {
           syncMenu(v)
           syncMentionMenu(v)
+          setPasteRange(pasteUrlState(v.state))
           syncEmojiMenu(v)
           syncCommentTarget(v)
           remeasureCodeUi(v)
@@ -1615,6 +1637,7 @@ export function BodyEditor({
         setFormatBar(null)
       })
       view.dom.addEventListener('focusin', () => syncFormatToolbar(view))
+      // 주소를 붙여넣었다 — 넣는 쪽(링크 걸기 · 메뉴 열기)은 지연 로드한다.
       view.dom.addEventListener('compositionstart', () => {
         composingIme.current = true
       })
@@ -2206,6 +2229,10 @@ export function BodyEditor({
             </li>
           ))}
         </ul>
+      )}
+
+      {pasteRange !== null && PasteUrlMenu !== null && viewRef.current !== null && (
+        <PasteUrlMenu view={viewRef.current} range={pasteRange} workspaceId={workspaceId} env={PASTE_URL_ENV} />
       )}
 
       {emojiUi.open && emojiPopup && (
