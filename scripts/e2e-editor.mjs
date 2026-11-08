@@ -14755,6 +14755,92 @@ async function main() {
         JSON.stringify({ marks: await marks(), running }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('차트 — 값 하나 (CH-4 · F-04-08)')) { try {
+      // 값 하나 — 뷰의 모든 행의 계산(개수 · 합계 · 평균). 그룹 값의 합 · 평균의 평균이 아니다. 필터가 숫자를 바꾼다. 새로고침 뒤에도 남는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `차트 숫자 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const amount = (await api('POST', `/data-sources/${ds}/properties`, { name: '금액', type: 'number' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      // 가 = 10 · 20 · 30 (합 60 · 평균 20), 나 = 100 → 전체 합 160 · 전체 평균 40 (그룹 평균의 평균은 60)
+      for (const [o, n] of [[ga, 10], [ga, 20], [ga, 30], [na, 100]]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [{ propertyId: stage, value: { type: 'select', select: { id: o } } }, { propertyId: amount, value: { type: 'number', number: n } }],
+        })
+      }
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'chart' })
+      const chartId = made.body?.view?.id
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage } })
+      const numberValue = () => evaluate(`(() => { const e = document.querySelector('[data-testid="chart-number"]'); return e ? Number(e.dataset.value) : null })()`)
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${chartId}` })
+        return waitFor(`!!document.querySelector('[data-testid="db-chart"]')`, 20000)
+      }
+      const openNumber = async () => {
+        await open()
+        return waitFor(`!!document.querySelector('[data-testid="chart-number"]')`, 20000)
+      }
+      const settle = async (expected) => waitFor(`Number(document.querySelector('[data-testid="chart-number"]')?.dataset.value) === ${expected}`, 20000)
+
+      await open()
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 패널이 열릴 때까지 몇 번 누른다
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="chart-kind-number"]')`)); i += 1) {
+        await clickOn('[data-testid="chart-settings"]')
+        await waitFor(`!!document.querySelector('[data-testid="chart-kind-number"]')`, 1500)
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await clickOn('[data-testid="chart-kind-number"]')
+        if (await waitFor(`!!document.querySelector('[data-testid="chart-number"]')`, 8000)) break
+      }
+      check('★ 숫자를 고르면 chart-number 가 서고 값은 행 개수',
+        await settle(4) && (await evaluate(`document.querySelector('[data-testid="chart-number-caption"]')?.textContent`)) === '행 개수',
+        JSON.stringify({ value: await numberValue() }))
+      check('★ 숫자이면 막대 · 점 · 조각이 없다', (await evaluate(`document.querySelectorAll('[data-testid="chart-mark"]').length`)) === 0)
+      const locks = await evaluate(`(() => { const l = document.querySelector('[data-testid="chart-data-labels"]'); const c = document.querySelector('[data-testid="chart-cumulative"]'); return l && c ? [l.disabled, c.disabled] : null })()`)
+      check('★ 데이터 라벨 · 누적 토글은 잠긴다', JSON.stringify(locks) === '[true,true]', JSON.stringify(locks))
+
+      // Y = 합계 — 전체 합
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage, calculation: { property_id: amount, function: 'sum' } } })
+      await openNumber()
+      check('★ Y = 합계 — 모든 행의 합(160) · 한 그룹의 합(60 · 100)과 다르다', await settle(160), JSON.stringify({ value: await numberValue() }))
+      const caption = await evaluate(`document.querySelector('[data-testid="chart-number-caption"]')?.textContent`)
+      check('이름줄은 계산 이름 · 속성 이름', typeof caption === 'string' && caption.includes('금액') && caption.includes('합계'), JSON.stringify(caption))
+
+      // Y = 평균 — 모든 행의 평균(40), 그룹 평균의 평균(60)이 아니다
+      await api('PATCH', `/views/${chartId}`, { groupBy: { property_id: stage, calculation: { property_id: amount, function: 'average' } } })
+      await openNumber()
+      check('★ Y = 평균 — 모든 행의 평균(40) · 그룹 평균의 평균(60)이 아니다', await settle(40), JSON.stringify({ value: await numberValue() }))
+
+      // 뷰의 필터 — 가만 남기면 평균 20
+      await api('PATCH', `/views/${chartId}`, { filter: { property_id: stage, operator: 'equals', value: ga } })
+      await openNumber()
+      check('★ 뷰의 필터가 숫자를 바꾼다(가만 — 평균 20)', await settle(20), JSON.stringify({ value: await numberValue() }))
+
+      const stored = (await api('GET', `/views/${chartId}`)).body?.view?.chart
+      check('★ 종류 number 는 저장되어 새로고침 뒤에도 남는다', stored?.kind === 'number' && (await numberValue()) === 20, JSON.stringify(stored))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.

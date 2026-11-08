@@ -235,6 +235,7 @@ test('cumulativeAllowed — 도넛 · 내림차순 · 개수/합계 아닌 계�
   assert.equal(cumulativeAllowed('bar', 'count_all', null), true)
   assert.equal(cumulativeAllowed('column', 'sum', undefined), true)
   assert.equal(cumulativeAllowed('donut', null, undefined), false)
+  assert.equal(cumulativeAllowed('number', null, undefined), false)
   assert.equal(cumulativeAllowed('column', null, 'descending'), false)
   assert.equal(cumulativeAllowed('column', 'average', undefined), false)
   assert.equal(cumulativeAllowed('column', 'max', undefined), false)

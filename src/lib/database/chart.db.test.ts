@@ -137,6 +137,42 @@ describe('② 그룹 요약', () => {
   })
 })
 
+describe('②-2 값 하나(CH-4) — total', () => {
+  test('★ 계산이 없으면 total 은 행 개수', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { created, s } = await fixture()
+    const view = unwrap(await createView(fx.owner.ctx, created.id, { type: 'chart', groupBy: { property_id: s } }))
+    const page = unwrap(await queryGroupSummary(fx.owner.ctx, view.id))
+    assert.deepEqual(page.total, { kind: 'count', value: 3 })
+  })
+
+  test('★ 합계 · 평균은 모든 행에 한 번 — 그룹 값의 합 · 평균의 평균이 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { created, s, n } = await fixture()
+    const view = unwrap(
+      await createView(fx.owner.ctx, created.id, { type: 'chart', groupBy: { property_id: s, calculation: { property_id: n, function: 'sum' } } }),
+    )
+    assert.deepEqual(unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).total, { kind: 'number', value: 35 })
+    unwrap(await updateView(fx.owner.ctx, view.id, { groupBy: { property_id: s, calculation: { property_id: n, function: 'average' } } }))
+    const avg = unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).total
+    assert.equal(avg.kind, 'number')
+    // 가 = 15 · 나 = 5 → 그룹 평균의 평균은 10 이지만 전체 평균은 35 / 3
+    assert.ok(Math.abs((avg.value ?? 0) - 35 / 3) < 1e-9, `전체 평균 ${avg.value}`)
+  })
+
+  test('★ 뷰의 필터를 지난 행만', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { created, s, n, a } = await fixture()
+    const view = unwrap(
+      await createView(fx.owner.ctx, created.id, { type: 'chart', groupBy: { property_id: s, calculation: { property_id: n, function: 'sum' } } }),
+    )
+    unwrap(await updateView(fx.owner.ctx, view.id, { filter: { property_id: s, operator: 'equals', value: a } }))
+    assert.deepEqual(unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).total, { kind: 'number', value: 30 })
+    unwrap(await updateView(fx.owner.ctx, view.id, { groupBy: { property_id: s } }))
+    assert.deepEqual(unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).total, { kind: 'count', value: 2 })
+  })
+})
+
 describe('③ 차트 설정', () => {
   test('★ 종류가 남는다 · 모르는 종류는 invalid_layout · 키는 합쳐진다', async (t) => {
     if (skipReason) return t.skip(skipReason)

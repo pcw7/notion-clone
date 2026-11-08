@@ -1124,8 +1124,8 @@ function ChartPanel({
         <input
           type="checkbox"
           data-testid="chart-data-labels"
-          checked={chart.layout.data_labels}
-          disabled={locked}
+          checked={chart.layout.data_labels && chart.layout.kind !== 'number'}
+          disabled={locked || chart.layout.kind === 'number'}
           onChange={(e) => void onSaveLayout({ data_labels: e.target.checked })}
         />
         데이터 라벨

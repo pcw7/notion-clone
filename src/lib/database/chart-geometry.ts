@@ -174,6 +174,10 @@ export type SummaryInput = {
   readonly numberSize: number | null
   readonly textMode: TextMode | null
   readonly groups: readonly SummaryGroup[]
+  /** 값 하나 차트(CH-4)의 값 — 뷰의 모든 행의 계산. */
+  readonly total?: CalculationResult
+  /** 값 하나 차트의 이름줄에 쓰는 Y 속성의 이름(개수면 null). */
+  readonly calculationName?: string | null
 }
 
 export type ChartDatum = {
@@ -246,7 +250,7 @@ export function truncateLabel(label: string, max: number): string {
   return `${chars.slice(0, Math.max(1, max - 1)).join('')}…`
 }
 
-export const CHART_KIND_LABEL = { column: '세로 막대', bar: '가로 막대', line: '선', donut: '도넛' } as const
+export const CHART_KIND_LABEL = { column: '세로 막대', bar: '가로 막대', line: '선', donut: '도넛', number: '숫자' } as const
 
 /** 접근성 한 줄 요약 — `svg role="img"` 의 이름. */
 export function chartSummaryLabel(kind: keyof typeof CHART_KIND_LABEL, groupCount: number): string {
@@ -262,7 +266,7 @@ export function chartSummaryLabel(kind: keyof typeof CHART_KIND_LABEL, groupCoun
  * 그룹 순서가 내림차순이 아닐 때. 아니면 저장값은 두고 그리지 않는다.
  */
 export function cumulativeAllowed(kind: string, calculationFunction: Calculation | null, groupSort: string | null | undefined): boolean {
-  if (kind === 'donut') return false
+  if (kind === 'donut' || kind === 'number') return false
   if (groupSort === 'descending') return false
   return calculationFunction === null || calculationFunction === 'count_all' || calculationFunction === 'count_values' || calculationFunction === 'sum'
 }

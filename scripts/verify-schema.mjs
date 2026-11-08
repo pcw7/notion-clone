@@ -5174,6 +5174,29 @@ try {
     else fail(`액션 종류에 send_notification 이 없다 — ${typeDef}`)
   }
 
+  console.log('\n[89] 차트 종류 — 값 하나(number) (0131 / §3.6 [보강 CH-4] ① · CH-4조각)')
+  {
+    const viewRow = (await client.query(`SELECT id FROM view LIMIT 1`)).rows[0]
+    if (!viewRow) {
+      ok('뷰가 없다 — 건너뛴다(CHECK 은 마이그레이션이 세웠다)')
+    } else {
+      const set = `UPDATE view SET configuration = jsonb_set(coalesce(configuration, '{}'::jsonb), '{chart}', $2::jsonb, true) WHERE id = $1`
+      const chart = (over) => JSON.stringify({ kind: 'column', data_labels: false, cumulative: false, ...over })
+      await client.query(set, [viewRow.id, chart({ kind: 'number' })])
+      ok("★ kind 'number' — 통과한다")
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(set, [viewRow.id, chart({ kind: 'gauge' })])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail('★ 모르는 종류(gauge, 0131 뒤에도) — 거부되어야 하는데 통과했다')
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'ck_view_chart_layout') ok('★ 모르는 종류(gauge, 0131 뒤에도) — ck_view_chart_layout 가 거부함')
+        else fail(`★ 모르는 종류 — ck_view_chart_layout 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+  }
+
 
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')

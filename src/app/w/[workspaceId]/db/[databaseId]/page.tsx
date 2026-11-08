@@ -415,7 +415,11 @@ export default async function DatabasePage({
   // ── 차트 ── 도구줄의 "차트" 패널(종류 · X축 · Y값 · 그룹 보이기)은 구조를 고칠 수 있는 사람에게만(CH-2 ⑤)
   const chartSummary =
     chartPage !== null && chartPage.ok && groupColumn !== undefined && isGroupableType(groupColumn.type)
-      ? { ...chartPage.value, propertyName: groupColumn.name }
+      ? {
+          ...chartPage.value,
+          propertyName: groupColumn.name,
+          calculationName: view.value.columns.find((c) => c.propertyId === chartPage.value.calculation?.property_id)?.name ?? null,
+        }
       : null
   const chartSettings: ChartSettings | undefined =
     isChart && access.canEditStructure

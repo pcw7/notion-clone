@@ -1008,7 +1008,11 @@ export type GroupSummary = {
 export type GroupSummaryPage = Pick<
   GroupsPage,
   'propertyId' | 'propertyType' | 'calculation' | 'statusBy' | 'dateUnit' | 'numberSize' | 'textMode' | 'today'
-> & { readonly groups: readonly GroupSummary[] }
+> & {
+  readonly groups: readonly GroupSummary[]
+  /** 값 하나 차트(CH-4)의 값 — 뷰를 지나는 모든 행에 `calculation`(없으면 모두 세기)을 한 번. 그룹 값을 더하지 않는다. */
+  readonly total: CalculationResult
+}
 
 /**
  * 그룹마다 개수와 계산 값만(차트 · CH-1 · 정본 §3.6 [보강 CH-1] ④) — 행은 읽지 않는다. `queryGroups` 의 머리와 같은 질의(`readGroupCounts`)라
@@ -1024,6 +1028,7 @@ export async function queryGroupSummary(
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     const counted = await readGroupCounts(tx, board)
+    const total = await readTotal(tx, board)
     const hidden = new Set(board.groupBy.hidden ?? [])
     const groups: GroupSummary[] = catalogOf(board, counted)
       .map((g) => ({
@@ -1047,9 +1052,32 @@ export async function queryGroupSummary(
         textMode: board.textMode,
         today: board.dateUnit === 'relative' ? board.today : null,
         groups,
+        total,
       },
     } as const
   })
+}
+
+/**
+ * 뷰를 지나는 모든 행의 계산 하나(CH-4) — 그룹 질의와 같은 WHERE(권한 · 필터 · 검색어 · 하위 항목의 부모만)에서 행을 한 번씩만 고르고
+ * (여러 선택 그룹이 행을 겹쳐 세지 않게 `DISTINCT`) 열 집계와 같은 통계 식(`statsJsonSql`)으로 센다. 계산이 없으면 모두 세기.
+ */
+async function readTotal(tx: Tx, board: Board): Promise<CalculationResult> {
+  const params = new ParamBag(2)
+  const c = compileBoard(board, params, false)
+  const calc = board.calculation
+  const prop = calc === null ? null : params.bind(calc.property_id)
+  const completeParam =
+    calc !== null && board.types.get(calc.property_id) === 'status'
+      ? params.bind((await completeIdsOf(tx, [calc.property_id])).get(calc.property_id) ?? [])
+      : null
+  const row = await tx.queryOne<{ n: number; s: StatsRow | null }>(
+    `WITH r AS (SELECT DISTINCT p.id ${c.from} WHERE ${c.where})
+     SELECT count(*)::int AS n${prop === null ? '' : `, ${statsJsonSql('cv', completeParam)} AS s`}
+       FROM r${prop === null ? '' : ` LEFT JOIN page_property_value cv ON cv.page_id = r.id AND cv.property_id = ${prop}`}`,
+    [board.dataSourceId, ...params.values],
+  )
+  return calculationResult(calc?.function ?? 'count_all', columnStatsOf(row.n, row.s ?? EMPTY_STATS_ROW))
 }
 
 /**
