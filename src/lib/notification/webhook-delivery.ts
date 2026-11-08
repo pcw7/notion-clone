@@ -62,6 +62,7 @@ export async function runWebhookDelivery(
         WHERE ((d.status = 'collecting' AND d.window_end <= $1) OR (d.status = 'pending' AND d.next_attempt_at <= $1))
           AND (d.locked_until IS NULL OR d.locked_until < $1)
           AND ($3::uuid[] IS NULL OR w.workspace_id = ANY($3::uuid[]))
+          AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = w.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
         ORDER BY coalesce(d.next_attempt_at, d.window_end), d.id
         LIMIT $2
         FOR UPDATE OF d SKIP LOCKED`,

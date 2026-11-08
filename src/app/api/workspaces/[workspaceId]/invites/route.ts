@@ -51,7 +51,7 @@ export async function POST(
   if (!session.ok) {
     // 멤버가 아니거나 워크스페이스가 없으면 **둘 다 404** 다.
     // 403 을 주면 "그 워크스페이스는 존재한다"를 알려주는 셈이 된다.
-    if (session.reason === 'not_a_member' || session.reason === 'member_inactive') {
+    if (session.reason === 'not_a_member' || session.reason === 'member_inactive' || session.reason === 'workspace_deleted') {
       return Response.json({ error: 'not_found' }, { status: 404 })
     }
     if (session.reason === 'sso_required') {

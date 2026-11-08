@@ -41,7 +41,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
             u.name AS name,
             ue.email::text AS email,
             (SELECT count(*)
-               FROM workspace_member m
+               FROM workspace_member m JOIN workspace w ON w.id = m.workspace_id AND w.deleted_at IS NULL
               WHERE m.user_id = u.id AND m.status = 'active') AS workspace_count
        FROM user_session s
        JOIN "user" u ON u.id = s.user_id

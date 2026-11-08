@@ -16,6 +16,8 @@ export const AUDIT_EVENT_TYPES = [
   'workspace.member_role_changed',
   'workspace.setting_changed',
   'workspace.exported',
+  'workspace.deleted',
+  'workspace.restored',
   'page.permission_changed',
   'page.publish_changed',
   'page.permanently_deleted',

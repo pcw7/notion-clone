@@ -505,7 +505,7 @@ function rejection(reason: CollabRejection): Error & { readonly reason: CollabRe
 }
 
 function sessionRejection(reason: SessionDenialReason): CollabRejection {
-  if (reason === 'not_a_member' || reason === 'member_inactive') return 'not_found'
+  if (reason === 'not_a_member' || reason === 'member_inactive' || reason === 'workspace_deleted') return 'not_found'
   if (reason === 'sso_required') return 'sso_required'
   return 'unauthenticated'
 }

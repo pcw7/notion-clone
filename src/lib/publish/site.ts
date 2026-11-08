@@ -137,6 +137,7 @@ export async function resolveSiteTokenIn(tx: Tx, domain: string, slug: string): 
   const row = await tx.queryMaybe<{ token: string }>(
     `SELECT l.token
        FROM site_domain d
+       JOIN workspace w ON w.id = d.workspace_id AND w.deleted_at IS NULL -- 지운 워크스페이스의 사이트 주소는 없는 주소다(AD-1 ③)
        JOIN public_link l ON l.workspace_id = d.workspace_id AND l.slug = $2
       WHERE d.name = $1 AND l.enabled AND l.token IS NOT NULL`,
     [domain, slug],

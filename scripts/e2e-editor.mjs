@@ -3607,6 +3607,68 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('워크스페이스 삭제 (AD-1 · F-14-13)')) { try {
+      // 설정의 워크스페이스 일반 절 끝 위험 구역(정본 §3.1 [보강 AD-1]) — 이 판이 함께 쓰는 워크스페이스를 지우지 않도록 따로 만든 워크스페이스를 지운다.
+      // 브라우저 세션을 그 소유자로 바꾸고 끝에서 주 세션으로 되돌린다.
+      const stamp = Date.now() % 100000
+      const delName = `삭제될 곳 ${stamp}`
+      const delWs = await createBareWorkspace(delName)
+      const delOwner = await joinAs(delWs, await createUser(`삭제 소유자 ${stamp}`), 'owner')
+      const delMate = await joinAs(delWs, await createUser(`삭제 멤버 ${stamp}`), 'member')
+      const { createPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+      const { restoreWorkspace } = await import(new URL('../src/lib/workspace/delete.ts', import.meta.url).href)
+      const delPage = await createPage(delOwner.ctx, { title: titleFromPlainText(`삭제 전 게시 ${stamp}`), privateTop: true })
+      const published = await publishPage(delOwner.ctx, delPage.id)
+      const publicToken = published.ok ? published.value.token : null
+      const as = (who) => ({ cookie: `nc_session=${who.token}` })
+      const status = async (path, who) => (await fetch(`${BASE}${path}`, { headers: who ? as(who) : {}, redirect: 'manual' })).status
+      const GENERAL = `${BASE}/w/${delWs}/settings?s=workspace.general`
+      check('전제 — 게시한 페이지는 공개로 열리고, 소유자 · 멤버는 워크스페이스를 연다',
+        publicToken !== null && (await status(`/p/${publicToken}`)) === 200 && (await status(`/w/${delWs}`, delOwner)) === 200 && (await status(`/w/${delWs}`, delMate)) === 200)
+
+      const ownerHtml = await (await fetch(GENERAL, { headers: as(delOwner) })).text()
+      const mateHtml = await (await fetch(GENERAL, { headers: as(delMate) })).text()
+      check('★ 위험 구역은 소유자에게만 선다 — 멤버의 서버 렌더에는 없다',
+        ownerHtml.includes('data-testid="delete-workspace-panel"') && !mateHtml.includes('data-testid="delete-workspace-panel"'))
+      const mateDelete = await fetch(`${BASE}/api/workspaces/${delWs}`, { method: 'DELETE', headers: { ...json, ...as(delMate) }, body: JSON.stringify({ confirmName: delName }) })
+      check('멤버가 API 를 직접 불러도 403 이고 지워지지 않는다', mateDelete.status === 403 && (await status(`/w/${delWs}`, delOwner)) === 200, String(mateDelete.status))
+      const wrongApi = await fetch(`${BASE}/api/workspaces/${delWs}`, { method: 'DELETE', headers: { ...json, ...as(delOwner) }, body: JSON.stringify({ confirmName: `${delName} ` }) })
+      check('이름이 다르면 API 는 400 name_mismatch', wrongApi.status === 400 && (await wrongApi.json()).error === 'name_mismatch')
+
+      try {
+        await send('Network.setCookie', { name: 'nc_session', value: delOwner.token, domain: 'localhost', path: '/', httpOnly: true })
+        await send('Page.navigate', { url: GENERAL })
+        await waitHydrated('[data-testid="delete-workspace-button"]')
+        await clickSelector('[data-testid="delete-workspace-button"]')
+        check('확인 창은 "모든 멤버가 이 워크스페이스를 잃습니다" 를 말한다',
+          await waitFor(`(document.querySelector('[data-testid="delete-workspace-dialog"]')?.textContent ?? '').includes('모든 멤버가 이 워크스페이스를 잃습니다')`, 5000))
+        const confirmDisabled = () => evaluate(`document.querySelector('[data-testid="delete-workspace-confirm"]')?.disabled === true`)
+        check('이름을 치기 전에는 삭제 버튼이 꺼져 있다', await confirmDisabled())
+        await clickSelector('[data-testid="delete-workspace-name"]')
+        await send('Input.insertText', { text: `${delName}x` })
+        check('★ 이름이 다르면 삭제 버튼이 꺼진 채다', await confirmDisabled())
+        await evaluate(`document.querySelector('[data-testid="delete-workspace-name"]').select()`)
+        await send('Input.insertText', { text: delName })
+        check('이름을 그대로 치면 삭제 버튼이 켜진다', await waitFor(`document.querySelector('[data-testid="delete-workspace-confirm"]')?.disabled === false`, 5000))
+        await clickSelector('[data-testid="delete-workspace-confirm"]')
+        check('★ 지우면 소유자는 다른 곳으로 옮겨 간다(다른 워크스페이스가 없으니 처음 화면)',
+          await waitFor(`location.pathname === '/'`, 15000), await evaluate('location.pathname'))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+
+      check('★ 지운 뒤 소유자 · 멤버 모두 GET /w/{id} 가 404 이다',
+        (await status(`/w/${delWs}`, delOwner)) === 404 && (await status(`/w/${delWs}`, delMate)) === 404 && (await status(`/w/${delWs}/settings`, delOwner)) === 404)
+      check('지운 워크스페이스의 API 도 404 다', (await status(`/api/workspaces/${delWs}/pages`, delOwner)) === 404)
+      check('★ 그 워크스페이스에서 게시한 페이지는 공개로도 404 다', (await status(`/p/${publicToken}`)) === 404)
+
+      const restored = await restoreWorkspace(delWs)
+      check('★ 운영자 복구 — 소유자 · 멤버 접근과 공개 페이지가 돌아온다',
+        restored.ok && (await status(`/w/${delWs}`, delOwner)) === 200 && (await status(`/w/${delWs}`, delMate)) === 200 && (await status(`/p/${publicToken}`)) === 200,
+        JSON.stringify(restored))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) { try {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.

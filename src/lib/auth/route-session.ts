@@ -5,6 +5,7 @@
  * 있지만 **거부 코드 매핑을 한 곳에서만 결정해야** 한다:
  *
  *   not_a_member / member_inactive / 없는 워크스페이스  →  **404**
+ *   workspace_deleted(지운 워크스페이스 · AD-1)         →  **404**
  *   sso_required                                        →  **403**
  *   no_session / expired / revoked                      →  **401**
  *
@@ -39,7 +40,7 @@ export async function requireWorkspaceSession(rawWorkspaceId: string): Promise<R
   const session = await resolveSessionContext(await readSessionToken(), workspaceId)
   if (session.ok) return { ok: true, ctx: session.context }
 
-  if (session.reason === 'not_a_member' || session.reason === 'member_inactive') {
+  if (session.reason === 'not_a_member' || session.reason === 'member_inactive' || session.reason === 'workspace_deleted') {
     return { ok: false, response: Response.json({ error: 'not_found' }, { status: 404 }) }
   }
   if (session.reason === 'mfa_required') {

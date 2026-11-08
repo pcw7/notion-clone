@@ -28,6 +28,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:migrate:status": "node scripts/migrate.mjs --status",
     "db:verify:schema": "node scripts/verify-schema.mjs",
+    "workspace:restore": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/workspace-restore.mjs",
     "plan:set": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/set-plan.mjs",
     "test": "node --test \"src/**/*.test.ts\"",
     "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs",

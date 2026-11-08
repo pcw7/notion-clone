@@ -62,6 +62,7 @@ export async function runAutomationDispatch(
          JOIN automation a ON a.id = e.automation_id
         WHERE ((e.status = 'collecting' AND e.window_end <= $1) OR (e.status = 'dispatching' AND e.locked_until < $1))
           AND ($3::uuid[] IS NULL OR a.workspace_id = ANY($3::uuid[]))
+          AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = a.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
         ORDER BY e.window_end, e.id
         LIMIT $2
         FOR UPDATE OF e SKIP LOCKED`,
