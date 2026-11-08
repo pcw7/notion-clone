@@ -5308,6 +5308,37 @@ try {
   }
 
 
+  console.log('\n[92] 검증 만료 알림 — 일의 종류 · 알림 종류 · 활동 이벤트 (0134 / §3.5 [보강 VF-1] ⑤ · VF-3조각)')
+  {
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'r92', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId],
+    )
+    const eventId = randomUUID()
+    await client.query(
+      `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, 'verification.expired', '{}'::jsonb, now())`,
+      [eventId, wsId, pageId, userId],
+    )
+    ok('★ 활동 이벤트 종류 verification.expired — 통과한다')
+    const put = `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+                 VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, 'verification:x', now())`
+    await client.query(put, [randomUUID(), userId, wsId, pageId, eventId, 'verification_expired'])
+    ok('★ 알림 종류 verification_expired — 통과한다')
+    await mustReject('★ 모르는 알림 종류(0134 뒤에도)', put, [randomUUID(), userId, wsId, pageId, eventId, 'carrier_pigeon'])
+    await mustReject('모르는 활동 이벤트 종류(0134 뒤에도)', `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, 'verification.exploded', '{}'::jsonb, now())`, [randomUUID(), wsId, pageId, userId])
+    const putJob = `INSERT INTO scheduled_job (id, kind, run_at, payload, dedupe_key) VALUES ($1, $2, now(), '{}'::jsonb, $3)`
+    await client.query(putJob, [randomUUID(), 'verification_expire', `probe-${randomUUID()}`])
+    ok('★ 일의 종류 verification_expire — 통과한다')
+    await mustReject('★ 모르는 일의 종류(0134 뒤에도)', putJob, [randomUUID(), 'verification_explode', null])
+    const kindDef = (await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)).rows[0]?.def ?? ''
+    if (['version_gc', 'reminder_fire', 'automation_webhook', 'verification_expire'].every((k) => kindDef.includes(`'${k}'`))) ok('앞의 일의 종류도 그대로 있다')
+    else fail(`일의 종류가 어긋났다: ${kindDef}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

@@ -41,7 +41,7 @@ import Link from '@/app/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
-import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine } from './inbox-messages'
+import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine, verificationInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -86,6 +86,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   reminder: '리마인더',
   person_property_assigned: '담당',
   automation: '자동화',
+  verification_expired: '검증 만료',
 }
 
 const UNTITLED = '제목 없음'
@@ -325,6 +326,7 @@ export function InboxList({
                   reminderInboxLine(item.reminder) ??
                   assignmentInboxLine(item.assignment) ??
                   (item.automation ? automationInboxLine(item.automation) : null) ??
+                  verificationInboxLine(item.kind) ??
                   (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 

@@ -55,6 +55,8 @@ export const NOTIFICATION_KINDS = [
   'access_granted',
   // 버튼 · DB automation 의 알림 보내기 액션(AN-1 · 0130) — 실행마다 따로 간다.
   'automation',
+  // 검증 만료(VF-3 · 0134) — 소유자(비었으면 검증한 사람)에게 한 번.
+  'verification_expired',
 ] as const
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]
 

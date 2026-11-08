@@ -32099,6 +32099,91 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검증 만료 알림 (VF-3 · F-03-23)')) { try {
+      // 소유자 칸에 나를 두고 몇 초 뒤 만료로 검증 → 한 번짜리 잡이 서고(SQL) → 때가 지나 잡의 일을 돌리면(워커 대신 이 판이 부른다)
+      // 인박스에 "검증이 만료되었습니다" 한 줄 · 칸은 "만료" / 다시 돌려도 그대로 한 줄 / 만료 전에 다시 검증한 행은 알림이 없다.
+      // 알림은 끝에 보관한다(뒤의 인박스 절은 안 읽은 수를 센다). 요금제는 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { runVerificationExpire } = await import(new URL('../src/lib/notification/verification-expire.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      let noteIds = []
+      try {
+        await setWorkspacePlan(workspaceId, 'business')
+        const db = (await api('POST', '/databases', { name: `검증만료 ${stamp}` })).body.database
+        const view = db.defaultViewId
+        const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const newRow = async (title) =>
+          (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const rowA = await newRow('만료될 행')
+        const rowB = await newRow('다시 검증한 행')
+        const added = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '검증', type: 'verification' })
+        const pid = added.body?.property?.id
+        const ownerProp = (added.body?.schema?.properties ?? []).find((p) => p.name === '소유자' && p.type === 'people')?.id
+        check('전제 — 검증 속성과 소유자 속성이 선다', added.status === 201 && typeof pid === 'string' && typeof ownerProp === 'string', JSON.stringify(added.body).slice(0, 160))
+
+        const soon = new Date(Date.now() + 4000).toISOString()
+        const putA = await api('PUT', `/rows/${rowA}/verification`, { propertyId: pid, expiresAt: soon })
+        const me = putA.body?.cell?.verified_by
+        const setOwner = await api('PATCH', `/rows/${rowA}`, { cells: [{ propertyId: ownerProp, value: { type: 'people', people: [{ id: me }] } }] })
+        const jobs = await dbQuery(`SELECT run_at, payload FROM scheduled_job WHERE kind = 'verification_expire' AND payload ->> 'rowId' = $1`, [rowA])
+        check('★ 만료가 있는 검증은 한 번짜리 잡이 선다 — run_at 이 만료 시각',
+          putA.status === 200 && setOwner.status === 200 && jobs.length === 1 && new Date(jobs[0].run_at).toISOString() === soon, JSON.stringify([putA.status, setOwner.status, jobs]))
+
+        // 다시 검증한 행 — 옛 만료의 잡은 남고, 칸은 새 만료다
+        const putB1 = await api('PUT', `/rows/${rowB}/verification`, { propertyId: pid, expiresAt: soon })
+        await api('PATCH', `/rows/${rowB}`, { cells: [{ propertyId: ownerProp, value: { type: 'people', people: [{ id: me }] } }] })
+        const putB2 = await api('PUT', `/rows/${rowB}/verification`, { propertyId: pid, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString() })
+        check('다시 검증하면 잡이 하나 더 선다(옛 잡은 지우지 않는다)',
+          putB1.status === 200 && putB2.status === 200
+            && (await dbQuery(`SELECT 1 FROM scheduled_job WHERE kind = 'verification_expire' AND payload ->> 'rowId' = $1`, [rowB])).length === 2)
+
+        // 때가 지날 때까지 — 잡의 내용으로 일을 돌린다(워커가 하는 것과 같은 함수)
+        await sleep(Math.max(0, new Date(soon).getTime() - Date.now()) + 600)
+        const runJob = async (row) => {
+          let made = 0
+          for (const j of await dbQuery(`SELECT payload FROM scheduled_job WHERE kind = 'verification_expire' AND payload ->> 'rowId' = $1 ORDER BY run_at`, [row])) {
+            made += await runVerificationExpire(j.payload, new Date())
+          }
+          return made
+        }
+        const madeA = await runJob(rowA)
+        const madeB = await runJob(rowB)
+        const countOf = async (row) => (await dbQuery(`SELECT id FROM notification WHERE page_id = $1 AND kind = 'verification_expired'`, [row])).length
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        const lineA = `[...document.querySelectorAll('[data-testid="inbox-item"]')].filter((li) => li.querySelector('a')?.getAttribute('href')?.includes('${rowA}') && li.textContent.includes('검증이 만료되었습니다'))`
+        const shown = await waitFor(`${lineA}.length === 1`, 15000)
+        const lineHref = await evaluate(`${lineA}[0]?.querySelector('a')?.getAttribute('href') ?? null`)
+        check('★ 소유자의 인박스에 "검증이 만료되었습니다" 한 줄 — 그 행으로 가는 링크', madeA === 1 && shown && lineHref === `/w/${workspaceId}/${rowA}`, JSON.stringify([madeA, shown, lineHref]))
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('tr[data-row-id="${rowA}"] td[data-property-id="${pid}"] [data-testid="db-verification"]')`, 20000)
+        const cellText = await evaluate(`document.querySelector('tr[data-row-id="${rowA}"] td[data-property-id="${pid}"] [data-testid="db-verification"]')?.textContent ?? ''`)
+        check('★ 칸은 "만료"', cellText === '만료', cellText)
+
+        check('★ 만료 전에 다시 검증한 행은 알림이 없다', madeB === 0 && (await countOf(rowB)) === 0, JSON.stringify([madeB, await countOf(rowB)]))
+
+        const again = await runJob(rowA)
+        check('★ 잡의 일을 다시 돌려도 알림은 한 줄 그대로', again === 0 && (await countOf(rowA)) === 1, JSON.stringify([again, await countOf(rowA)]))
+
+        noteIds = (await dbQuery(`SELECT id FROM notification WHERE page_id = ANY($1::uuid[])`, [[rowA, rowB]])).map((r) => r.id)
+      } finally {
+        if (noteIds.length > 0) {
+          await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, {
+            method: 'PATCH', headers: authed, body: JSON.stringify({ ids: noteIds, read: true, archived: true }),
+          })
+        }
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.
