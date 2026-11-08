@@ -33,6 +33,8 @@ export const SETTING_PANELS = [
   { id: 'password', section: 'account.security', visible: () => true },
   // 2단계 인증(8i-2b) — 누구나 본다(켜려면 비밀번호가 있어야 한다는 것은 패널이 말한다). 판정 · 쓰기는 `auth/mfa.ts`.
   { id: 'mfa', section: 'account.security', visible: () => true },
+  // 계정 삭제(AD-3) — 누구나(게스트 포함). "내 계정" 절의 끝(위험 구역). 막힘 판정 · 삭제는 `/api/account/deletion` 이 한다.
+  { id: 'account-delete', section: 'account.security', visible: () => true },
   // 이 기기의 고대비 · 움직임 줄이기(10d-2) — 누구나. 계정의 설정 표가 아니라 이 브라우저의 쿠키다(`settings/device-preferences.ts`).
   { id: 'accessibility', section: 'account.preferences', visible: () => true },
   { id: 'members', section: 'workspace.people', visible: (ctx: SessionContext) => canListMembers(ctx.role) },

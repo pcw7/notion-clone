@@ -3736,6 +3736,73 @@ async function main() {
         JSON.stringify({ again: again.status, verified: verified.status, newUser }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('계정 삭제 — 화면 (AD-3 · F-14-13)')) { try {
+      // 계정 삭제 화면(정본 §3.1 [보강 AD-3]) — 설정 "내 계정" 절 끝의 위험 구역. 스스로 데이터를 만든다(E2E_ONLY 로 홀로 돈다).
+      const stamp = Date.now() % 100000
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const me = await createUser(`떠날 화면 ${stamp}`)
+      const solo = await createBareWorkspace(`화면 혼자 ${stamp}`)
+      const mineSolo = await joinAs(solo, me, 'owner')
+      const shared = await createBareWorkspace(`화면 공동 ${stamp}`)
+      await joinAs(shared, await createUser(`화면 대표 ${stamp}`), 'owner')
+      await joinAs(shared, me, 'member')
+      const blocked = await createBareWorkspace(`화면 유일 ${stamp}`)
+      const mineBlocked = await joinAs(blocked, me, 'owner')
+      const heir = await joinAs(blocked, await createUser(`화면 후임 ${stamp}`), 'member')
+      const SECURITY = `${BASE}/w/${solo}/settings?s=account.security`
+      const rowSel = (id) => `[data-testid="account-delete-row"][data-workspace-id="${id}"]`
+      const confirmDisabled = () => evaluate(`document.querySelector('[data-testid="account-delete-confirm"]')?.disabled === true`)
+      const typeEmail = async (text) => {
+        await clickSelector('[data-testid="account-delete-email"]')
+        await evaluate(`document.querySelector('[data-testid="account-delete-email"]').select()`)
+        await send('Input.insertText', { text })
+      }
+      /** 하이드레이션 전의 클릭은 사라진다 — 확인 창이 뜰 때까지 다시 누른다 */
+      const openDialog = async () => {
+        await send('Page.navigate', { url: SECURITY })
+        await waitHydrated('[data-testid="account-delete-open"]')
+        for (let i = 0; i < 10; i += 1) {
+          await clickSelector('[data-testid="account-delete-open"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="account-delete-dialog"]')`, 700)) break
+        }
+        return waitFor(`document.querySelectorAll('[data-testid="account-delete-row"]').length === 3`, 8000)
+      }
+      const outcomeOf = (id) => evaluate(`document.querySelector('${rowSel(id)}')?.dataset.outcome ?? ''`)
+
+      try {
+        await send('Network.setCookie', { name: 'nc_session', value: mineSolo.token, domain: 'localhost', path: '/', httpOnly: true })
+        check('★ 설정 "내 계정" 절에 계정 삭제 위험 구역이 선다', await (async () => {
+          await send('Page.navigate', { url: SECURITY })
+          return waitFor(`!!document.querySelector('[data-testid="account-delete-panel"]')`, 15000)
+        })())
+        check('★ 열면 워크스페이스마다 한 줄 — 혼자 delete · 공동 leave · 유일 owner 는 blocked', await openDialog()
+          && (await outcomeOf(solo)) === 'delete' && (await outcomeOf(shared)) === 'leave' && (await outcomeOf(blocked)) === 'blocked')
+        check('막힌 줄은 까닭과 그 워크스페이스의 멤버 설정 링크를 가진다',
+          await evaluate(`(() => { const r = document.querySelector('${rowSel(blocked)}'); const a = r?.querySelector('a'); return !!a && a.getAttribute('href') === '/w/${blocked}/settings?s=workspace.people' && r.textContent.includes('먼저 해결해야 합니다') && r.textContent.includes('유일한 owner') })()`))
+        check('경고 두 줄 — 되돌릴 수 없다 · 내보내기 먼저(링크)',
+          await evaluate(`(() => { const d = document.querySelector('[data-testid="account-delete-dialog"]'); return d.textContent.includes('되돌릴 수 없습니다') && d.textContent.includes('먼저 내보내기를 받아 두세요') && !!d.querySelector('a[href*="/settings?s=workspace.general"]') })()`))
+        await typeEmail(me.email)
+        check('★ 막힌 줄이 있으면 이메일을 맞게 쳐도 삭제 단추는 꺼진 채다', await confirmDisabled())
+
+        // 후임을 owner 로 올리고 다시 연다
+        const promote = await fetch(`${BASE}/api/workspaces/${blocked}/members/${heir.userId}`, { method: 'PATCH', headers: { ...json, cookie: `nc_session=${mineBlocked.token}` }, body: JSON.stringify({ role: 'owner' }) })
+        check('전제 — 후임을 owner 로 올린다', promote.ok, String(promote.status))
+        check('★ 다시 열면 그 줄은 leave 로 바뀌고 막힌 줄이 없다', await openDialog() && (await outcomeOf(blocked)) === 'leave'
+          && (await evaluate(`!document.querySelector('[data-outcome="blocked"]')`)))
+        check('이메일을 치기 전에는 꺼져 있다', await confirmDisabled())
+        await typeEmail(`x${me.email}`)
+        check('★ 이메일이 다르면 꺼진 채다', await confirmDisabled())
+        await typeEmail(me.email.toUpperCase())
+        check('★ 이메일을 (대소문자 달리) 그대로 치면 켜진다', await waitFor(`document.querySelector('[data-testid="account-delete-confirm"]')?.disabled === false`, 5000))
+        await clickSelector('[data-testid="account-delete-confirm"]')
+        check('★ 지우면 로그인 화면으로 간다(함께 로그인한 계정이 없다)', await waitFor(`location.pathname === '/login'`, 15000), await evaluate('location.pathname'))
+        const after = (await dbQuery(`SELECT status FROM "user" WHERE id = $1`, [me.userId]))[0]
+        check('★ 사람 행은 deleted 이다', after?.status === 'deleted', JSON.stringify(after))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) { try {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
