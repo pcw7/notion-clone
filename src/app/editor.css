@@ -819,6 +819,26 @@
   height: 100%;
   border: 0;
 }
+/* 높이 손잡이(EM-3) — 판 아래 가장자리. 끄는 동안은 iframe 이 마우스를 삼키지 않게 한다 */
+.blk-embed-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 0.5rem;
+  cursor: row-resize;
+  touch-action: none;
+  background: transparent;
+}
+.blk-embed-resize:hover,
+.blk-embed-resize:focus-visible,
+.blk-embed-resizing .blk-embed-resize {
+  background: #93c5fd;
+  outline: none;
+}
+.blk-embed-resizing .blk-embed-iframe {
+  pointer-events: none;
+}
 .blk-embed-facade,
 .blk-embed-refused {
   display: flex;

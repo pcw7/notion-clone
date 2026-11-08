@@ -8,6 +8,9 @@
  */
 
 import { isBookmarkUrl } from './bookmark-block.ts'
+import { isOwnHostUrl } from './embed-origin.ts'
+
+export { isOwnHostUrl, ownHostsOf } from './embed-origin.ts'
 
 export type EmbedProvider =
   | 'youtube'
@@ -234,35 +237,21 @@ export function embedSourceOf(url: string): EmbedSource {
   return { kind: 'generic', provider: 'generic', label: parsed.hostname.replace(/^www\./, ''), src: parsed.href, height: GENERIC_EMBED_HEIGHT }
 }
 
-/** 이 앱 자신의 호스트(`host:port`)인가 — 스킴은 따지지 않는다(http · https 어느 쪽이든 자기다). */
-export function isOwnHostUrl(url: string, ownHosts: readonly string[]): boolean {
-  try {
-    const host = new URL(url).host.toLowerCase()
-    return ownHosts.some((own) => own.toLowerCase() === host)
-  } catch {
-    return false
-  }
-}
-
-/** 출처(`https://host:port`) 또는 호스트 목록 → `host:port` 목록. 읽지 못하는 것은 버린다. */
-export function ownHostsOf(origins: readonly (string | null | undefined)[]): string[] {
-  const out: string[] = []
-  for (const origin of origins) {
-    if (!origin) continue
-    try {
-      const host = new URL(origin.includes('://') ? origin : `https://${origin}`).host
-      if (host !== '' && !out.includes(host)) out.push(host)
-    } catch {
-      // 버린다
-    }
-  }
-  return out
-}
-
 /** 편집기 · 공개 화면이 부르는 하나 — 자기 출처의 주소는 그리지 않는다(`allow-same-origin` 과 겹치면 격리가 풀리고 끝없이 중첩된다 · 정본 ③). */
 export function embedPlanOf(url: string, ownHosts: readonly string[]): EmbedSource {
   if (isOwnHostUrl(url, ownHosts)) {
     return { kind: 'refused', reason: '이 앱 자신의 주소는 임베드할 수 없습니다 — 격리가 풀리고 화면이 끝없이 겹칩니다.' }
   }
   return embedSourceOf(url)
+}
+
+/** 높이를 정할 수 있는 판인가 — 정한 높이 모양(비율 모양 동영상은 폭을 따른다 · 정본 [보강 EM-3] ①). */
+export function isHeightResizable(plan: EmbedSource): plan is EmbedKnown | EmbedGeneric {
+  return plan.kind === 'generic' || (plan.kind === 'known' && plan.aspect === undefined)
+}
+
+/** 판의 높이(px) — 저장값이 있으면 그것, 없으면 서비스의 기본. 비율 모양 · 그리지 않는 판은 null. */
+export function embedStageHeight(plan: EmbedSource, stored: number | null): number | null {
+  if (!isHeightResizable(plan)) return null
+  return stored ?? (plan.kind === 'known' ? plan.height ?? GENERIC_EMBED_HEIGHT : plan.height)
 }

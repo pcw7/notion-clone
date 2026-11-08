@@ -27,6 +27,7 @@ import {
   type MenuItem,
 } from './block-menu.ts'
 import { findContainerById } from './pm-blocks.ts'
+import { swapBookmarkEmbedCommand } from './file-block-commands.ts'
 import type { CommandDeps } from './commands.ts'
 import type { EditorBlock } from './document.ts'
 
@@ -72,7 +73,7 @@ describe('blockMenuItems — 무엇이 켜져 있는가', () => {
     const plain = blockMenuItems(select(stateOf([blk(a, 'paragraph', 'A')]), a), deps()).map((i) => i.id)
     const page = blockMenuItems(select(stateOf([blk(p, 'page', '하위')]), p), deps()).map((i) => i.id)
     // '코드'(8a-2) · '표'(Phase 2 1d-2)도 늘 있다 — 그 블록이 아니면 꺼질 뿐이다(`code-chrome.test.ts` ② · `table.test.ts` ⑩).
-    assert.deepEqual(plain, ['turn_into', 'color', 'code', 'table', 'duplicate', 'copy_link', 'delete'])
+    assert.deepEqual(plain, ['turn_into', 'color', 'code', 'table', 'embed_swap', 'duplicate', 'copy_link', 'delete'])
     assert.deepEqual(page, plain, '손이 기억한 위치가 선택에 따라 틀어지면 안 된다')
   })
 
@@ -303,5 +304,68 @@ describe('openBlockMenuCommand — Mod+/', () => {
     })(select(stateOf([blk(a)]), a))
     assert.equal(handled, true)
     assert.equal(opened, 0)
+  })
+})
+
+// ── 북마크 ↔ 임베드 (EM-3) ───────────────────────────────────────────
+
+describe('북마크 ↔ 임베드 바꾸기 (EM-3)', () => {
+  const own = ['localhost:3000']
+  const cap = [textRun('설명')]
+  const withProps = (id: string, type: BlockType, properties: Record<string, unknown>): EditorBlock => ({ ...blk(id, type), properties })
+
+  test('북마크 → 임베드 — id · 주소 · 캡션은 그대로, 타입만 바뀐다', () => {
+    const a = nextId()
+    const state = select(stateOf([withProps(a, 'bookmark', { url: 'https://www.google.com/maps/embed?pb=x', caption: cap })]), a)
+    const menu = item(blockMenuItems(state, deps(), own), 'embed_swap')
+    assert.equal(menu.label, '임베드로 바꾸기')
+    assert.equal(menu.enabled, true)
+    const next = run(state, swapBookmarkEmbedCommand(a, own))
+    assert.ok(next !== null)
+    const block = pmToDoc(next!.doc).blocks[0]!
+    assert.equal(block.id, a)
+    assert.equal(block.type, 'embed')
+    assert.equal(block.properties.url, 'https://www.google.com/maps/embed?pb=x')
+    assert.deepEqual(block.properties.caption, cap)
+  })
+
+  test('임베드 → 북마크 — 높이만 버린다', () => {
+    const a = nextId()
+    const state = select(stateOf([withProps(a, 'embed', { url: 'https://example.com/x', caption: cap, height: 700 })]), a)
+    const menu = item(blockMenuItems(state, deps(), own), 'embed_swap')
+    assert.equal(menu.label, '북마크로 바꾸기')
+    assert.equal(menu.enabled, true)
+    const next = run(state, swapBookmarkEmbedCommand(a, own))
+    assert.ok(next !== null)
+    const block = pmToDoc(next!.doc).blocks[0]!
+    assert.equal(block.id, a)
+    assert.equal(block.type, 'bookmark')
+    assert.equal(block.properties.url, 'https://example.com/x')
+    assert.deepEqual(block.properties.caption, cap)
+    assert.equal('height' in block.properties, false)
+  })
+
+  test('자기 출처 주소의 북마크는 임베드로 바꿀 수 없다', () => {
+    for (const url of ['http://localhost:3000/w/a', 'https://localhost:3000/x']) {
+      const a = nextId()
+      const state = select(stateOf([withProps(a, 'bookmark', { url })]), a)
+      assert.equal(item(blockMenuItems(state, deps(), own), 'embed_swap').enabled, false, url)
+      assert.ok(run(state, swapBookmarkEmbedCommand(a, own)) === null, url)
+    }
+  })
+
+  test('http 일반 주소의 북마크는 임베드로 바꿀 수 있다 — 임베드가 그리지 않는 이유를 보인다', () => {
+    const a = nextId()
+    const state = select(stateOf([withProps(a, 'bookmark', { url: 'http://example.com/x' })]), a)
+    assert.equal(item(blockMenuItems(state, deps(), own), 'embed_swap').enabled, true)
+    assert.ok(run(state, swapBookmarkEmbedCommand(a, own)) !== null)
+  })
+
+  test('북마크 · 임베드 하나가 아니면 꺼진다', () => {
+    const [a, b] = [nextId(), nextId()]
+    const para = select(stateOf([blk(a)]), a)
+    assert.equal(item(blockMenuItems(para, deps(), own), 'embed_swap').enabled, false)
+    const two = select(stateOf([withProps(a, 'bookmark', { url: 'https://a.test' }), withProps(b, 'bookmark', { url: 'https://b.test' })]), a, b)
+    assert.equal(item(blockMenuItems(two, deps(), own), 'embed_swap').enabled, false)
   })
 })

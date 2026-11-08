@@ -32,13 +32,16 @@
 
 import type { Command, EditorState } from '@tiptap/pm/state'
 
+import { BOOKMARK_TYPE } from '../block/bookmark-block.ts'
 import { CODE_TYPE } from '../block/code.ts'
+import { EMBED_TYPE } from '../block/embed-block.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from '../block/table.ts'
 import { normalizeFormat, type BlockFormat, type BodyBlockType } from '../block/types.ts'
 import { COLORS, type Color } from '../contracts/rich-text.ts'
 import { isUuid } from '../ids.ts'
 import { BlockSelection, isBlockSelection, selectionHasPageRef } from './block-selection.ts'
 import { separateUndoStep } from './code-block.ts'
+import { canEmbedProperties } from './file-block-commands.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { blockTypeOf, containerAt, findContainerById } from './pm-blocks.ts'
 import { colorable, setBlockColorAt } from './block-color.ts'
@@ -82,6 +85,8 @@ export type BlockMenuAction =
   | { readonly kind: 'code_wrap'; readonly wrap: boolean }
   | { readonly kind: 'code_caption' }
   | { readonly kind: 'code_copy' }
+  // 북마크 ↔ 임베드(EM-3) — 타입만 바뀐다.
+  | { readonly kind: 'embed_swap'; readonly blockId: string }
   // 심플 테이블(Phase 2 1d-2 · F-01-18) — 머리 줄 · 머리 열 · 행 · 열. 블록 메뉴의 '표' 와 셀 위 손잡이 메뉴가 같은 동작이다.
   | { readonly kind: 'table_edit'; readonly blockId: string; readonly change: TableEdit }
 
@@ -118,7 +123,7 @@ function selectedBlocks(state: EditorState) {
  * 꺼진 항목은 숨기지 않고 `enabled: false` 로 둔다. 메뉴 모양이 선택에 따라
  * 바뀌면 손이 기억한 위치가 틀어진다(`aria-disabled` 로 읽힌다).
  */
-export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[] {
+export function blockMenuItems(state: EditorState, deps: CommandDeps, ownHosts: readonly string[] = []): MenuItem[] {
   const blocks = selectedBlocks(state)
   const sel = state.selection
   const hasPageRef = isBlockSelection(sel) && selectionHasPageRef(state.doc, sel.rootPositions)
@@ -179,6 +184,17 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
     },
   ]
 
+  // 북마크 ↔ 임베드(EM-3) — 하나를 골랐을 때만 켠다. 자리는 늘 있다(항목이 사라지지 않는다). 임베드로 그릴 수 없는 주소면 꺼진다.
+  const only = blocks.length === 1 ? blocks[0]! : null
+  const swapToBookmark = only !== null && only.type === EMBED_TYPE
+  const swapToEmbed = only !== null && only.type === BOOKMARK_TYPE
+  const embedSwap: MenuItem = {
+    id: 'embed_swap',
+    label: swapToBookmark ? '북마크로 바꾸기' : '임베드로 바꾸기',
+    enabled: swapToBookmark || (swapToEmbed && canEmbedProperties(only.content.attrs.props, ownHosts)),
+    action: { kind: 'embed_swap', blockId: only?.id ?? '' },
+  }
+
   return [
     {
       id: 'turn_into',
@@ -190,6 +206,7 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
     { id: 'color', label: '색', enabled: paintable.length > 0, children: color },
     { id: 'code', label: '코드', enabled: allCode, children: code },
     { id: 'table', label: '표', enabled: shape !== null, children: table },
+    embedSwap,
     {
       id: 'duplicate',
       label: '복제',
