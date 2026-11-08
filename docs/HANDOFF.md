@@ -462,7 +462,7 @@ F-01-15 는 P0 인데 소유권 문서 597행이 "image 만 · file/bookmark/vid
 | 조각 | 무엇 | 상태 |
 |---|---|---|
 | EM-1 | **임베드 블록**(정본 §3.4 [보강 EM-1] · §3.3-680 · F-09-10 · F-09-18) — 마이그레이션 없음(블록 타입에 DB CHECK 이 없다). `block.type = 'embed'` · `properties.url` · `caption`(`embed-block.ts` — 북마크와 같은 계약) · `embedSourceOf`(`embed-source.ts` — 순수 · YouTube · Vimeo · Loom · Figma · Google 지도 · 문서 · 시트 · 슬라이드 · 드라이브 · CodePen · CodeSandbox · Spotify · SoundCloud · Miro · X · 호스트는 URL 로 풀어 정확히 · 하위 도메인만) · 격리 상수 하나(`embed-attrs.ts` — 편집기 · 공개가 함께) · 일반은 판(호스트 · "불러오기") · 자기 출처는 편집기 `location.origin` · 공개는 요청의 `host` · `x-forwarded-host` · 설정 주소 중 하나라도 맞으면 거절 · 노드 뷰의 몸과 규칙은 지연 로드(`embed-view-impl.ts` — 처음엔 db 화면이 522.1KB 로 넘었다 · 지금 518.8 / 520) · `/임베드` · `/유튜브` · `/지도` · `/figma` · 공개(`public-embed.tsx` · 판은 `public-embed-facade.tsx`) · 마크다운 · 클립보드. 단위 22 · e2e 절 1(11개 — 바깥 주소는 절 안에서 `Network.setBlockedURLs`) · 반사실 1판(일반을 바로 불러오고 자기 출처 거절을 끄면 ★ 넷이 떨어진다) · 닿는 절 9개(에디터 코어 · 북마크 · 파일 · 비디오 · 코드 강조 · 웹 게시 · 붙여넣기 …) 198 / 200 — 둘은 알려진 클립보드 | ✅ #592 |
-| EM-2 | 주소를 붙여넣으면 링크 · 북마크 · 임베드를 고르는 메뉴 | ⏳ |
+| EM-2 | 주소를 붙여넣으면 링크로 넣고 고르는 메뉴(링크로 두기 · 북마크 · 임베드 · 페이지 멘션 — 정본 [보강 EM-2]) · 선택 위에 붙이면 링크 | ⏳ |
 | EM-3 | 높이 조절(`properties.height`) · 북마크 ↔ 임베드 바꾸기 | ⏳ |
 
 
