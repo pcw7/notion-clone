@@ -36,6 +36,8 @@ import { cellDays, daysBetween } from '@/lib/database/calendar'
 import { rowOpenHref } from '@/lib/database/open-pages'
 import { MOVED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import type { RowJson } from '@/lib/database/http'
+import { OPTION_DOT_RGB } from '@/lib/database/option-dot'
+import type { OptionColor } from '@/lib/database/property-types'
 import { TIMELINE_ZOOMS, type TimelineZoom } from '@/lib/database/timeline'
 import {
   arrowHeadPoints,
@@ -115,6 +117,10 @@ export function DatabaseTimeline(props: {
   to: string
   zoom: TimelineZoom
   showTable: boolean
+  /** 막대 색을 정하는 선택 · 상태 속성(TL-7) — 없으면 한 색. */
+  colorBy: string | null
+  /** 막대 색으로 고를 수 있는 속성들과 옵션의 색. */
+  colorProperties: readonly { readonly id: string; readonly name: string; readonly options: readonly { readonly id: string; readonly color: OptionColor }[] }[]
   datePropertyId: string
   /** 이 표의 날짜 속성들 — 둘 이상이면 편집자가 고른다. */
   dateProperties: readonly { readonly id: string; readonly name: string }[]
@@ -142,6 +148,7 @@ export function DatabaseTimeline(props: {
   const [win, setWin] = useState<TimelineWindow>({ from: props.from, to: props.to })
   const [zoom, setZoom] = useState<TimelineZoom>(props.zoom)
   const [showTable, setShowTable] = useState(props.showTable)
+  const [colorBy, setColorBy] = useState<string | null>(props.colorBy)
   const [datePropertyId, setDatePropertyId] = useState(props.datePropertyId)
   const [rows, setRowsState] = useState<readonly RowJson[]>(props.rows)
   const [undated, setUndated] = useState(props.undated)
@@ -218,7 +225,7 @@ export function DatabaseTimeline(props: {
   }, [win])
 
   /** 뷰의 설정을 저장한다 — 편집자만. 실패하면 알린다(화면은 그대로 둔다). */
-  const persist = async (patch: { zoom?: TimelineZoom; show_table?: boolean; date_property_id?: string }): Promise<boolean> => {
+  const persist = async (patch: { zoom?: TimelineZoom; show_table?: boolean; date_property_id?: string; color_by?: string | null }): Promise<boolean> => {
     if (!canEditStructure) return true
     const result = await api.updateView(workspaceId, viewId, { timeline: patch })
     if (!result.ok) {
@@ -234,6 +241,17 @@ export function DatabaseTimeline(props: {
     setZoom(next)
     moveTo(windowFrom(win.from, next))
     void persist({ zoom: next })
+  }
+  const changeColorBy = (next: string | null) => {
+    setColorBy(next)
+    void persist({ color_by: next })
+  }
+  const colorOf = (row: RowJson): OptionColor | 'default' => {
+    const prop = colorBy === null ? undefined : props.colorProperties.find((p) => p.id === colorBy)
+    if (prop === undefined || colorBy === null) return 'default'
+    const v = row.properties[colorBy] as { type?: string; select?: { id: string } | null; status?: { id: string } | null } | undefined
+    const ref = v?.type === 'status' ? v.status : v?.type === 'select' ? v.select : null
+    return prop.options.find((o) => o.id === ref?.id)?.color ?? 'default'
   }
   const toggleTable = () => {
     const next = !showTable
@@ -459,6 +477,24 @@ export function DatabaseTimeline(props: {
         <button type="button" data-testid="timeline-table-toggle" aria-pressed={showTable} className={BUTTON} onClick={toggleTable}>
           표
         </button>
+        {(props.colorProperties.length > 0 || colorBy !== null) && (
+          <label className="flex items-center gap-1 text-neutral-600 dark:text-neutral-400">
+            막대 색
+            <select
+              data-testid="timeline-color-by"
+              value={colorBy ?? ''}
+              onChange={(e) => changeColorBy(e.target.value === '' ? null : e.target.value)}
+              className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-sm dark:border-neutral-700"
+            >
+              <option value="">없음</option>
+              {props.colorProperties.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {canEditStructure && props.dateProperties.length > 1 && (
           <label className="flex items-center gap-1 text-neutral-600 dark:text-neutral-400">
             날짜
@@ -572,6 +608,7 @@ export function DatabaseTimeline(props: {
               const place = days === null ? null : placeBar(days.start, days.end, win, zoom)
               const title = row.title || UNTITLED
               const inside = place !== null && place.width >= LABEL_INSIDE_MIN_PX
+              const barColor = colorOf(row)
               return (
                 <div
                   key={row.id}
@@ -587,6 +624,7 @@ export function DatabaseTimeline(props: {
                         scroll={false}
                         draggable={false}
                         data-testid="timeline-bar"
+                        data-color={barColor}
                         data-row-id={row.id}
                         onPointerDown={(e) => onBarPointerDown(row.id, 'move', e)}
                         onDragStart={(e) => e.preventDefault()}
@@ -600,10 +638,15 @@ export function DatabaseTimeline(props: {
                         data-end={days.end}
                         aria-label={`${title} · ${days.start} ~ ${days.end}`}
                         title={title}
-                        className={`absolute top-1.5 flex items-center overflow-hidden bg-blue-500/80 px-1 ${canEditContent ? 'cursor-grab touch-none' : ''} text-xs whitespace-nowrap text-white hover:bg-blue-600 ${
+                        className={`absolute top-1.5 flex items-center overflow-hidden bg-blue-500/80 px-1 ${canEditContent ? 'cursor-grab touch-none' : ''} text-xs whitespace-nowrap text-white hover:bg-blue-600 hover:brightness-90 ${
                           place.clippedStart ? '' : 'rounded-l'
                         } ${place.clippedEnd ? '' : 'rounded-r'}`}
-                        style={{ left: place.left, width: Math.max(place.width, 3), height: ROW_PX - 12 }}
+                        style={{
+                          left: place.left,
+                          width: Math.max(place.width, 3),
+                          height: ROW_PX - 12,
+                          ...(barColor === 'default' ? {} : { backgroundColor: OPTION_DOT_RGB[barColor] }),
+                        }}
                       >
                         {inside ? title : null}
                         {canEditContent && !place.clippedStart && (

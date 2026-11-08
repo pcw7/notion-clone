@@ -863,6 +863,10 @@ export default async function DatabasePage({
             to={timelineWindow.to}
             zoom={view.value.timeline.zoom}
             showTable={view.value.timeline.show_table}
+            colorBy={view.value.timeline.color_by}
+            colorProperties={columns
+              .filter((c) => c.type === 'select' || c.type === 'status')
+              .map((c) => ({ id: c.propertyId, name: c.name, options: c.options.map((o) => ({ id: o.id, color: o.color })) }))}
             datePropertyId={timelinePage.value.datePropertyId}
             dateProperties={columns.filter((c) => c.type === 'date').map((c) => ({ id: c.propertyId, name: c.name }))}
             rows={timelinePage.value.rows.map(rowJson)}

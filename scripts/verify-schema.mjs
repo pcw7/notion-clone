@@ -5108,7 +5108,7 @@ try {
         }
       }
       await rejects('★ 모르는 줌(hour)', timeline({ zoom: 'hour' }))
-      await rejects('★ 모르는 키(color_by)', timeline({ color_by: 'x' }))
+      await rejects('★ 모르는 키(tint)', timeline({ tint: 'x' }))
       await rejects('★ show_table 이 빠졌다(NULL 이면 통과하는 구멍)', JSON.stringify({ date_property_id: 'p1', zoom: 'week' }))
       await rejects('★ date_property_id 가 글자가 아니다', timeline({ date_property_id: 7 }))
       await rejects('타임라인 키가 객체가 아니다', JSON.stringify('week'))
@@ -5194,6 +5194,35 @@ try {
         if (e.code === '23514' && e.constraint === 'ck_view_chart_layout') ok('★ 모르는 종류(gauge, 0131 뒤에도) — ck_view_chart_layout 가 거부함')
         else fail(`★ 모르는 종류 — ck_view_chart_layout 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
       }
+    }
+  }
+
+  console.log('\n[90]타임라인 막대 색 — color_by (0132 / §3.6 [보강 TL-7] ① · TL-7조각)')
+  {
+    const viewRow = (await client.query(`SELECT id FROM view LIMIT 1`)).rows[0]
+    if (!viewRow) {
+      ok('뷰가 없다 — 건너뛴다(CHECK 은 마이그레이션이 세웠다)')
+    } else {
+      const set = `UPDATE view SET configuration = jsonb_set(coalesce(configuration, '{}'::jsonb), '{timeline}', $2::jsonb, true) WHERE id = $1`
+      const timeline = (over) => JSON.stringify({ date_property_id: 'p1', zoom: 'week', show_table: true, ...over })
+      await client.query(set, [viewRow.id, timeline({ color_by: 'p2' })])
+      ok('★ color_by 글자 — 통과한다')
+      await client.query(set, [viewRow.id, timeline({})])
+      ok('★ 세 키만(color_by 없음) — 여전히 통과한다')
+      const rejects = async (label, json) => {
+        await client.query('SAVEPOINT probe')
+        try {
+          await client.query(set, [viewRow.id, json])
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          fail(`${label} — 거부되어야 하는데 통과했다`)
+        } catch (e) {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          if (e.code === '23514' && e.constraint === 'ck_view_timeline_layout') ok(`${label} — ck_view_timeline_layout 가 거부함`)
+          else fail(`${label} — ck_view_timeline_layout 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+        }
+      }
+      await rejects('★ color_by 가 숫자', timeline({ color_by: 5 }))
+      await rejects('★ 모르는 키(tint, 0132 뒤에도)', timeline({ tint: 'x' }))
     }
   }
 

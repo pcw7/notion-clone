@@ -55,7 +55,7 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { fitGroupByToType, isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
-import { mergeTimelineLayout, readTimelineLayout, validateTimelinePatch, type LiveTimelineLayout, type TimelineLayout } from './timeline.ts'
+import { isColorType, mergeTimelineLayout, readTimelineLayout, validateTimelinePatch, type LiveTimelineLayout, type TimelineLayout } from './timeline.ts'
 import { mergeChartLayout, readChartLayout, validateChartPatch, type ChartLayout } from './chart.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
 import { readFormulaConfig } from './formula-schema.ts'
@@ -516,7 +516,9 @@ function liveCalendarLayout(configuration: unknown, columns: readonly ViewColumn
 function liveTimelineLayout(configuration: unknown, columns: readonly ViewColumn[]): LiveTimelineLayout {
   const stored = readTimelineLayout(configuration)
   const id = stored.date_property_id
-  return id !== null && columns.some((c) => c.propertyId === id && c.type === 'date') ? stored : { ...stored, date_property_id: null }
+  const colorId = stored.color_by
+  const color_by = colorId !== null && columns.some((c) => c.propertyId === colorId && isColorType(c.type)) ? colorId : null
+  return { ...stored, date_property_id: id !== null && columns.some((c) => c.propertyId === id && c.type === 'date') ? id : null, color_by }
 }
 
 /**
@@ -536,7 +538,11 @@ async function pickDateProperty(tx: Tx, dataSourceId: string, stored: string | n
 /** 타임라인으로 만들거나 바꿀 때의 레이아웃(TL-1) — 날짜 속성은 `pickDateProperty`, 없으면 null. 세 키 모두 싣는다. */
 async function resolveTimelineLayout(tx: Tx, dataSourceId: string, stored: LiveTimelineLayout): Promise<TimelineLayout | null> {
   const id = await pickDateProperty(tx, dataSourceId, stored.date_property_id)
-  return id === null ? null : { date_property_id: id, zoom: stored.zoom, show_table: stored.show_table }
+  if (id === null) return null
+  // 색 속성은 살아 있는 선택 · 상태일 때만 남긴다(없으면 키를 쓰지 않는다 — 0132)
+  const types = await readPropertyTypes(tx, dataSourceId)
+  const color = stored.color_by !== null && isColorType(types.get(stored.color_by)) ? { color_by: stored.color_by } : {}
+  return { date_property_id: id, zoom: stored.zoom, show_table: stored.show_table, ...color }
 }
 
 /**
