@@ -9,6 +9,7 @@
  *   date_property_id  막대를 놓을 날짜 속성. 만들 때 · 타임라인으로 바꿀 때 첫 날짜 속성을 고른다(없으면 `date_required`)
  *   zoom              'day' | 'week' | 'month' | 'quarter' | 'year' — 한 화면의 눈금 · 기본 week
  *   show_table        왼쪽의 표를 그리는가 · 기본 참
+ *   color_by          (TL-7 · 0132) 막대 색을 정하는 선택 · 상태 속성의 id — **있을 때만** 쓴다(없으면 한 색). 지워지거나 타입이 바뀌면 읽을 때 null
  *
  * 스크롤 자리(04 `center_timestamp`)는 저장하지 않는다 — 보는 사람마다 다르다(처음 열면 오늘).
  */
@@ -23,6 +24,7 @@ export type TimelineLayout = {
   readonly date_property_id: string
   readonly zoom: TimelineZoom
   readonly show_table: boolean
+  readonly color_by?: string | null
 }
 
 /** 읽은 모양 — 날짜 속성이 없으면(저장 전 · 지워짐) null. */
@@ -30,6 +32,7 @@ export type LiveTimelineLayout = {
   readonly date_property_id: string | null
   readonly zoom: TimelineZoom
   readonly show_table: boolean
+  readonly color_by: string | null
 }
 
 export const DEFAULT_TIMELINE_ZOOM: TimelineZoom = 'week'
@@ -47,14 +50,18 @@ const isZoom = (v: unknown): v is TimelineZoom => typeof v === 'string' && (TIME
 export function readTimelineLayout(configuration: unknown): LiveTimelineLayout {
   const c = (configuration as { timeline?: unknown } | null | undefined)?.timeline as Record<string, unknown> | undefined
   if (typeof c !== 'object' || c === null) {
-    return { date_property_id: null, zoom: DEFAULT_TIMELINE_ZOOM, show_table: DEFAULT_TIMELINE_SHOW_TABLE }
+    return { date_property_id: null, zoom: DEFAULT_TIMELINE_ZOOM, show_table: DEFAULT_TIMELINE_SHOW_TABLE, color_by: null }
   }
   return {
     date_property_id: typeof c.date_property_id === 'string' ? c.date_property_id : null,
     zoom: isZoom(c.zoom) ? c.zoom : DEFAULT_TIMELINE_ZOOM,
     show_table: typeof c.show_table === 'boolean' ? c.show_table : DEFAULT_TIMELINE_SHOW_TABLE,
+    color_by: typeof c.color_by === 'string' ? c.color_by : null,
   }
 }
+
+/** 막대 색을 정할 수 있는 속성 타입(TL-7). */
+export const isColorType = (t: string | undefined): boolean => t === 'select' || t === 'status'
 
 /** 바꿀 키만 — 모르는 키 · 값은 거부, 빈 객체도 거부. 날짜 속성은 이 표의 살아 있는 날짜 속성이어야 한다(타입 맵). */
 export function validateTimelinePatch(raw: unknown, types: ReadonlyMap<string, string>): ValidationIssue[] {
@@ -72,6 +79,10 @@ export function validateTimelinePatch(raw: unknown, types: ReadonlyMap<string, s
       if (!isZoom(c.zoom)) issues.push({ path: 'timeline.zoom', message: `${TIMELINE_ZOOMS.join(' · ')} 중 하나여야 합니다` })
     } else if (key === 'show_table') {
       if (typeof c.show_table !== 'boolean') issues.push({ path: 'timeline.show_table', message: 'true 또는 false 여야 합니다' })
+    } else if (key === 'color_by') {
+      if (c.color_by !== null && (typeof c.color_by !== 'string' || !isColorType(types.get(c.color_by)))) {
+        issues.push({ path: 'timeline.color_by', message: '이 표의 선택 · 상태 속성이거나 null 이어야 합니다' })
+      }
     } else {
       issues.push({ path: `timeline.${key}`, message: '모르는 키입니다' })
     }
@@ -85,5 +96,6 @@ export function mergeTimelineLayout(current: LiveTimelineLayout, patch: Partial<
     date_property_id: patch.date_property_id ?? current.date_property_id,
     zoom: patch.zoom ?? current.zoom,
     show_table: patch.show_table ?? current.show_table,
+    color_by: patch.color_by === undefined ? current.color_by : patch.color_by,
   }
 }

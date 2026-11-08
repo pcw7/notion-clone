@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { probeDatabase, makeFixture, type Fixture } from '../testing/db-fixtures.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase } from './database.ts'
-import { addProperty, getSchema } from './property.ts'
+import { addProperty, deleteProperty, getSchema } from './property.ts'
 import type { CellValue } from './property-types.ts'
 import { createRow } from './row.ts'
 import { createView, getView, updateView } from './view.ts'
@@ -86,7 +86,7 @@ describe('① 레이아웃', () => {
     const { databaseId, due } = await table()
     const view = unwrap(await createView(fx.owner.ctx, databaseId, { type: 'timeline' }))
     assert.equal(view.type, 'timeline')
-    assert.deepEqual(view.timeline, { date_property_id: due, zoom: 'week', show_table: true })
+    assert.deepEqual(view.timeline, { date_property_id: due, zoom: 'week', show_table: true, color_by: null })
 
     const bare = unwrap(await createDatabase(fx.owner.ctx, { name: `날짜 없는 표 ${Date.now()}` }))
     const refused = await createView(fx.owner.ctx, bare.id, { type: 'timeline' })
@@ -95,7 +95,7 @@ describe('① 레이아웃', () => {
     assert.equal(!refusedSwitch.ok && refusedSwitch.reason, 'date_required')
 
     const patched = unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { zoom: 'month', show_table: false } }))
-    assert.deepEqual(patched.timeline, { date_property_id: due, zoom: 'month', show_table: false })
+    assert.deepEqual(patched.timeline, { date_property_id: due, zoom: 'month', show_table: false, color_by: null })
     assert.equal(unwrap(await getView(fx.owner.ctx, view.id)).timeline.zoom, 'month', '저장돼 있다')
 
     const bad = await updateView(fx.owner.ctx, view.id, { timeline: { zoom: 'hour' as TimelineLayout['zoom'] } })
@@ -106,6 +106,42 @@ describe('① 레이아웃', () => {
     const tbl = unwrap(await createView(fx.owner.ctx, databaseId, { type: 'table' }))
     const switched = unwrap(await updateView(fx.owner.ctx, tbl.id, { type: 'timeline' }))
     assert.equal(switched.timeline.date_property_id, due, '표에서 바꿀 때도 고른다')
+  })
+})
+
+describe('①-b 막대 색 (TL-7)', () => {
+  test('★ 선택 · 상태 속성을 고르고 · null 로 지우고 · 지워진 속성은 null 로 읽고 · 맞지 않는 타입은 거부', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { databaseId, due } = await table()
+    const ds = unwrap(await getView(fx.owner.ctx, unwrap(await createView(fx.owner.ctx, databaseId, { type: 'timeline' })).id)).dataSourceId
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '분류', type: 'select' }))
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '진행', type: 'status' }))
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '메모', type: 'rich_text' }))
+    const props = unwrap(await getSchema(fx.owner.ctx, ds)).properties
+    const idOf = (name: string) => props.find((p) => p.name === name)!.id
+    const view = unwrap(await createView(fx.owner.ctx, databaseId, { type: 'timeline' }))
+
+    const set = unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { color_by: idOf('분류') } }))
+    assert.deepEqual(set.timeline, { date_property_id: due, zoom: 'week', show_table: true, color_by: idOf('분류') })
+    assert.equal(unwrap(await getView(fx.owner.ctx, view.id)).timeline.color_by, idOf('분류'), '저장돼 있다')
+    const other = unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { zoom: 'month' } }))
+    assert.equal(other.timeline.color_by, idOf('분류'), '다른 키를 바꿔도 남는다')
+    assert.equal(unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { color_by: idOf('진행') } })).timeline.color_by, idOf('진행'), '상태도 된다')
+
+    for (const bad of [idOf('메모'), due, 'nope']) {
+      const refused = await updateView(fx.owner.ctx, view.id, { timeline: { color_by: bad } })
+      assert.equal(!refused.ok && refused.reason, 'invalid_layout', `거부: ${bad}`)
+    }
+
+    const cleared = unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { color_by: null } }))
+    assert.equal(cleared.timeline.color_by, null)
+    assert.equal(unwrap(await getView(fx.owner.ctx, view.id)).timeline.color_by, null)
+
+    unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { color_by: idOf('분류') } }))
+    unwrap(await deleteProperty(fx.owner.ctx, ds, idOf('분류')))
+    assert.equal(unwrap(await getView(fx.owner.ctx, view.id)).timeline.color_by, null, '지워진 속성은 없는 것과 같다')
+    const after = unwrap(await updateView(fx.owner.ctx, view.id, { timeline: { zoom: 'day' } }))
+    assert.equal(after.timeline.color_by, null, '다음 저장에서 죽은 키는 떨어진다')
   })
 })
 

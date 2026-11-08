@@ -14484,6 +14484,111 @@ async function main() {
       await send('Page.navigate', { url })
       check('★ 새로고침해도 체크가 켜져 있다', await waitFor(`document.querySelector(${JSON.stringify(T)})?.checked === true`, 15000))
     } catch (thrown) { await sectionThrew(thrown) } }
+    if (sectionIf('타임라인 — 막대 색 (TL-7 · F-04-07)')) { try {
+      // 머리의 "막대 색"에서 선택 속성을 고르면 막대가 그 행의 옵션 색이 된다(값 없는 행은 기본) · 새로고침 뒤에도 저장 · 없음으로 되돌림 ·
+      // 속성을 지우면 기본으로 돌아가고 저장된 color_by 는 null 로 읽힌다. 정본 [보강 TL-7].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const dayOf = (offset) => {
+        const d = new Date()
+        d.setDate(d.getDate() + offset)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const db = (await api('POST', '/databases', { name: `막대 색 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '일정', type: 'date' })).body.property.id
+      const kind = (await api('POST', `/data-sources/${ds}/properties`, { name: '분류', type: 'select' })).body.property.id
+      const opt = async (name, color) => (await api('POST', `/data-sources/${ds}/properties/${kind}/options`, { name, color })).body.option.id
+      const red = await opt('급함', 'red')
+      const blue = await opt('여유', 'blue')
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (title, start, optionId) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: due, value: { type: 'date', date: { start: dayOf(start), end: dayOf(start + 2) } } },
+          ...(optionId ? [{ propertyId: kind, value: { type: 'select', select: { id: optionId } } }] : []),
+        ],
+      })).body.row.id
+      const rA = await row('급한 일', 3, red)
+      const rB = await row('여유 일', 8, blue)
+      const rC = await row('분류 없는 일', 13, null)
+      const timelineId = (await api('POST', `/databases/${db.id}/views`, { type: 'timeline', name: '시간축' })).body?.view?.id
+      const url = `${BASE}/w/${workspaceId}/db/${db.id}?v=${timelineId}`
+      const colors = () => evaluate(`JSON.stringify(Object.fromEntries([...document.querySelectorAll('[data-testid="timeline-bar"]')].map((b) => [b.dataset.rowId, b.dataset.color])))`).then((s) => JSON.parse(s))
+      const waitColors = async (want, ms = 15000) => {
+        const end = Date.now() + ms
+        let got = {}
+        while (Date.now() < end) {
+          got = await colors()
+          if (JSON.stringify(got) === JSON.stringify(want)) return { ok: true, got }
+          await new Promise((r) => setTimeout(r, 300))
+        }
+        return { ok: false, got }
+      }
+      const choose = async (value, want) => {
+        for (let i = 0; i < 8; i += 1) {
+          await setSelect('[data-testid="timeline-color-by"]', value)
+          const r = await waitColors(want, 2500)
+          if (r.ok) return r
+        }
+        return waitColors(want, 1000)
+      }
+      const savedColorBy = async (want) => {
+        let got
+        for (let i = 0; i < 20; i += 1) {
+          got = (await api('GET', `/views/${timelineId}`)).body?.view?.timeline?.color_by ?? null
+          if (got === want) break
+          await new Promise((r) => setTimeout(r, 500))
+        }
+        return got
+      }
+      const allDefault = { [rA]: 'default', [rB]: 'default', [rC]: 'default' }
+
+      await send('Page.navigate', { url })
+      await waitFor(`document.querySelectorAll('[data-testid="timeline-bar"]').length === 3`, 15000)
+      check('처음에는 막대가 모두 기본 색(data-color=default)', (await waitColors(allDefault, 5000)).ok, JSON.stringify(await colors()))
+
+      const picked = await choose(kind, { [rA]: 'red', [rB]: 'blue', [rC]: 'default' })
+      check('★ "막대 색"에서 분류를 고르면 막대가 행의 옵션 색(급함=red · 여유=blue · 값 없음=default)', picked.ok, JSON.stringify(picked.got))
+      const bgA = await evaluate(`getComputedStyle(document.querySelector('[data-testid="timeline-bar"][data-row-id="${rA}"]')).backgroundColor`)
+      const bgC = await evaluate(`getComputedStyle(document.querySelector('[data-testid="timeline-bar"][data-row-id="${rC}"]')).backgroundColor`)
+      check('색이 실제로 칠해진다(red 막대와 기본 막대의 배경이 다르다)', typeof bgA === 'string' && bgA !== bgC && bgA.includes('229'), JSON.stringify([bgA, bgC]))
+      const saved = await savedColorBy(kind)
+      check('★ 편집자의 선택이 저장된다(timeline.color_by = 분류)', saved === kind, String(saved))
+
+      await send('Page.navigate', { url })
+      const after = await waitColors({ [rA]: 'red', [rB]: 'blue', [rC]: 'default' }, 15000)
+      check('★ 새로고침 뒤에도 같은 색', after.ok, JSON.stringify(after.got))
+
+      await waitFor(`!!document.querySelector('[data-testid="timeline-color-by"]')`, 15000)
+      const cleared = await choose('', allDefault)
+      check('★ "없음"을 고르면 막대가 모두 기본 색으로 돌아온다', cleared.ok, JSON.stringify(cleared.got))
+      const savedNull = await savedColorBy(null)
+      check('없음 — 저장된 color_by 가 null', savedNull === null, String(savedNull))
+
+      // 다시 고른 뒤 속성을 지운다
+      await choose(kind, { [rA]: 'red', [rB]: 'blue', [rC]: 'default' })
+      await savedColorBy(kind)
+      const del = await api('DELETE', `/data-sources/${ds}/properties/${kind}`)
+      await send('Page.navigate', { url })
+      await waitFor(`document.querySelectorAll('[data-testid="timeline-bar"]').length === 3`, 15000)
+      const gone = await waitColors(allDefault, 15000)
+      check('★ 속성을 지우면 막대가 기본 색으로 돌아온다', del.status === 200 && gone.ok, JSON.stringify([del.status, gone.got]))
+      const readBack = (await api('GET', `/views/${timelineId}`)).body?.view?.timeline?.color_by
+      check('★ 지운 속성은 저장된 레이아웃에서 color_by null 로 읽힌다', readBack === null, String(readBack))
+    } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
