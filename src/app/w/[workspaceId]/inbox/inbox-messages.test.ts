@@ -8,7 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { assignmentInboxLine, reminderInboxLine } from './inbox-messages.ts'
+import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine } from './inbox-messages.ts'
 
 test('① 리마인더가 아니면 null · 속성 이름 · 이름이 없으면 리마인더만', () => {
   assert.equal(reminderInboxLine(null), null)
@@ -20,4 +20,13 @@ test('② 담당이 아니면 null · 사람 속성 이름 · 이름이 없으�
   assert.equal(assignmentInboxLine(null), null)
   assert.equal(assignmentInboxLine({ propertyName: '담당' }), '"담당"에 회원님을 추가했습니다.')
   assert.equal(assignmentInboxLine({ propertyName: null }), '사람 속성에 회원님을 추가했습니다.')
+})
+
+test('③ 알림 보내기 — 머리는 자동화 · 버튼, 한 줄은 보낸 이: 메시지 (보낸 이를 모르면 메시지만 · 메시지가 비면 알림)', () => {
+  assert.equal(automationInboxLabel({ via: 'automation' }), '자동화')
+  assert.equal(automationInboxLabel({ via: 'button' }), '버튼')
+  assert.equal(automationInboxLine({ message: '새 행: 견적서', senderName: '김하나' }), '김하나: 새 행: 견적서')
+  assert.equal(automationInboxLine({ message: '새 행: 견적서', senderName: null }), '새 행: 견적서')
+  assert.equal(automationInboxLine({ message: '' }), '알림')
+  assert.equal(automationInboxLine({ message: '', senderName: '김하나' }), '김하나: 알림')
 })

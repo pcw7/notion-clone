@@ -19,7 +19,16 @@ export function assignmentInboxLine(assignment: { readonly propertyName: string 
     : `"${assignment.propertyName}"에 회원님을 추가했습니다.`
 }
 
-/** 알림 보내기 알림의 한 줄(AN-1) — 메시지가 있으면 그것, 없으면 "알림" 만. 모양을 꾸미는 것은 AN-2. */
-export function automationInboxLine(automation: { readonly message: string }): string {
-  return automation.message === '' ? '알림' : automation.message
+/** 알림 보내기 알림의 머리(AN-2 · 정본 [보강 AN-2] ②) — DB 자동화면 "자동화", 버튼이면 "버튼". */
+export function automationInboxLabel(automation: { readonly via: 'automation' | 'button' }): string {
+  return automation.via === 'button' ? '버튼' : '자동화'
+}
+
+/**
+ * 알림 보내기 알림의 한 줄(AN-1 · AN-2) — "보낸 이: 메시지". 메시지는 값 슬롯이 이미 채워진 글이다. 보낸 이를 모르면(게스트가 본다 · 떠났다)
+ * 메시지만, 메시지가 비면 "알림" 만.
+ */
+export function automationInboxLine(automation: { readonly message: string; readonly senderName?: string | null }): string {
+  const text = automation.message === '' ? '알림' : automation.message
+  return automation.senderName ? `${automation.senderName}: ${text}` : text
 }

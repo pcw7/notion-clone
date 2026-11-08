@@ -40,6 +40,7 @@ import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { ruleOpensRowSql } from '../database/row-access.ts'
+import { peopleNamesIn } from '../database/people.ts'
 import { canListMembers } from '../workspace/list.ts'
 import { readEvents } from './activity.ts'
 import { decodeInboxCursor, encodeInboxCursor } from './inbox-cursor.ts'
@@ -98,7 +99,7 @@ export type InboxItem = {
    * 알림 보내기(AN-1 · `automation`) — 보낸 방식(`automation`: DB 자동화 · `button`: 누른 사람)과 메시지(자동화 설정의 글 — 비면 빈 글자). 보낸 사람은
    * `actorId`(DB 자동화는 만든 사람). 다른 알림은 null. 모양을 꾸미는 것은 AN-2.
    */
-  readonly automation: { readonly via: 'automation' | 'button'; readonly message: string } | null
+  readonly automation: { readonly via: 'automation' | 'button'; readonly message: string; readonly senderName: string | null } | null
   /**
    * 내가 이 페이지의 알림을 껐는가(NM-2 · 정본 §3.8 [보강 NM-2] ①) — 내 `subscription` 이 `none` 이면 참, 행이 없거나 다른 수준이면 거짓.
    * 같은 질의에서 함께 읽는다(항목마다 따로 묻지 않는다).
@@ -216,6 +217,15 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
         .map((g) => events.get(g.latest_event as string)?.payload.property_id)
         .filter((id): id is string => typeof id === 'string'),
     )
+    // 알림 보내기의 보낸 이 이름(AN-2) — 멤버 목록을 볼 수 있는 사람에게만(게스트에게는 이름을 흘리지 않는다)
+    const senderNames = await peopleNamesIn(
+      tx,
+      ctx.workspaceId,
+      groups
+        .filter((g) => g.kind === 'automation' && g.latest_event !== null)
+        .map((g) => events.get(g.latest_event as string)?.actorId)
+        .filter((id): id is string => typeof id === 'string'),
+    )
     const requests = await readAccessRequests(
       tx,
       ctx,
@@ -270,7 +280,11 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
             : null,
         automation:
           g.kind === 'automation'
-            ? { via: event?.payload.via === 'button' ? 'button' : 'automation', message: typeof event?.payload.message === 'string' ? event.payload.message : '' }
+            ? {
+                via: event?.payload.via === 'button' ? 'button' : 'automation',
+                message: typeof event?.payload.message === 'string' ? event.payload.message : '',
+                senderName: event?.actorId != null && canListMembers(ctx.role) ? (senderNames.get(event.actorId) ?? null) : null,
+              }
             : null,
         muted: g.muted,
       }
