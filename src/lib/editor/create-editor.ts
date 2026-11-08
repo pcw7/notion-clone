@@ -55,6 +55,7 @@ import { slashMenuPlugin } from './slash-menu.ts'
 import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
 import { emojiMenuPlugin } from './emoji-menu.ts'
+import { pasteUrlPlugin } from './paste-url.ts'
 import type { EditorDoc } from './document.ts'
 import { presencePlugin } from './presence-plugin.ts'
 import type { LocalPresence } from '../collab/presence.ts'
@@ -126,6 +127,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     mentionMenuPlugin(),
     // `:` 커스텀 이모지(7c-3b) — 같은 뼈대(`emoji-menu.ts`). 후보 · 팝업은 화면이 한다.
     emojiMenuPlugin(),
+    // 주소를 붙여넣으면 링크로 넣고 고르는 메뉴(EM-2) — 열린 범위만 쥔다. 판은 화면이 지연 로드한다.
+    pasteUrlPlugin(),
     // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
     // 이 플러그인은 그리기만 한다.
     blockSelectionPlugin(),

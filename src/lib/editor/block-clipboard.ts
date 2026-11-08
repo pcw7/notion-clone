@@ -73,6 +73,7 @@ import type { CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
 import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
 import { containerAt, inTableCell } from './pm-blocks.ts'
+import { canPasteUrl, pastedUrlOf, pasteUrlCommand } from './paste-url.ts'
 import { blockSchema, isPlainTextNode } from './schema.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
@@ -478,6 +479,13 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
         if ((event.clipboardData?.getData(BLOCKS_MIME) ?? '') === '' && /<table[\s>]/i.test(pastedHtml)) {
           const blocks = blocksFromHtml(pastedHtml)
           if (blocks.length > 0) return pasteBlocksCommand(blocks, deps)(view.state, view.dispatch.bind(view))
+        }
+        // 평문이 주소 하나(우리 블록 묶음이 아닐 때)면 링크로 넣고 고르는 메뉴를 연다(EM-2) — 글자 선택이 있으면 그 선택에 링크만 건다.
+        const pastedUrl = (event.clipboardData?.getData(BLOCKS_MIME) ?? '') === '' ? pastedUrlOf(event.clipboardData?.getData('text/plain')) : null
+        if (pastedUrl !== null && view.editable && canPasteUrl(view.state)) {
+          // 링크는 지금 넣는다(늦게 넣으면 그 사이 친 글자와 자리가 엇갈린다) — 메뉴의 화면만 지연 로드다(범위가 열리면 화면이 읽는다).
+          pasteUrlCommand(pastedUrl)(view.state, view.dispatch.bind(view))
+          return true
         }
         const parsed = parseClipboardBlocks(event.clipboardData?.getData(BLOCKS_MIME))
         if (!parsed.ok) {
