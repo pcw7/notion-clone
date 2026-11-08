@@ -59,6 +59,7 @@ import { IMAGE_TYPE, validateImageFormat, validateImageProperties } from '../blo
 import { FILE_TYPE, validateFileProperties } from '../block/file-block.ts'
 import { VIDEO_TYPE, validateVideoProperties } from '../block/video-block.ts'
 import { BOOKMARK_TYPE, validateBookmarkProperties } from '../block/bookmark-block.ts'
+import { EMBED_TYPE, validateEmbedProperties } from '../block/embed-block.ts'
 import { CALLOUT_TYPE, validateCalloutProperties } from '../block/callout.ts'
 import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { TABLE_CELLS_KEY, TABLE_ROW_TYPE, validateTableRow, validateTableWidths } from '../block/table.ts'
@@ -191,6 +192,10 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       // 북마크(F-3) — 주소는 화면의 `<a href>` 에 그대로 들어간다(정본 §3.4 [보강 F-3] ④)
       if (block.type === BOOKMARK_TYPE) {
         issues.push(...validateBookmarkProperties(block.properties, `${p}.properties`))
+      }
+      // 임베드(EM-1) — 주소는 iframe 주소를 만드는 입력이다(정본 §3.4 [보강 EM-1] ①)
+      if (block.type === EMBED_TYPE) {
+        issues.push(...validateEmbedProperties(block.properties, `${p}.properties`))
       }
       // 코드 블록의 언어 · 캡션(8a-1) — 같은 까닭(API 로 직접 저장하는 경로).
       if (block.type === CALLOUT_TYPE) {

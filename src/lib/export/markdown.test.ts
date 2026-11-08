@@ -650,3 +650,26 @@ describe('⑧ 북마크의 제목 — 메타 캐시(F-4b)', () => {
     assert.ok(markdown.includes('](https://other.test/)'), markdown)
   })
 })
+
+// ── 임베드 블록(EM-1 · 정본 §3.4 [보강 EM-1] ⑤) ───────────────────────
+describe('⑨ 임베드 블록', () => {
+  test('★ [주소](주소) 한 줄 + 캡션 문단 — 북마크와 같다 · iframe 주소는 싣지 않는다 · 주소 없는 빈 블록은 아무것도 남기지 않는다', () => {
+    const { markdown, losses } = pageToMarkdown(
+      {
+        title: [textRun('T')],
+        doc: {
+          blocks: [
+            block('embed', [], { properties: { url: 'https://youtu.be/dQw4w9WgXcQ', caption: [textRun('참고 *영상*')] } }),
+            block('embed', [], { properties: {} }),
+          ],
+        },
+      },
+      NO_LINKS,
+      { untitled: 'x' },
+    )
+    assert.ok(markdown.includes('](https://youtu.be/dQw4w9WgXcQ)'), markdown)
+    assert.ok(markdown.includes('참고 \\*영상\\*'), markdown)
+    assert.ok(!markdown.includes('nocookie'), markdown)
+    assert.equal(losses.unsupported, 0)
+  })
+})

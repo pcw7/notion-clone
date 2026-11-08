@@ -771,6 +771,121 @@
   display: none;
 }
 
+/* 임베드 블록(EM-1 · 정본 §3.4 [보강 EM-1] ③ ④) — 판(iframe · 눌러야 불러오는 판 · 그리지 않는 이유) 아래에 서비스 이름과 단추. 빈 상태는 점선 상자 안의 주소 입력칸. */
+.blk-embed[data-state='empty'] .blk-embed-controls {
+  border: 1px dashed #d1d5db;
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  color: #9ca3af;
+  font-size: 0.875rem;
+}
+.blk-embed-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.blk-embed-url {
+  display: flex;
+  flex: 1;
+  gap: 0.5rem;
+}
+.blk-embed-url-input {
+  flex: 1;
+  min-width: 0;
+}
+.blk-embed-url-add,
+.blk-embed-load {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.blk-embed-stage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  background: #f9fafb;
+}
+.blk-embed-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.blk-embed-facade,
+.blk-embed-refused {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 100%;
+  min-height: 6rem;
+  padding: 1rem;
+  text-align: center;
+  color: #6b7280;
+  font-size: 0.875rem;
+}
+.blk-embed-stage[data-kind='refused'] {
+  height: auto;
+}
+.blk-embed-facade-host {
+  color: #374151;
+  font-weight: 500;
+}
+.blk-embed-refused-reason {
+  margin: 0;
+}
+.blk-embed-refused-link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6b7280;
+  font-size: 0.75rem;
+}
+.blk-embed-label,
+.blk-embed-open {
+  margin-top: 0.25rem;
+  color: #6b7280;
+  font-size: 0.75rem;
+}
+.blk-embed-caption {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin-top: 0.25rem;
+}
+.blk-embed .blk-embed-caption-open,
+.blk-embed .blk-embed-edit {
+  margin-top: 0.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.125rem 0.5rem;
+  color: #6b7280;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0;
+}
+.blk-embed:hover .blk-embed-caption-open,
+.blk-embed .blk-embed-caption-open:focus-visible,
+.blk-embed:hover .blk-embed-edit,
+.blk-embed .blk-embed-edit:focus-visible {
+  opacity: 1;
+}
+.blk-editor[contenteditable='false'] .blk-embed-caption-open,
+.blk-editor[contenteditable='false'] .blk-embed-edit {
+  display: none;
+}
+
 /* 올리기 취소 · 다시 올리기(10n-73) — 상태 줄 · 실패 줄 옆에 늘 보인다(머물 때만이 아니다 — 지금 할 일이다). 읽기 전용 편집기는 올리지 않아
    서지 않는다. */
 .blk-image .blk-image-upload-cancel,

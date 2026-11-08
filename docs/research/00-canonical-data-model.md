@@ -2127,6 +2127,36 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > 한다 — 익명 방문 · 내보내기가 남의 서버로 요청을 보내지 않는다(편집기가 읽을 때 적힌 것을 그린다 · 없으면 주소가 제목). 마크다운의 `[제목](주소)` 의 제목도
 > 캐시의 것이다.
 
+**[보강 EM-1] 임베드 블록 — 알려진 서비스는 주소 규칙으로 iframe · 모르는 사이트는 눌러야 불러온다 · 서버는 가져오지 않는다** ⟨44번 트랙 EM-1 · 09 F-09-10 · F-09-18 · 01 F-01-15 / 마이그레이션 없음⟩
+
+> 09 F-09-10 *"외부 서비스의 인터랙티브 콘텐츠를 페이지 안에서 그대로 조작할 수 있게 iframe 으로"* · 클론 대안 *"상위 20개 프로바이더 하드코딩으로 시작"*.
+> 노션은 Iframely(유료 SaaS)에 맡긴다 — 우리는 쓰지 않는다(절대 제약 1). 서버가 oEmbed 를 부르는 길(F-09-18)은 SSRF 의 문을 하나 더 여는 일이라, 첫 판은
+> **주소 → iframe 주소를 순수 규칙으로** 만든다(네트워크 없음 · [보강 F-4] 의 가져오는 길도 쓰지 않는다).
+>
+> ① **저장 모양** — `block.type = 'embed'` · `properties.url`(http · https · 2,048자 이하 — 북마크와 같은 계약 · `validateEmbedProperties`) ·
+> `properties.caption`(RichText). 글 · 자식 · 색이 없는 원자. **iframe 주소 · 서비스 이름은 적지 않는다** — 읽을 때 규칙으로 만든다(규칙이 나아지면 옛 블록도
+> 따라온다 · 북마크가 메타를 적지 않는 것과 같은 까닭). 블록 타입에 DB CHECK 은 없다(북마크와 같다) — 마이그레이션이 없다.
+> ② **서비스 규칙**(`embedSourceOf(url)` — 순수 · 결과 주소는 늘 https) — YouTube(watch · youtu.be · shorts · embed · `t` → `start` · 재생목록 →
+> `www.youtube-nocookie.com/embed/…`) · Vimeo · Loom · Figma(`www.figma.com/embed?embed_host=…&url=…`) · Google 지도(`/maps/embed` 는 그대로 · 찾기 · 장소는
+> `output=embed`) · Google 문서 · 시트 · 슬라이드 · 드라이브 파일(`/preview`) · CodePen · CodeSandbox · Spotify · SoundCloud(`w.soundcloud.com/player/?url=`) ·
+> Miro · X(트윗 — `platform.twitter.com/embed/Tweet.html?id=`). 서비스마다 모양이 있다(동영상은 16:9 · 나머지는 정한 높이). 규칙에 없는 https 주소는
+> **일반** — 그 주소 그대로.
+> ③ **그리기 · 격리** — `<iframe sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-presentation"
+> allow="fullscreen; picture-in-picture; encrypted-media; clipboard-write" referrerpolicy="strict-origin-when-cross-origin" loading="lazy">` — 위 창 옮기기
+> (`allow-top-navigation*`) · 경고창(`allow-modals`) · 내려받기는 주지 않는다 · 리퍼러는 출처만(YouTube 는 리퍼러가 없으면 재생을 거부한다). **알려진 서비스는
+> 바로(늦게) 불러오고, 일반은 눌러야 불러온다**(F-09-10 *"클릭 시 활성화(façade)"* — 남의 아무 주소가 보는 사람의 브라우저에서 저절로 열리지 않는다 · 판에는
+> 호스트와 "불러오기"). **자기 출처의 주소는 그리지 않는다** — `allow-same-origin` 과 겹치면 격리가 풀리고 끝없이 중첩된다(F-09-18 *"자기 도메인 임베드"*) ·
+> 편집기는 `location.origin`, 공개 화면은 그 요청의 출처와 견준다. http 주소는 알려진 서비스면 https 로 그리고, 일반이면 그리지 않는다(섞인 콘텐츠). 그리지
+> 않을 때는 이유와 주소(새 탭 링크)를 보인다.
+> ④ **편집기** — 빈 상태는 주소 입력칸("임베드할 주소 붙여넣기" · 넣기 — 북마크와 같은 판) · http(s) 가 아니면 쓰지 않고 이유를 말한다 · 판 아래에 서비스
+> 이름 · "원래 주소 열기" · "주소 고치기"(빈 상태로 — 캡션은 남는다) · 캡션(편집기 밖 입력칸 `embed_caption`). `/임베드` · `/embed` · `/유튜브` · `/youtube` ·
+> `/지도` · `/maps` · `/figma` — 모두 같은 블록이다(서비스 이름은 별칭일 뿐).
+> ⑤ **공개 · 내보내기 · 클립보드** — 공개 본문은 같은 규칙 · 같은 격리(`pub-embed` — 일반은 눌러야 · 자기 출처는 그리지 않는다). 마크다운은 `[주소](주소)`
+> 한 줄과 캡션 문단 · 클립보드의 평문은 `[주소](주소)` — 북마크와 같다.
+> ⑥ **뒤로** — 주소를 붙여넣을 때 링크 · 북마크 · 임베드를 고르는 메뉴(EM-2 · [보강 F-3] ③ 의 §7) · 높이 조절과 북마크 ↔ 임베드 바꾸기(EM-3) ·
+> 서버의 oEmbed · 규칙에 없는 서비스의 자동 판정(F-09-18 — SSRF 방어 길을 함께 써야 한다 · 하지 않는다).
+
+
 **[보강] 편집기 메뉴의 접근성 — 편집기 루트가 열린 목록과 지금 항목을 가리킨다** ⟨플랫폼 잔여 10d-3 · F-12-13 / 마이그레이션 없음⟩
 
 > 12 F-12-13 *"슬래시 메뉴/멘션 팝업은 role="listbox" + aria-activedescendant 로 조합 위젯 패턴을 따라야 하며, 포커스를 입력에서 빼앗으면

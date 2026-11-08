@@ -17,6 +17,8 @@ import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/l
 import { FILE_TYPE, fileDisplayName, formatFileSize, readFileSource } from '@/lib/block/file-block'
 import { VIDEO_TYPE, readVideoSource } from '@/lib/block/video-block'
 import { BOOKMARK_TYPE, bookmarkCacheUrl, bookmarkHost, bookmarkTitle, readBookmarkUrl } from '@/lib/block/bookmark-block'
+import { EMBED_TYPE } from '@/lib/block/embed-block'
+import { PublicEmbed } from './public-embed'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
@@ -327,6 +329,9 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
         </figure>
       )
     }
+    case EMBED_TYPE:
+      // 임베드(EM-1 · 정본 §3.4 [보강 EM-1] ⑤) — 편집기와 같은 규칙 · 같은 격리 · 일반은 눌러야 · 자기 출처는 그리지 않는다
+      return <PublicEmbed properties={props} />
     case BOOKMARK_TYPE: {
       // 북마크(F-3 · 정본 §3.4 [보강 F-3] ④) — 카드: 제목(메타가 없으면 주소) · 호스트 · 주소 · 새 탭 · 남의 사이트라 nofollow ugc
       const url = readBookmarkUrl(props)

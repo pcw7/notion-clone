@@ -194,3 +194,18 @@
 /* 페이지의 모습(PL-2 · 정본 §3.4 [보강 PL-2]) — 서체는 editor.css 의 [data-page-font] · 작은 글씨는 본문만 16 → 14px · 전체 폭은 칸의 너비 제한을 푼다 */
 .pub-page[data-page-small-text] .pub-body { font-size: 14px; }
 .pub-page[data-page-full-width] { max-width: none; }
+/* 임베드 블록(EM-1) — 판(iframe · 눌러야 불러오는 판 · 그리지 않는 이유) 아래에 서비스 이름과 원래 주소 */
+.pub-block.pub-embed { padding-left: 0; padding-right: 0; }
+.pub-embed-stage { position: relative; width: 100%; overflow: hidden; border: 1px solid rgba(135, 131, 120, 0.25); border-radius: 4px; background: rgba(135, 131, 120, 0.06); }
+.pub-embed-iframe { display: block; width: 100%; height: 100%; border: 0; }
+.pub-embed-facade, .pub-embed-refused { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; height: 100%; min-height: 6rem; padding: 1rem; text-align: center; color: #6b7280; font-size: 0.875rem; }
+.pub-embed-refused { border: 1px solid rgba(135, 131, 120, 0.25); border-radius: 4px; height: auto; }
+.pub-embed-refused p { margin: 0; }
+.pub-embed-refused a { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; color: #6b7280; }
+.pub-embed-facade-host { color: #374151; font-weight: 500; }
+.pub-embed-load { border: 1px solid rgba(135, 131, 120, 0.4); border-radius: 4px; background: none; padding: 0.25rem 0.75rem; color: inherit; font: inherit; cursor: pointer; }
+.pub-embed-meta { display: flex; gap: 0.75rem; margin: 0.25rem 0 0; font-size: 0.75rem; color: #6b7280; }
+.pub-embed-meta a { color: inherit; }
+.pub-embed figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+:root[data-theme='dark'] .pub-embed-stage, :root[data-theme='dark'] .pub-embed-refused { border-color: rgba(255, 255, 255, 0.14); }
+:root[data-theme='dark'] .pub-embed-facade-host { color: #d1d5db; }
