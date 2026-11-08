@@ -31298,14 +31298,14 @@ async function main() {
       await clickSelector(CELL)
       await key('Enter')
       check('칸에서 Enter — 사람 고르개가 열리고 찾기 칸에 포커스', await waitFor(`document.activeElement?.matches('[data-testid="db-people-input"]')`, 5000))
-      await typeText('담당 동료')
+      await typeText(mateName) // 이름 전체 — 전체 판에선 다른 절(18148)이 만든 "담당 동료" 가 같은 워크스페이스에 있어 먼저 골라진다
       await waitFor(`[...document.querySelectorAll('[data-testid="db-people-option"]')].some((o) => o.textContent.includes(${JSON.stringify(mateName)}))`, 20000)
       await key('Enter')
       // 서버 값이 먼저 — 쓰기 · 다시 읽기가 부하에서 늦어도 서버가 바뀐 뒤에 칩을 본다
       const mateSaved = await serverUntil(mate.userId)
       check('★ 고르면 칩이 서고 서버에 저장된다',
         mateSaved && (await waitFor(`(document.querySelector('${CELL} [data-testid="db-person-chip"]')?.textContent ?? '') === ${JSON.stringify(mateName)}`, 20000)),
-        `${await evaluate(`document.querySelector('${CELL}')?.textContent ?? '(칸 없음)'`)} · ${await valueOf()}`)
+        `${await evaluate(`document.querySelector('${CELL}')?.textContent ?? '(칸 없음)'`)} · ${await valueOf()} · 기대 ${mateName} · ${mate.userId}`)
 
       await clickSelector('[data-testid="db-people-remove"]')
       const cleared = await waitFor(`!document.querySelector('${CELL} [data-testid="db-person-chip"]')`, 20000)
@@ -31337,7 +31337,7 @@ async function main() {
       check('★ 그사이 다른 사람이 더한 사람이 남는다 — 고르개는 더하기로 보낸다 · 칸에 둘 다 선다',
         (await serverUntil(`${ctx.userId},${mate.userId}`)) &&
           (await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length === 2`, 20000)),
-        `${await valueOf()} · 칩 ${await evaluate(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length`)}`)
+        `${await valueOf()} · 칩 ${await evaluate(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length`)} · 기대 ${ctx.userId},${mate.userId}`)
       await key('Escape')
 
       await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: pid, value: { type: 'people', people: [{ id: mate.userId }] } }] })
