@@ -31898,6 +31898,207 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검증 속성 — 고르개 · 행 머리 (VF-2 · F-03-23)')) { try {
+      // 칸에서 Enter → 고르개(30일 · 무기한 · 날짜 · 해제) → 서버 값 / 속성 추가에 "검증"(Business) → 소유자 열 동반 / 낮은 플랜은 문구만 / 행 머리 배지:
+      // 편집하는 사람은 거기서 검증하고 읽기만 하는 사람은 배지만 본다 / 검증 뒤에 제목을 고치면 머리말에 "검증 뒤 고침". 요금제는 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const setDate = (value) => evaluate(`(() => {
+        const i = document.querySelector('[data-testid="db-verification-date"]')
+        if (!i) return false
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+        set.call(i, ${JSON.stringify(value)})
+        i.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+      const PICKER = '[data-testid="db-verification-picker"]'
+      const DURATION = (days) => `${PICKER} [data-testid="db-verification-duration"][data-days="${days}"]`
+      try {
+        await setWorkspacePlan(workspaceId, 'business')
+        const db = (await api('POST', '/databases', { name: `검증고르개 ${stamp}` })).body.database
+        const view = db.defaultViewId
+        const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const newRow = async (title) =>
+          (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const row = await newRow('고르개 행')
+        const row2 = await newRow('머리 행')
+        const row3 = await newRow('안 한 행')
+        const added = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '검증', type: 'verification' })
+        const pid = added.body?.property?.id
+        const CELL = `tr[data-row-id="${row}"] td[data-property-id="${pid}"]`
+        const cellOf = async (id = row) => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === id)?.properties?.[pid] ?? null
+        const serverUntil = async (test, ms = 20000, id = row) => {
+          for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (test(await cellOf(id))) return true
+          return false
+        }
+        const openTable = async () => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+          await waitFor(`!!document.querySelector('${CELL}')`, 20000)
+        }
+        // 서버가 그린 칸 — React 가 붙기 전의 클릭 · 키는 버려진다. 열릴 때까지 다시 한다(열려 있으면 누르지 않는다)
+        const openPicker = async () => {
+          for (let i = 0; i < 8 && !(await evaluate(`!!document.querySelector('${PICKER}')`)); i += 1) {
+            await waitHydrated(CELL)
+            await clickSelector(CELL)
+            if (await waitFor(`!!document.querySelector('${PICKER}')`, 800)) break
+            await key('Enter')
+            await waitFor(`!!document.querySelector('${PICKER}')`, 2000)
+          }
+          return evaluate(`!!document.querySelector('${PICKER}')`)
+        }
+        check('전제 — 검증 속성이 선다', added.status === 201 && typeof pid === 'string', JSON.stringify(added.body).slice(0, 160))
+
+        await openTable()
+        check('칸에서 Enter · 한 번 더 누르기 — 고르개가 열리고 기간 선택이 보인다',
+          (await openPicker()) && (await evaluate(`${JSON.stringify(['7', '30', '90', 'forever'])}.every((d) => !!document.querySelector('${PICKER} [data-testid="db-verification-duration"][data-days="' + d + '"]'))`)))
+
+        // ── 30일 ──
+        const before30 = Date.now()
+        await clickSelector(DURATION(30))
+        const ok30 = await serverUntil((c) => c?.state === 'verified' && typeof c.expires_at === 'string' && Math.abs(new Date(c.expires_at).getTime() - (before30 + 30 * 86400000)) < 60000)
+        check('★ 고르개의 "30일" — 검증되고 만료가 지금 + 30일이다(서버 값)', ok30, JSON.stringify(await cellOf()))
+        check('칸이 "30일 남음" 으로 바뀐다', await waitFor(`(document.querySelector('${CELL} [data-testid="db-verification"]')?.textContent ?? '').includes('30일 남음')`, 15000))
+
+        // ── 무기한 — 다시 검증 ──
+        check('검증된 칸의 고르개 — 누가 · 언제 · 언제까지와 "검증 해제"', (await openPicker())
+          && (await waitFor(`(document.querySelector('${PICKER} [data-testid="db-verification-info"]')?.textContent ?? '').includes('까지')`, 8000))
+          && (await evaluate(`!!document.querySelector('${PICKER} [data-testid="db-verification-off"]')`)))
+        await clickSelector(DURATION('forever'))
+        check('★ 고르개의 "무기한" — 서버 expires_at 이 null 이다', await serverUntil((c) => c?.state === 'verified' && c.expires_at === null), JSON.stringify(await cellOf()))
+
+        // ── 날짜 고르기 — 보는 사람의 시간대로 그날의 끝 ──
+        try {
+          await send('Emulation.setTimezoneOverride', { timezoneId: 'Asia/Tokyo' })
+          await openTable()
+          check('전제 — 날짜 고르개가 열린다', await openPicker())
+          let dated = false
+          for (let i = 0; i < 6 && !dated; i += 1) {
+            await setDate('2031-01-15')
+            dated = await waitFor(`!document.querySelector('${PICKER} [data-testid="db-verification-date-apply"]')?.disabled`, 1500)
+          }
+          await clickSelector(`${PICKER} [data-testid="db-verification-date-apply"]`)
+          check('★ 고르개의 "날짜 고르기" — 보는 사람의 시간대(도쿄)로 그날의 끝이 서버에 저장된다',
+            await serverUntil((c) => c?.expires_at === '2031-01-15T14:59:59.999Z'), JSON.stringify(await cellOf()))
+        } finally {
+          await send('Emulation.setTimezoneOverride', { timezoneId: '' }).catch(() => undefined)
+        }
+
+        // ── 해제 ──
+        await openTable()
+        check('전제 — 해제 고르개가 열린다', await openPicker())
+        await clickSelector(`${PICKER} [data-testid="db-verification-off"]`)
+        check('★ 고르개의 "검증 해제" — 서버의 칸이 지워지고 화면의 칸도 빈다',
+          (await serverUntil((c) => c === null)) && (await waitFor(`!document.querySelector('${CELL} [data-testid="db-verification"]')`, 15000)), JSON.stringify(await cellOf()))
+
+        // ── 행 머리 배지 ──
+        const rowUrl = (id) => `${BASE}/w/${workspaceId}/${id}`
+        await send('Page.navigate', { url: rowUrl(row2) })
+        await waitFor(`!!document.querySelector('[data-testid="row-verification-verify"]')`, 20000)
+        for (let i = 0; i < 8 && !(await evaluate(`!!document.querySelector('${PICKER}')`)); i += 1) {
+          await waitHydrated('[data-testid="row-verification-verify"]')
+          await clickSelector('[data-testid="row-verification-verify"]')
+          await waitFor(`!!document.querySelector('${PICKER}')`, 2500)
+        }
+        await clickSelector(DURATION(7))
+        check('★ 행 머리 — 편집하는 사람은 "검증하기" 로 검증한다(서버 값 · 배지가 "검증됨")',
+          (await serverUntil((c) => c?.state === 'verified', 20000, row2))
+            && (await waitFor(`(document.querySelector('[data-testid="row-verification-badge"]')?.textContent ?? '').includes('검증됨')`, 15000)),
+          `${JSON.stringify(await cellOf(row2))} | ${await evaluate(`document.querySelector('[data-testid="row-verification"]')?.textContent ?? ''`)}`)
+
+        // 읽기만 하는 사람 — 배지는 보고 단추는 없다
+        const reader = await joinAs(workspaceId, await createUser(`검증 독자 ${stamp}`), 'guest')
+        const shared = await aclMod.grantAccess(ctx, db.id, { type: 'user', id: reader.userId }, 'view')
+        const htmlOf = async (id, who) => (await fetch(rowUrl(id), { headers: { cookie: `nc_session=${who}` } })).text()
+        const viewerHtml = await htmlOf(row2, reader.token)
+        const viewerEmpty = await htmlOf(row3, reader.token)
+        const editorEmpty = await htmlOf(row3, session)
+        check('★ 읽기만 하는 사람 — 행 머리의 배지는 보이고 "검증하기" 단추는 없다',
+          shared.ok && viewerHtml.includes('data-testid="row-properties"') && viewerHtml.includes('data-testid="row-verification-badge"')
+            && !viewerHtml.includes('data-testid="row-verification-verify"') && !/<button[^>]*data-testid="row-verification-badge"/.test(viewerHtml)
+            && viewerEmpty.includes('data-testid="row-properties"') && !viewerEmpty.includes('data-testid="row-verification-verify"')
+            && editorEmpty.includes('data-testid="row-verification-verify"'),
+          JSON.stringify([shared.ok, viewerHtml.includes('row-verification-badge'), viewerHtml.includes('row-verification-verify'), viewerEmpty.includes('row-verification-verify'), editorEmpty.includes('row-verification-verify')]))
+
+        // 검증 뒤에 제목을 고친다 — 머리말에 "검증 뒤 고침"
+        await sleep(1300)
+        const retitled = await api('PATCH', `/rows/${row2}`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('머리 행 고침')] } }] })
+        await send('Page.navigate', { url: rowUrl(row2) })
+        await waitFor(`!!document.querySelector('[data-testid="row-verification-badge"]')`, 20000)
+        const headerTitle = await evaluate(`document.querySelector('[data-testid="row-verification-badge"]')?.getAttribute('title') ?? ''`)
+        check('★ 검증 뒤에 행을 고치면 머리 배지의 머리말에 "검증 뒤 고침" 이 붙는다(풀리지는 않는다)',
+          retitled.status === 200 && headerTitle.includes('검증 뒤 고침') && (await cellOf(row2))?.state === 'verified', `${retitled.status} | ${headerTitle}`)
+
+        // ── 속성 추가 메뉴 ──
+        const db2 = (await api('POST', '/databases', { name: `검증추가 ${stamp}` })).body.database
+        const openAddMenu = async (dbId) => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+          await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 20000)
+          for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-add-column-form"]')`)); i += 1) {
+            await waitHydrated('[data-testid="db-add-column"]')
+            await clickSelector('[data-testid="db-add-column"]')
+            await waitFor(`!!document.querySelector('[data-testid="db-add-column-form"]')`, 2000)
+          }
+          await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        }
+        const offeredVerification = () =>
+          evaluate(`[...(document.querySelector('select[aria-label="속성 유형"]')?.options ?? [])].some((o) => o.value === 'verification' && o.textContent.includes('검증'))`)
+        await openAddMenu(db2.id)
+        const offered = await offeredVerification()
+        await typeText('검증')
+        await setSelect('select[aria-label="속성 유형"]', 'verification')
+        await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+        const both = await waitFor(`(() => { const t = [...document.querySelectorAll('thead th')].map((th) => th.textContent); return t.some((x) => x.includes('검증')) && t.some((x) => x.includes('소유자')) })()`, 20000)
+        const cols2 = (await api('GET', `/views/${db2.defaultViewId}`)).body?.view?.columns ?? []
+        check('★ 속성 추가에 "검증" — 고르면 검증 열과 소유자 열이 함께 선다(Business)',
+          offered && both && cols2.some((c) => c.type === 'verification') && cols2.some((c) => c.name === '소유자' && c.type === 'people'),
+          JSON.stringify([offered, both, cols2.map((c) => `${c.name}:${c.type}`)]))
+
+        // ── 낮은 요금제 ──
+        await setWorkspacePlan(workspaceId, 'free')
+        const db3 = (await api('POST', '/databases', { name: `검증무료 ${stamp}` })).body.database
+        await openAddMenu(db3.id)
+        const offeredFree = await offeredVerification()
+        await typeText('검증')
+        await setSelect('select[aria-label="속성 유형"]', 'verification')
+        await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+        const planText = await waitFor(`(document.querySelector('[data-testid="db-add-column-form"]')?.textContent ?? '').includes('Business 이상')`, 15000)
+        const cols3 = (await api('GET', `/views/${db3.defaultViewId}`)).body?.view?.columns ?? []
+        check('★ 낮은 플랜 — "검증" 은 목록에 있고 만들면 플랜 문구가 보이며 서버는 그대로다',
+          offeredFree && planText && !cols3.some((c) => c.type === 'verification'), JSON.stringify([offeredFree, planText, cols3.map((c) => c.type)]))
+
+        await openTable()
+        // 첫 행은 해제해 둔 행 — 칸이 비어 있어도 고르개를 열 수 있다
+        for (let i = 0; i < 8 && !(await evaluate(`!!document.querySelector('${PICKER}')`)); i += 1) {
+          await waitHydrated(CELL)
+          await clickSelector(CELL)
+          if (await waitFor(`!!document.querySelector('${PICKER}')`, 800)) break
+          await key('Enter')
+          await waitFor(`!!document.querySelector('${PICKER}')`, 2000)
+        }
+        await clickSelector(DURATION(7))
+        const planInPicker = await waitFor(`(document.querySelector('${PICKER} [data-testid="db-verification-error"]')?.textContent ?? '').includes('Business 이상')`, 15000)
+        check('★ 낮은 플랜 — 고르개로 검증하면 플랜 문구가 보이고 서버의 칸은 그대로(검증 안 됨)',
+          planInPicker && (await cellOf(row)) === null, `${planInPicker} | ${JSON.stringify(await cellOf(row))} | ${await evaluate(`document.querySelector('${PICKER}')?.textContent ?? '(고르개 없음)'`)}`)
+      } finally {
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.

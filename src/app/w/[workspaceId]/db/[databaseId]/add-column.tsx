@@ -62,7 +62,7 @@ import { FormulaEditor } from './formula-editor'
 import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan'
 import { AnchoredLayer } from '../../anchored-layer'
 
-type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button'
+type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button' | 'verification'
 
 const ADDABLE_TYPES: readonly AddableType[] = [
   ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title'> => t !== 'title'),
@@ -72,6 +72,8 @@ const ADDABLE_TYPES: readonly AddableType[] = [
   'unique_id',
   // 버튼(자동화 5a-3) — 만들면 액션 0개. "버튼 설정"(열 머리 메뉴)에서 액션을 더한다.
   'button',
+  // 검증(VF-2) — 낮은 요금제에서도 목록에 선다. 만들면 서버가 `plan_required` 로 거절하고 폼이 그 말을 보인다. 표에 하나뿐이다.
+  'verification',
 ]
 
 /** 이 표의 relation 컬럼 — rollup 이 탈 수 있는 것. 대상 표는 그 config 가 정한다. */
@@ -90,12 +92,14 @@ export function AddColumn({
   tableName,
   relations,
   hasUniqueId,
+  hasVerification,
   onAdd,
   onAddRelation,
   onAddRollup,
   onAddUniqueId,
   onAddFormula,
   onAddButton,
+  onAddVerification,
   formulaPlan,
   previewCells,
 }: {
@@ -108,6 +112,8 @@ export function AddColumn({
   relations: readonly RelationChoice[]
   /** 이 표에 ID 속성이 이미 보인다 — 유형 목록에서 뺀다(U1). */
   hasUniqueId: boolean
+  /** 이 표에 검증 속성이 이미 보인다 — 유형 목록에서 뺀다(표에 하나 · 서버도 `verification_exists`). */
+  hasVerification: boolean
   /** 실패하면 사람이 읽을 이유를, 성공하면 `null` 을 돌려준다. */
   onAdd: (name: string, type: MvpPropertyType) => Promise<string | null>
   onAddRelation: (input: api.AddRelationInput) => Promise<string | null>
@@ -116,6 +122,8 @@ export function AddColumn({
   onAddFormula: (name: string, expression: string) => Promise<string | null>
   /** 버튼 속성을 만든다(5a-3) — 표가 다시 읽는다(버튼 열은 서버가 세운다). */
   onAddButton: (name: string) => Promise<string | null>
+  /** 검증 속성을 만든다(VF-2) — 소유자 사람 속성이 함께 생기므로 표가 다시 읽는다. */
+  onAddVerification: (name: string) => Promise<string | null>
   /** 수식의 계산 계획(2i-3b) — 편집기가 표의 속성을 읽는다. 없으면 "수식"이 서지 않는다. */
   formulaPlan: FormulaPlan | null
   /** 미리보기에 쓸 첫 행의 칸. 행이 없으면 null(결과 타입만 보인다). */
@@ -281,6 +289,8 @@ export function AddColumn({
                 ? await onAddUniqueId(name, prefix)
                 : type === 'button'
                 ? await onAddButton(name)
+                : type === 'verification'
+                ? await onAddVerification(name)
                 : type === 'formula'
                 ? await onAddFormula(name, expression)
                 : type === 'rollup'
@@ -321,7 +331,7 @@ export function AddColumn({
             aria-label="속성 유형"
             className={FIELD}
           >
-            {ADDABLE_TYPES.filter((t) => (t !== 'unique_id' || !hasUniqueId) && (t !== 'formula' || formulaPlan !== null)).map((t) => (
+            {ADDABLE_TYPES.filter((t) => (t !== 'unique_id' || !hasUniqueId) && (t !== 'verification' || !hasVerification) && (t !== 'formula' || formulaPlan !== null)).map((t) => (
               <option key={t} value={t}>
                 {TYPE_ICON[t]} {TYPE_LABEL[t]}
               </option>
