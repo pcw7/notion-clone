@@ -387,8 +387,8 @@ function connect(url) {
     // (전체 판 #237 · 4c-1). 기다림을 `Page.navigate` 에만 걸어 두었었다.
     if (method === 'Page.navigate' || method === 'Page.reload') {
       const settle = async () => {
-        // 받은 "바뀌었다"의 다시 읽기가 시작되기를(신호 뒤 3초까지) — 시작되면 진행 중인 요청으로 끝나기를 기다린다
-        while (changedAt !== null && Date.now() - changedAt < 3000) await sleep(50)
+        // 받은 "바뀌었다"의 다시 읽기가 시작되기를(신호 뒤 8초까지 — 전체 판의 부하에서 3초는 모자랐다) — 시작되면 진행 중인 요청으로 끝나기를 기다린다
+        while (changedAt !== null && Date.now() - changedAt < 8000) await sleep(50)
         changedAt = null
         for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
       }
@@ -396,11 +396,11 @@ function connect(url) {
       // 떠나는 화면이 다 살아나기를 먼저 — 문서를 다 받고(load) 메인 스레드가 비면(requestIdleCallback) 하이드레이션과 효과가 끝났다. 서버가
       // 그린 내용만 보고 넘어온 검사가 살아나는 중인 화면을 떠나면, 그 화면은 아래의 대기가 본 뒤에야 구독을 열고 렌더 뒤의 변경(방금의
       // 쓰기)을 곧바로 받아 다시 읽기를 시작한다 — 떠나는 이동이 그것을 끊어 "The destination stream closed early" 를 찍었다(갤러리 2f-1 ·
-      // #380 · #381 의 전체 판 · CPU 6배 홀로 열 판 남짓에 한 번 — 구독이 화면이 선 지 1.15초 뒤에 열렸다 · HANDOFF §3.3-477). 상한 3초.
+      // #380 · #381 의 전체 판 · CPU 6배 홀로 열 판 남짓에 한 번 — 구독이 화면이 선 지 1.15초 뒤에 열렸다 · HANDOFF §3.3-477). 상한 8초(전체 판의 부하에서 3초 상한이 모자라 늦게 시작한 다시 읽기를 떠나며 끊었다).
       await rawSend('Runtime.evaluate', {
         expression: `new Promise((resolve) => {
-          const done = setTimeout(() => resolve(false), 3000)
-          const idle = () => requestIdleCallback(() => { clearTimeout(done); resolve(true) }, { timeout: 3000 })
+          const done = setTimeout(() => resolve(false), 8000)
+          const idle = () => requestIdleCallback(() => { clearTimeout(done); resolve(true) }, { timeout: 8000 })
           if (document.readyState === 'complete') idle()
           else addEventListener('load', idle, { once: true })
         })`,
@@ -17882,7 +17882,13 @@ async function main() {
 
         // ② 다시 열면 힌트만 — 비워 둔 채 저장해도 그대로
         await openEditor()
-        await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')`, 5000)
+        // 열린 편집기가 저장된 값(힌트 · 헤더 · 고른 속성)을 다 받아 그릴 때까지 — 부하에서는 칸만 먼저 서고 나머지가 늦는다
+        await waitFor(`(() => {
+          const url = document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')
+          const value = document.querySelector('${EDITOR} [data-testid="db-button-webhook-header-value"]')
+          return !!url && String(url.placeholder).includes('지금: 127.0.0.1') && !!value && String(value.placeholder).includes('저장된 값')
+            && document.querySelector('${EDITOR} [data-testid="db-button-webhook-property"][data-property-id="${qty}"]')?.checked === true
+        })()`, 20000)
         const shown = await evaluate(`(() => {
           const url = document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')
           const value = document.querySelector('${EDITOR} [data-testid="db-button-webhook-header-value"]')
@@ -17891,11 +17897,14 @@ async function main() {
         })()`)
         await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
         // 저장이 **받아들여져** 닫혀야 한다 — 거절돼 열린 채면 서버 값이 그대로인 것은 아무것도 말하지 않는다
-        const resaved = await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+        const resaved = await waitFor(`!document.querySelector('${EDITOR}')`, 20000)
+        // 닫힘 뒤 서버 값을 읽는다 — 저장 응답과 다시 읽기가 늦어도 서버 값이 보일 때까지(최대 20초)
+        let afterResave = await savedActions()
+        for (let i = 0; i < 40 && afterResave[0]?.config?.urlHint !== config.urlHint; i += 1) { await sleep(500); afterResave = await savedActions() }
         check('★ 다시 열면 주소 · 헤더 값은 비어 있고 힌트만 보인다 — 비워 둔 채 저장해도 그대로',
           resaved && shown.url === '' && String(shown.urlHint).includes('지금: 127.0.0.1') && shown.header === '' && String(shown.headerHint).includes('저장된 값')
-            && shown.checked === true && (await savedActions())[0]?.config?.urlHint === config.urlHint,
-          JSON.stringify([resaved, shown, await evaluate(`document.querySelector('${EDITOR} [data-testid="db-button-editor-error"]')?.textContent ?? null`)]))
+            && shown.checked === true && afterResave[0]?.config?.urlHint === config.urlHint,
+          JSON.stringify([resaved, shown, afterResave[0]?.config?.urlHint ?? null, await evaluate(`document.querySelector('${EDITOR} [data-testid="db-button-editor-error"]')?.textContent ?? null`)]))
 
         // ③ 누르면 받는 서버에 그 헤더와 몸이 닿는다
         await clickSelector(`tr[data-row-id="${row}"] [data-testid="db-button-cell"]`)
@@ -18150,10 +18159,18 @@ async function main() {
       await clickSelector(`${EDITOR} [data-testid="db-automation-notify-people"][data-property-id="${who}"]`)
       // 메시지 — 글 + 값 넣기(메모)
       await fill(`${EDITOR} [data-testid="db-automation-notify-text"]`, '새 행: ')
-      await clickSelector(`${EDITOR} [data-testid="db-automation-notify-slot-add"]`)
-      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-notify-slot-option"][data-property-id="${note}"]')`, 5000)
-      await clickSelector(`${EDITOR} [data-testid="db-automation-notify-slot-option"][data-property-id="${note}"]`)
-      const chipShown = await waitFor(`document.querySelector('${EDITOR} [data-testid="db-automation-notify-chip"][data-property-id="${note}"]')?.textContent?.startsWith('메모')`, 5000)
+      // 값 넣기 단추 → 출처 목록 → 메모 — 하이드레이션 전의 클릭은 버려지므로 칩이 설 때까지 처음부터 다시 누른다
+      const SLOT_OPTION = `${EDITOR} [data-testid="db-automation-notify-slot-option"][data-property-id="${note}"]`
+      const CHIP_SHOWN = `document.querySelector('${EDITOR} [data-testid="db-automation-notify-chip"][data-property-id="${note}"]')?.textContent?.startsWith('메모')`
+      let chipShown = false
+      for (let i = 0; i < 5 && !chipShown; i += 1) {
+        if (!(await evaluate(`!!document.querySelector('${SLOT_OPTION}')`))) {
+          await clickSelector(`${EDITOR} [data-testid="db-automation-notify-slot-add"]`)
+          await waitFor(`!!document.querySelector('${SLOT_OPTION}')`, 4000)
+        }
+        if (await evaluate(`!!document.querySelector('${SLOT_OPTION}')`)) await clickSelector(SLOT_OPTION)
+        chipShown = await waitFor(CHIP_SHOWN, 4000)
+      }
       const chipOnly = await evaluate(`!(document.querySelector('${EDITOR} [data-testid="db-automation-notify-message"]')?.textContent ?? '').includes('{{row:')`)
       const selected = await evaluate(`[...document.querySelectorAll('${EDITOR} [data-testid="db-automation-notify-user"]')].map((e) => e.dataset.userId).join(',')`)
       await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
@@ -18222,12 +18239,15 @@ async function main() {
         await evaluate(`!document.querySelector('${SETTINGS} [data-testid="button-block-notify-people"]') && !document.querySelector('${SETTINGS} [data-testid="button-block-notify-slot-add"]')`))
       let count = 0
       for (let i = 0; i < 24; i += 1) {
-        await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]') || document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')?.disabled === true`, 5000)
+        // 후보가 서거나 칸이 잠기기를 — 후보 목록은 서버에서 오고 부하에서는 5초를 넘긴다. 시간 안에 둘 다 없으면 그만둔다(칩 수가 말한다)
+        await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]') || document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')?.disabled === true`, 20000)
         const clicked = await evaluate(`(() => { const c = document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]'); if (!c) return false; c.click(); return true })()`)
         if (!clicked) break
         count += 1
-        await waitFor(`document.querySelectorAll('${SETTINGS} [data-testid="button-block-notify-user"]').length === ${count}`, 3000)
+        await waitFor(`document.querySelectorAll('${SETTINGS} [data-testid="button-block-notify-user"]').length === ${count}`, 10000)
       }
+      // 마지막 고름 뒤 칸이 잠기고 후보가 사라질 때까지(고르개가 새 목록을 받아 다시 그린다)
+      await waitFor(`document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')?.disabled === true && !document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]')`, 10000)
       const chips = await evaluate(`document.querySelectorAll('${SETTINGS} [data-testid="button-block-notify-user"]').length`)
       check('★ 멤버는 20명에서 더 고를 수 없다 — 칸이 잠기고 후보가 사라진다',
         chips === 20 && (await evaluate(`document.querySelector('${SETTINGS} [data-testid="button-block-notify-search"]')?.disabled === true && !document.querySelector('${SETTINGS} [data-testid="button-block-notify-candidate"]')`)),
@@ -31166,7 +31186,7 @@ async function main() {
         return (rows.find((r) => r.id === row)?.properties?.[pid]?.people ?? []).map((p) => p.id).join(',')
       }
       // 서버 값은 브라우저 식이 아니다 — 여기서 몇 번 묻는다
-      const serverUntil = async (want, ms = 8000) => {
+      const serverUntil = async (want, ms = 20000) => {
         for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if ((await valueOf()) === want) return true
         return false
       }
@@ -31174,15 +31194,16 @@ async function main() {
       await key('Enter')
       check('칸에서 Enter — 사람 고르개가 열리고 찾기 칸에 포커스', await waitFor(`document.activeElement?.matches('[data-testid="db-people-input"]')`, 5000))
       await typeText('담당 동료')
-      await waitFor(`[...document.querySelectorAll('[data-testid="db-people-option"]')].some((o) => o.textContent.includes(${JSON.stringify(mateName)}))`, 8000)
+      await waitFor(`[...document.querySelectorAll('[data-testid="db-people-option"]')].some((o) => o.textContent.includes(${JSON.stringify(mateName)}))`, 20000)
       await key('Enter')
+      // 서버 값이 먼저 — 쓰기 · 다시 읽기가 부하에서 늦어도 서버가 바뀐 뒤에 칩을 본다
+      const mateSaved = await serverUntil(mate.userId)
       check('★ 고르면 칩이 서고 서버에 저장된다',
-        (await waitFor(`(document.querySelector('${CELL} [data-testid="db-person-chip"]')?.textContent ?? '') === ${JSON.stringify(mateName)}`, 8000)) &&
-          (await serverUntil(mate.userId)),
+        mateSaved && (await waitFor(`(document.querySelector('${CELL} [data-testid="db-person-chip"]')?.textContent ?? '') === ${JSON.stringify(mateName)}`, 20000)),
         `${await evaluate(`document.querySelector('${CELL}')?.textContent ?? '(칸 없음)'`)} · ${await valueOf()}`)
 
       await clickSelector('[data-testid="db-people-remove"]')
-      const cleared = await waitFor(`!document.querySelector('${CELL} [data-testid="db-person-chip"]')`, 8000)
+      const cleared = await waitFor(`!document.querySelector('${CELL} [data-testid="db-person-chip"]')`, 20000)
       check('× 로 빼면 빈 칸 · 서버 값도 비었다', cleared && (await serverUntil('')), await valueOf())
 
       // 그사이 다른 사람이 더한 사람이 남는다(10n-3 · 정본 [보강] 사람 속성 ⑫). 다른 연결이 행을 잠근 채 칸에 "나"를 넣어 둔다 — 커밋
@@ -31210,7 +31231,7 @@ async function main() {
       check('전제 — 고르개의 쓰기가 행의 잠금을 기다렸다(다른 사람의 쓰기가 먼저 끝난다)', waited)
       check('★ 그사이 다른 사람이 더한 사람이 남는다 — 고르개는 더하기로 보낸다 · 칸에 둘 다 선다',
         (await serverUntil(`${ctx.userId},${mate.userId}`)) &&
-          (await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length === 2`, 8000)),
+          (await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length === 2`, 20000)),
         `${await valueOf()} · 칩 ${await evaluate(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length`)}`)
       await key('Escape')
 
