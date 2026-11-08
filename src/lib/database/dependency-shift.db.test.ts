@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import { probeDatabase, makeFixture, createUser, joinAs, type Fixture } from '../testing/db-fixtures.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { grantAccess, stopInheriting } from '../permissions/acl.ts'
-import { createDatabase, setDependencyShiftMode } from './database.ts'
+import { createDatabase, setAvoidWeekends, setDependencyShiftMode } from './database.ts'
 import { addProperty, getSchema } from './property.ts'
 import type { CellValue } from './property-types.ts'
 import { createRow, updateCells } from './row.ts'
@@ -110,6 +110,30 @@ describe('① 방식이 없으면 · 종속 관계가 꺼지면 옮기지 않는
     assert.equal(!bad.ok && bad.reason, 'invalid_shift_mode')
     assert.equal(unwrap(await setDependencyShiftMode(fx.owner.ctx, f.databaseId, 'overlap_only')), 'overlap_only')
     assert.equal(unwrap(await setDependencyShiftMode(fx.owner.ctx, f.databaseId, 'overlap_only')), 'overlap_only')
+  })
+})
+
+describe('TL-6 주말 피하기', () => {
+  test('★ overlap_only + 켬 → 토요일에 닿는 B 는 월요일로 · 끔 → 토요일 그대로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    // 2026-03-13 은 금요일 → B 는 3-14(토)부터
+    const on = await chain()
+    unwrap(await setDependencyShiftMode(fx.owner.ctx, on.databaseId, 'overlap_only'))
+    assert.equal(unwrap(await setAvoidWeekends(fx.owner.ctx, on.databaseId, true)), true)
+    const bad = await setAvoidWeekends(fx.owner.ctx, on.databaseId, 'yes')
+    assert.equal(bad.ok, false)
+    // 사람이 직접 고친 A 는 토요일에 끝나도 그대로
+    unwrap(await move(fx.owner, on.a, on.due, date('2026-03-07', '2026-03-14')))
+    assert.deepEqual(await spanOf(on.a, on.due), ['2026-03-07', '2026-03-14'])
+    // A 끝 3-14(토) → B 시작 3-15(일) → 월요일 3-16 · 기간 그대로
+    assert.deepEqual(await spanOf(on.b, on.due), ['2026-03-16', '2026-03-18'])
+    unwrap(await move(fx.owner, on.a, on.due, date('2026-03-09', '2026-03-13')))
+    assert.deepEqual(await spanOf(on.b, on.due), ['2026-03-16', '2026-03-18'])
+
+    const off = await chain()
+    unwrap(await setDependencyShiftMode(fx.owner.ctx, off.databaseId, 'overlap_only'))
+    unwrap(await move(fx.owner, off.a, off.due, date('2026-03-09', '2026-03-13')))
+    assert.deepEqual(await spanOf(off.b, off.due), ['2026-03-14', '2026-03-16'])
   })
 })
 

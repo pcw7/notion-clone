@@ -534,6 +534,28 @@ export async function setDependencyShiftMode(
   })
 }
 
+/** 주말 피하기를 켜고 끈다(TL-6 · 정본 [보강 TL-6] ③) — 이동 방식과 같은 사람 · 같은 조건. */
+export async function setAvoidWeekends(ctx: SessionContext, databaseId: string, raw: unknown): Promise<DatabaseResult<boolean>> {
+  if (typeof raw !== 'boolean') return { ok: false, reason: 'invalid_shift_mode' } as const
+  return withCommandTransaction(async (tx) => {
+    const row = await tx.queryMaybe<{ on: boolean }>(
+      `SELECT d.avoid_weekends AS on FROM block b JOIN database d ON d.id = b.id
+        WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'database' AND b.lifecycle = 'live'
+        FOR UPDATE OF b`,
+      [databaseId, ctx.workspaceId],
+    )
+    if (row === null) return { ok: false, reason: 'not_found' } as const
+    const caps = await effectiveCaps(tx, ctx, databaseId)
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+    if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
+    if (row.on === raw) return { ok: true, value: raw } as const
+    await tx.query(`UPDATE database SET avoid_weekends = $2, updated_at = now() WHERE id = $1`, [databaseId, raw])
+    await tx.query(`UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`, [databaseId, ctx.userId])
+    return { ok: true, value: raw } as const
+  })
+}
+
 type DatabaseRow = {
   parent_type: string
   parent_id: string

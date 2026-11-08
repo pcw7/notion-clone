@@ -108,3 +108,26 @@ test('200행을 넘으면 shift_too_large', () => {
   const ok = planShift({ rowId: 'A', oldValue: d('2026-01-01'), newValue: d('2026-01-05'), mode: 'maintain_gap', edges: edges.slice(0, MAX_SHIFTED_ROWS), values })
   assert.ok(ok.ok && ok.moves.size === MAX_SHIFTED_ROWS)
 })
+
+// 주말 피하기(TL-6) — 2026-01-01 은 목요일: 02 금 · 03 토 · 04 일 · 05 월
+test('주말 피하기 — 시작이 토요일이면 월요일로, 기간은 그대로', () => {
+  const p = planShift({ rowId: 'A', oldValue: d('2025-12-20'), newValue: d('2026-01-01', '2026-01-02'), mode: 'overlap_only', avoidWeekends: true, edges: [edge('A', 'B')], values: vals({ B: d('2026-01-02', '2026-01-03') }) })
+  assert.deepEqual(moves(p), { B: { start: '2026-01-05', end: '2026-01-06' } })
+})
+
+test('주말 피하기 — 끝이 일요일에 떨어지면 끝만 월요일로 늘린다', () => {
+  const p = planShift({ rowId: 'A', oldValue: d('2025-12-20'), newValue: d('2026-01-01'), mode: 'overlap_only', avoidWeekends: true, edges: [edge('A', 'B')], values: vals({ B: d('2026-01-01', '2026-01-03') }) })
+  assert.deepEqual(moves(p), { B: { start: '2026-01-02', end: '2026-01-05' } })
+})
+
+test('주말 피하기 — 전파는 조정한 끝으로 본다', () => {
+  const input = { rowId: 'A', oldValue: d('2025-12-20'), newValue: d('2026-01-01', '2026-01-02'), mode: 'overlap_only', edges: [edge('A', 'B'), edge('B', 'C')], values: vals({ B: d('2026-01-02', '2026-01-03'), C: d('2026-01-06', '2026-01-07') }) } as const
+  assert.deepEqual(moves(planShift({ ...input, avoidWeekends: true })), { B: { start: '2026-01-05', end: '2026-01-06' }, C: { start: '2026-01-07', end: '2026-01-08' } })
+  // 끄면 이전 동작 그대로 — B 는 토 · 일에 놓이고 C 는 겹치지 않아 안 움직인다
+  assert.deepEqual(moves(planShift({ ...input, avoidWeekends: false })), { B: { start: '2026-01-03', end: '2026-01-04' } })
+})
+
+test('주말 피하기 — 사람이 직접 고친 행은 조정하지 않는다', () => {
+  const p = planShift({ rowId: 'A', oldValue: d('2025-12-20'), newValue: d('2026-01-03'), mode: 'overlap_only', avoidWeekends: true, edges: [edge('A', 'B')], values: vals({ B: d('2026-01-20') }) })
+  assert.deepEqual(moves(p), {})
+})

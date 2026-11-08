@@ -800,6 +800,7 @@ async function planDependencyShift(
       oldValue: old !== null && typeof old.start === 'string' ? old : null,
       newValue: cell.value.date,
       mode: loaded.mode,
+      avoidWeekends: loaded.avoidWeekends,
       edges: loaded.edges,
       values: loaded.values,
     })

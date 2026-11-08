@@ -100,7 +100,7 @@ function useToday(serverToday: string): string {
 }
 
 /** 종속 관계의 날짜 이동 방식(TL-5) — 종속 관계가 꺼져 있으면 null. `databaseId` 는 설정이 사는 데이터베이스. */
-type DependencyShift = { mode: 'overlap_only' | 'maintain_gap' | 'never'; databaseId: string }
+type DependencyShift = { mode: 'overlap_only' | 'maintain_gap' | 'never'; avoidWeekends?: boolean; databaseId: string }
 const SHIFT_LABEL: Record<DependencyShift['mode'], string> = { overlap_only: '겹칠 때만', maintain_gap: '간격 유지', never: '옮기지 않음' }
 
 type TimelineBody = { ok?: boolean; datePropertyId?: string; rows?: RowJson[]; undated?: number; truncated?: boolean; dependencies?: Dependency[]; dependencyShift?: DependencyShift | null; error?: string }
@@ -264,6 +264,25 @@ export function DatabaseTimeline(props: {
     } catch {
       setDependencyShift(current)
       setError('날짜 이동 방식을 바꾸지 못했습니다.')
+    }
+  }
+
+  /** 주말 피하기(TL-6) — 이동 방식과 같다. */
+  const changeAvoidWeekends = async (on: boolean) => {
+    const current = dependencyShift
+    if (current === null) return
+    setDependencyShift({ ...current, avoidWeekends: on })
+    setError(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/databases/${current.databaseId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ avoidWeekends: on }),
+      })
+      if (!res.ok) throw new Error('rejected')
+    } catch {
+      setDependencyShift(current)
+      setError('주말 피하기를 바꾸지 못했습니다.')
     }
   }
 
@@ -472,6 +491,17 @@ export function DatabaseTimeline(props: {
                 </option>
               ))}
             </select>
+          </label>
+        )}
+        {canEditStructure && dependencyShift !== null && (
+          <label className="flex items-center gap-1 text-neutral-600 dark:text-neutral-400">
+            <input
+              type="checkbox"
+              data-testid="timeline-avoid-weekends"
+              checked={dependencyShift.avoidWeekends === true}
+              onChange={(e) => void changeAvoidWeekends(e.target.checked)}
+            />
+            주말 피하기
           </label>
         )}
         {undated > 0 && (

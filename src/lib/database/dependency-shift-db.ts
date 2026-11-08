@@ -16,11 +16,18 @@ export async function readShiftMode(tx: Tx, databaseId: string): Promise<Depende
   return row !== null && isShiftMode(row.mode) ? row.mode : 'never'
 }
 
+/** 주말 피하기(TL-6) — 기본 거짓. */
+export async function readAvoidWeekends(tx: Tx, databaseId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ on: boolean }>(`SELECT avoid_weekends AS on FROM database WHERE id = $1`, [databaseId])
+  return row?.on === true
+}
+
 /** 간선 상한 — 행 상한보다 넉넉히 두되 한도가 있다(넘으면 너무 크다). */
 const MAX_EDGES = MAX_SHIFTED_ROWS * 5
 
 export type ShiftContext = {
   readonly mode: DependencyShiftMode
+  readonly avoidWeekends: boolean
   readonly edges: readonly ShiftEdge[]
   readonly values: ReadonlyMap<string, DateValue | null>
 }
@@ -60,5 +67,5 @@ export async function loadShiftContext(
     )
     for (const r of rows) values.set(r.page_id, r.date !== null && typeof r.date.start === 'string' ? r.date : null)
   }
-  return { mode, edges, values }
+  return { mode, avoidWeekends: await readAvoidWeekends(tx, input.databaseId), edges, values }
 }
