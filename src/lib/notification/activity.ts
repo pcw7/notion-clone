@@ -43,6 +43,8 @@ export const ACTIVITY_TYPES = [
   'person.assigned',
   // 알림 보내기 액션이 알렸다(AN-1 · 0130) — payload 는 자동화 id · 실행 방식(automation | button) · 풀어 낸 메시지(자동화 설정의 글).
   'automation.notified',
+  // 검증이 만료됐다(VF-3 · 0134) — payload 는 속성 id 하나.
+  'verification.expired',
 ] as const
 export type ActivityType = (typeof ACTIVITY_TYPES)[number]
 

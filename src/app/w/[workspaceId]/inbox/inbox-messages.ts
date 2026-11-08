@@ -32,3 +32,8 @@ export function automationInboxLine(automation: { readonly message: string; read
   const text = automation.message === '' ? '알림' : automation.message
   return automation.senderName ? `${automation.senderName}: ${text}` : text
 }
+
+/** 검증 만료 알림의 글(VF-3) — 행 제목은 줄 머리의 링크가 보인다. */
+export function verificationInboxLine(kind: string): string | null {
+  return kind === 'verification_expired' ? '검증이 만료되었습니다.' : null
+}
