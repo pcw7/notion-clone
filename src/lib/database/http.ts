@@ -33,6 +33,11 @@ export function rowFailureStatus(reason: RowFailure): number {
     case 'version_conflict':
     case 'locked':
       return 409
+    // 날짜 자동 이동(TL-5) — 따라 옮길 행을 못 고친다 · 너무 많다. 입력이 아니라 지금 상태가 허락하지 않는다.
+    case 'shift_forbidden':
+      return 403
+    case 'shift_too_large':
+      return 409
     case 'unknown_property':
     case 'readonly_property':
     case 'invalid_value':
@@ -49,7 +54,10 @@ export function relationFailureStatus(reason: RelationFailure): number {
       return 403
     // 잠긴 행 페이지(7f-2) — 입력은 맞는데 지금 상태가 허락하지 않는다.
     case 'locked':
+    case 'shift_too_large':
       return 409
+    case 'shift_forbidden':
+      return 403
     case 'unknown_property':
     case 'readonly_property':
     case 'invalid_value':
@@ -165,6 +173,7 @@ export function databaseFailureStatus(reason: DatabaseFailure): number {
       return 409
     case 'invalid_name':
     case 'invalid_icon':
+    case 'invalid_shift_mode':
     case 'too_deep':
       return 400
   }

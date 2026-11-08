@@ -14082,6 +14082,134 @@ async function main() {
       check('★ 종속 관계를 끄면 다시 열어도 화살표가 없다(막대는 그대로)', (await evaluate(`document.querySelectorAll(${JSON.stringify(ARROWS)}).length === 0 && document.querySelectorAll('[data-testid="timeline-bar"]').length === 2`)) === true)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('타임라인 — 날짜 자동 이동 (TL-5 · F-04-07)')) { try {
+      // 막는 행의 날짜를 쓰면(행 PATCH · 막대 끌기 · 키보드가 다 이 길) 데이터베이스의 방식대로 막힌 행이 따라온다 — overlap_only(겹칠 때만 E+1 로 민다) ·
+      // maintain_gap(같은 일수) · never. 응답 shifted 에 옮긴 행 id. 머리의 "날짜 이동" 선택이 방식을 저장한다. 정본 [보강 TL-5].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const dayOf = (offset) => {
+        const d = new Date()
+        d.setDate(d.getDate() + offset)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const span = (s, e) => `${dayOf(s)}~${e === undefined ? '' : dayOf(e)}`
+      const build = async (label, withC) => {
+        const db = (await api('POST', '/databases', { name: `타임라인 이동 ${label} ${stamp}`, privateTop: true })).body.database
+        const ds = db.dataSourceId
+        const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '일정', type: 'date' })).body.property.id
+        const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const row = async (title, date) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, { propertyId: due, value: { type: 'date', date } }],
+        })).body.row.id
+        const a = await row('이동 막는 행', { start: dayOf(2), end: dayOf(4) })
+        const b = await row('이동 막힌 행', { start: dayOf(10), end: dayOf(12) })
+        const c = withC ? await row('이동 다음 행', { start: dayOf(20) }) : null
+        const blockedBy = (await api('POST', `/data-sources/${ds}/dependencies`, {})).body?.blockedByPropertyId
+        await api('POST', `/rows/${b}/relations/${blockedBy}`, { add: [a] })
+        if (c !== null) await api('POST', `/rows/${c}/relations/${blockedBy}`, { add: [b] })
+        const timelineId = (await api('POST', `/databases/${db.id}/views`, { type: 'timeline', name: '시간축' })).body?.view?.id
+        return { db, due, a, b, c, blockedBy, timelineId }
+      }
+      const put = (f, id, s, e) => api('PATCH', `/rows/${id}`, { cells: [{ propertyId: f.due, value: { type: 'date', date: e === undefined ? { start: dayOf(s) } : { start: dayOf(s), end: dayOf(e) } } }] })
+      const serverDate = async (f, id) => {
+        const r = ((await api('GET', `/views/${f.db.defaultViewId}/rows`)).body?.rows ?? []).find((x) => x.id === id)
+        const d = r?.properties?.[f.due]?.date
+        return d ? `${d.start}~${d.end ?? ''}` : ''
+      }
+      const waitServer = async (f, id, want, ms = 8000) => {
+        let got = ''
+        for (let t = Date.now(); Date.now() - t < ms && got !== want; ) {
+          got = await serverDate(f, id)
+          if (got !== want) await sleep(250)
+        }
+        return got
+      }
+      const setMode = (f, mode) => api('PATCH', `/databases/${f.db.id}`, { dependencyShiftMode: mode })
+
+      const f = await build('서버', true)
+      const bad = await setMode(f, 'sometimes')
+      check('모르는 방식은 400', bad.status === 400, JSON.stringify(bad))
+      check('★ 방식이 없으면(NULL) 막는 행을 옮겨도 막힌 행은 그대로 — shifted 없음', await (async () => {
+        const r = await put(f, f.a, 8, 11)
+        return r.status === 200 && r.body?.shifted === undefined && (await serverDate(f, f.b)) === span(10, 12)
+      })())
+      await setMode(f, 'never')
+      await put(f, f.a, 2, 4)
+
+      check('방식을 overlap_only 로 둔다(200)', (await setMode(f, 'overlap_only')).status === 200)
+      const clear = await put(f, f.a, 3, 5)
+      check('★ overlap_only — 겹치지 않게 옮기면 막힌 행은 그대로', clear.status === 200 && clear.body?.shifted === undefined && (await serverDate(f, f.b)) === span(10, 12), JSON.stringify(clear.body?.shifted))
+      const hit = await put(f, f.a, 6, 10)
+      check('★ overlap_only — A 의 끝이 B 의 시작에 닿으면 B 는 A 끝 다음 날로 기간을 지켜 밀린다(응답 shifted 에 B)',
+        hit.status === 200 && Array.isArray(hit.body?.shifted) && hit.body.shifted.includes(f.b) && (await serverDate(f, f.b)) === span(11, 13) && (await serverDate(f, f.c)) === span(20),
+        JSON.stringify({ shifted: hit.body?.shifted, b: await serverDate(f, f.b), c: await serverDate(f, f.c) }))
+
+      // maintain_gap — 되돌려 놓고(never 로 두고) 시작
+      await setMode(f, 'never')
+      await put(f, f.a, 2, 4)
+      await put(f, f.b, 10, 12)
+      await put(f, f.c, 20)
+      check('방식을 maintain_gap 으로 둔다(200)', (await setMode(f, 'maintain_gap')).status === 200)
+      const gap = await put(f, f.a, 5, 7)
+      check('★ maintain_gap — A 를 +3일 옮기면 B 도 +3일, B 가 막는 C 도 +3일',
+        gap.status === 200 && (await serverDate(f, f.b)) === span(13, 15) && (await serverDate(f, f.c)) === span(23) && gap.body?.shifted?.length === 2,
+        JSON.stringify({ shifted: gap.body?.shifted, b: await serverDate(f, f.b), c: await serverDate(f, f.c) }))
+      const back = await put(f, f.a, 2, 4)
+      check('★ maintain_gap — 앞으로 −3일도 따라온다', back.status === 200 && (await serverDate(f, f.b)) === span(10, 12) && (await serverDate(f, f.c)) === span(20))
+
+      await setMode(f, 'never')
+      await put(f, f.a, 5, 7)
+      check('★ never — 막힌 행은 그대로', (await serverDate(f, f.b)) === span(10, 12) && (await serverDate(f, f.c)) === span(20))
+
+      // 화면 — 머리의 "날짜 이동" 선택이 저장되고, 막대를 키보드로 옮기면 서버에서 막힌 행이 따라온다
+      const g = await build('화면', false)
+      const url = `${BASE}/w/${workspaceId}/db/${g.db.id}?v=${g.timelineId}`
+      const open = async () => {
+        await send('Page.navigate', { url })
+        await waitFor(`document.querySelectorAll('[data-testid="timeline-bar"]').length === 2`, 20000)
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const savedMode = async () => (await api('GET', `/views/${g.timelineId}/timeline?from=${dayOf(-30)}&to=${dayOf(60)}`)).body?.dependencyShift?.mode
+      await open()
+      check('★ 종속 관계가 켜져 있으면 머리에 "날짜 이동" 선택이 있다(기본 옮기지 않음)',
+        await waitFor(`document.querySelector('[data-testid="timeline-shift-mode"]')?.value === 'never'`, 15000))
+      await waitHydrated('[data-testid="timeline-shift-mode"]')
+      let mode = await savedMode()
+      for (let i = 0; i < 6 && mode !== 'overlap_only'; i += 1) {
+        await setSelect('[data-testid="timeline-shift-mode"]', 'overlap_only')
+        await sleep(600)
+        mode = await savedMode()
+      }
+      check('★ 선택을 바꾸면 데이터베이스에 저장된다(overlap_only)', mode === 'overlap_only', String(mode))
+
+      const wantA = span(8, 10)
+      const BAR = (id) => `[data-testid="timeline-bar"][data-row-id="${id}"]`
+      await waitHydrated(BAR(g.a))
+      let gotA = await serverDate(g, g.a)
+      for (let i = 0; i < 20 && gotA !== wantA; i += 1) {
+        await evaluate(`document.querySelector(${JSON.stringify(BAR(g.a))})?.focus()`)
+        await key('ArrowRight', 1)
+        await sleep(300)
+        gotA = await waitServer(g, g.a, wantA, 1500)
+      }
+      check('A 의 막대를 Alt+→ 로 옮긴다(서버 A 의 날짜)', gotA === wantA, gotA)
+      check('★ 키보드로 옮긴 A 가 B 에 닿자 서버에서 B 가 A 끝 다음 날로 밀렸다(기간 그대로)',
+        (await waitServer(g, g.b, span(11, 13), 15000)) === span(11, 13), await serverDate(g, g.b))
+      check('화면의 B 막대도 따라온다(data-start)',
+        await waitFor(`document.querySelector(${JSON.stringify(BAR(g.b))})?.dataset.start === ${JSON.stringify(dayOf(11))}`, 15000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
       const stamp = Date.now()

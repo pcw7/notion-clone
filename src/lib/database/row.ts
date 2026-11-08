@@ -68,6 +68,7 @@ import {
   optionValue,
   validateCellValue,
   type CellValue,
+  type DateValue,
   type MvpPropertyType,
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
@@ -76,6 +77,8 @@ import { applyPeopleChanges, checkPeopleChanges, peopleIdsOf, peopleIssuesIn, wi
 import { optionIssuesIn, withoutMissingOptions } from './options.ts'
 import { filterPrefill } from './filter-prefill.ts'
 import type { FilterNode } from './filter.ts'
+import { planShift } from './dependency-shift.ts'
+import { loadShiftContext } from './dependency-shift-db.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -104,6 +107,8 @@ export type RowSummary = {
   readonly lastEditedAt: Date
   /** `block.version` [X-6]. 낙관적 잠금에 쓴다. */
   readonly version: string
+  /** 종속 관계로 따라 옮겨진 행 id(TL-5 ⑤) — 쓰기 응답에만 있다. 없으면 옮긴 행이 없다. */
+  readonly shifted?: readonly string[]
 }
 
 export type RowFailure =
@@ -117,6 +122,10 @@ export type RowFailure =
   | 'version_conflict'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
+  /** 날짜를 바꾸면 따라 옮겨질 행 중 이 사람이 못 고치는 행이 있다 — 원래 쓰기까지 통째로 거부(TL-5 ⑤ · 부분 적용 금지). */
+  | 'shift_forbidden'
+  /** 한 번에 옮길 행(200)을 넘는다 — 원래 쓰기까지 거부(TL-5 ④). */
+  | 'shift_too_large'
 
 export type RowResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -657,6 +666,8 @@ export type UpdateCellsInput = {
    * 셀 동시 편집 → 셀 단위 잠금 없이 LWW"* 라고 한 기본값이다.
    */
   readonly expectedVersion?: string
+  /** 종속 관계의 날짜 자동 이동을 하지 않는다 — 이동으로 옮기는 행의 쓰기가 다시 이동을 부르지 않게(TL-5). */
+  readonly noShift?: boolean
 }
 
 export async function updateCells(
@@ -722,6 +733,10 @@ export async function updateCellsIn(
     const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared, before)), ...(await optionIssuesIn(tx, prepared))]
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
+    // 종속 관계의 날짜 자동 이동(TL-5) — **쓰기 전에** 계획하고 권한을 본다(하나라도 못 옮기면 원래 쓰기까지 거부)
+    const shifting = input.noShift === true ? { ok: true as const, moves: [] as PlannedMove[] } : await planDependencyShift(tx, ctx, rowId, row.data_source_id, gate, prepared)
+    if ('reason' in shifting) return shifting
+
     if (prepared.length > 0) {
       // DB automation — 셀이 바뀐다(5b-2). **쓰기 전에** — 창 전 값을 붙든다
       await routeCellsEdited(tx, {
@@ -739,10 +754,65 @@ export async function updateCellsIn(
       await recordCoalescedActivity(tx, ctx, { pageId: rowId, type: 'property.updated' })
     }
 
+    // 옮길 행들 — 같은 트랜잭션 · 같은 행위자, 평범한 셀 쓰기와 같은 길(사이드카 · 버전 · 활동)
+    for (const move of shifting.moves) {
+      const moved = await updateCellsIn(tx, ctx, move.rowId, {
+        cells: [{ propertyId: move.propertyId, value: { type: 'date', date: move.date } }],
+        noShift: true,
+      })
+      if (!moved.ok) return { ok: false, reason: 'shift_forbidden' } as const
+    }
+
     const summary = await readRow(tx, rowId)
     if (summary === null) return { ok: false, reason: 'not_found' } as const
-    return { ok: true, value: summary } as const
+    return { ok: true, value: shifting.moves.length === 0 ? summary : { ...summary, shifted: shifting.moves.map((m) => m.rowId) } } as const
   }
+}
+
+type PlannedMove = { readonly rowId: string; readonly propertyId: string; readonly date: DateValue }
+
+/**
+ * 날짜 칸을 쓸 때 막힌 행들이 따라 옮겨질 자리를 계획한다(TL-5). 종속 관계가 꺼져 있거나 방식이 `never` 거나 날짜 칸이 아니면 빈 계획이다.
+ * 옮길 행마다 `edit_content`(그 행의 권한 · 잠긴 행 포함)가 있어야 한다 — 하나라도 없으면 `shift_forbidden`.
+ */
+async function planDependencyShift(
+  tx: Tx,
+  ctx: SessionContext,
+  rowId: string,
+  dataSourceId: string,
+  gate: DataSourceGate,
+  prepared: readonly PreparedCell[],
+): Promise<{ ok: true; moves: PlannedMove[] } | { ok: false; reason: 'shift_forbidden' | 'shift_too_large' }> {
+  const empty = { ok: true, moves: [] as PlannedMove[] } as const
+  const dateCells = prepared.filter((cell) => cell.value.type === 'date')
+  if (dateCells.length === 0) return empty
+
+  const moves: PlannedMove[] = []
+  for (const cell of dateCells) {
+    if (cell.value.type !== 'date') continue
+    const loaded = await loadShiftContext(tx, { dataSourceId, databaseId: gate.containerId, rowId, propertyId: cell.propertyId })
+    if (loaded === null) continue
+    if (loaded === 'tooLarge') return { ok: false, reason: 'shift_too_large' } as const
+    const before = await readCellValues(tx, rowId, [cell.propertyId])
+    const old = (before.get(cell.propertyId) as { date?: DateValue | null } | undefined)?.date ?? null
+    const plan = planShift({
+      rowId,
+      oldValue: old !== null && typeof old.start === 'string' ? old : null,
+      newValue: cell.value.date,
+      mode: loaded.mode,
+      edges: loaded.edges,
+      values: loaded.values,
+    })
+    if (!plan.ok) return plan
+    for (const [id, date] of plan.moves) moves.push({ rowId: id, propertyId: cell.propertyId, date })
+  }
+  for (const move of moves) {
+    const caps = await effectiveCaps(tx, ctx, move.rowId)
+    if (!can(caps, 'view') || !can(caps, 'edit_content') || (await isLocked(tx, move.rowId))) {
+      return { ok: false, reason: 'shift_forbidden' } as const
+    }
+  }
+  return { ok: true, moves }
 }
 
 /**

@@ -28,6 +28,8 @@ import { readableScopes } from '../permissions/effective.ts'
 import { getView } from './view.ts'
 import { cardParentsOnlyPair } from './view-columns.ts'
 import { readDependencyPair } from './dependencies.ts'
+import { readShiftMode } from './dependency-shift-db.ts'
+import type { DependencyShiftMode } from './dependency-shift.ts'
 
 export type CalendarPage = {
   readonly datePropertyId: string
@@ -41,6 +43,11 @@ export type CalendarPage = {
    * 종속 관계 간선(TL-4 · 타임라인만) — `from` = 막는 행, `to` = 막힌 행. 종속 관계가 켜져 있고 둘 다 `rows` 에 있을 때만. 캘린더는 늘 빈 배열.
    */
   readonly dependencies: readonly { readonly from: string; readonly to: string }[]
+  /**
+   * 종속 관계의 날짜 이동 방식(TL-5 · 타임라인만) — 종속 관계가 켜져 있을 때만 있다(꺼져 있거나 캘린더면 null). 설정은 데이터베이스에 있다(`databaseId` = 그 데이터베이스 — 붙인 소스의 뷰여도 원본이다).
+   * 화면의 "날짜 이동" 선택이 읽는다 — 뷰 페이지의 늘 받는 JS 를 늘리지 않으려 이 응답에 싣는다.
+   */
+  readonly dependencyShift: { readonly mode: DependencyShiftMode; readonly databaseId: string } | null
 }
 
 export type CalendarFailure =
@@ -183,7 +190,13 @@ async function queryWindow(ctx: SessionContext, viewId: string, input: WindowInp
     const shown = rows.slice(0, maxRows)
     // 종속 관계 간선(TL-4 ①②) — 켜져 있을 때만 · 간선 질의 하나 · 둘 다 이 응답의 행인 것만. 엣지는 막힌 행(from) → 막는 행(to)이다(0052)
     let dependencies: { from: string; to: string }[] = []
-    if (kind === 'timeline' && shown.length > 1 && (await readDependencyPair(tx, dataSourceId)) !== null) {
+    let dependencyShift: { mode: DependencyShiftMode; databaseId: string } | null = null
+    const depsOn = kind === 'timeline' && (await readDependencyPair(tx, dataSourceId)) !== null
+    if (depsOn) {
+      const owner = await tx.queryMaybe<{ owner_database_id: string }>(`SELECT owner_database_id FROM data_source WHERE id = $1`, [dataSourceId])
+      if (owner !== null) dependencyShift = { mode: await readShiftMode(tx, owner.owner_database_id), databaseId: owner.owner_database_id }
+    }
+    if (depsOn && shown.length > 1) {
       const ids = shown.map((r) => r.id)
       const edges = await tx.query<{ blocked: string; blocker: string }>(
         `SELECT from_page_id AS blocked, to_page_id AS blocker FROM relation_edge
@@ -200,6 +213,7 @@ async function queryWindow(ctx: SessionContext, viewId: string, input: WindowInp
         datePropertyId: dateProperty,
         rows: shown.map(toQueriedRow),
         dependencies,
+        dependencyShift,
         undated: undated.n,
         truncated: rows.length > maxRows,
       },

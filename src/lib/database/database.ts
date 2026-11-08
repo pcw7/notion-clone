@@ -58,6 +58,7 @@ import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { insertLinkedAttachment, insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
+import { isShiftMode, type DependencyShiftMode } from './dependency-shift.ts'
 import { normalizeDatabaseQuery } from './linked-picker.ts'
 
 export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
@@ -121,6 +122,8 @@ export type DatabaseFailure =
   | 'invalid_name'
   /** 아이콘의 모양이 아니다 — 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · http(s) 이미지 주소(8c-3b · 8c-4 — 페이지 아이콘과 같은 규칙). */
   | 'invalid_icon'
+  /** 날짜 이동 방식이 셋(`overlap_only` · `maintain_gap` · `never`) 중 하나가 아니다(TL-5). */
+  | 'invalid_shift_mode'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
   /** 인라인 데이터베이스(I-1)의 자리가 트리 깊이 상한을 넘는다(`MAX_TREE_DEPTH` — 하위 페이지와 같은 상한). */
@@ -500,6 +503,34 @@ export async function setDatabaseIcon(
     )
     await moveIconFileReference(tx, ctx, current, icon)
     return { ok: true, value: icon } as const
+  })
+}
+
+/**
+ * 종속 관계의 날짜 이동 방식을 바꾼다(TL-5 · 정본 [보강 TL-5] ①) — `edit_structure`. 아이콘과 같이 블록 행을 먼저 잠그고 바뀌면 버전을 올린다.
+ */
+export async function setDependencyShiftMode(
+  ctx: SessionContext,
+  databaseId: string,
+  raw: unknown,
+): Promise<DatabaseResult<DependencyShiftMode>> {
+  if (!isShiftMode(raw)) return { ok: false, reason: 'invalid_shift_mode' } as const
+  return withCommandTransaction(async (tx) => {
+    const row = await tx.queryMaybe<{ mode: string | null }>(
+      `SELECT d.dependency_shift_mode AS mode FROM block b JOIN database d ON d.id = b.id
+        WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'database' AND b.lifecycle = 'live'
+        FOR UPDATE OF b`,
+      [databaseId, ctx.workspaceId],
+    )
+    if (row === null) return { ok: false, reason: 'not_found' } as const
+    const caps = await effectiveCaps(tx, ctx, databaseId)
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+    if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
+    if ((row.mode ?? 'never') === raw) return { ok: true, value: raw } as const
+    await tx.query(`UPDATE database SET dependency_shift_mode = $2, updated_at = now() WHERE id = $1`, [databaseId, raw])
+    await tx.query(`UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`, [databaseId, ctx.userId])
+    return { ok: true, value: raw } as const
   })
 }
 

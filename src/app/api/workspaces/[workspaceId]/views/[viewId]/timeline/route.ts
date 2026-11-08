@@ -46,5 +46,6 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     undated: result.value.undated,
     truncated: result.value.truncated,
     dependencies: result.value.dependencies,
+    dependencyShift: result.value.dependencyShift,
   })
 }

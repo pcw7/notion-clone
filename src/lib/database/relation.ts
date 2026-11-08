@@ -236,6 +236,9 @@ export type RelationFailure =
   | 'invalid_value'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
+  /** 행 쓰기의 날짜 자동 이동 거부가 연결 길로 새어 나온다(TL-5) — 행 쓰기와 같은 뜻이다. */
+  | 'shift_forbidden'
+  | 'shift_too_large'
 
 export type RelationResult<T> =
   | { readonly ok: true; readonly value: T }

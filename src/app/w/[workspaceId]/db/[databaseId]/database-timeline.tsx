@@ -99,7 +99,11 @@ function useToday(serverToday: string): string {
   )
 }
 
-type TimelineBody = { ok?: boolean; datePropertyId?: string; rows?: RowJson[]; undated?: number; truncated?: boolean; dependencies?: Dependency[]; error?: string }
+/** 종속 관계의 날짜 이동 방식(TL-5) — 종속 관계가 꺼져 있으면 null. `databaseId` 는 설정이 사는 데이터베이스. */
+type DependencyShift = { mode: 'overlap_only' | 'maintain_gap' | 'never'; databaseId: string }
+const SHIFT_LABEL: Record<DependencyShift['mode'], string> = { overlap_only: '겹칠 때만', maintain_gap: '간격 유지', never: '옮기지 않음' }
+
+type TimelineBody = { ok?: boolean; datePropertyId?: string; rows?: RowJson[]; undated?: number; truncated?: boolean; dependencies?: Dependency[]; dependencyShift?: DependencyShift | null; error?: string }
 
 export function DatabaseTimeline(props: {
   workspaceId: string
@@ -119,6 +123,8 @@ export function DatabaseTimeline(props: {
   truncated: boolean
   /** 종속 관계 간선(TL-4) — 종속 관계가 꺼져 있으면 비어 있다. */
   dependencies?: readonly Dependency[]
+  /** 날짜 이동 방식(TL-5) — 종속 관계가 꺼져 있으면 null. */
+  dependencyShift?: DependencyShift | null
   /** 뷰의 설정을 고칠 수 있다(`edit_structure`) — 아니면 줌 · 표 보이기는 이 화면에서만 바뀐다. */
   canEditStructure: boolean
   /** 행의 내용을 고칠 수 있다(`edit_content`) — 막대 끌기 · 키 · 날짜 없는 행 놓기(TL-3). 캘린더 카드와 같은 판정. */
@@ -141,6 +147,7 @@ export function DatabaseTimeline(props: {
   const [undated, setUndated] = useState(props.undated)
   const [truncated, setTruncated] = useState(props.truncated)
   const [dependencies, setDependencies] = useState<readonly Dependency[]>(props.dependencies ?? [])
+  const [dependencyShift, setDependencyShift] = useState<DependencyShift | null>(props.dependencyShift ?? null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -180,6 +187,7 @@ export function DatabaseTimeline(props: {
           setUndated(body.undated ?? 0)
           setTruncated(body.truncated === true)
           setDependencies(body.dependencies ?? [])
+          setDependencyShift(body.dependencyShift ?? null)
           if (body.datePropertyId !== undefined) setDatePropertyId(body.datePropertyId)
         }
       } catch {
@@ -240,6 +248,25 @@ export function DatabaseTimeline(props: {
     }
   }
 
+  /** 날짜 이동 방식을 바꾼다(TL-5) — 편집자만. 먼저 바꾸고 거부되면 제자리로. */
+  const changeShiftMode = async (mode: DependencyShift['mode']) => {
+    const current = dependencyShift
+    if (current === null || current.mode === mode) return
+    setDependencyShift({ ...current, mode })
+    setError(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/databases/${current.databaseId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dependencyShiftMode: mode }),
+      })
+      if (!res.ok) throw new Error('rejected')
+    } catch {
+      setDependencyShift(current)
+      setError('날짜 이동 방식을 바꾸지 못했습니다.')
+    }
+  }
+
   const dateOf = (rowId: string): DateJson | null => {
     const value = rowsRef.current.find((r) => r.id === rowId)?.properties[datePropertyId] as { type?: string; date?: DateJson } | undefined
     return value?.type === 'date' && typeof value.date?.start === 'string' ? value.date : null
@@ -266,6 +293,8 @@ export function DatabaseTimeline(props: {
     const saved = result.value.row
     if (result.value.inView === false) setNotice(MOVED_OUT_OF_VIEW_NOTICE)
     setRows((current) => current.map((r) => (r.id === saved.id && notOlder(saved.version, r.version) ? saved : r)))
+    // 종속 관계의 날짜 자동 이동(TL-5) — 따라 옮겨진 행이 있을 수 있으니 창을 다시 읽는다
+    if (dependencyShift !== null && dependencyShift.mode !== 'never' && dependencies.length > 0) void load(winRef.current)
     return date
   }
 
@@ -423,6 +452,23 @@ export function DatabaseTimeline(props: {
               {props.dateProperties.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {canEditStructure && dependencyShift !== null && (
+          <label className="flex items-center gap-1 text-neutral-600 dark:text-neutral-400">
+            날짜 이동
+            <select
+              data-testid="timeline-shift-mode"
+              value={dependencyShift.mode}
+              onChange={(e) => void changeShiftMode(e.target.value as DependencyShift['mode'])}
+              className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-sm dark:border-neutral-700"
+            >
+              {(Object.keys(SHIFT_LABEL) as DependencyShift['mode'][]).map((m) => (
+                <option key={m} value={m}>
+                  {SHIFT_LABEL[m]}
                 </option>
               ))}
             </select>
