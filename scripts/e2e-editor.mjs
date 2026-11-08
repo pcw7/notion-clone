@@ -13845,6 +13845,152 @@ async function main() {
         JSON.stringify([shared.status, viewerHtml.includes('data-testid="db-timeline"')]))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('타임라인 — 끌기 (TL-3 · F-04-07)')) { try {
+      // 막대 가운데 끌기(옮기기 · 기간 유지) · 오른쪽 끝(하루 → 기간) · 왼쪽 끝을 끝 너머로(끝에서 멈춤) · Alt+→ 하루 옮기기 ·
+      // 날짜 없음 목록의 항목을 시간축에 놓기 · 볼 수만 있는 사람은 손잡이가 없다. 값은 매번 서버에서 읽는다. 정본 [보강 TL-3].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const dayOf = (offset) => {
+        const d = new Date()
+        d.setDate(d.getDate() + offset)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const plus = (ymd, n) => {
+        const d = new Date(`${ymd}T00:00:00Z`)
+        d.setUTCDate(d.getUTCDate() + n)
+        return d.toISOString().slice(0, 10)
+      }
+      const span = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000)
+      const db = (await api('POST', '/databases', { name: `타임라인 끌기 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '일정', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (title, date) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...(date ? [{ propertyId: due, value: { type: 'date', date } }] : [])],
+      })).body.row.id
+      const single = { start: dayOf(3) }
+      const range = { start: dayOf(5), end: dayOf(12) }
+      const oneId = await row('끌기 하루', single)
+      const manyId = await row('끌기 기간', range)
+      const noneId = await row('끌기 날짜 없음', null)
+      const timelineId = (await api('POST', `/databases/${db.id}/views`, { type: 'timeline', name: '시간축' })).body?.view?.id
+      const serverDate = async (id) => {
+        const r = ((await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []).find((x) => x.id === id)
+        const d = r?.properties?.[due]?.date
+        return d ? `${d.start}~${d.end ?? ''}` : ''
+      }
+      const waitServer = async (id, want, ms = 20000) => {
+        let got = ''
+        for (let t = Date.now(); Date.now() - t < ms && got !== want; ) {
+          got = await serverDate(id)
+          if (got !== want) await sleep(250)
+        }
+        return got
+      }
+      const BAR = (id) => `[data-testid="timeline-bar"][data-row-id="${id}"]`
+      const rectOf = (sel) => evaluate(`(() => { const r = document.querySelector(${JSON.stringify(sel)})?.getBoundingClientRect(); return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null })()`)
+      const dragBy = async (sel, dx) => {
+        const r = await rectOf(sel)
+        const sx = r.x + r.w / 2
+        const sy = r.y + r.h / 2
+        await move(sx, sy)
+        await press(sx, sy)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(sx + (dx * i) / 10, sy, true)
+          await sleep(16)
+        }
+        await release(sx + dx, sy)
+      }
+      /** 끈 뒤 서버 값이 want 가 될 때까지 — 하이드레이션 전이라 아무 일이 없었으면 한 번 더 끈다(두 번까지). */
+      const dragUntil = async (id, handleSel, dx, want) => {
+        let got = ''
+        for (let i = 0; i < 3 && got !== want; i += 1) {
+          await dragBy(handleSel, dx)
+          got = await waitServer(id, want, i === 2 ? 20000 : 6000)
+        }
+        return got
+      }
+      const url = `${BASE}/w/${workspaceId}/db/${db.id}?v=${timelineId}`
+      await send('Page.navigate', { url })
+      await waitFor(`document.querySelectorAll('[data-testid="timeline-bar"]').length === 2`, 20000)
+      await waitHydrated(`${BAR(manyId)} [data-testid="timeline-bar-end"]`)
+      const dayPx = (await rectOf(BAR(oneId))).w
+      check('편집자 화면에 막대마다 손잡이가 있다(시작 · 끝)',
+        (await evaluate(`document.querySelectorAll('[data-testid="timeline-bar-start"]').length === 2 && document.querySelectorAll('[data-testid="timeline-bar-end"]').length === 2`)) === true)
+
+      // ① 가운데를 3일 오른쪽으로 — 시작 · 끝이 같이 3일(기간 유지)
+      const moved = await dragUntil(manyId, BAR(manyId), 3 * dayPx, `${plus(range.start, 3)}~${plus(range.end, 3)}`)
+      check('★ 기간 막대의 가운데를 3일 오른쪽으로 끌면 시작 · 끝이 같이 3일 움직인다(기간 유지)',
+        moved === `${plus(range.start, 3)}~${plus(range.end, 3)}`, moved)
+      const afterMove = { start: plus(range.start, 3), end: plus(range.end, 3) }
+      check('옮긴 막대의 data-start/data-end 도 새 값이다',
+        await waitFor(`(() => { const b = document.querySelector(${JSON.stringify(BAR(manyId))}); return b?.dataset.start === ${JSON.stringify(afterMove.start)} && b?.dataset.end === ${JSON.stringify(afterMove.end)} })()`, 8000))
+
+      // ② 하루 막대의 오른쪽 끝을 2일 — 기간이 된다
+      const widened = await dragUntil(oneId, `${BAR(oneId)} [data-testid="timeline-bar-end"]`, 2 * dayPx, `${single.start}~${plus(single.start, 2)}`)
+      check('★ 하루 막대의 오른쪽 끝을 2일 끌면 기간이 된다(끝 = 시작 + 2)', widened === `${single.start}~${plus(single.start, 2)}`, widened)
+
+      // ③ 왼쪽 끝을 끝 너머로 — 끝에서 멈추고 하루짜리가 된다
+      const clamped = await dragUntil(manyId, `${BAR(manyId)} [data-testid="timeline-bar-start"]`, 10 * dayPx, `${afterMove.end}~`)
+      check('★ 왼쪽 끝을 끝 너머로 끌면 끝 날에서 멈춘다(끝은 시작 앞으로 가지 않는다 · 하루짜리)', clamped === `${afterMove.end}~`, clamped)
+
+      // ④ Alt+→ — 하루 옮기기 + 스크린 리더 알림
+      let pressed = ''
+      const wantKey = `${plus(single.start, 1)}~${plus(single.start, 3)}`
+      for (let i = 0; i < 3 && pressed !== wantKey; i += 1) {
+        await evaluate(`document.querySelector(${JSON.stringify(BAR(oneId))})?.focus()`)
+        await key('ArrowRight', 1)
+        pressed = await waitServer(oneId, wantKey, i === 2 ? 20000 : 6000)
+      }
+      check('★ 막대에 포커스를 두고 Alt+→ 를 누르면 하루 옮겨진다', pressed === wantKey, pressed)
+      check('옮긴 뒤 timeline-live 에 새 날짜가 알려진다',
+        await waitFor(`(document.querySelector('[data-testid="timeline-live"]')?.textContent ?? '').includes(${JSON.stringify(plus(single.start, 1))})`, 5000))
+
+      // ⑤ 날짜 없음 목록 → 시간축에 놓기
+      const target = dayOf(20)
+      let placed = ''
+      for (let i = 0; i < 3 && placed !== `${target}~`; i += 1) {
+        if (!(await evaluate(`!!document.querySelector('[data-testid="timeline-undated-panel"]')`))) {
+          await evaluate(`document.querySelector('[data-testid="timeline-undated"]')?.click()`)
+          await waitFor(`!!document.querySelector('[data-testid="timeline-undated-item"][data-row-id="${noneId}"]')`, 6000)
+        }
+        const item = await rectOf(`[data-testid="timeline-undated-item"][data-row-id="${noneId}"]`)
+        const ref = await rectOf(BAR(oneId))
+        if (!item || !ref) continue
+        const refStart = await evaluate(`document.querySelector(${JSON.stringify(BAR(oneId))}).dataset.start`)
+        const tx = ref.x + span(refStart, target) * dayPx + dayPx / 2
+        const ty = ref.y + ref.h / 2
+        const sx = item.x + item.w / 2
+        const sy = item.y + item.h / 2
+        await move(sx, sy)
+        await press(sx, sy)
+        for (let s = 1; s <= 12; s += 1) {
+          await move(sx + ((tx - sx) * s) / 12, sy + ((ty - sy) * s) / 12, true)
+          await sleep(16)
+        }
+        await release(tx, ty)
+        placed = await waitServer(noneId, `${target}~`, i === 2 ? 20000 : 6000)
+      }
+      check('★ 날짜 없음 목록의 항목을 시간축에 놓으면 놓은 날이 시작일(하루짜리)이 된다', placed === `${target}~`, placed)
+      check('놓은 행이 막대로 나타난다(data-start = 놓은 날)',
+        await waitFor(`document.querySelector(${JSON.stringify(BAR(noneId))})?.dataset.start === ${JSON.stringify(target)}`, 10000))
+
+      // ⑥ 볼 수만 있는 사람 — 막대는 있고 손잡이는 없다(서버 렌더)
+      const viewer = await joinAs(workspaceId, await createUser(`타임라인 끌기 보는 사람 ${stamp}`), 'member')
+      await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${db.id}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' }),
+      })
+      const viewerHtml = await (await fetch(url, { headers: { ...json, cookie: `nc_session=${viewer.token}` } })).text()
+      check('★ 볼 수만 있는 사람의 화면에는 막대가 있고 끌기 손잡이(timeline-bar-start)는 없다',
+        viewerHtml.includes('data-testid="timeline-bar"') && !viewerHtml.includes('data-testid="timeline-bar-start"') && !viewerHtml.includes('data-testid="timeline-bar-end"'))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('차트 — 서버 (CH-1 · F-04-08)')) { try {
       // 차트 뷰는 보드처럼 묶을 수 있는 첫 속성을 고르고, GET /chart 는 그룹마다 개수(계산이 있으면 값)를 준다. 종류는 configuration.chart 에 남는다.
       const stamp = Date.now()
