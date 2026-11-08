@@ -3669,6 +3669,73 @@ async function main() {
         JSON.stringify(restored))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('계정 삭제 — 서버 (AD-2 · F-14-13)')) { try {
+      // 계정 삭제(정본 §3.1 [보강 AD-2]) — API 만. 세 워크스페이스에 든 사람: 혼자(→ 지움) · 멤버(→ 나감) · 유일한 owner(→ 막힘).
+      const stamp = Date.now() % 100000
+      const { createPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const me = await createUser(`떠날 사람 ${stamp}`)
+      const soloName = `혼자 ${stamp}`
+      const sharedName = `공동 ${stamp}`
+      const blockedName = `유일 ${stamp}`
+      const solo = await createBareWorkspace(soloName)
+      const mineSolo = await joinAs(solo, me, 'owner')
+      const shared = await createBareWorkspace(sharedName)
+      const boss = await joinAs(shared, await createUser(`남는 대표 ${stamp}`), 'owner')
+      const mineShared = await joinAs(shared, me, 'member')
+      const blocked = await createBareWorkspace(blockedName)
+      const mineBlocked = await joinAs(blocked, me, 'owner')
+      const heir = await joinAs(blocked, await createUser(`후임 ${stamp}`), 'member')
+      const editedPage = await createPage(mineShared.ctx, { title: titleFromPlainText(`내가 만든 ${stamp}`) })
+      const as = (who) => ({ ...json, cookie: `nc_session=${who.token}` })
+      const DELETION = `${BASE}/api/account/deletion`
+      const wsState = async (id) => (await dbQuery(`SELECT deleted_at IS NOT NULL AS deleted FROM workspace WHERE id = $1`, [id]))[0]?.deleted
+      const userStatus = async () => (await dbQuery(`SELECT status, name FROM "user" WHERE id = $1`, [me.userId]))[0]
+
+      const preview = await (await fetch(DELETION, { headers: as(mineSolo) })).json()
+      const byName = new Map((preview.workspaces ?? []).map((w) => [w.name, w]))
+      check('★ 미리보기 — 혼자는 delete · 멤버는 leave · 유일한 owner 는 blocked(sole_owner)',
+        preview.email === me.email && byName.get(soloName)?.outcome === 'delete' && byName.get(sharedName)?.outcome === 'leave'
+          && byName.get(blockedName)?.outcome === 'blocked' && byName.get(blockedName)?.reason === 'sole_owner', JSON.stringify(preview))
+      check('로그인하지 않으면 미리보기는 401', (await fetch(DELETION)).status === 401)
+
+      const wrong = await fetch(DELETION, { method: 'POST', headers: as(mineSolo), body: JSON.stringify({ confirmEmail: 'nobody@example.com' }) })
+      check('이메일이 다르면 400 email_mismatch', wrong.status === 400 && (await wrong.json()).error === 'email_mismatch')
+      const refused = await fetch(DELETION, { method: 'POST', headers: as(mineSolo), body: JSON.stringify({ confirmEmail: me.email }) })
+      const refusedBody = await refused.json()
+      check('★ 막힌 것이 있으면 409 blocked(미리보기와 함께) · 아무것도 바뀌지 않는다',
+        refused.status === 409 && refusedBody.error === 'blocked' && refusedBody.workspaces?.some((w) => w.outcome === 'blocked')
+          && (await userStatus()).status === 'active' && (await wsState(solo)) === false
+          && (await fetch(`${BASE}/api/workspaces/${solo}/pages`, { headers: as(mineSolo) })).status === 200)
+
+      const promote = await fetch(`${BASE}/api/workspaces/${blocked}/members/${heir.userId}`, { method: 'PATCH', headers: as(mineBlocked), body: JSON.stringify({ role: 'owner' }) })
+      check('전제 — 후임을 owner 로 올린다(멤버 역할 API)', promote.ok, String(promote.status))
+
+      const done = await fetch(DELETION, { method: 'POST', headers: as(mineSolo), body: JSON.stringify({ confirmEmail: me.email.toUpperCase() }) })
+      const doneBody = await done.json()
+      check('★ 풀고 나면 POST 가 성공한다(이메일 대소문자는 가리지 않는다)', done.status === 200 && doneBody.ok === true, JSON.stringify(doneBody))
+      check('★ 옛 세션은 API 에서 401 이다', (await fetch(`${BASE}/api/workspaces/${solo}/pages`, { headers: as(mineSolo) })).status === 401
+        && (await fetch(DELETION, { headers: as(mineSolo) })).status === 401)
+      // 옛 세션이 401 인 것은 두 겹이다(세션 확인이 사람의 status 도 본다) — 세션 행이 실제로 닫혔는지는 따로 묻는다(반사실: 폐기를 빼도 401 이었다)
+      const openSessions = Number((await dbQuery(`SELECT count(*)::int AS n FROM user_session WHERE user_id = $1 AND revoked_at IS NULL`, [me.userId]))[0]?.n ?? -1)
+      const reasons = (await dbQuery(`SELECT DISTINCT revoked_reason FROM user_session WHERE user_id = $1`, [me.userId])).map((r) => r.revoked_reason)
+      check('★ 그 사람의 세션은 모두 account_deleted 로 닫혔다', openSessions === 0 && reasons.includes('account_deleted'), JSON.stringify({ openSessions, reasons }))
+      const after = await userStatus()
+      check('사람 행은 tombstone — status deleted · 이름 "삭제된 사용자"', after.status === 'deleted' && after.name === '삭제된 사용자', JSON.stringify(after))
+      check('★ 혼자였던 워크스페이스는 지워졌고 나머지는 남는다', (await wsState(solo)) === true && (await wsState(shared)) === false && (await wsState(blocked)) === false)
+
+      check('★ 남은 멤버는 공동 워크스페이스를 그대로 쓴다', (await fetch(`${BASE}/api/workspaces/${shared}/pages`, { headers: as(boss) })).status === 200)
+      const html = (await (await fetch(`${BASE}/w/${shared}/${editedPage.id}`, { headers: as(boss) })).text()).replace(/<!-- -->/g, '')
+      check('★ 그 사람이 고친 페이지의 편집 이력은 "삭제된 사용자"', html.includes('data-testid="page-edit-last"') && html.includes('마지막 편집 삭제된 사용자'))
+
+      const again = await fetch(`${BASE}/api/auth/request-code`, { method: 'POST', headers: json, body: JSON.stringify({ email: me.email }) })
+      const code = await loginCodeFor(me.email)
+      const verified = await fetch(`${BASE}/api/auth/verify-code`, { method: 'POST', headers: json, body: JSON.stringify({ email: me.email, code }) })
+      const newUser = (await dbQuery(`SELECT u.id, u.status FROM user_email ue JOIN "user" u ON u.id = ue.user_id WHERE ue.email = $1`, [me.email]))[0]
+      check('★ 같은 이메일로 다시 가입할 수 있다 — 새 사람 행이 생긴다', again.ok && verified.ok && newUser?.status === 'active' && newUser.id !== me.userId,
+        JSON.stringify({ again: again.status, verified: verified.status, newUser }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) { try {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.

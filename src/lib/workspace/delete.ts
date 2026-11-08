@@ -9,8 +9,8 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { recordAuditIn, recordForContextIn } from '../audit/audit.ts'
-import { withCommandTransaction, withTransaction } from '../db/tx.ts'
+import { recordAuditIn } from '../audit/audit.ts'
+import { withCommandTransaction, withTransaction, type Tx } from '../db/tx.ts'
 
 export type DeleteWorkspaceFailure =
   /** owner 가 아니다(위임 컨텍스트도). */
@@ -42,9 +42,25 @@ export async function deleteWorkspace(ctx: SessionContext, input: { readonly con
     if (row === null) return { ok: false, reason: 'not_found' }
     if (row.role !== 'owner' || row.status !== 'active') return { ok: false, reason: 'forbidden' }
     if (typeof input.confirmName !== 'string' || input.confirmName !== row.name) return { ok: false, reason: 'name_mismatch' }
-    await tx.query(`UPDATE workspace SET deleted_at = now(), deleted_by = $2 WHERE id = $1`, [ctx.workspaceId, ctx.userId])
-    await recordForContextIn(tx, ctx, 'workspace.deleted', { target: { type: 'workspace', id: ctx.workspaceId }, metadata: { name: row.name } })
+    await markWorkspaceDeletedIn(tx, { workspaceId: ctx.workspaceId, userId: ctx.userId, sessionId: ctx.delegation === undefined ? ctx.sessionId : null }, row.name)
     return { ok: true }
+  })
+}
+
+/** 지운 표시와 감사 — 워크스페이스 삭제와 계정 삭제(AD-2 ②)가 같은 몸을 쓴다. 부르는 쪽이 행을 잠그고 지울 수 있음을 확인했다. */
+export async function markWorkspaceDeletedIn(
+  tx: Tx,
+  by: { readonly workspaceId: string; readonly userId: string; readonly sessionId: string | null },
+  name: string,
+): Promise<void> {
+  await tx.query(`UPDATE workspace SET deleted_at = now(), deleted_by = $2 WHERE id = $1`, [by.workspaceId, by.userId])
+  await recordAuditIn(tx, {
+    type: 'workspace.deleted',
+    workspaceId: by.workspaceId,
+    actorUserId: by.userId,
+    sessionId: by.sessionId,
+    target: { type: 'workspace', id: by.workspaceId },
+    metadata: { name },
   })
 }
 
