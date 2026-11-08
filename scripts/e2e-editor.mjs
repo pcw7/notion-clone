@@ -17696,6 +17696,94 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('알림 보내기 액션 — 서버 (AN-1 · F-08-07)')) { try {
+      // 버튼 · DB automation 의 "알림 보내기" — 행이 추가되면 고른 멤버와 사람 칸의 사람이 인박스에 받고(메시지는 그 행의 값으로),
+      // 그 행을 볼 수 없는 멤버는 받지 않는다. 버튼은 고른 멤버에게 누른 사람 이름으로 간다. 모양이 틀린 설정은 400. 정본 §3.10 [보강 AN-1].
+      const stamp = Date.now()
+      const stampName = `알림 ${stamp}`
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const { runAutomationDispatch } = await import(new URL('../src/lib/automation/dispatch.ts', import.meta.url).href)
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const fixedMate = await joinAs(workspaceId, await createUser('고른 동료'), 'member')
+      const assignee = await joinAs(workspaceId, await createUser('담당 동료'), 'member')
+      const blindMate = await joinAs(workspaceId, await createUser('못 보는 동료'), 'member')
+      const presser = await joinAs(workspaceId, await createUser('누르는 동료'), 'member')
+      const guest = await joinAs(workspaceId, await createUser('손님'), 'guest')
+      const as = (actor) => ({ ...json, cookie: `nc_session=${actor.token}` })
+      const inboxOf = async (actor) => ((await api('GET', '/inbox?limit=100', undefined, as(actor))).body?.items ?? [])
+      const text = (content) => ({ type: 'text', plain_text: content, href: null, text: { content, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' } })
+
+      const db = (await api('POST', '/databases', { name: `알림 액션 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      const note = await prop('메모', 'rich_text')
+      const who = await prop('담당', 'people')
+      const qty = await prop('수량', 'number')
+      const buttonId = await prop('알리기', 'button')
+      const notifyAction = (users, people, message) => ({ type: 'send_notification', config: { v: 1, to: { users, people_property_ids: people }, message: message === '' ? [] : [text(message)] } })
+      const peopleCell = (ids) => ({ propertyId: who, value: { type: 'people', people: ids.map((id) => ({ id })) } })
+
+      // ① DB automation — 행이 추가되면 고른 멤버 + 사람 칸
+      const made = await api('POST', `/data-sources/${ds}/automations`, {
+        name: stampName,
+        triggers: [{ type: 'page_added' }],
+        actions: [notifyAction([fixedMate.userId, blindMate.userId], [who], `새 행: {{row:${note}}}`)],
+      })
+      check('★ 알림 보내기를 담은 DB automation 을 저장한다 (201)', made.status === 201, JSON.stringify(made.body))
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        { propertyId: note, value: { type: 'rich_text', rich_text: [text('견적서')] } },
+        peopleCell([assignee.userId, fixedMate.userId, blindMate.userId]),
+      ] })).body.row.id
+      const hidden = [
+        await aclMod.stopInheriting(ctx, row),
+        await aclMod.grantAccess(ctx, row, { type: 'user', id: ctx.userId }, 'full_access'),
+        await aclMod.grantAccess(ctx, row, { type: 'user', id: fixedMate.userId }, 'full_access'),
+        await aclMod.grantAccess(ctx, row, { type: 'user', id: assignee.userId }, 'full_access'),
+        await aclMod.revokeAccess(ctx, row, { type: 'workspace_everyone', id: null }),
+      ].every((r) => r.ok)
+      await runAutomationDispatch(new Date(Date.now() + 10_000), { workspaces: [workspaceId] })
+      const pick = (items) => items.find((i) => i.pageId === row && i.kind === 'automation')
+      const fixedItem = pick(await inboxOf(fixedMate))
+      const assignedItem = pick(await inboxOf(assignee))
+      check('★ 고른 멤버와 사람 칸의 사람이 그 행의 인박스 항목을 받는다 — 메시지는 그 행의 값으로, 보낸 이는 automation 을 만든 사람',
+        hidden && fixedItem?.automation?.message === '새 행: 견적서' && assignedItem?.automation?.message === '새 행: 견적서'
+          && fixedItem.automation.via === 'automation' && fixedItem.actorId === ctx.userId && fixedItem.pageId === row,
+        JSON.stringify({ hidden, fixedItem, assignedItem }))
+      check('★ 그 행을 볼 수 없는 멤버는 받지 않는다(고른 멤버이고 사람 칸에도 있는데)', pick(await inboxOf(blindMate)) === undefined)
+      // 인박스는 읽을 때도 볼 수 있는지를 본다(§3.3-131 — 두 겹) — 보낼 때 아예 알림 행을 만들지 않았는지는 DB 로 따로 묻는다
+      // (반사실: 보낼 때의 판정을 빼도 인박스 검사는 통과했다)
+      const { query: notifQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const blindRows = Number((await notifQuery(`SELECT count(*)::int AS n FROM notification WHERE recipient_id = $1 AND kind = 'automation'`, [blindMate.userId]))[0]?.n ?? -1)
+      check('★ 볼 수 없는 멤버에게는 알림 행 자체가 만들어지지 않는다(보낼 때의 판정)', blindRows === 0, String(blindRows))
+
+      // ② 버튼 — 고른 멤버에게 누른 사람 이름으로
+      const wired = await api('PUT', `/data-sources/${ds}/properties/${buttonId}/actions`, { actions: [notifyAction([fixedMate.userId], [], '눌렀어요')] })
+      const row2 = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const pressed = await api('POST', `/rows/${row2}/buttons/${buttonId}`, { idempotencyKey: randomUUID() }, as(presser))
+      const buttonItem = (await inboxOf(fixedMate)).find((i) => i.pageId === row2 && i.kind === 'automation')
+      check('★ 버튼을 누르면 고른 멤버가 받는다 — 보낸 이는 누른 사람 · 메시지 그대로',
+        wired.status === 200 && pressed.status === 200 && pressed.body?.run?.steps?.[0]?.notified === 1
+          && buttonItem?.automation?.via === 'button' && buttonItem.automation.message === '눌렀어요' && buttonItem.actorId === presser.userId,
+        JSON.stringify({ wired: wired.status, pressed: pressed.status, run: pressed.body?.run, buttonItem }))
+
+      // ③ 틀린 설정은 400
+      const put = (actions) => api('PUT', `/data-sources/${ds}/properties/${buttonId}/actions`, { actions })
+      const rejected = async (label, actions, problem) => {
+        const r = await put(actions)
+        check(`틀린 설정 — ${label} → 400 ${problem}`, r.status === 400 && JSON.stringify(r.body).includes(problem), JSON.stringify([r.status, r.body]))
+      }
+      await rejected('받는 사람이 하나도 없다', [notifyAction([], [], '')], 'invalid_input')
+      await rejected('멤버 21명', [notifyAction(Array.from({ length: 21 }, () => randomUUID()), [], '')], 'too_many_recipients')
+      await rejected('게스트', [notifyAction([guest.userId], [], '')], 'unknown_recipient')
+      await rejected('멤버가 아닌 사람', [notifyAction([randomUUID()], [], '')], 'unknown_recipient')
+      await rejected('사람 칸이 아닌 속성', [notifyAction([], [qty], '')], 'unknown_property')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('값 슬롯 — 화면 (5d-2 · F-08-11)')) { try {
       // 버튼 설정의 값 칸 옆에서 출처를 고른다 — 날짜는 "지금", 숫자는 "누른 행의 수량". 출처 목록은 저장 검사와 같은 규칙(지금은 날짜에만 ·
       // 같은 타입끼리). 저장하면 서버에 동적 값으로 남고, 다시 열면 그대로 보이고, 누르면 그때의 값으로 채워진다.

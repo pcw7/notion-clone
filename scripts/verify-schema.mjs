@@ -5147,6 +5147,33 @@ try {
     else fail('tg_collab_access_workspace_deleted 가 없다')
   }
 
+  console.log('\n[88] 알림 보내기 액션 — 알림 종류 · 활동 이벤트 · 액션 종류 (0130 / §3.10 [보강 AN-1] ① ③ · AN-1조각)')
+  {
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'r88', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId],
+    )
+    const eventId = randomUUID()
+    await client.query(
+      `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, 'automation.notified', '{}'::jsonb, now())`,
+      [eventId, wsId, pageId, userId],
+    )
+    ok('활동 이벤트 종류 automation.notified — 통과한다')
+    const put = `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+                 VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, 'automation:x', now())`
+    await client.query(put, [randomUUID(), userId, wsId, pageId, eventId, 'automation'])
+    ok('★ 알림 종류 automation — 통과한다')
+    await mustReject('★ 모르는 알림 종류(0130 뒤에도)', put, [randomUUID(), userId, wsId, pageId, eventId, 'carrier_pigeon'])
+    await mustReject('모르는 활동 이벤트 종류(0130 뒤에도)', `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, 'automation.exploded', '{}'::jsonb, now())`, [randomUUID(), wsId, pageId, userId])
+    const typeDef = (await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_automation_action_type'`)).rows[0]?.def ?? ''
+    if (typeDef.includes("'send_notification'")) ok('액션 종류에 send_notification 이 있다(ck_automation_action_type)')
+    else fail(`액션 종류에 send_notification 이 없다 — ${typeDef}`)
+  }
+
 
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')

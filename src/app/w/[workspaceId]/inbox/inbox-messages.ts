@@ -18,3 +18,8 @@ export function assignmentInboxLine(assignment: { readonly propertyName: string 
     ? '사람 속성에 회원님을 추가했습니다.'
     : `"${assignment.propertyName}"에 회원님을 추가했습니다.`
 }
+
+/** 알림 보내기 알림의 한 줄(AN-1) — 메시지가 있으면 그것, 없으면 "알림" 만. 모양을 꾸미는 것은 AN-2. */
+export function automationInboxLine(automation: { readonly message: string }): string {
+  return automation.message === '' ? '알림' : automation.message
+}

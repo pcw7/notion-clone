@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { ACTION_TYPES, IMPLEMENTED_ACTIONS, MAX_ACTIONS, MAX_CELLS_PER_ACTION, parseActions, parseStoredActions } from './actions.ts'
+import { ACTION_TYPES, IMPLEMENTED_ACTIONS, MAX_ACTIONS, MAX_CELLS_PER_ACTION, notifySlotIds, parseActions, parseStoredActions } from './actions.ts'
 
 const edit = (cells: unknown[]) => ({ type: 'edit_property', config: { v: 1, cells } })
 const cell = (propertyId: string) => ({ propertyId, value: { type: 'number', number: 1 } })
@@ -139,3 +139,46 @@ test('★ 블록 넣기 — 자리(버튼 아래 · 페이지 끝) · 하나 이
   assert.ok(parseActions([insert({ position: 'bottom', blocks: [para(uid(1), [para(uid(2), [para(uid(3))])])] })]).ok, '깊이 3 까지')
 })
 
+
+const notify = (config: Record<string, unknown>) => ({ type: 'send_notification', config: { v: 1, ...config } })
+const textRunOf = (content: string) => ({
+  type: 'text',
+  text: { content, link: null },
+  annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' },
+})
+
+test('★ 알림 보내기 — 받는 사람(멤버 · 사람 칸) · 둘 다 비면 invalid_input · 멤버 20명 · 메시지 모양', () => {
+  const ok = parseActions([notify({ to: { users: [uid(1), uid(1), uid(2)], people_property_ids: ['p1', 'p1'] }, message: [textRunOf('끝났어요 {{row:p2}}')] })])
+  assert.ok(ok.ok && ok.actions[0].type === 'send_notification', JSON.stringify(ok))
+  if (ok.ok && ok.actions[0].type === 'send_notification') {
+    assert.deepEqual(ok.actions[0].config.to, { users: [uid(1), uid(2)], people_property_ids: ['p1'] }, '같은 사람 · 칸은 한 번')
+    assert.equal(ok.actions[0].config.message[0].plain_text, '끝났어요 {{row:p2}}', 'plain_text 를 다시 계산한다')
+  }
+  assert.ok(parseActions([notify({ to: { people_property_ids: ['p1'] } })]).ok, '메시지는 비어도 · 멤버 없이 사람 칸만도 된다')
+  assert.ok(parseActions([notify({ to: { users: [uid(1)] }, message: [] })]).ok)
+
+  const bad = (config: Record<string, unknown>, problem = 'invalid_input') => assert.deepEqual(parseActions([notify(config)]), { ok: false, problem, index: 0 }, JSON.stringify(config).slice(0, 80))
+  bad({})
+  bad({ to: { users: [], people_property_ids: [] } })
+  bad({ to: { users: 'x' } })
+  bad({ to: { users: ['nope'] } })
+  bad({ to: { users: [uid(1)], people_property_ids: [7] } })
+  bad({ to: { users: Array.from({ length: 21 }, (_, i) => uid(i + 1)) } }, 'too_many_recipients')
+  assert.ok(parseActions([notify({ to: { users: Array.from({ length: 20 }, (_, i) => uid(i + 1)) } })]).ok, '20명까지')
+  bad({ to: { users: [uid(1)] }, message: 'hi' })
+  bad({ to: { users: [uid(1)] }, message: [{ type: 'bogus' }] })
+  bad({ to: { users: [uid(1)] }, message: [textRunOf('가'.repeat(501))] })
+  assert.ok(parseActions([notify({ to: { users: [uid(1)] }, message: [textRunOf('가'.repeat(500))] })]).ok)
+})
+
+test('알림 보내기 — 저장한 것도 같은 모양으로 읽고 · 목록에 있다', () => {
+  assert.ok((ACTION_TYPES as readonly string[]).includes('send_notification') && (IMPLEMENTED_ACTIONS as readonly string[]).includes('send_notification'))
+  const stored = parseStoredActions([notify({ to: { users: [uid(1)], people_property_ids: [] }, message: [] })])
+  assert.ok(stored.ok && stored.actions[0].type === 'send_notification')
+})
+
+test('알림 메시지의 값 슬롯 — {{row:속성id}} 만 (글자 s 가 든 id 도)', () => {
+  const run = (plain: string) => [{ ...textRunOf(plain), plain_text: plain }] as never
+  assert.deepEqual(notifySlotIds(run('a {{row:status1}} b {{row:x_Y-z}} {{row:status1}}')), ['status1', 'x_Y-z'])
+  assert.deepEqual(notifySlotIds(run('{{row:}} {{ row:a }} {{col:a}}')), [])
+})

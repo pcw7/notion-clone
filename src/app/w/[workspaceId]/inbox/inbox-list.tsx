@@ -41,7 +41,7 @@ import Link from '@/app/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
-import { assignmentInboxLine, reminderInboxLine } from './inbox-messages'
+import { assignmentInboxLine, automationInboxLine, reminderInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -63,6 +63,8 @@ export type InboxRow = {
   reminder: { propertyName: string | null } | null
   /** 담당(6h) — 회원님을 넣은 사람 속성의 지금 이름. 다른 알림은 null. */
   assignment: { propertyName: string | null } | null
+  /** 알림 보내기(AN-1) — 보낸 방식과 메시지. 다른 알림은 null. */
+  automation?: { via: 'automation' | 'button'; message: string } | null
   /** 내가 이 페이지의 알림을 껐는가(NM-2) — 서버가 내 구독 행에서 읽어 준다. */
   muted: boolean
 }
@@ -83,6 +85,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   access_granted: '요청 허락',
   reminder: '리마인더',
   person_property_assigned: '담당',
+  automation: '자동화',
 }
 
 const UNTITLED = '제목 없음'
@@ -321,6 +324,7 @@ export function InboxList({
                 {accessInboxLine(item.kind, item.access) ??
                   reminderInboxLine(item.reminder) ??
                   assignmentInboxLine(item.assignment) ??
+                  (item.automation ? automationInboxLine(item.automation) : null) ??
                   (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 

@@ -31,6 +31,7 @@ import {
   type SendWebhookInput,
   type SendWebhookStored,
   type StoredAction,
+  notifySlotIds,
 } from './actions.ts'
 
 /** 액션이 그 표에 맞지 않는 까닭(모양은 `ActionProblem` — `actions.ts`). */
@@ -52,6 +53,8 @@ export type ActionSchemaProblem =
   | 'invalid_dynamic'
   /** 이 자리에서 쓸 수 없는 액션 — `insert_blocks` 는 버튼 블록에서만(정본 ⑱). */
   | 'unsupported_here'
+  /** `send_notification` 의 고른 사람이 이 워크스페이스의 활성 멤버(게스트 아님)가 아니다(정본 [보강 AN-1] ①). */
+  | 'unknown_recipient'
 
 /** 그 표의 속성들 — `openDataSource` 의 문이 준다. */
 export type SchemaGate = {
@@ -129,6 +132,24 @@ export async function checkActions(
   for (const [index, action] of actions.entries()) {
     if (action.type === 'insert_blocks') {
       if (options.insertBlocks !== true) return { problem: 'unsupported_here', index }
+      continue
+    }
+    if (action.type === 'send_notification') {
+      const { users, people_property_ids: people } = action.config.to
+      // 사람 칸은 그 automation 의 표의 살아 있는 사람 속성 — 표가 없는 버튼 블록은 고를 수 없다. 메시지 슬롯의 속성은 셀 속성
+      for (const id of people) if (gate.properties.get(id)?.type !== 'people') return { problem: 'unknown_property', index }
+      for (const id of notifySlotIds(action.config.message)) {
+        const meta = gate.properties.get(id)
+        if (meta === undefined || !isAutomationCellType(meta.type)) return { problem: 'unknown_property', index }
+      }
+      if (users.length > 0) {
+        const found = await tx.query<{ user_id: string }>(
+          `SELECT user_id FROM workspace_member
+            WHERE workspace_id = $1 AND status = 'active' AND role <> 'guest' AND user_id = ANY($2::uuid[])`,
+          [ctx.workspaceId, users],
+        )
+        if (found.length !== users.length) return { problem: 'unknown_recipient', index }
+      }
       continue
     }
     if (action.type === 'send_webhook') {
