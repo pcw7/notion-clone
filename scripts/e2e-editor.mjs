@@ -28602,6 +28602,146 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('임베드 블록 (EM-1 · F-09-10)')) { try {
+      // 임베드 블록(정본 §3.4 [보강 EM-1]) — /임베드 로 빈 블록(주소 입력칸) · http · https 가 아니면 쓰지 않고 이유를 말한다 · 자기 출처는 그리지 않는다 ·
+      // YouTube 는 nocookie embed(start) 를 정한 격리 속성으로 · 일반 https 는 "불러오기" 를 눌러야 iframe · 캡션 · "주소 고치기" 는 빈 상태로(캡션은 남는다) ·
+      // 서버에는 주소(와 캡션)만 · 공개 화면도 같은 규칙. 바깥 네트워크에 기대지 않는다 — 속성만 보고, 바깥 호스트는 막는다.
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `임베드 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      // 바깥 iframe 이 실제로 열리지 않게 — 이 절이 끝나면(예외로 끝나도 backToBaseline 이) 푼다
+      await send('Network.setBlockedURLs', { urls: ['*youtube-nocookie.com*', '*example.com*', '*example.org*'] })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+        await waitHydrated(`[data-block-id="${first}"]`)
+        const MENU = '[role="listbox"][aria-label="블록 삽입"]'
+        await clickSelector(`[data-block-id="${first}"] .blk`)
+        await typeText('/')
+        await typeText('임베드')
+        const menuShown = await waitFor(`(document.querySelector('${MENU}')?.textContent ?? '').includes('임베드')`, 5000)
+        await key('Enter')
+        const empty = await waitFor(`!!document.querySelector('.blk-embed[data-state="empty"] .blk-embed-url-input')`, 5000)
+        check('★ /임베드 — 미디어 그룹의 "임베드" 를 고르면 주소 입력칸 하나의 빈 블록이 선다', menuShown && empty, JSON.stringify({ menuShown, empty }))
+        const blockId = await evaluate(`document.querySelector('.blk-embed')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null`)
+        const B = `[data-block-id="${blockId}"]`
+        const put = async (value) => {
+          await evaluate(`(() => { const i = document.querySelector('${B} .blk-embed-url-input'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+          await clickSelector(`${B} .blk-embed-url-input`)
+          await typeText(value)
+          await clickSelector(`${B} .blk-embed-url-add`)
+        }
+
+        // http · https 가 아니면 쓰지 않고 이유를 말한다
+        await put('javascript:alert(1)')
+        const refused = await waitFor(`(document.querySelector('${B} [role="alert"]')?.textContent ?? '').includes('http') && document.querySelector('${B} .blk-embed')?.dataset.state === 'empty'`, 5000)
+        check('http · https 가 아닌 주소(javascript:)는 쓰지 않고 이유를 말한다', refused,
+          JSON.stringify(await evaluate(`({ state: document.querySelector('${B} .blk-embed')?.dataset.state, alert: document.querySelector('${B} [role="alert"]')?.textContent ?? '' })`)))
+
+        // 자기 출처 — 그리지 않고 이유와 주소(새 탭 링크)
+        const own = `${BASE}/w/${workspaceId}/${page}`
+        await put(own)
+        const ownRefused = await waitFor(`!!document.querySelector('${B} [data-testid="embed-refused"]')`, 5000)
+        const ownState = await evaluate(`({
+          frames: document.querySelectorAll('${B} iframe').length,
+          reason: document.querySelector('${B} [data-testid="embed-refused"]')?.textContent ?? '',
+          link: document.querySelector('${B} .blk-embed-refused-link')?.getAttribute('href') ?? null,
+          rel: document.querySelector('${B} .blk-embed-refused-link')?.getAttribute('rel') ?? null,
+        })`)
+        check('★ 자기 출처의 주소(BASE + 경로)는 그리지 않는다 — iframe 없음 · 이유와 주소(새 탭 링크)', ownRefused && ownState.frames === 0 && ownState.reason.includes('자신') && ownState.link === own && (ownState.rel ?? '').includes('noopener'),
+          JSON.stringify(ownState))
+        await clickSelector(`${B} [data-testid="embed-edit"]`)
+        await waitFor(`document.querySelector('${B} .blk-embed')?.dataset.state === 'empty'`, 5000)
+
+        // YouTube — nocookie embed + start · 정한 격리 속성
+        const SANDBOX = 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-presentation'
+        const ALLOW = 'fullscreen; picture-in-picture; encrypted-media; clipboard-write'
+        const attrsOf = (sel) => evaluate(`(() => { const f = document.querySelector(${JSON.stringify(sel)}); return f === null ? null : { src: f.getAttribute('src'), sandbox: f.getAttribute('sandbox'), allow: f.getAttribute('allow'), referrer: f.getAttribute('referrerpolicy'), loading: f.getAttribute('loading') } })()`)
+        const watch = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1m30s'
+        await put(watch)
+        await waitFor(`!!document.querySelector('${B} iframe')`, 5000)
+        const yt = await attrsOf(`${B} iframe`)
+        check('★ YouTube watch 주소(t=1m30s) — nocookie embed 에 start=90 · sandbox · allow · referrerpolicy · lazy 가 정한 값 그대로',
+          yt !== null && yt.src === 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?start=90' && yt.sandbox === SANDBOX && yt.allow === ALLOW && yt.referrer === 'strict-origin-when-cross-origin' && yt.loading === 'lazy'
+            && !/top-navigation|modals|downloads/.test(yt.sandbox ?? ''),
+          JSON.stringify(yt))
+
+        // 캡션 → 서버에 남는다(주소 · 캡션 — iframe 주소 · 서비스 이름은 없다)
+        await clickSelector(`${B} [data-testid="embed-caption-open"]`)
+        const captionBox = await waitFor(`!!document.querySelector('[data-testid="code-caption-input"]')`, 5000)
+        if (captionBox) {
+          await clickSelector('[data-testid="code-caption-input"]')
+          await typeText(`영상 ${stamp}`)
+          await key('Enter')
+        }
+        const saved = await (async () => {
+          for (let i = 0; i < 60; i += 1) {
+            const body = await loadPageBody(ctx, page)
+            const found = body?.doc.blocks.find((b) => b.id === blockId)
+            if (found?.type === 'embed' && found.properties?.url === watch && Array.isArray(found.properties?.caption) && found.properties.caption.length > 0) return found.properties
+            await sleep(250)
+          }
+          return null
+        })()
+        check('캡션 — 같은 입력칸으로 쓰고 서버에는 주소(와 캡션)만 남는다 — iframe 주소 · 서비스 이름은 없다',
+          captionBox && saved !== null && Object.keys(saved).every((k) => k === 'url' || k === 'caption') && !JSON.stringify(saved).includes('nocookie'),
+          JSON.stringify({ captionBox, saved }))
+
+        // 주소 고치기 — 빈 상태로(캡션은 남는다) → 일반 https 주소
+        await clickSelector(`${B} [data-testid="embed-edit"]`)
+        const reopened = await waitFor(`document.querySelector('${B} .blk-embed')?.dataset.state === 'empty' && !!document.querySelector('${B} .blk-embed-url-input')`, 5000)
+        const keptCaption = await waitFor(`(document.querySelector('${B} .blk-embed-caption')?.textContent ?? '') === ${JSON.stringify(`영상 ${stamp}`)}`, 5000)
+        check('"주소 고치기" 는 빈 상태로 되돌리고 캡션은 남는다', reopened && keptCaption, JSON.stringify({ reopened, keptCaption }))
+
+        const generic = `https://www.example.com/embed-test/${stamp}`
+        await put(generic)
+        const facade = await waitFor(`!!document.querySelector('${B} [data-testid="embed-facade"]')`, 5000)
+        const beforeClick = await evaluate(`({ frames: document.querySelectorAll('${B} iframe').length, host: document.querySelector('${B} .blk-embed-facade-host')?.textContent ?? '', button: document.querySelector('${B} [data-testid="embed-load"]')?.textContent ?? '' })`)
+        check('★ 일반 https 주소는 판(호스트 · "불러오기")만 — 누르기 전에는 iframe 이 없다',
+          facade && beforeClick.frames === 0 && beforeClick.host === 'example.com' && beforeClick.button === '불러오기', JSON.stringify(beforeClick))
+        await clickSelector(`${B} [data-testid="embed-load"]`)
+        await waitFor(`!!document.querySelector('${B} iframe')`, 5000)
+        const loaded = await attrsOf(`${B} iframe`)
+        check('★ "불러오기" 를 누르면 그 주소 그대로 iframe — 같은 격리 속성',
+          loaded !== null && loaded.src === generic && loaded.sandbox === SANDBOX && loaded.allow === ALLOW && loaded.referrer === 'strict-origin-when-cross-origin' && loaded.loading === 'lazy',
+          JSON.stringify(loaded))
+
+        // 공개 화면 — 알려진 서비스 · 일반 · 자기 출처
+        await sleep(1500)
+        const publicPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `임베드 공개 ${stamp}` }) })).json()).page.id
+        const mk = (url, caption) => ({ id: randomUUID(), type: 'embed', title: [], properties: caption === undefined ? { url } : { url, caption: [textRun(caption)] }, format: {}, children: [] })
+        const known = mk(watch, `공개 ${stamp}`)
+        const plain = mk(generic)
+        const mine = mk(`${BASE}/p/anything`)
+        await saveBody(publicPage, { blocks: [known, plain, mine] })
+        const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+        const published = await publishPage(ctx, publicPage)
+        const token = published.ok ? published.value.token : null
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        await waitFor(`document.querySelectorAll('[data-testid="public-embed"]').length === 3`, 15000)
+        const pub = await evaluate(`(() => {
+          const figs = [...document.querySelectorAll('[data-testid="public-embed"]')]
+          return figs.map((f) => ({ kind: f.getAttribute('data-kind'), frames: f.querySelectorAll('iframe').length, facade: !!f.querySelector('[data-testid="public-embed-facade"]'), refused: !!f.querySelector('[data-testid="public-embed-refused"]') }))
+        })()`)
+        const pubKnown = await attrsOf('[data-testid="public-embed"][data-kind="known"] iframe')
+        check('★ 공개 화면 — 알려진 서비스는 pub-embed 안에 같은 iframe(nocookie start · 같은 격리 속성)',
+          pub[0]?.kind === 'known' && pub[0].frames === 1 && pubKnown !== null && pubKnown.src === 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?start=90' && pubKnown.sandbox === SANDBOX
+            && pubKnown.allow === ALLOW && pubKnown.referrer === 'strict-origin-when-cross-origin' && pubKnown.loading === 'lazy'
+            && (await evaluate(`document.querySelector('.pub-embed')?.textContent?.includes(${JSON.stringify(`공개 ${stamp}`)}) ?? false`)),
+          JSON.stringify({ pub, pubKnown }))
+        check('★ 공개 화면 — 일반 주소는 판(iframe 없음)이고 자기 출처는 iframe 없이 이유만',
+          pub[1]?.kind === 'generic' && pub[1].frames === 0 && pub[1].facade && pub[2]?.kind === 'refused' && pub[2].frames === 0 && pub[2].refused, JSON.stringify(pub))
+        const clicked = await clickUntil('[data-testid="public-embed-load"]', `!!document.querySelector('[data-testid="public-embed"][data-kind="generic"] iframe')`)
+        const pubGeneric = await attrsOf('[data-testid="public-embed"][data-kind="generic"] iframe')
+        check('★ 공개 화면 — "불러오기" 를 누르면 그 주소 그대로 iframe(같은 격리 속성)',
+          clicked && pubGeneric !== null && pubGeneric.src === generic && pubGeneric.sandbox === SANDBOX && pubGeneric.allow === ALLOW && pubGeneric.referrer === 'strict-origin-when-cross-origin',
+          JSON.stringify(pubGeneric))
+      } finally {
+        await send('Network.setBlockedURLs', { urls: [] }).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('접속자 표시 (AW-1 · F-05-03)')) { try {
       // 접속자 표시(정본 §3.7 presence [보강 AW-1]) — 두 번째 사람(Node 의 provider · 쿠키 헤더)이 이름을 사칭한 awareness 로 한 블록에 서면
       // 브라우저의 상단 바에 **그 사람의 진짜 이름**으로 아바타가 서고(서버가 덮어쓴다) 그 블록에 표시가 붙는다 · 누르면 그 블록으로 · 브라우저의

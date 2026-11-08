@@ -146,6 +146,8 @@ const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   file: { label: '파일', aliases: ['파일', 'file', '첨부', 'attachment'], group: '미디어' },
   video: { label: '비디오', aliases: ['비디오', 'video', '동영상', '영상'], group: '미디어' },
   bookmark: { label: '웹 북마크', aliases: ['북마크', 'bookmark', '웹', 'web', '링크 카드'], group: '미디어' },
+  // 임베드(EM-1) — 서비스 이름은 별칭일 뿐 모두 같은 블록이다
+  embed: { label: '임베드', aliases: ['임베드', 'embed', '유튜브', 'youtube', '지도', 'maps', 'figma'], group: '미디어' },
   code: { label: '코드', aliases: ['코드', 'code', 'codeblock', '```'], group: '기본 블록' },
   // 목차(8b-1) — 노션의 'Advanced blocks' 자리.
   table_of_contents: { label: '목차', aliases: ['목차', '차례', 'toc', 'table of contents', 'contents'], group: '고급 블록' },

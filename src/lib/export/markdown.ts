@@ -50,6 +50,7 @@ import { imageAltText, readImageSource, type ImageSource } from '../block/image.
 import { FILE_TYPE, externalFileName, readFileSource, type FileSource } from '../block/file-block.ts'
 import { VIDEO_TYPE } from '../block/video-block.ts'
 import { BOOKMARK_TYPE, bookmarkTitle, readBookmarkUrl } from '../block/bookmark-block.ts'
+import { EMBED_TYPE, readEmbedUrl } from '../block/embed-block.ts'
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
@@ -755,6 +756,14 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       const url = readBookmarkUrl(block.properties)
       if (url === null) return []
       const line = `[${escapeText(bookmarkTitle(url, links.bookmarkTitle?.(url)))}](${linkDestination(url)})`
+      const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses, ctx.rewrite))
+      return caption === '' ? [line] : [line, '', ...escapeLineStarts(caption).split('\n')]
+    }
+    case EMBED_TYPE: {
+      // 임베드(EM-1 · 정본 §3.4 [보강 EM-1] ⑤) — 북마크와 같다: `[주소](주소)` 한 줄 · 캡션은 그 뒤의 문단
+      const url = readEmbedUrl(block.properties)
+      if (url === null) return []
+      const line = `[${escapeText(url)}](${linkDestination(url)})`
       const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses, ctx.rewrite))
       return caption === '' ? [line] : [line, '', ...escapeLineStarts(caption).split('\n')]
     }

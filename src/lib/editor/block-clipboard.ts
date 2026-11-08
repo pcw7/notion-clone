@@ -60,6 +60,7 @@ import { buttonPlainText } from '../block/button.ts'
 import { imageAltText, readImageSource } from '../block/image.ts'
 import { fileDisplayName, readFileSource } from '../block/file-block.ts'
 import { readBookmarkUrl } from '../block/bookmark-block.ts'
+import { readEmbedUrl } from '../block/embed-block.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isKnownBlockType, isRefType, specOf } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
@@ -180,6 +181,12 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
         case 'bookmark': {
           // 북마크(F-3) — `[주소](주소)`(평문은 바깥으로 나가는 모양 · 주소가 없으면 줄을 남기지 않는다)
           const url = readBookmarkUrl(block.properties)
+          if (url !== null) lines.push(`${indent}[${url}](${url})`)
+          break
+        }
+        case 'embed': {
+          // 임베드(EM-1) — 북마크와 같다: `[주소](주소)`
+          const url = readEmbedUrl(block.properties)
           if (url !== null) lines.push(`${indent}[${url}](${url})`)
           break
         }

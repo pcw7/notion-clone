@@ -97,8 +97,10 @@ import { ImageAltDialog } from './image-alt-dialog'
 import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from '@/lib/editor/image-block'
 import {
   bookmarkCaptionInfo,
+  embedCaptionInfo,
   fileCaptionInfo,
   setBookmarkCaptionCommand,
+  setEmbedCaptionCommand,
   setFileCaptionCommand,
   setVideoCaptionCommand,
   videoCaptionInfo,
@@ -197,7 +199,7 @@ function mentionIdsIn(view: EditorView): { users: string[]; pages: string[]; emo
  */
 type CodeUi = CodeUiGeometry & {
   /** `image_caption` — 이미지 블록의 캡션(10n-62 · 같은 입력칸 · 같은 열고 닫기 · 자리 다시 재기) · `file_caption` — 파일 블록의 캡션(F-1b). */
-  kind: 'language' | 'caption' | 'image_caption' | 'file_caption' | 'video_caption' | 'bookmark_caption'
+  kind: 'language' | 'caption' | 'image_caption' | 'file_caption' | 'video_caption' | 'bookmark_caption' | 'embed_caption'
   blockId: string
   language: string | null
   caption: string
@@ -233,6 +235,10 @@ function codeUiTarget(
   kind: CodeUi['kind'],
   blockId: string,
 ): Pick<CodeBlockInfo, 'pos' | 'node' | 'language' | 'caption' | 'captionFormatted'> | null {
+  if (kind === 'embed_caption') {
+    const embed = embedCaptionInfo(state, blockId)
+    return embed === null ? null : { pos: embed.pos, node: embed.node, language: null, caption: embed.caption, captionFormatted: embed.captionFormatted }
+  }
   if (kind === 'bookmark_caption') {
     const bookmark = bookmarkCaptionInfo(state, blockId)
     return bookmark === null ? null : { pos: bookmark.pos, node: bookmark.node, language: null, caption: bookmark.caption, captionFormatted: bookmark.captionFormatted }
@@ -254,6 +260,16 @@ function codeUiTarget(
 function measureCodeUi(view: EditorView, frame: HTMLElement, kind: CodeUi['kind'], contentPos: number): CodeUiGeometry | null {
   const box = view.nodeDOM(contentPos)
   if (!(box instanceof HTMLElement)) return null
+  if (kind === 'embed_caption') {
+    // 임베드의 캡션 자리(EM-1) — 판 바로 아래, 같은 폭
+    const stage = box.querySelector<HTMLElement>('.blk-embed-stage')
+    if (!stage) return null
+    const fr = frame.getBoundingClientRect()
+    const k = stage.getBoundingClientRect()
+    const shown = box.querySelector<HTMLElement>('.blk-embed-caption')
+    const c = shown === null ? null : shown.getBoundingClientRect()
+    return { top: (c?.top ?? k.bottom + 4) - fr.top, left: k.left - fr.left, width: k.width, minHeight: c?.height ?? 0 }
+  }
   if (kind === 'bookmark_caption') {
     // 북마크의 캡션 자리(F-3) — 카드 바로 아래, 같은 폭(파일과 같다)
     const card = box.querySelector<HTMLElement>('.blk-bookmark-card')
@@ -1469,6 +1485,7 @@ export function BodyEditor({
       openFileCaption: (id) => openCodeUi('file_caption', id),
       openVideoCaption: (id) => openCodeUi('video_caption', id),
       openBookmarkCaption: (id) => openCodeUi('bookmark_caption', id),
+      openEmbedCaption: (id) => openCodeUi('embed_caption', id),
       // 접속자 표시(AW-1) — 내 자리가 바뀌면 싣는다(같은 자리면 보내지 않는다 · 연결 전이면 붙을 때 싣는다)
       onLocalPresence: (local) => {
         if (sameLocalPresence(lastPresenceRef.current, local)) return
@@ -1984,10 +2001,10 @@ export function BodyEditor({
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
           />
         )}
-        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption' || codeUi?.kind === 'file_caption' || codeUi?.kind === 'video_caption' || codeUi?.kind === 'bookmark_caption') && (
+        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption' || codeUi?.kind === 'file_caption' || codeUi?.kind === 'video_caption' || codeUi?.kind === 'bookmark_caption' || codeUi?.kind === 'embed_caption') && (
           <CodeCaptionEditor
             key={`${codeUi.kind}:${codeUi.blockId}`}
-            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : codeUi.kind === 'file_caption' ? '파일 캡션' : codeUi.kind === 'video_caption' ? '비디오 캡션' : codeUi.kind === 'bookmark_caption' ? '북마크 캡션' : '코드 캡션'}
+            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : codeUi.kind === 'file_caption' ? '파일 캡션' : codeUi.kind === 'video_caption' ? '비디오 캡션' : codeUi.kind === 'bookmark_caption' ? '북마크 캡션' : codeUi.kind === 'embed_caption' ? '임베드 캡션' : '코드 캡션'}
             initial={codeUi.caption}
             formatted={codeUi.captionFormatted}
             top={codeUi.top}
@@ -2004,7 +2021,9 @@ export function BodyEditor({
                       ? setVideoCaptionCommand
                       : codeUi.kind === 'bookmark_caption'
                         ? setBookmarkCaptionCommand
-                        : setCodeCaptionCommand
+                        : codeUi.kind === 'embed_caption'
+                          ? setEmbedCaptionCommand
+                          : setCodeCaptionCommand
               save(codeUi.blockId, text)(view.state, view.dispatch.bind(view))
             }}
             onClose={closeCodeUi}
