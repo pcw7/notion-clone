@@ -7,6 +7,8 @@
  * 액션 목록"*). 실행하는 것은 `edit_property`(그 행의 셀을 고정 값으로 · 5a-1) · `add_page_to`(그 표에 행을 하나 · 5a-2) · `send_webhook`
  * (그 행의 고른 속성을 바깥으로 · 5c-1)이다. 나머지는 그 조각이 올 때 `IMPLEMENTED_ACTIONS` 에 더한다.
  *
+ * `send_notification`(AN-1 · 정본 [보강 AN-1] ①)은 받는 것과 저장하는 것이 같다 — 받는 사람(멤버 · 그 행의 사람 칸)과 메시지(값 슬롯 `{{row:속성id}}`).
+ *
  * `send_webhook` 은 모양이 셋이다(정본 ⑫) — **받는 것**(`SendWebhookInput` — 평문 URL · 헤더 값, 또는 이전 액션에서 옮기라는 `keep`) ·
  * **저장하는 것**(`SendWebhookStored` — 봉인) · 읽어 주는 것(`action-check.ts` `readPublicActions` — 힌트 · 헤더 이름만). 받는 것은
  * `parseActions`, 저장한 것은 `parseStoredActions` 가 읽는다. 나머지 종류는 받는 것과 저장하는 것이 같다.
@@ -19,13 +21,14 @@
 import type { RowCell } from '../database/row.ts'
 import { checkOutboundUrl } from '../net/outbound.ts'
 import { validateDoc, type EditorBlock } from '../editor/document.ts'
+import { sanitizeRichText, toPlainText, validateRichText, type RichTextRun } from '../contracts/rich-text.ts'
 
 /** 정본 CHECK 와 같은 목록. */
-export const ACTION_TYPES = ['edit_property', 'add_page_to', 'insert_blocks', 'send_webhook', 'define_variables', 'show_confirmation'] as const
+export const ACTION_TYPES = ['edit_property', 'add_page_to', 'insert_blocks', 'send_webhook', 'define_variables', 'show_confirmation', 'send_notification'] as const
 export type ActionType = (typeof ACTION_TYPES)[number]
 
 /** 지금 실행할 수 있는 종류 — 조각마다 늘린다(5a-2 `add_page_to` · 5c `send_webhook` · 5d `define_variables` · 5e `insert_blocks`). */
-export const IMPLEMENTED_ACTIONS: readonly ActionType[] = ['edit_property', 'add_page_to', 'send_webhook', 'insert_blocks']
+export const IMPLEMENTED_ACTIONS: readonly ActionType[] = ['edit_property', 'add_page_to', 'send_webhook', 'insert_blocks', 'send_notification']
 
 /** 한 automation 의 액션 상한. */
 export const MAX_ACTIONS = 20
@@ -59,6 +62,16 @@ export const INSERTABLE_BLOCK_TYPES: readonly string[] = [
 /** 블록을 넣는 자리 — 버튼 아래 · 페이지 끝(08 클론 대안의 둘). */
 export const INSERT_POSITIONS = ['below', 'bottom'] as const
 export type InsertPosition = (typeof INSERT_POSITIONS)[number]
+
+/** `send_notification` 의 고른 멤버 · 사람 칸 상한 · 메시지 상한(정본 [보강 AN-1] ① ②). */
+export const MAX_NOTIFY_USERS = 20
+export const MAX_NOTIFY_PEOPLE_PROPERTIES = 20
+export const MAX_NOTIFY_RUNS = 20
+export const MAX_NOTIFY_MESSAGE = 500
+/** 한 번 실행이 알리는 사람의 상한 — 고정 멤버 + 사람 칸의 값(정본 [보강 AN-1] ②). */
+export const MAX_NOTIFY_RECIPIENTS = 100
+/** 메시지의 값 슬롯 — `{{row:속성id}}`. 실행할 때 그 행의 그 칸을 글자로 푼다. */
+export const NOTIFY_SLOT = /\{\{row:([^{}\s]{1,64})\}\}/g
 
 /** 발송기가 정하는 헤더 — 사람이 덮지 못한다(정본 ⑫). */
 export const RESERVED_WEBHOOK_HEADERS: readonly string[] = ['host', 'content-length', 'content-type', 'connection', 'transfer-encoding', 'user-agent']
@@ -109,12 +122,20 @@ export type SendWebhookStored = {
 /** 미리 적어 둔 블록 묶음을 본문에 복제해 넣는다(정본 ⑱ — 버튼 블록에서만). */
 export type InsertBlocksConfig = { readonly v: 1; readonly position: InsertPosition; readonly blocks: readonly EditorBlock[] }
 
+/** 알림을 보낸다(정본 [보강 AN-1] ①) — 받는 사람은 고른 멤버 ∪ 그 행의 사람 칸. 본문의 버튼 블록은 행이 없어 사람 칸을 읽지 않는다. */
+export type SendNotificationConfig = {
+  readonly v: 1
+  readonly to: { readonly users: readonly string[]; readonly people_property_ids: readonly string[] }
+  readonly message: readonly RichTextRun[]
+}
+
 /** 받는 액션. */
 export type ActionInput =
   | { readonly type: 'edit_property'; readonly config: EditPropertyConfig }
   | { readonly type: 'add_page_to'; readonly config: AddPageToConfig }
   | { readonly type: 'send_webhook'; readonly config: SendWebhookInput }
   | { readonly type: 'insert_blocks'; readonly config: InsertBlocksConfig }
+  | { readonly type: 'send_notification'; readonly config: SendNotificationConfig }
 
 /** 저장한 액션 — 엔진이 실행하는 것. */
 export type StoredAction =
@@ -122,6 +143,7 @@ export type StoredAction =
   | { readonly type: 'add_page_to'; readonly config: AddPageToConfig }
   | { readonly type: 'send_webhook'; readonly config: SendWebhookStored }
   | { readonly type: 'insert_blocks'; readonly config: InsertBlocksConfig }
+  | { readonly type: 'send_notification'; readonly config: SendNotificationConfig }
 
 export type ActionProblem =
   | 'invalid'
@@ -137,6 +159,10 @@ export type ActionProblem =
   | 'too_many_webhooks'
   /** `insert_blocks` 의 블록 — 없다 · 모양이 틀렸다 · 넣을 수 없는 타입 · 50개 · 깊이 3 을 넘는다 · 자리가 틀렸다(정본 ⑱). */
   | 'invalid_blocks'
+  /** `send_notification` — 받는 사람이 모두 비었다 · 모양이 틀렸다 · 메시지가 너무 길다(정본 [보강 AN-1] ①). */
+  | 'invalid_input'
+  /** `send_notification` 의 고른 멤버가 20명을 넘는다. */
+  | 'too_many_recipients'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** RFC 9110 의 token. */
@@ -234,6 +260,34 @@ function parseInsertBlocks(config: Record<string, unknown>): ActionInput | Actio
   return { type: 'insert_blocks', config: { v: 1, position: config.position as InsertPosition, blocks } }
 }
 
+/** 문자열 목록 — 같은 것은 한 번만 · 모양이 틀리면 null. */
+function parseIdList(raw: unknown, ok: (v: string) => boolean): string[] | null {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw) || !raw.every((v): v is string => typeof v === 'string' && ok(v))) return null
+  return [...new Set(raw)]
+}
+
+/** `send_notification`(정본 [보강 AN-1] ①) — 받는 것과 저장한 것이 같다. 멤버인지 · 사람 칸인지는 저장할 때 DB 에 대어 본다(`action-check.ts`). */
+function parseSendNotification(config: Record<string, unknown>): ActionInput | ActionProblem {
+  if (!isRecord(config.to)) return 'invalid_input'
+  if (Array.isArray(config.to.users) && config.to.users.length > MAX_NOTIFY_USERS) return 'too_many_recipients'
+  const users = parseIdList(config.to.users, (v) => UUID.test(v))
+  const people = parseIdList(config.to.people_property_ids, (v) => v !== '' && v.length <= 64)
+  if (users === null || people === null || people.length > MAX_NOTIFY_PEOPLE_PROPERTIES) return 'invalid_input'
+  if (users.length > MAX_NOTIFY_USERS) return 'too_many_recipients'
+  if (users.length === 0 && people.length === 0) return 'invalid_input'
+  const rawMessage = config.message ?? []
+  if (!Array.isArray(rawMessage) || rawMessage.length > MAX_NOTIFY_RUNS || validateRichText(rawMessage).length > 0) return 'invalid_input'
+  const message = sanitizeRichText(rawMessage) ?? []
+  if (toPlainText(message).length > MAX_NOTIFY_MESSAGE) return 'invalid_input'
+  return { type: 'send_notification', config: { v: 1, to: { users, people_property_ids: people }, message } }
+}
+
+/** 메시지가 쓰는 `{{row:속성id}}` 슬롯의 속성 id 들. */
+export function notifySlotIds(message: readonly RichTextRun[]): string[] {
+  return [...new Set([...toPlainText(message).matchAll(NOTIFY_SLOT)].map((m) => m[1]))]
+}
+
 /** 받는 `send_webhook`(정본 ⑫). */
 function parseSendWebhookInput(config: Record<string, unknown>): ActionInput | ActionProblem {
   const url = config.url ?? null
@@ -304,7 +358,9 @@ export function parseActions(raw: unknown): Parsed<ActionInput> {
       ? parseSendWebhookInput(config)
       : type === 'insert_blocks'
         ? parseInsertBlocks(config)
-        : parseCellAction(type as 'edit_property' | 'add_page_to', config),
+        : type === 'send_notification'
+          ? parseSendNotification(config)
+          : parseCellAction(type as 'edit_property' | 'add_page_to', config),
   )
 }
 
@@ -313,6 +369,7 @@ export function parseStoredActions(raw: unknown): Parsed<StoredAction> {
   return parseList<StoredAction>(raw, (type, config) => {
     if (type === 'send_webhook') return parseSendWebhookStored(config)
     if (type === 'insert_blocks') return parseInsertBlocks(config) as StoredAction | ActionProblem
+    if (type === 'send_notification') return parseSendNotification(config) as StoredAction | ActionProblem
     const parsed = parseCellAction(type as 'edit_property' | 'add_page_to', config)
     return typeof parsed === 'string' ? parsed : (parsed as StoredAction)
   })

@@ -41,6 +41,8 @@ export const ACTIVITY_TYPES = [
   'reminder.fired',
   // 사람 칸에 새로 든 사람이 있다(6h · 0092) — payload 는 속성 id 하나(받는 사람은 알림 행이 안다).
   'person.assigned',
+  // 알림 보내기 액션이 알렸다(AN-1 · 0130) — payload 는 자동화 id · 실행 방식(automation | button) · 풀어 낸 메시지(자동화 설정의 글).
+  'automation.notified',
 ] as const
 export type ActivityType = (typeof ACTIVITY_TYPES)[number]
 

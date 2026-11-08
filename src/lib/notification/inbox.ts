@@ -95,6 +95,11 @@ export type InboxItem = {
    */
   readonly assignment: { readonly propertyName: string | null } | null
   /**
+   * 알림 보내기(AN-1 · `automation`) — 보낸 방식(`automation`: DB 자동화 · `button`: 누른 사람)과 메시지(자동화 설정의 글 — 비면 빈 글자). 보낸 사람은
+   * `actorId`(DB 자동화는 만든 사람). 다른 알림은 null. 모양을 꾸미는 것은 AN-2.
+   */
+  readonly automation: { readonly via: 'automation' | 'button'; readonly message: string } | null
+  /**
    * 내가 이 페이지의 알림을 껐는가(NM-2 · 정본 §3.8 [보강 NM-2] ①) — 내 `subscription` 이 `none` 이면 참, 행이 없거나 다른 수준이면 거짓.
    * 같은 질의에서 함께 읽는다(항목마다 따로 묻지 않는다).
    */
@@ -262,6 +267,10 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
                 propertyName:
                   typeof event?.payload.property_id === 'string' ? (propertyNames.get(event.payload.property_id) ?? null) : null,
               }
+            : null,
+        automation:
+          g.kind === 'automation'
+            ? { via: event?.payload.via === 'button' ? 'button' : 'automation', message: typeof event?.payload.message === 'string' ? event.payload.message : '' }
             : null,
         muted: g.muted,
       }

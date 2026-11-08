@@ -53,6 +53,8 @@ export const NOTIFICATION_KINDS = [
   // 접근 요청(7e-1) — 관리자에게 온 요청 · 요청한 사람에게 온 허락.
   'access_requested',
   'access_granted',
+  // 버튼 · DB automation 의 알림 보내기 액션(AN-1 · 0130) — 실행마다 따로 간다.
+  'automation',
 ] as const
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]
 

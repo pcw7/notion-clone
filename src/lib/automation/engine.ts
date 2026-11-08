@@ -17,6 +17,9 @@
  *     때만 · 비었으면 빈 값 · 원본 속성이 사라졌거나 타입이 바뀌었으면 실패).
  *   ⑨ 블록 넣기(정본 ⑱) — 그 페이지의 본문을 **명령 경로로** 연다(페이지 행 잠금 → 본문 세션 → 변경 → 투영 · 로그 · 퍼뜨리기). 블록마다 새 id ·
  *     버튼 아래 또는 페이지 끝. 같은 트랜잭션이라 실행이 되돌려지면 넣은 블록도 남지 않는다.
+ *   ⑩ 알림 보내기(정본 [보강 AN-1]) — 받는 사람 = 고른 멤버 ∪ 그 행의 사람 칸(행이 있는 실행만) → 중복을 지우고 → 지금 활성 멤버이며 그 페이지를
+ *     볼 수 있는 사람만(받는 사람마다 판정 — `membersWith`) → 앞의 100명. 실행마다 따로(묶지 않는다) · 그 페이지를 보고 있는 사람은 읽음으로.
+ *     실행 기록의 단계에 알린 수(`notified`)와 뺀 수(`omitted`)만 적는다(사람의 id 는 적지 않는다 · ⑥).
  */
 
 import { randomUUID } from 'node:crypto'
@@ -27,10 +30,26 @@ import { createRowIn, isRowFailure, openDataSource, readRow, updateCellsIn, type
 import { emptyValue, isAutomationCellType, type CellValue } from '../database/property-types.ts'
 import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
+import { cellToText } from '../database/type-conversion.ts'
+import { membersWith } from '../permissions/effective.ts'
+import { activeViewersOf } from '../collab/presence-registry.ts'
+import { recordActivity } from '../notification/activity.ts'
+import { toPlainText } from '../contracts/rich-text.ts'
 import { webhooksAllowedIn } from '../notification/webhook-switch.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
-import { isDynamicCell, type ActionCell, type ActionType, type InsertBlocksConfig, type SendWebhookStored, type StoredAction } from './actions.ts'
+import {
+  isDynamicCell,
+  MAX_NOTIFY_MESSAGE,
+  MAX_NOTIFY_RECIPIENTS,
+  NOTIFY_SLOT,
+  type ActionCell,
+  type ActionType,
+  type InsertBlocksConfig,
+  type SendNotificationConfig,
+  type SendWebhookStored,
+  type StoredAction,
+} from './actions.ts'
 import { openPageBody } from '../block/body-write.ts'
 import { remapBody } from '../block/duplicate-remap.ts'
 import { containerFor } from '../editor/pm-adapter.ts'
@@ -47,6 +66,9 @@ export type Step = {
   readonly pageId?: string
   /** `send_webhook` 이 쌓은 배달(⑦). */
   readonly deliveryId?: string
+  /** `send_notification` 이 알린 사람 수 · 100명을 넘어 뺀 수(⑩ — 사람의 id 는 적지 않는다). */
+  readonly notified?: number
+  readonly omitted?: number
 }
 export type RunStatus = 'success' | 'partial' | 'failed'
 export type RunOutcome = { readonly runId: string; readonly status: RunStatus; readonly steps: readonly Step[]; readonly duplicate: boolean }
@@ -95,10 +117,18 @@ class RunFailed extends Error {
 const SKIPPABLE: ReadonlySet<string> = new Set(['forbidden', 'not_found', 'locked'])
 
 /** 액션의 결과 — 만든 행 · 쌓은 배달이 있으면 그 id. */
-type Done = { readonly pageId?: string; readonly deliveryId?: string }
+type Done = { readonly pageId?: string; readonly deliveryId?: string; readonly notified?: number; readonly omitted?: number }
 
 /** 실행 하나의 자리 — 쓰기의 출처 · 실행 기록 · automation(배달이 싣는다) · 시작 시각(동적 값 "지금"). */
-type RunEnv = { readonly origin: WriteOrigin; readonly runId: string; readonly automationId: string; readonly startedAt: string }
+type RunEnv = {
+  readonly origin: WriteOrigin
+  readonly runId: string
+  readonly automationId: string
+  readonly startedAt: string
+  readonly kind: RunKind
+  /** 지금 실행하는 액션의 차례 — 알림의 묶음 열쇠가 한 실행 안의 액션들을 가른다. */
+  readonly index: number
+}
 
 /** 일하는 행의 속성으로 채울 수 없는 타입(`action-check.ts` 와 같다 · 정본 ⑯). */
 const NOT_COPYABLE: ReadonlySet<string> = new Set(['select', 'status'])
@@ -224,6 +254,86 @@ async function insertBlocks(tx: Tx, ctx: SessionContext, config: InsertBlocksCon
   return {}
 }
 
+/**
+ * 알림 보내기(⑩ · 정본 [보강 AN-1] ② ③ ④). 사람 칸 · 메시지 슬롯은 그 행에서 읽는다 — 행이 있는 실행(버튼 속성 · DB automation)만, 그리고
+ * 실행하는 사람이 그 행을 볼 수 있을 때만(아니면 건너뛴다 — 웹훅과 같다). 버튼 블록은 행이 없어 사람 칸은 무시하고 슬롯은 빈 글자다.
+ */
+async function sendNotification(tx: Tx, ctx: SessionContext, config: SendNotificationConfig, context: RunContext, env: RunEnv): Promise<Done> {
+  const pageId = context.triggerPageId
+  const page = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+    [pageId, ctx.workspaceId],
+  )
+  if (page === null) throw new StepSkipped('not_found')
+
+  const slots = [...new Set([...toPlainText(config.message).matchAll(NOTIFY_SLOT)].map((m) => m[1]))]
+  const hasRow = env.kind !== 'button_block'
+  const needsRow = hasRow && (config.to.people_property_ids.length > 0 || slots.length > 0)
+  let row: RowSummary | null = null
+  const types = new Map<string, string>()
+  if (needsRow) {
+    if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) throw new StepSkipped('not_found')
+    row = await readRow(tx, pageId)
+    if (row === null) throw new StepSkipped('not_found')
+    for (const p of await tx.query<{ id: string; type: string }>(
+      `SELECT pr.id, pr.type FROM property pr JOIN page p ON p.data_source_id = pr.data_source_id WHERE p.id = $1 AND pr.deleted_at IS NULL`,
+      [pageId],
+    )) {
+      types.set(p.id, p.type)
+    }
+  }
+
+  // 받는 사람 — 고른 멤버 ∪ 사람 칸의 값(없어졌거나 사람 칸이 아니게 된 속성은 조용히 뺀다)
+  const candidates: string[] = [...config.to.users]
+  if (row !== null) {
+    for (const propertyId of config.to.people_property_ids) {
+      if (types.get(propertyId) !== 'people') continue
+      const raw = row.properties[propertyId] as { type?: string; people?: readonly { id: string }[] } | undefined
+      if (raw?.type === 'people' && Array.isArray(raw.people)) candidates.push(...raw.people.map((person) => person.id))
+    }
+  }
+  const unique = [...new Set(candidates)]
+  // 지금도 활성 멤버이고 그 페이지를 볼 수 있는 사람만 — 받는 사람마다 판정(`membersWith`)
+  const canView = unique.length === 0 ? new Set<string>() : ((await membersWith(tx, ctx.workspaceId, [pageId], 'view', unique)).get(pageId) ?? new Set<string>())
+  const eligible = unique.filter((id) => canView.has(id))
+  const recipients = eligible.slice(0, MAX_NOTIFY_RECIPIENTS)
+  const omitted = eligible.length - recipients.length
+  if (recipients.length === 0) return { notified: 0 }
+
+  // 메시지 — 슬롯은 그때의 값으로(없는 칸 · 타입이 바뀐 칸은 빈 글자)
+  const optionIds = slots.filter((id) => types.get(id) === 'select' || types.get(id) === 'status')
+  const optionNames = new Map<string, string>(
+    optionIds.length === 0
+      ? []
+      : (await tx.query<{ id: string; name: string }>(`SELECT id::text, name FROM select_option WHERE property_id = ANY($1::text[])`, [optionIds])).map(
+          (o): [string, string] => [o.id, o.name],
+        ),
+  )
+  const slotText = (id: string): string => {
+    const type = types.get(id)
+    const raw = row?.properties[id]
+    if (type === undefined || type === 'people' || typeof raw !== 'object' || raw === null || (raw as { type?: unknown }).type !== type) return ''
+    return cellToText(raw as CellValue, (optionId) => optionNames.get(optionId) ?? null)
+  }
+  const message = toPlainText(config.message).replace(NOTIFY_SLOT, (_all, id: string) => slotText(id)).slice(0, MAX_NOTIFY_MESSAGE)
+
+  const activity = await recordActivity(tx, ctx, {
+    pageId,
+    type: 'automation.notified',
+    payload: { automation_id: env.automationId, via: env.kind === 'db_automation' ? 'automation' : 'button', message },
+  })
+  const viewing = await activeViewersOf(pageId, recipients)
+  const groupKey = `automation:${env.runId}:${env.index}`
+  for (const userId of recipients) {
+    await tx.query(
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at, read_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'automation', $6, now(), CASE WHEN $7::boolean THEN now() END)`,
+      [randomUUID(), userId, ctx.workspaceId, pageId, activity.id, groupKey, viewing.has(userId)],
+    )
+  }
+  return omitted > 0 ? { notified: recipients.length, omitted } : { notified: recipients.length }
+}
+
 async function execute(tx: Tx, ctx: SessionContext, action: StoredAction, context: RunContext, env: RunEnv): Promise<Done> {
   const { origin } = env
   switch (action.type) {
@@ -252,6 +362,8 @@ async function execute(tx: Tx, ctx: SessionContext, action: StoredAction, contex
       return queueWebhook(tx, ctx, action.config, context, env)
     case 'insert_blocks':
       return insertBlocks(tx, ctx, action.config, context)
+    case 'send_notification':
+      return sendNotification(tx, ctx, action.config, context, env)
   }
 }
 
@@ -271,7 +383,7 @@ export async function runAutomation(
   },
 ): Promise<RunOutcome | null> {
   const runId = randomUUID()
-  const env: RunEnv = { origin: WRITE_ORIGIN[input.kind], runId, automationId: input.automationId, startedAt: new Date().toISOString() }
+  const env: RunEnv = { origin: WRITE_ORIGIN[input.kind], runId, automationId: input.automationId, startedAt: new Date().toISOString(), kind: input.kind, index: 0 }
   const record = (tx: Tx, status: 'running' | 'failed', steps: readonly Step[]) =>
     tx.query<{ id: string }>(
       `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, idempotency_key, steps, finished_at)
@@ -300,13 +412,15 @@ export async function runAutomation(
       const steps: Step[] = []
       for (const [index, action] of input.actions.entries()) {
         try {
-          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context, env))
+          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context, { ...env, index }))
           steps.push({
             index,
             type: action.type,
             status: 'done',
             ...(done.pageId === undefined ? {} : { pageId: done.pageId }),
             ...(done.deliveryId === undefined ? {} : { deliveryId: done.deliveryId }),
+            ...(done.notified === undefined ? {} : { notified: done.notified }),
+            ...(done.omitted === undefined ? {} : { omitted: done.omitted }),
           })
         } catch (e) {
           if (e instanceof StepSkipped) {
