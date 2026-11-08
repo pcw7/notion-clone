@@ -173,6 +173,71 @@ describe('②-2 값 하나(CH-4) — total', () => {
   })
 })
 
+describe('②-3 쌓기(CH-5) — sub', () => {
+  /** fixture 위에 팀(X · Y) 속성을 더하고 행 넷을 더한다: (가, X, 1) (가, Y, 2) (나, X, 4) (나, X, 8). 기존 행은 팀이 없다. */
+  async function stacked() {
+    const f = await fixture()
+    const team = unwrap(await addProperty(fx.owner.ctx, f.ds, { name: '팀', type: 'select' })).properties.find((p) => p.name === '팀')!.id
+    const x = unwrap(await addSelectOption(fx.owner.ctx, f.ds, team, { name: 'X' })).option.id
+    const y = unwrap(await addSelectOption(fx.owner.ctx, f.ds, team, { name: 'Y' })).option.id
+    for (const [num, st, tm] of [[1, f.a, x], [2, f.a, y], [4, f.b, x], [8, f.b, x]] as const) {
+      const cells: { propertyId: string; value: CellValue }[] = [
+        { propertyId: f.n, value: { type: 'number', number: num } },
+        { propertyId: f.s, value: { type: 'select', select: { id: st } } },
+        { propertyId: team, value: { type: 'select', select: { id: tm } } },
+      ]
+      unwrap(await createRow(fx.owner.ctx, f.ds, { cells }))
+    }
+    return { ...f, team, x, y }
+  }
+
+  test('★ 하위 그룹이 없으면 sub 는 null · 정하면 칸마다 행 수', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const f = await stacked()
+    const view = unwrap(await createView(fx.owner.ctx, f.created.id, { type: 'chart', groupBy: { property_id: f.s } }))
+    assert.equal(unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).sub, null)
+    assert.equal(unwrap(await updateView(fx.owner.ctx, view.id, { subGroupBy: { property_id: f.team } })).subGroupBy?.property_id, f.team)
+    const sub = unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).sub
+    assert.ok(sub !== null)
+    assert.deepEqual(sub.groups.map((g) => [g.key, g.count, g.hidden]), [['', 3, false], [f.x, 3, false], [f.y, 1, false]])
+    const count = (g: string, k: string) => sub.cells[g]?.[k]?.count ?? 0
+    assert.deepEqual([count(f.a, f.x), count(f.a, f.y), count(f.a, ''), count(f.b, f.x), count(f.b, f.y)], [1, 1, 2, 2, 0])
+    assert.equal(sub.cells[f.a][f.x].value, null, '계산이 없으면 value null')
+  })
+
+  test('★ 합계 — 칸마다 그 칸의 행의 합 · 숨긴 하위 그룹도 싣는다(hidden)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const f = await stacked()
+    const view = unwrap(
+      await createView(fx.owner.ctx, f.created.id, {
+        type: 'chart',
+        groupBy: { property_id: f.s, calculation: { property_id: f.n, function: 'sum' } },
+      }),
+    )
+    unwrap(await updateView(fx.owner.ctx, view.id, { subGroupBy: { property_id: f.team, hidden: [f.y] } }))
+    const sub = unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).sub
+    assert.ok(sub !== null)
+    assert.deepEqual(sub.cells[f.a][f.x].value, { kind: 'number', value: 1 })
+    assert.deepEqual(sub.cells[f.a][f.y].value, { kind: 'number', value: 2 })
+    assert.deepEqual(sub.cells[f.a][''].value, { kind: 'number', value: 30 })
+    assert.deepEqual(sub.cells[f.b][f.x].value, { kind: 'number', value: 12 })
+    assert.deepEqual(sub.groups.map((g) => [g.key, g.hidden]), [['', false], [f.x, false], [f.y, true]])
+  })
+
+  test('차트는 하위 그룹을 둘 수 있고 표는 거부한다 · 종류를 바꿔도 저장값은 남는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const f = await stacked()
+    const view = unwrap(await createView(fx.owner.ctx, f.created.id, { type: 'chart', groupBy: { property_id: f.s } }))
+    unwrap(await updateView(fx.owner.ctx, view.id, { subGroupBy: { property_id: f.team } }))
+    unwrap(await updateView(fx.owner.ctx, view.id, { chart: { kind: 'donut' } }))
+    assert.equal(unwrap(await queryGroupSummary(fx.owner.ctx, view.id)).sub?.propertyId, f.team)
+    const same = await updateView(fx.owner.ctx, view.id, { subGroupBy: { property_id: f.s } })
+    assert.equal(same.ok, false, 'X축과 같은 속성은 거부')
+    const table = unwrap(await createView(fx.owner.ctx, f.created.id, { type: 'table' }))
+    assert.equal((await updateView(fx.owner.ctx, table.id, { subGroupBy: { property_id: f.team } })).ok, false, '표는 거부')
+  })
+})
+
 describe('③ 차트 설정', () => {
   test('★ 종류가 남는다 · 모르는 종류는 invalid_layout · 키는 합쳐진다', async (t) => {
     if (skipReason) return t.skip(skipReason)

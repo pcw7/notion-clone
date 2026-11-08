@@ -136,6 +136,8 @@ export type BoardSettings = {
 export type ChartSettings = {
   readonly layout: ChartLayout
   readonly groupBy: GroupBy | null
+  /** 쌓기(CH-5) — 저장된 하위 그룹. */
+  readonly subGroupBy: GroupBy | null
   readonly groups: readonly { readonly key: string; readonly label: string; readonly count: number; readonly hidden: boolean }[]
 }
 
@@ -422,6 +424,7 @@ export function ViewToolbar({
             locked={busy}
             onSaveLayout={(patch) => run(() => updateView(workspaceId, viewId, { chart: patch }))}
             onSaveGroupBy={(next) => run(() => updateView(workspaceId, viewId, { groupBy: next }))}
+            onSaveSub={(next) => run(() => updateView(workspaceId, viewId, { subGroupBy: next }))}
             onClose={close}
           />
         )}
@@ -1066,6 +1069,7 @@ function ChartPanel({
   locked,
   onSaveLayout,
   onSaveGroupBy,
+  onSaveSub,
   onClose,
 }: {
   columns: ViewColumn[]
@@ -1073,6 +1077,7 @@ function ChartPanel({
   locked: boolean
   onSaveLayout: (patch: Partial<ChartLayout>) => Promise<boolean>
   onSaveGroupBy: (next: GroupBy) => Promise<boolean>
+  onSaveSub: (next: GroupBy | null) => Promise<boolean>
   onClose: () => void
 }) {
   const groupable = columns.filter((c) => isGroupableType(c.type))
@@ -1084,7 +1089,8 @@ function ChartPanel({
   const calcColumn = calc === null ? undefined : calculable.find((c) => c.propertyId === calc.property_id)
   const liveCalc = calc !== null && calcColumn !== undefined && chartCalculationsFor(calcColumn.type).includes(calc.function) ? calc : null
   // 저장된 계산이 수가 아니면(날짜 · 기간) 고르개에 내지 않는다 — 개수로 보이고 화면이 "다시 고르세요" 를 적는다
-  const cumulativeOk = cumulativeAllowed(chart.layout.kind, calc?.function ?? null, current?.sort)
+  const stacked = chart.subGroupBy !== null && chart.subGroupBy.property_id !== current?.property_id
+  const cumulativeOk = cumulativeAllowed(chart.layout.kind, calc?.function ?? null, current?.sort, stacked)
   const savedNonNumeric = calc !== null && !isNumericCalculation(calc.function)
 
   const toggleHidden = (key: string, hidden: boolean) => {
@@ -1193,6 +1199,26 @@ function ChartPanel({
 
       {current !== null && !dead && (
         <>
+          <label className="flex items-center gap-2 text-sm">
+            쌓기
+            <select
+              aria-label="쌓기"
+              data-testid="chart-stack"
+              value={stacked ? (chart.subGroupBy?.property_id ?? '') : ''}
+              disabled={locked}
+              onChange={(e) => void onSaveSub(e.target.value === '' ? null : { property_id: e.target.value })}
+              className={FIELD}
+            >
+              <option value="">없음</option>
+              {groupable
+                .filter((c) => c.propertyId !== current.property_id)
+                .map((c) => (
+                  <option key={c.propertyId} value={c.propertyId}>
+                    {c.name}
+                  </option>
+                ))}
+            </select>
+          </label>
           <div className="flex flex-wrap items-center gap-2 text-sm">
             Y값
             <select

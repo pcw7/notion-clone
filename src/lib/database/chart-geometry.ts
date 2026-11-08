@@ -178,6 +178,18 @@ export type SummaryInput = {
   readonly total?: CalculationResult
   /** 값 하나 차트의 이름줄에 쓰는 Y 속성의 이름(개수면 null). */
   readonly calculationName?: string | null
+  /** 쌓기(CH-5)의 하위 그룹과 칸 값 — 없으면 쌓지 않는다. */
+  readonly sub?: SummarySub | null
+}
+
+export type SummarySub = {
+  readonly propertyType: GroupableType
+  readonly propertyName: string
+  readonly dateUnit: DateUnit | null
+  readonly numberSize: number | null
+  readonly textMode: TextMode | null
+  readonly groups: readonly { readonly key: string; readonly option: SelectOption | null; readonly statusGroup: StatusGroupKind | null; readonly count: number; readonly hidden: boolean }[]
+  readonly cells: Readonly<Record<string, Readonly<Record<string, { readonly count: number; readonly value: CalculationResult | null }>>>>
 }
 
 export type ChartDatum = {
@@ -263,10 +275,15 @@ export function chartSummaryLabel(kind: keyof typeof CHART_KIND_LABEL, groupCoun
 
 /**
  * 누적을 그릴 수 있는가 — 종류가 도넛이 아니고, Y값이 개수(계산 없음 · `count_all` · `count_values`) 또는 합계(`sum`)이고,
- * 그룹 순서가 내림차순이 아닐 때. 아니면 저장값은 두고 그리지 않는다.
+ * 그룹 순서가 내림차순이 아닐 때 · 쌓기가 없을 때(CH-5). 아니면 저장값은 두고 그리지 않는다.
  */
-export function cumulativeAllowed(kind: string, calculationFunction: Calculation | null, groupSort: string | null | undefined): boolean {
-  if (kind === 'donut' || kind === 'number') return false
+export function cumulativeAllowed(
+  kind: string,
+  calculationFunction: Calculation | null,
+  groupSort: string | null | undefined,
+  stacked = false,
+): boolean {
+  if (kind === 'donut' || kind === 'number' || stacked) return false
   if (groupSort === 'descending') return false
   return calculationFunction === null || calculationFunction === 'count_all' || calculationFunction === 'count_values' || calculationFunction === 'sum'
 }
@@ -285,4 +302,104 @@ export const DONUT_LABEL_MIN_FRACTION = 0.1
 
 export function donutLabelVisible(fraction: number): boolean {
   return fraction >= DONUT_LABEL_MIN_FRACTION - 1e-9
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 쌓기 (CH-5 · 정본 [보강 CH-5])
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type StackSegment = {
+  /** 하위 그룹 키. */
+  readonly sub: string
+  readonly label: string
+  readonly value: number
+  readonly text: string
+  /** 조각 색의 차례(범례의 차례와 같다). */
+  readonly index: number
+}
+
+export type StackBar = {
+  readonly key: string
+  readonly label: string
+  /** 하위 그룹 차례대로 · 그릴 것이 없는 칸(행 0개)은 빠진다. */
+  readonly segments: readonly StackSegment[]
+  /** 조각의 합 — 합할 수 없는 계산이면 null(라벨을 적지 않는다). */
+  readonly total: number | null
+  readonly totalText: string | null
+}
+
+export type StackedData = {
+  readonly bars: readonly StackBar[]
+  /** 숨기지 않은 하위 그룹들 — 색은 `fill` 로. */
+  readonly legend: readonly { readonly key: string; readonly label: string; readonly fill: string }[]
+  readonly integer: boolean
+  readonly empty: boolean
+}
+
+/** 합할 수 있는 계산인가 — 개수(계산 없음 · `count_all` · `count_values`) 또는 합계. 평균 · 중앙값 같은 것은 조각을 더해도 막대의 값이 아니다. */
+export function stackAdditive(fn: Calculation | null): boolean {
+  return fn === null || fn === 'count_all' || fn === 'count_values' || fn === 'sum'
+}
+
+/** 쌓기를 그릴 자료 — 하위 그룹이 없으면 null. 숨긴 그룹 · 숨긴 하위 그룹은 그리지 않는다. */
+export function stackedData(summary: SummaryInput): StackedData | null {
+  const sub = summary.sub
+  if (sub === undefined || sub === null) return null
+  const fn = summary.calculation?.function ?? null
+  const useCalc = fn !== null && isNumericCalculation(fn)
+  const subs = sub.groups.filter((g) => !g.hidden)
+  const asDatum = subs.map((g): ChartDatum => ({
+    key: g.key,
+    label: groupLabel(sub.propertyType, sub.propertyName, g, sub),
+    value: 0,
+    text: '',
+    color: g.option !== null ? g.option.color : g.statusGroup !== null ? STATUS_GROUP_COLOR[g.statusGroup] : null,
+  }))
+  const optionColors = donutUsesOptionColors(asDatum)
+  const legend = asDatum.map((d, i) => ({ key: d.key, label: d.label, fill: fillOf(d, i, true, optionColors) }))
+  const additive = stackAdditive(fn)
+  const bars = summary.groups
+    .filter((g) => !g.hidden)
+    .map((g): StackBar => {
+      const cells = summary.sub?.cells[g.key] ?? {}
+      const segments: StackSegment[] = []
+      subs.forEach((s, index) => {
+        const cell = cells[s.key]
+        if (cell === undefined || cell.count === 0) return
+        const numeric = useCalc && cell.value !== null && cell.value.kind !== 'date' ? (cell.value.value ?? 0) : null
+        const value = numeric ?? cell.count
+        const text = useCalc && cell.value !== null ? formatCalculation(cell.value) : cell.count.toLocaleString('ko-KR')
+        segments.push({ sub: s.key, label: asDatum[index].label, value, text, index })
+      })
+      const total = additive ? clean(segments.reduce((sum, s) => sum + s.value, 0)) : null
+      return {
+        key: g.key,
+        label: groupLabel(summary.propertyType, summary.propertyName, g, summary),
+        segments,
+        total,
+        totalText: total === null ? null : total.toLocaleString('ko-KR', { maximumFractionDigits: 2 }),
+      }
+    })
+  return {
+    bars,
+    legend,
+    integer: !useCalc || fn === 'count_all' || fn === 'count_values' || fn === 'count_empty' || fn === 'count_unique',
+    empty: bars.every((b) => b.segments.length === 0),
+  }
+}
+
+/** 막대 하나의 조각 위치 — 양수는 0 위로 · 음수는 0 아래로 쌓는다. `from`/`to` 는 값의 축 위의 끝(작은 쪽이 from). */
+export function stackSpans(segments: readonly StackSegment[]): { from: number; to: number }[] {
+  let pos = 0
+  let neg = 0
+  return segments.map((s) => {
+    if (s.value >= 0) {
+      const from = pos
+      pos = clean(pos + s.value)
+      return { from, to: pos }
+    }
+    const to = neg
+    neg = clean(neg + s.value)
+    return { from: neg, to }
+  })
 }

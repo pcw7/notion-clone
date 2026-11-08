@@ -419,6 +419,14 @@ export default async function DatabasePage({
           ...chartPage.value,
           propertyName: groupColumn.name,
           calculationName: view.value.columns.find((c) => c.propertyId === chartPage.value.calculation?.property_id)?.name ?? null,
+          // 쌓기(CH-5) — 하위 그룹 속성의 이름(라벨에 쓴다)
+          sub:
+            chartPage.value.sub === null
+              ? null
+              : {
+                  ...chartPage.value.sub,
+                  propertyName: view.value.columns.find((c) => c.propertyId === chartPage.value.sub?.propertyId)?.name ?? '',
+                },
         }
       : null
   const chartSettings: ChartSettings | undefined =
@@ -426,6 +434,7 @@ export default async function DatabasePage({
       ? {
           layout: view.value.chart,
           groupBy,
+          subGroupBy: view.value.subGroupBy,
           groups:
             chartSummary === null
               ? []

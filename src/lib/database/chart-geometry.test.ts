@@ -13,6 +13,8 @@ import {
   chartSummaryLabel,
   donutSlices,
   fillOf,
+  stackedData,
+  stackSpans,
   niceCeil,
   niceScale,
   scaleLinear,
@@ -239,6 +241,7 @@ test('cumulativeAllowed — 도넛 · 내림차순 · 개수/합계 아닌 계�
   assert.equal(cumulativeAllowed('column', null, 'descending'), false)
   assert.equal(cumulativeAllowed('column', 'average', undefined), false)
   assert.equal(cumulativeAllowed('column', 'max', undefined), false)
+  assert.equal(cumulativeAllowed('column', null, undefined, true), false, '쌓기가 있으면 그리지 않는다')
 })
 
 test('accumulate — 그리는 차례로 더해 간다 · 글자는 같은 서식', () => {
@@ -253,4 +256,34 @@ test('donutLabelVisible — 10% 이상만', () => {
   assert.equal(donutLabelVisible(0.1), true)
   assert.equal(donutLabelVisible(0.0999), false)
   assert.equal(donutLabelVisible(0.5), true)
+})
+
+test('stackedData — 하위 그룹 차례로 조각 · 숨긴 것과 빈 칸은 그리지 않는다 · 합할 수 있을 때만 합', () => {
+  const g = (key: string, count: number): SummaryGroup => ({ key, option: null, statusGroup: null, count, hidden: false, value: null })
+  const sg = (key: string, name: string, color: 'red' | 'blue', hidden = false) => ({
+    key,
+    option: { id: key, name, color },
+    statusGroup: null,
+    count: 1,
+    hidden,
+  })
+  const sub = {
+    propertyType: 'select' as const,
+    propertyName: '팀',
+    dateUnit: null,
+    numberSize: null,
+    textMode: null,
+    groups: [sg('x', 'X', 'red'), sg('y', 'Y', 'blue'), sg('z', 'Z', 'red', true)],
+    cells: { a: { x: { count: 2, value: null }, y: { count: 3, value: null }, z: { count: 9, value: null } }, b: { y: { count: 1, value: null } } },
+  }
+  const out = stackedData(summary([g('a', 14), g('b', 1)], { sub }))
+  assert.ok(out !== null)
+  assert.deepEqual(out.legend.map((l) => l.label), ['X', 'Y'])
+  assert.deepEqual(out.bars[0].segments.map((s) => [s.sub, s.value]), [['x', 2], ['y', 3]])
+  assert.equal(out.bars[0].total, 5)
+  assert.deepEqual(out.bars[1].segments.map((s) => [s.sub, s.value]), [['y', 1]])
+  assert.deepEqual(stackSpans(out.bars[0].segments), [{ from: 0, to: 2 }, { from: 2, to: 5 }])
+  assert.equal(stackedData(summary([g('a', 1)])), null)
+  const avg = stackedData(summary([g('a', 5)], { sub, calculation: { property_id: 'p', function: 'average' } }))
+  assert.equal(avg?.bars[0].total, null, '평균은 합하지 않는다')
 })
