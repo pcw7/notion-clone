@@ -111,7 +111,7 @@ import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/li
 import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, type TableVariant } from '@/lib/database/list-layout'
 import { ROLLUP_FUNCTION_LABEL, rollupFunctionsFor, rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
-import { toVerificationCell } from '@/lib/database/verification-cell'
+import { toVerificationCell, type VerificationCell } from '@/lib/database/verification-cell'
 import * as api from './table-api'
 import type { RowCell } from '@/lib/database/row'
 import {
@@ -153,6 +153,7 @@ import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
 import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
 import { ButtonCell } from './button-cell'
+import { VerificationPickerLazy } from './verification-lazy'
 import { ButtonEditForm } from './button-editor'
 import { RollupSourceEditor } from './rollup-source-editor'
 import { ReminderBell } from './reminder-bell'
@@ -297,6 +298,21 @@ export function DatabaseTable(props: {
   }
   /** 다시 읽은 결과에는 없지만 내가 고쳐서 남긴 행 — 제목 옆에 "조건 밖"을 단다. */
   const [outside, setOutside] = useState<ReadonlySet<string>>(new Set())
+
+  // 검증 칸이 바뀌었다(VF-2) — 고르개가 서버의 답을 준다(풀었으면 null). 칸만 갈아 끼운다 — 검증은 행의 마지막 편집을 올리지 않는다
+  const putVerification = (rowId: string, propertyId: string, next: VerificationCell | null, known: PeopleNames) => {
+    markTouched(rowId)
+    addPeopleNames(known)
+    setRows((current) =>
+      current.map((row) => {
+        if (row.id !== rowId) return row
+        const properties = { ...row.properties }
+        if (next === null) delete properties[propertyId]
+        else properties[propertyId] = next
+        return { ...row, properties }
+      }),
+    )
+  }
 
   // ── 날짜 칸의 리마인더(4c-3 · F-11-10) ──
   // 보이는 행들의 리마인더 — 행의 읽기에 싣지 않고 따로 읽는다(정본 §3.8 [보강] 리마인더 ⑨ ⓑ · `use-row-reminders.ts` — 보드 · 갤러리와 같은 훅).
@@ -444,7 +460,7 @@ export function DatabaseTable(props: {
     // rollup 칸은 **읽기 전용이다** — 값이 행에 없고 읽을 때 계산된다(정본 [보강] rollup v1). 고칠 것은 설정뿐이고
     // 그것은 속성의 일이다(칸의 일이 아니다). 선택만 한다.
     // 고유 ID 칸도 읽기 전용이다 — 번호는 시스템이 매긴다(정본 [보강] 고유 ID ⑥ · 2a-1). 수식 칸도(2i-2) — 고칠 것은 식이다.
-    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula' || column.type === 'verification') {
+    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula') {
       setMode({ kind: 'selected', at })
       return
     }
@@ -879,6 +895,14 @@ export function DatabaseTable(props: {
   /** 버튼 컬럼을 만든다(5a-3) — 다시 읽는다(버튼 열은 서버가 세운다 · 고유 ID 와 같은 길). 액션은 "버튼 설정"에서. */
   const addButtonColumn = async (name: string): Promise<string | null> => {
     const result = await api.addColumn(workspaceId, dataSourceId, name, 'button')
+    if (!result.ok) return result.message
+    router.refresh()
+    return null
+  }
+
+  /** 검증 컬럼을 만든다(VF-2) — 소유자 사람 속성이 함께 생기므로 다시 읽는다. 낮은 요금제면 서버가 `plan_required` 로 거절한다. */
+  const addVerificationColumn = async (name: string): Promise<string | null> => {
+    const result = await api.addColumn(workspaceId, dataSourceId, name, 'verification')
     if (!result.ok) return result.message
     router.refresh()
     return null
@@ -1630,11 +1654,13 @@ export function DatabaseTable(props: {
                     tableName={tableName}
                     relations={relationChoices}
                     hasUniqueId={columns.some((c) => c.type === 'unique_id')}
+                    hasVerification={columns.some((c) => c.type === 'verification')}
                     onAdd={addColumn}
                     onAddRelation={addRelationColumn}
                     onAddRollup={addRollupColumn}
                     onAddUniqueId={addUniqueIdColumn}
                     onAddButton={addButtonColumn}
+                    onAddVerification={addVerificationColumn}
                     onAddFormula={addFormulaColumn}
                     formulaPlan={formulaPlan}
                     previewCells={rows[0]?.properties ?? null}
@@ -1719,7 +1745,7 @@ export function DatabaseTable(props: {
                             : cell.kind === 'formula'
                             ? cell.value === null && cell.error === null
                             : rollupIsEmpty(cell.value)
-                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button' || cell.kind === 'verification'
+                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button'
                   const content =
                     // rollup · 고유 ID 는 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
                     isList && empty && !readOnlyCell ? (
@@ -1942,6 +1968,20 @@ export function DatabaseTable(props: {
                             names={peopleNames}
                             align={isList ? 'right' : 'left'}
                             onChange={(ids, known) => setPeople(at, ids, known)}
+                          />
+                        </>
+                      ) : isEditing && cell.kind === 'verification' ? (
+                        <>
+                          {isList ? <div className="min-w-0 flex-1">{display}</div> : display}
+                          <VerificationPickerLazy
+                            workspaceId={workspaceId}
+                            rowId={row.id}
+                            propertyId={column.propertyId}
+                            cell={cell.value}
+                            names={peopleNames}
+                            align={isList ? 'right' : 'left'}
+                            onChanged={(next, known) => putVerification(row.id, column.propertyId, next, known)}
+                            onClose={() => setMode({ kind: 'selected', at })}
                           />
                         </>
                       ) : isEditing && cell.kind === 'relation' ? (

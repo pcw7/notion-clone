@@ -31,6 +31,7 @@ import type { Calculations } from '@/lib/database/calculate'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
 import type { PageSettings } from '@/lib/database/page-settings'
 import type { DateReminderJson } from '@/lib/database/reminder'
+import type { VerificationCell } from '@/lib/database/verification-cell'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 import { buttonActionProblemMessage } from './button-messages'
 import { automationProblemMessage } from './automation-messages'
@@ -718,7 +719,7 @@ export function addColumn(
   workspaceId: string,
   dataSourceId: string,
   name: string,
-  type: MvpPropertyType | 'unique_id' | 'button',
+  type: MvpPropertyType | 'unique_id' | 'button' | 'verification',
   /** 고유 ID 의 접두사(2a-2). 비우면 보내지 않는다 — 서버가 옛 접두사를 그대로 둔다. */
   prefix?: string,
 ): Promise<ApiResult<PropertySummary>> {
@@ -1330,4 +1331,25 @@ export function listDbAutomationRuns(workspaceId: string, dataSourceId: string, 
     titles: (body.titles ?? {}) as DbAutomationRunsJson['titles'],
     deliveries: (body.deliveries ?? {}) as DbAutomationRunsJson['deliveries'],
   }))
+}
+
+// ── 검증 속성 (VF-2 · F-03-23) ──
+
+/** 행을 검증한다(다시 검증도) — `expiresAt` 은 ISO 글자 · null 이면 무기한. 답은 칸(만료 여부 포함). */
+export function verifyRowCell(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  expiresAt: string | null,
+): Promise<ApiResult<VerificationCell>> {
+  return call(
+    `${base(workspaceId)}/rows/${rowId}/verification`,
+    { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ propertyId, expiresAt }) },
+    (body) => body.cell as VerificationCell,
+  )
+}
+
+/** 검증을 푼다 — 칸이 지워진다(플랜을 묻지 않는다). */
+export function unverifyRowCell(workspaceId: string, rowId: string, propertyId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/rows/${rowId}/verification?propertyId=${encodeURIComponent(propertyId)}`, { method: 'DELETE' }, () => null)
 }

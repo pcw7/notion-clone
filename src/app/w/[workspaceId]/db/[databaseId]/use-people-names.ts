@@ -17,6 +17,12 @@ import type { ViewColumn } from '@/lib/database/view'
 import type { PeopleNames } from './cell-view'
 import * as api from './table-api'
 
+/** 검증 칸의 검증한 사람(VF-2) — 서버 렌더가 이름을 싣지 않으므로 첫 실행에도 묻는다. */
+function verifierOf(value: unknown): string[] {
+  const v = value as { type?: unknown; verified_by?: unknown } | null
+  return v?.type === 'verification' && typeof v.verified_by === 'string' ? [v.verified_by] : []
+}
+
 function idsOf(value: unknown): string[] {
   const people = (value as { type?: unknown; people?: unknown } | null)?.people
   if ((value as { type?: unknown } | null)?.type !== 'people' || !Array.isArray(people)) return []
@@ -31,10 +37,33 @@ export function usePeopleNames(
 ): { readonly names: PeopleNames; readonly addNames: (known: PeopleNames) => void } {
   const [names, setNames] = useState<PeopleNames>(initial)
   const asked = useRef<Set<string> | null>(null)
+  const verifiedAsked = useRef<Set<string> | null>(null)
   const propertyKey = columns
     .filter((c) => c.type === 'people')
     .map((c) => c.propertyId)
     .join(',')
+
+  const verificationKey = columns
+    .filter((c) => c.type === 'verification')
+    .map((c) => c.propertyId)
+    .join(',')
+
+  // 검증한 사람의 이름 — 서버 렌더가 싣지 않았으니 처음에도 묻는다(이미 물은 id 는 다시 묻지 않는다)
+  useEffect(() => {
+    if (verificationKey === '') return
+    const verifiers = rows.flatMap((row) => verificationKey.split(',').flatMap((id) => verifierOf(row.properties[id])))
+    const known = (verifiedAsked.current ??= new Set())
+    const missing = [...new Set(verifiers)].filter((id) => !known.has(id))
+    if (missing.length === 0) return
+    for (const id of missing) known.add(id)
+    void api.loadPeopleNames(workspaceId, missing).then((result) => {
+      if (!result.ok) {
+        for (const id of missing) known.delete(id)
+        return
+      }
+      setNames((current) => ({ ...current, ...result.value }))
+    })
+  }, [rows, verificationKey, workspaceId])
 
   useEffect(() => {
     if (propertyKey === '') return

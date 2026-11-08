@@ -66,6 +66,8 @@ import { rowJson } from '@/lib/database/http'
 import { RowTitle } from '../db/[databaseId]/row-title'
 import type { feedClock } from '@/lib/database/row-feed'
 import { RowProperties } from './row-properties'
+import { VerificationBadge } from './verification-badge'
+import { toVerificationCell } from '@/lib/database/verification-cell'
 import { SCREEN_TITLES, contentTitle } from '@/lib/nav/screen-title'
 import { DocumentTitle } from '../document-title'
 
@@ -207,6 +209,11 @@ export async function PageContentBase({
     rowPage === null || rowPeopleIds.length === 0
       ? {}
       : await loadPeopleNames(ctx, peopleIdsOf(rowPeopleIds.map((id) => rowPage.row.properties[id])))
+  // 검증 배지(VF-2 · F-03-23) — 이 행의 표에 검증 속성이 있으면 머리에 선다(칸이 비면 편집하는 사람에게만 "검증하기")
+  const verificationColumn = rowPage?.columns.find((c) => c.type === 'verification') ?? null
+  const verificationCell =
+    rowPage === null || verificationColumn === null ? null : toVerificationCell(rowPage.row.properties[verificationColumn.propertyId], new Date())
+  const verificationNames = verificationCell === null ? {} : await loadPeopleNames(ctx, [verificationCell.verified_by])
 
   // 틀만 다르다 — 페이지는 화면 전체(`main`) · 피크는 데이터베이스 화면의 패널 안(`div`)
   const Frame = frame === 'page' ? 'main' : 'div'
@@ -398,6 +405,20 @@ export async function PageContentBase({
           <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} readOnly={access !== 'edit'} />
         )}
       </div>
+
+      {rowPage !== null && rowAccess !== null && verificationColumn !== null && (
+        <div className="flex items-center gap-2">
+          <VerificationBadge
+            workspaceId={workspaceId}
+            rowId={page.id}
+            propertyId={verificationColumn.propertyId}
+            initial={verificationCell}
+            names={verificationNames}
+            lastEditedAt={page.lastEditedAt.toISOString()}
+            canEdit={rowAccess.canEditContent}
+          />
+        </div>
+      )}
 
       {/*
         행의 속성 묶음(8f-1 · F-16-03) — 본문 위에 선다(F-16-07 *"제목 아래 … 모듈들 → 자유 본문 블록 순"*). 제목은 위의 제목 칸이라
