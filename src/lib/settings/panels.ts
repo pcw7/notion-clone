@@ -19,6 +19,7 @@ import { canSeePlan } from '../billing/overview.ts'
 import { canSeeEmojiLibrary } from '../emoji/custom-emoji.ts'
 import { canExportWorkspace } from '../export/download.ts'
 import { canManageSiteDomain } from '../publish/site.ts'
+import { canDeleteWorkspace } from '../workspace/delete.ts'
 import { canSeeGroups } from '../workspace/group.ts'
 import { canManageGuests } from '../workspace/guest.ts'
 import { canInvite } from '../workspace/invite.ts'
@@ -41,6 +42,8 @@ export const SETTING_PANELS = [
   { id: 'export', section: 'workspace.general', visible: (ctx: SessionContext) => canExportWorkspace(ctx) },
   // 스스로 나가기(10o-3) — 게스트 아닌 멤버. 일반 절의 끝("위험 구역"). 마지막 owner 인지는 명령(`leaveWorkspace`)이 센다.
   { id: 'leave', section: 'workspace.general', visible: (ctx: SessionContext) => canLeaveWorkspace(ctx.role) },
+  // 워크스페이스 삭제(AD-1) — 소유자만(위임 컨텍스트 아님). 일반 절의 끝("위험 구역"). 판정은 `deleteWorkspace` 가 다시 한다.
+  { id: 'delete', section: 'workspace.general', visible: (ctx: SessionContext) => canDeleteWorkspace(ctx) },
   // 요금제(8k-3) — 소유자 · 멤버 관리자. 읽기만 한다(바꾸는 길은 운영자 명령).
   { id: 'plan', section: 'workspace.plan', visible: (ctx: SessionContext) => canSeePlan(ctx.role) },
   // 커스텀 이모지(7c-2b) — 게스트가 아닌 사람. 올릴 수 있는가 · 바꿀 수 있는가는 패널이 보이고 명령이 다시 판정한다(`emoji/custom-emoji.ts`).

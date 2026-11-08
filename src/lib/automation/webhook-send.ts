@@ -66,6 +66,7 @@ export async function runAutomationWebhooks(
         WHERE d.status = 'pending' AND d.next_attempt_at <= $1
           AND (d.locked_until IS NULL OR d.locked_until < $1)
           AND ($3::uuid[] IS NULL OR d.workspace_id = ANY($3::uuid[]))
+          AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = d.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
         ORDER BY d.next_attempt_at, d.id
         LIMIT $2
         FOR UPDATE OF d SKIP LOCKED`,

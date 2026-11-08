@@ -144,6 +144,7 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
        FROM form_view f
        JOIN view v ON v.id = f.view_id AND v.type = 'form'
        JOIN block b ON b.id = v.database_id AND b.lifecycle = 'live'
+       JOIN workspace w ON w.id = b.workspace_id AND w.deleted_at IS NULL -- 지운 워크스페이스의 폼은 닫힌다(AD-1 ③)
        JOIN data_source ds ON ds.id = v.data_source_id AND ds.lifecycle = 'live'
       WHERE f.token = $1 AND f.access IN ('public', 'workspace')
         -- 세션이 없어 권한 판정을 지나지 않는다 — 위의 페이지가 휴지통이면 닫는다(데이터베이스 블록은 수명이 없다 · X-3)
@@ -410,7 +411,12 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
       respondent_access: RespondentAccess | null
     }>(
       `SELECT max_responses, closes_at, one_per_respondent, respondent_access
-         FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR UPDATE`,
+         FROM form_view
+        WHERE view_id = $1 AND access = $3 AND token = $2
+          -- 읽은 뒤 워크스페이스를 지웠을 수 있다(AD-1 ③)
+          AND NOT EXISTS (SELECT 1 FROM view v JOIN block b ON b.id = v.database_id JOIN workspace w ON w.id = b.workspace_id
+                           WHERE v.id = form_view.view_id AND w.deleted_at IS NOT NULL)
+        FOR UPDATE`,
       [form.viewId, input.token, form.access],
     )
     if (still === null) return { ok: false, reason: 'not_found' }

@@ -55,11 +55,13 @@ export async function runTrashPurge(
            FROM block b
           WHERE b.lifecycle = 'trashed' AND b.purge_after <= $1
             AND ($3::uuid[] IS NULL OR b.workspace_id = ANY($3::uuid[]))
+            AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = b.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
          UNION ALL
          SELECT ds.id, ds.purge_after
            FROM data_source ds JOIN block d ON d.id = ds.owner_database_id   -- 데이터베이스는 블록의 1:1 확장이다(X-2)
           WHERE ds.lifecycle = 'trashed' AND ds.purge_after <= $1
             AND ($3::uuid[] IS NULL OR d.workspace_id = ANY($3::uuid[]))
+            AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = d.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
        ) due
       GROUP BY root
       ORDER BY min(purge_after), root

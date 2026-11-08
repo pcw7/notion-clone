@@ -26,6 +26,9 @@
  *     싣고 `sessionId` 자리에 automation id 를 둔다 — 세션 표를 가리키지 않으므로 세션에 매인 명령(비밀번호 · 2단계 인증)에 넘기지 않는다.
  *
  * 셋째 발급자를 만들지 않는다(CLAUDE.md "권한 코드 규칙").
+ *
+ * 둘 다 **지운 워크스페이스**(AD-1 · 정본 §3.1 [보강 AD-1] ③)에는 내주지 않는다(`workspace_deleted`) — 이 한 조건이 앱 화면 · API ·
+ * 협업 서버 · 위임 자동화를 한꺼번에 닫는다. 세션 없는 길(공개 게시 · 폼 · 워커의 고르기)은 각자 같은 조건을 묻는다.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -84,6 +87,7 @@ export type SessionDenialReason =
   | 'member_inactive' // invited / suspended / removed
   | 'sso_required' // <14 R-11> SSO 강제인데 saml 로 로그인하지 않음
   | 'mfa_required' // 2단계 인증을 켠 사람의 세션이 아직 둘째 단계를 거치지 않았다(8i-2a · 정본 §3.2 [보강] 2단계 인증 ④)
+  | 'workspace_deleted' // 지운 워크스페이스(AD-1 · 정본 §3.1 [보강 AD-1] ③) — 없는 워크스페이스와 같은 답(404). 밖의 사람의 길로도 보내지 않는다
 
 export type SessionResolution =
   | { readonly ok: true; readonly context: SessionContext }
@@ -138,6 +142,7 @@ type SessionRow = {
   role: string | null
   member_status: string | null
   sso_enforced: boolean | null
+  workspace_deleted: boolean
 }
 
 /**
@@ -164,12 +169,15 @@ export async function resolveSessionContext(
            (s.revoked_at IS NOT NULL)    AS is_revoked,
            m.role                        AS role,
            m.status                      AS member_status,
-           COALESCE(sc.enforced, false)  AS sso_enforced
+           COALESCE(sc.enforced, false)  AS sso_enforced,
+           COALESCE(w.deleted_at IS NOT NULL, false) AS workspace_deleted
       FROM user_session s
       LEFT JOIN workspace_member m
              ON m.user_id = s.user_id AND m.workspace_id = $2
       LEFT JOIN sso_config sc
              ON sc.workspace_id = $2
+      LEFT JOIN workspace w
+             ON w.id = $2
      WHERE s.token_hash = $1
     `,
     [hashSessionToken(token), workspaceId],
@@ -181,6 +189,9 @@ export async function resolveSessionContext(
   // 2단계 인증 — 켠 사람의 세션은 둘째 단계를 거칠 때까지 아무 데도 들어오지 못한다(정본 ④). 멤버십보다 먼저 묻는다 — 신원이 아직
   // 증명되지 않았다.
   if (row.mfa_enabled && !row.mfa_satisfied) return { ok: false, reason: 'mfa_required' }
+  // 지운 워크스페이스(AD-1 ③) — 멤버십보다 먼저 묻는다. 멤버든 아니든 같은 답이다(없는 워크스페이스처럼 404). 로그인 전의 답(401)은
+  // 위에서 이미 갈렸다 — 없는 워크스페이스도 로그인 전에는 401 이다.
+  if (row.workspace_deleted) return { ok: false, reason: 'workspace_deleted' }
   if (row.role === null) return { ok: false, reason: 'not_a_member' }
   if (row.member_status !== 'active') return { ok: false, reason: 'member_inactive' }
 
@@ -207,6 +218,7 @@ export async function resolveSessionContext(
 export type DelegationDenialReason =
   | 'not_found' // 이 워크스페이스의 automation 이 아니다
   | 'creator_left' // 만든 사람이 지워졌거나 이 워크스페이스의 활성 멤버가 아니다
+  | 'workspace_deleted' // 지운 워크스페이스(AD-1 ③) — 자동화를 끄지 않는다(되살리면 그대로 돈다)
 
 export type DelegationResolution =
   | { readonly ok: true; readonly context: SessionContext }
@@ -219,15 +231,25 @@ export type DelegationResolution =
  * **지금** 지워지지 않았고 활성 멤버여야 한다. 권한(무엇을 할 수 있나)은 여기서 보지 않는다 — 액션이 부르는 명령이 이 컨텍스트로 묻는다.
  */
 export async function resolveDelegatedContext(workspaceId: WorkspaceId, automationId: string): Promise<DelegationResolution> {
-  const row = await queryMaybe<{ created_by: string; user_deleted: boolean; role: string | null; member_status: string | null }>(
-    `SELECT a.created_by, u.deleted_at IS NOT NULL AS user_deleted, m.role, m.status AS member_status
+  const row = await queryMaybe<{
+    created_by: string
+    user_deleted: boolean
+    workspace_deleted: boolean
+    role: string | null
+    member_status: string | null
+  }>(
+    `SELECT a.created_by, u.deleted_at IS NOT NULL AS user_deleted, w.deleted_at IS NOT NULL AS workspace_deleted,
+            m.role, m.status AS member_status
        FROM automation a
        JOIN "user" u ON u.id = a.created_by
+       JOIN workspace w ON w.id = a.workspace_id
        LEFT JOIN workspace_member m ON m.user_id = a.created_by AND m.workspace_id = a.workspace_id
       WHERE a.id = $1 AND a.workspace_id = $2`,
     [automationId, workspaceId],
   )
   if (!row) return { ok: false, reason: 'not_found' }
+  // 지운 워크스페이스(AD-1 ③) — 만든 사람을 묻기 전에. `creator_left` 로 답하면 부르는 쪽이 자동화를 꺼 버린다
+  if (row.workspace_deleted) return { ok: false, reason: 'workspace_deleted' }
   if (row.user_deleted || row.role === null || row.member_status !== 'active') return { ok: false, reason: 'creator_left' }
   return {
     ok: true,

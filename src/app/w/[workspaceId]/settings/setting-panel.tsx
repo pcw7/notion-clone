@@ -16,12 +16,13 @@ import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
 import { canManageGroups, listGroups } from '@/lib/workspace/group'
 import { listGuests } from '@/lib/workspace/guest'
-import { listMembers, listPendingInvites } from '@/lib/workspace/list'
+import { listMembers, listPendingInvites, workspaceNameOf } from '@/lib/workspace/list'
 import { invitableRoles } from '@/lib/workspace/member-rules'
 import { ExportButton } from '../export-button'
 import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
+import { DeleteWorkspacePanel } from '../delete-workspace-panel'
 import { LeavePanel } from '../leave-panel'
 import { MemberPanel } from '../member-panel'
 import { PendingInviteList } from '../pending-invite-list'
@@ -156,5 +157,8 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
     case 'leave':
       // 스스로 나가기(10o-3 · 정본 §3.3 [보강] 멤버 내보내기 ⑨) — 마지막 소유자인지는 명령이 센다
       return <LeavePanel workspaceId={ctx.workspaceId} />
+    case 'delete':
+      // 워크스페이스 삭제(AD-1) — owner 만 보인다(패널 목록이 걸렀다 · 명령이 다시 묻는다). 이름은 확인 입력의 기준이다
+      return <DeleteWorkspacePanel workspaceId={ctx.workspaceId} workspaceName={await workspaceNameOf(ctx)} />
   }
 }

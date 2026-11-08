@@ -106,6 +106,8 @@ async function livePage(tx: Tx, workspaceId: string, pageId: string): Promise<bo
        FROM block b
        JOIN block r ON r.id = COALESCE(b.ancestor_path[1], b.id)
       WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'page' AND b.lifecycle = 'live'
+        -- 지운 워크스페이스의 페이지는 없는 페이지와 같다(AD-1 ③)
+        AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = b.workspace_id AND dw.deleted_at IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM teamspace t
                          WHERE r.parent_type = 'teamspace' AND t.id = r.parent_id AND t.archived_at IS NOT NULL)`,
     [pageId, workspaceId],

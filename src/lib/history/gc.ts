@@ -49,6 +49,8 @@ export async function runVersionGc(
        FROM page_version v
       WHERE v.expires_at < $1
         AND ($3::uuid[] IS NULL OR v.page_id = ANY($3::uuid[]))
+        -- 지운 워크스페이스의 버전은 건드리지 않는다(AD-1 ③ · 되살리면 그대로)
+        AND NOT EXISTS (SELECT 1 FROM block pb JOIN workspace dw ON dw.id = pb.workspace_id WHERE pb.id = v.page_id AND dw.deleted_at IS NOT NULL)
         -- ⓐ 그 페이지의 가장 최근 버전은 남긴다
         AND EXISTS (SELECT 1 FROM page_version newer WHERE newer.page_id = v.page_id AND newer.through_seq > v.through_seq)
         -- ⓑ 복원이 가리키는 버전은 남긴다

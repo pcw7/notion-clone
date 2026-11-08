@@ -73,11 +73,13 @@ const DELETABLE_ROOTS = `
           FROM block b
          WHERE b.lifecycle = 'purged' AND b.purged_at <= $1 AND b.trash_root_id IS NOT NULL
            AND ($3::uuid[] IS NULL OR b.workspace_id = ANY($3::uuid[]))
+           AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = b.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
         UNION ALL
         SELECT ds.id, ds.purged_at
           FROM data_source ds JOIN block d ON d.id = ds.owner_database_id   -- 데이터베이스는 블록의 1:1 확장이다(X-2)
          WHERE ds.lifecycle = 'purged' AND ds.purged_at <= $1
            AND ($3::uuid[] IS NULL OR d.workspace_id = ANY($3::uuid[]))
+           AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = d.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
       ) candidates
      WHERE $4::uuid IS NULL OR root = $4::uuid
      GROUP BY root

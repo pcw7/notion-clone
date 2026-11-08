@@ -64,6 +64,7 @@ export async function runReminderFire(
     `SELECT id FROM reminder
       WHERE fired_at IS NULL AND fire_at <= $1
         AND ($3::uuid[] IS NULL OR workspace_id = ANY($3::uuid[]))
+        AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = reminder.workspace_id AND dw.deleted_at IS NOT NULL) -- 지운 워크스페이스의 일은 건너뛴다(AD-1 ③)
       ORDER BY fire_at, id
       LIMIT $2`,
     [now, batch, options.workspaces ?? null],
@@ -78,6 +79,7 @@ export async function runReminderFire(
       const claimed = await tx.queryMaybe<Claimed>(
         `UPDATE reminder SET fired_at = $2
           WHERE id = $1 AND fired_at IS NULL AND fire_at <= $2
+            AND NOT EXISTS (SELECT 1 FROM workspace dw WHERE dw.id = reminder.workspace_id AND dw.deleted_at IS NOT NULL)
           RETURNING id, workspace_id, page_id, block_id, property_id, recipient_ids, created_by`,
         [id, now],
       )

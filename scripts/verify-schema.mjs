@@ -5115,6 +5115,38 @@ try {
     }
   }
 
+  console.log('\n[87] 워크스페이스 삭제 — 지운 사람 · 감사 두 종류 (0129 / §3.1 [보강 AD-1] ② ⑤ · AD-1조각)')
+  {
+    // deleted_by 는 deleted_at 과 함께일 때만 선다 · 감사 종류에 workspace.deleted · workspace.restored 가 들어왔다.
+    const set = `UPDATE workspace SET deleted_at = $2, deleted_by = $3 WHERE id = $1`
+    await client.query('SAVEPOINT probe')
+    await client.query(set, [wsId, new Date(), userId])
+    ok('★ 지운 시각과 지운 사람을 함께 — 통과한다')
+    await client.query(set, [wsId, new Date(), null])
+    ok('지운 시각만(사람이 아닌 길 · W3 의 연쇄) — 통과한다')
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    try {
+      await client.query(set, [wsId, null, userId])
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      fail('★ 지우지 않은 워크스페이스에 지운 사람 — 거부되어야 하는데 통과했다')
+    } catch (e) {
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      if (e.code === '23514' && e.constraint === 'ck_workspace_deleted_by') ok('★ 지우지 않은 워크스페이스에 지운 사람 — ck_workspace_deleted_by 가 거부함')
+      else fail(`★ 지우지 않은 워크스페이스에 지운 사람 — ck_workspace_deleted_by 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+    }
+    for (const type of ['workspace.deleted', 'workspace.restored']) {
+      await client.query(
+        `INSERT INTO audit_event (id, scope, workspace_id, event_type, actor_user_id, target_type, target_id, occurred_at)
+         VALUES ($1, 'workspace', $2::uuid, $3, NULL, 'workspace', $2::text, now())`,
+        [randomUUID(), wsId, type],
+      )
+      ok(`감사 종류 ${type} — 통과한다`)
+    }
+    const trigger = (await client.query(`SELECT 1 FROM pg_trigger WHERE tgname = 'tg_collab_access_workspace_deleted'`)).rowCount
+    if (trigger === 1) ok('tg_collab_access_workspace_deleted 가 있다(지우면 협업 연결을 다시 판정)')
+    else fail('tg_collab_access_workspace_deleted 가 없다')
+  }
+
 
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')

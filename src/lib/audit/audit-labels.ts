@@ -18,6 +18,8 @@ export const AUDIT_TYPE_LABEL: Readonly<Record<AuditEventType, string>> = {
   'workspace.member_role_changed': '역할 변경',
   'workspace.setting_changed': '설정 변경',
   'workspace.exported': '내보내기',
+  'workspace.deleted': '워크스페이스 삭제',
+  'workspace.restored': '워크스페이스 복구',
   'page.permission_changed': '페이지 권한 변경',
   'page.publish_changed': '웹 게시 변경',
   'page.permanently_deleted': '영구 삭제',
@@ -84,6 +86,9 @@ export function auditDetail(row: Pick<AuditRow, 'type' | 'metadata' | 'setting'>
       return row.setting === null ? '' : `${row.setting.key}: ${str(row.setting.before)} → ${str(row.setting.after)}`
     case 'workspace.exported':
       return m.scope === 'workspace' ? '워크스페이스 전체' : '페이지'
+    case 'workspace.deleted':
+    case 'workspace.restored':
+      return ''
     case 'page.permission_changed':
       switch (m.change) {
         case 'grant':

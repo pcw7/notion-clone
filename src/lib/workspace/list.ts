@@ -142,3 +142,11 @@ export async function listPendingInvites(workspaceId: string): Promise<PendingIn
   )
   return rows.map((r) => ({ inviteId: r.id, email: r.email, role: r.role }))
 }
+
+/**
+ * 워크스페이스를 지운 사람이 이어서 갈 곳(AD-1 ④) — 남은 첫 워크스페이스, 없으면 `/`(새 워크스페이스 만들기 화면 — 루트가 그 일을 한다).
+ */
+export async function nextWorkspaceHref(userId: string): Promise<string> {
+  const [first] = await listWorkspacesForUser(userId)
+  return first === undefined ? '/' : `/w/${first.workspaceId}`
+}
