@@ -115,7 +115,7 @@ import type { DataSourceSummary } from '@/lib/database/data-source'
 import { splitLinkedAccess } from '@/lib/database/linked-access'
 import { asBlockId } from '@/lib/ids'
 import { databaseHref } from '@/lib/database/open-pages'
-import { PageContent } from '../../[pageId]/page-content'
+import { PeekPageContent } from '../../[pageId]/peek-page-content'
 import { RowPeek } from './row-peek'
 import { peekNeighbors, rowOpenHref } from '@/lib/database/open-pages'
 import { contentTitle } from '@/lib/nav/screen-title'
@@ -1048,7 +1048,7 @@ export default async function DatabasePage({
           prevHref={peekNeighborHrefs.prev}
           nextHref={peekNeighborHrefs.next}
         >
-          <PageContent key={peekRow} ctx={ctx} workspaceId={workspaceId} pageId={peekRow} shareOpen={false} renderedAt={renderedAt} frame="peek" />
+          <PeekPageContent key={peekRow} ctx={ctx} workspaceId={workspaceId} pageId={peekRow} shareOpen={false} renderedAt={renderedAt} frame="peek" />
         </RowPeek>
       )}
     </main>
