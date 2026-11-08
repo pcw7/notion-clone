@@ -124,6 +124,8 @@ export function CardBadges({
             </span>
           )
         }
+        // 검증(VF-1)은 카드에 그리지 않는다 — 배지는 VF-4 에서
+        if (column.type === 'verification') return null
         const value = readCell(column.type, row.properties[column.propertyId])
         if (value.type === 'checkbox' ? !value.checkbox : isEmptyValue(value)) return null
         return (

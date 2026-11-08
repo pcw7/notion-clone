@@ -324,7 +324,9 @@ async function copyRows(
   const pages = await readRows(tx, `SELECT to_jsonb(p) AS row FROM page p WHERE p.id = ANY($1::uuid[])`, [rowIds])
   const templateIds = new Set(pages.filter((p) => p.is_template === true).map((p) => String(p.id)))
   const cells = await readRows(tx,
-    `SELECT to_jsonb(v) AS row FROM page_property_value v WHERE v.page_id = ANY($1::uuid[]) AND v.property_id = ANY($2::text[])`, [rowIds, propertyIds])
+    `SELECT to_jsonb(v) AS row FROM page_property_value v JOIN property pr ON pr.id = v.property_id
+      WHERE v.page_id = ANY($1::uuid[]) AND v.property_id = ANY($2::text[])
+        AND pr.type <> 'verification'`, [rowIds, propertyIds]) // 검증 칸은 옮기지 않는다 — 그 페이지를 본 사람이 한 확인이다(VF-1 ⑨)
   const edges = await readRows(tx,
     `SELECT to_jsonb(e) AS row FROM relation_edge e WHERE e.property_id = ANY($1::text[]) AND e.from_page_id = ANY($2::uuid[])`, [propertyIds, rowIds])
   const positions = await readRows(tx,

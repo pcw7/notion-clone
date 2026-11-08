@@ -121,7 +121,14 @@ export type FormulaColumn = ColumnBase & {
  */
 export type ButtonColumn = ColumnBase & { readonly type: 'button' }
 
-export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn | FormulaColumn | ButtonColumn
+/**
+ * 검증 컬럼(VF-1 · F-03-23). 값은 셀이지만 일반 칸 쓰기가 받지 않는다 — 읽기 전용 칸이다(쓰는 길은 `…/rows/{id}/verification`).
+ * 행의 `properties` 에는 저장된 값 + 읽을 때 정한 `expired`(`VerificationCell`)가 있다. 셀 컬럼이 아니므로 셀 편집 · 필터 축에 넘어가지 않는다
+ * (필터 · 정렬은 VF-2).
+ */
+export type VerificationColumn = ColumnBase & { readonly type: 'verification' }
+
+export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn | FormulaColumn | ButtonColumn | VerificationColumn
 
 /** 이 표의 하위 항목 짝(2b-2) — 컬럼(숨긴 것 포함)의 relation 표시에서 읽는다. 꺼져 있으면 null. */
 export function subItemPairOf(

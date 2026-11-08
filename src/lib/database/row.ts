@@ -72,6 +72,7 @@ import {
   type MvpPropertyType,
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
+import { withVerificationExpiry } from './verification-cell.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
 import { applyPeopleChanges, checkPeopleChanges, peopleIdsOf, peopleIssuesIn, withoutLeftPeople } from './people.ts'
 import { optionIssuesIn, withoutMissingOptions } from './options.ts'
@@ -881,7 +882,7 @@ function toRowSummary(row: RowRow): RowSummary {
       : '',
     icon: readPageIcon(row.page_icon),
     orderKey: row.order_key,
-    properties: row.properties_cache ?? {},
+    properties: withVerificationExpiry(row.properties_cache ?? {}),
     uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,

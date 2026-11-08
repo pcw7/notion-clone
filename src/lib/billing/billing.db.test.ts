@@ -156,6 +156,7 @@ test('★ ⑥ 개요 — 소유자 · 멤버 관리자만 · 가격 순 · 값�
     'form.logic': [false, false, true, true],
     'search.teamspace_filter': [false, true, true, true],
     'publish.link_expiry': [false, true, true, true],
+    'database.verification': [false, false, true, true],
   })
   assert.equal(overview.usage.guests, 2, '활성 게스트 하나 + 대기 초대 하나')
 

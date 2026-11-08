@@ -246,6 +246,9 @@ export function defaultColumnWidth(type: AppPropertyType): number {
       return 160
     case 'checkbox':
       return 90
+    // 검증 칸은 "✓ 검증됨 · 12일 남음" 정도다(VF-1).
+    case 'verification':
+      return 170
     // 사람 이름 두셋(6g-1)
     case 'people':
       return 200

@@ -10,6 +10,7 @@ import { PageIconView } from '../../page-icon-view'
 import { optionIdOf } from '@/lib/database/property-types'
 import { OPTION_DOT_CLASS } from '@/lib/database/option-dot'
 import { LEFT_USER } from '@/lib/database/cell-format'
+import { verificationLabel, verificationTitle, type VerificationCell } from '@/lib/database/verification-cell'
 import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
 import type { FormulaValue } from '@/lib/formula/formula'
 import { formulaCell } from '@/lib/database/formula-plan'
@@ -30,6 +31,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   formula: '수식',
   unique_id: 'ID',
   button: '버튼',
+  verification: '검증',
 }
 
 /** 헤더의 타입 아이콘. 장식이다 — 스크린리더에는 `TYPE_LABEL` 이 간다. */
@@ -47,6 +49,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   formula: 'ƒ',
   unique_id: '№',
   button: '▶',
+  verification: '✓',
 }
 
 /**
@@ -235,6 +238,25 @@ const NOTE = 'flex-none text-xs text-neutral-400'
  * 칸을 그리는 함수(`CellDisplay`)로 그린다 — 수는 오른쪽 · 날짜는 날짜 칸의 모양 · 참거짓은 체크 표시. 빈 값은 그리지 않는다(0 이 아니다).
  * 식이 읽히지 않으면(읽던 속성이 지워졌다 · 타입이 바뀌었다) **말한다** — 조용히 비우면 "값이 없다"와 구분되지 않는다(03 *"셀에 에러 표시"*).
  */
+/**
+ * 검증 칸(VF-1 · F-03-23 · 정본 [보강 VF-1] ⑥) — 읽기 전용. 검증됨 "✓ 검증됨 · N일 남음" 또는 "무기한" · 만료(경고) · 없음(빈 칸).
+ * 머리말(title)에 누가 · 언제 · 언제까지. 사람 이름은 이미 받아 둔 것만 쓴다(없으면 "구성원" — 이름 찾기는 VF-2).
+ */
+export function VerificationDisplay({ cell, names = {} }: { cell: VerificationCell | null; names?: PeopleNames }) {
+  if (cell === null) return null
+  const now = new Date()
+  return (
+    <span
+      data-testid="db-verification"
+      data-state={cell.expired ? 'expired' : 'verified'}
+      title={verificationTitle(cell, names[cell.verified_by] ?? '구성원')}
+      className={`truncate ${cell.expired ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-400'}`}
+    >
+      {verificationLabel(cell, now)}
+    </span>
+  )
+}
+
 export function FormulaDisplay({ value, error }: { value: FormulaValue | undefined; error: string | null }) {
   if (error !== null) {
     return (

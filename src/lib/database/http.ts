@@ -85,7 +85,13 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'unique_id_exists':
     // 하위 항목 짝(2b-1) — 지금 상태(기능이 켜져 있다)가 허락하지 않는다. 끄면 같은 요청이 통과한다.
     case 'managed_property':
+    // 검증 속성(VF-1) — 표에 하나뿐 · 소유자 속성은 검증 속성을 지워야 지운다. 상태가 허락하지 않는 것이다.
+    case 'verification_exists':
+    case 'owner_linked':
       return 409
+    // 요금제가 허락하지 않는다 — 올리면 같은 요청이 통과한다(`form.ts` 의 plan_required 와 같다)
+    case 'plan_required':
+      return 403
     case 'invalid_name':
     case 'invalid_color':
     case 'invalid_group':

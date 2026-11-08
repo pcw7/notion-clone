@@ -5226,6 +5226,87 @@ try {
     }
   }
 
+  console.log('\n[91] 검증 속성 — 칸 모양 · 표마다 하나 · 설정 · 플랜 열쇠 (0133 / §3.5 [보강 VF-1] ① ② ③ · VF-1조각)')
+  {
+    // 표 하나와 검증 속성 · 소유자 속성 — data source 는 앞의 프로브가 쓰지 않은 새 것
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '검증', 1)`, [dsId, dbBlock])
+    const ownerProp = `own${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const verifyProp = `ver${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const putProp = `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), now())`
+    await client.query(putProp, [ownerProp, dsId, '소유자', 'people', '{}', 'a0'])
+    await client.query(putProp, [verifyProp, dsId, '검증', 'verification', JSON.stringify({ owner_property_id: ownerProp }), 'a1'])
+    ok('검증 속성(소유자 설정 포함) — 정상 경로가 통과한다')
+
+    const rowPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowPage, wsId, dsId, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowPage, dsId])
+
+    const tryReject = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await tryReject('★ 같은 표에 두 번째 검증 속성', 'ux_property_verification_one', putProp,
+      [`ver${randomUUID().replaceAll('-', '').slice(0, 18)}`, dsId, '검증 2', 'verification', JSON.stringify({ owner_property_id: ownerProp }), 'a2'])
+    await tryReject('★ 소유자 설정이 없는 검증 속성', 'ck_property_verification_config', `UPDATE property SET config = '{}'::jsonb WHERE id = $1`, [verifyProp])
+    await tryReject('★ 설정에 모르는 키', 'ck_property_verification_config', `UPDATE property SET config = $2::jsonb WHERE id = $1`,
+      [verifyProp, JSON.stringify({ owner_property_id: ownerProp, tint: 'x' })])
+    await client.query('SAVEPOINT probe')
+    await client.query(`UPDATE property SET deleted_at = now() WHERE id = $1`, [verifyProp])
+    await client.query(putProp, [`ver${randomUUID().replaceAll('-', '').slice(0, 18)}`, dsId, '검증 3', 'verification', JSON.stringify({ owner_property_id: ownerProp }), 'a3'])
+    ok('지운 검증 속성은 세지 않는다 — 다시 더할 수 있다')
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+
+    const good = { type: 'verification', state: 'verified', verified_by: userId, verified_at: '2026-11-01T00:00:00Z', expires_at: null }
+    const putCell = `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, $3::jsonb)
+                     ON CONFLICT (page_id, property_id) DO UPDATE SET value = EXCLUDED.value`
+    await client.query(putCell, [rowPage, verifyProp, JSON.stringify(good)])
+    ok('★ 검증 칸(무기한) — 정상 경로가 통과한다')
+    await client.query(putCell, [rowPage, verifyProp, JSON.stringify({ ...good, expires_at: '2026-12-01T09:00:00+09:00' })])
+    ok('★ 검증 칸(만료 있음 · 시간대 오프셋) — 정상 경로가 통과한다')
+    const noWho = { type: good.type, state: good.state, verified_at: good.verified_at, expires_at: good.expires_at }
+    const cases = [
+      ['★ verified_by 가 없다', noWho],
+      ['★ verified_by 가 uuid 가 아니다', { ...good, verified_by: 'someone' }],
+      ['★ 모르는 상태', { ...good, state: 'expired' }],
+      ['★ 만료가 검증 시각보다 앞', { ...good, expires_at: '2026-10-01T00:00:00Z' }],
+      ['★ 만료가 검증 시각과 같다', { ...good, expires_at: good.verified_at }],
+      ['모르는 키(expired 는 저장하지 않는다)', { ...good, expired: false }],
+      ['시각이 읽히지 않는다', { ...good, verified_at: '2026-13-45T00:00:00Z' }],
+      ['expires_at 키가 없다', { type: good.type, state: good.state, verified_by: good.verified_by, verified_at: good.verified_at }],
+    ]
+    for (const [label, value] of cases) await tryReject(`검증 칸 — ${label}`, 'tg_ppv_verification_shape', putCell, [rowPage, verifyProp, JSON.stringify(value)])
+
+    const ent = (await client.query(
+      `SELECT p.code, e.value FROM plan_entitlement e JOIN plan p ON p.id = e.plan_id WHERE e.key = 'database.verification' ORDER BY p.code`,
+    )).rows
+    const byPlan = Object.fromEntries(ent.map((r) => [r.code, r.value]))
+    if (byPlan.free === false && byPlan.plus === false && byPlan.business === true && byPlan.enterprise === true) ok('★ 엔타이틀먼트 database.verification — Business · Enterprise 만 true')
+    else fail(`엔타이틀먼트 database.verification 이 요금제와 맞지 않는다 — ${JSON.stringify(byPlan)}`)
+  }
+
 
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
