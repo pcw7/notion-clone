@@ -11,7 +11,8 @@ import type { Command, EditorState } from '@tiptap/pm/state'
 import { FILE_TYPE } from '../block/file-block.ts'
 import { VIDEO_TYPE } from '../block/video-block.ts'
 import { BOOKMARK_TYPE } from '../block/bookmark-block.ts'
-import { EMBED_TYPE } from '../block/embed-block.ts'
+import { EMBED_TYPE, readEmbedUrl, withoutEmbedHeight } from '../block/embed-block.ts'
+import { isOwnHostUrl } from '../block/embed-origin.ts'
 import { codeCaptionText, isCaptionFormatted, withCodeCaption } from '../block/code.ts'
 import { sameJsonValue } from '../contracts/json-safe.ts'
 import { separateUndoStep } from './code-block.ts'
@@ -89,3 +90,46 @@ export function embedCaptionInfo(state: EditorState, blockId: string): FileCapti
 }
 
 export const setEmbedCaptionCommand = captionCommand(EMBED_TYPE)
+
+/** 북마크 ↔ 임베드 바꾸기(EM-3) — 바꿀 수 있는 블록의 지금 타입. 아니면 null. */
+export function swapSourceOf(state: EditorState, blockId: string): typeof BOOKMARK_TYPE | typeof EMBED_TYPE | null {
+  if (blockInfoOf(state, blockId, BOOKMARK_TYPE) !== null) return BOOKMARK_TYPE
+  if (blockInfoOf(state, blockId, EMBED_TYPE) !== null) return EMBED_TYPE
+  return null
+}
+
+/** 이 주소를 임베드로 그릴 수 있는가 — 자기 출처 · http 일반은 아니다. 주소가 없는 빈 블록은 된다. */
+export function canEmbedProperties(properties: unknown, ownHosts: readonly string[]): boolean {
+  const url = readEmbedUrl(properties)
+  // 자기 출처만 막는다 — http 일반 주소는 바꿀 수 있고 임베드가 그리지 않는 이유를 보인다(규칙 모듈을 늘 실리는 쪽에 싣지 않는다).
+  return url === null || !isOwnHostUrl(url, ownHosts)
+}
+
+/**
+ * 북마크 ↔ 임베드 — 블록 id · 주소 · 캡션은 그대로 두고 타입만 바꾼다(임베드 → 북마크는 `height` 를 버린다). 한 트랜잭션 ·
+ * 되돌리기 한 걸음. 자기 출처의 주소면 거절한다.
+ */
+export function swapBookmarkEmbedCommand(blockId: string, ownHosts: readonly string[]): Command {
+  return (state, dispatch) => {
+    const from = swapSourceOf(state, blockId)
+    const info = from === null ? null : blockInfoOf(state, blockId, from)
+    if (from === null || info === null) return false
+    const props = (info.node.attrs.props ?? {}) as Record<string, unknown>
+    const toType = from === BOOKMARK_TYPE ? EMBED_TYPE : BOOKMARK_TYPE
+    if (toType === EMBED_TYPE && !canEmbedProperties(props, ownHosts)) return false
+    const nodeType = state.schema.nodes[toType]
+    if (!nodeType) return false
+    let tr
+    try {
+      tr = state.tr.setNodeMarkup(info.pos, nodeType, { ...info.node.attrs, props: toType === BOOKMARK_TYPE ? withoutEmbedHeight(props) : props })
+    } catch {
+      return false
+    }
+    if (dispatch) {
+      separateUndoStep(state)
+      dispatch(tr)
+      separateUndoStep(state)
+    }
+    return true
+  }
+}

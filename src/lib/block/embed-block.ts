@@ -29,12 +29,46 @@ export function withEmbedUrl(properties: Readonly<Record<string, unknown>> | nul
   return next
 }
 
-/** Y.Doc 계약의 검증 — 주소(있으면 받을 수 있는 것) · 캡션(RichText). */
+/** 높이(px)의 범위 — 정본 [보강 EM-3] ①. */
+export const MIN_EMBED_HEIGHT = 120
+export const MAX_EMBED_HEIGHT = 1600
+
+export function isEmbedHeight(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= MIN_EMBED_HEIGHT && value <= MAX_EMBED_HEIGHT
+}
+
+/** `properties.height` — 정한 값이 없거나 범위 밖이면 null(서비스의 기본 높이). */
+export function readEmbedHeight(properties: unknown): number | null {
+  const height = (properties as { height?: unknown } | null | undefined)?.height
+  return isEmbedHeight(height) ? height : null
+}
+
+/** 범위 안의 정수로 맞춘다. */
+export function clampEmbedHeight(value: number): number {
+  return Math.min(MAX_EMBED_HEIGHT, Math.max(MIN_EMBED_HEIGHT, Math.round(value)))
+}
+
+/** 높이를 쓴 properties — 모르는 키는 그대로. */
+export function withEmbedHeight(properties: Readonly<Record<string, unknown>> | null | undefined, height: number): Record<string, unknown> {
+  return { ...(properties ?? {}), height: clampEmbedHeight(height) }
+}
+
+/** 북마크로 바꿀 때의 properties — 높이만 버린다(주소 · 캡션 · 모르는 키는 그대로). */
+export function withoutEmbedHeight(properties: Readonly<Record<string, unknown>> | null | undefined): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(properties ?? {}) }
+  delete next.height
+  return next
+}
+
+/** Y.Doc 계약의 검증 — 주소(있으면 받을 수 있는 것) · 높이(있으면 범위 안의 정수) · 캡션(RichText). */
 export function validateEmbedProperties(properties: unknown, path: string): { path: string; message: string }[] {
-  const raw = (properties as { url?: unknown; caption?: unknown } | null | undefined) ?? {}
+  const raw = (properties as { url?: unknown; height?: unknown; caption?: unknown } | null | undefined) ?? {}
   const issues: { path: string; message: string }[] = []
   if (raw.url !== undefined && raw.url !== null && !isEmbedUrl(raw.url)) {
     issues.push({ path: `${path}.url`, message: `http 또는 https 주소(${MAX_EMBED_URL_LENGTH}자 이하)여야 합니다` })
+  }
+  if (raw.height !== undefined && !isEmbedHeight(raw.height)) {
+    issues.push({ path: `${path}.height`, message: `${MIN_EMBED_HEIGHT} 이상 ${MAX_EMBED_HEIGHT} 이하의 정수여야 합니다` })
   }
   if (raw.caption !== undefined) issues.push(...validateRichText(raw.caption, `${path}.caption`))
   return issues

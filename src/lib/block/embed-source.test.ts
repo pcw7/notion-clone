@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
 import { textRun } from '../contracts/rich-text.ts'
-import { readEmbedUrl, validateEmbedProperties, withEmbedUrl } from './embed-block.ts'
-import { embedPlanOf, embedSourceOf, embedStartSeconds, ownHostsOf, type EmbedSource } from './embed-source.ts'
+import { clampEmbedHeight, readEmbedHeight, validateEmbedProperties, readEmbedUrl, withEmbedHeight, withEmbedUrl, withoutEmbedHeight } from './embed-block.ts'
+import { embedPlanOf, embedSourceOf, embedStageHeight, embedStartSeconds, isHeightResizable, ownHostsOf, type EmbedSource } from './embed-source.ts'
 
 function src(url: string): string {
   const out = embedSourceOf(url)
@@ -193,5 +193,42 @@ describe('임베드 — 블록 계약', () => {
     assert.deepEqual(validateEmbedProperties({}, 'p'), [])
     assert.equal(validateEmbedProperties({ url: 'javascript:alert(1)' }, 'p')[0]?.path, 'p.url')
     assert.equal(validateEmbedProperties({ url: 'ftp://a.test' }, 'p').length, 1)
+  })
+
+  test('높이 — 120..1600 정수만 받는다(EM-3)', () => {
+    for (const ok of [120, 450, 1600]) assert.deepEqual(validateEmbedProperties({ height: ok }, 'p'), [], String(ok))
+    for (const bad of [119, 1601, 450.5, '450', null, Number.NaN, -1]) {
+      assert.equal(validateEmbedProperties({ height: bad }, 'p')[0]?.path, 'p.height', String(bad))
+    }
+    assert.deepEqual(validateEmbedProperties({}, 'p'), [], '없으면 서비스 기본')
+  })
+
+  test('높이 — 읽기 · 쓰기 · 맞추기 · 버리기', () => {
+    assert.equal(readEmbedHeight({ height: 300 }), 300)
+    assert.equal(readEmbedHeight({ height: 99999 }), null)
+    assert.equal(readEmbedHeight({}), null)
+    assert.equal(clampEmbedHeight(5), 120)
+    assert.equal(clampEmbedHeight(5000), 1600)
+    assert.equal(clampEmbedHeight(300.6), 301)
+    const set = withEmbedHeight({ url: 'https://a.test', other: 1 }, 700)
+    assert.deepEqual(set, { url: 'https://a.test', other: 1, height: 700 })
+    assert.deepEqual(withoutEmbedHeight(set), { url: 'https://a.test', other: 1 })
+  })
+
+  test('높이 — 정한 높이 모양만 쓴다(동영상은 무시)', () => {
+    const own = ownHostsOf(['http://localhost:3000'])
+    const video = embedPlanOf('https://youtu.be/dQw4w9WgXcQ', own)
+    const maps = embedPlanOf('https://www.google.com/maps/embed?pb=x', own)
+    const generic = embedPlanOf('https://example.com/a', own)
+    const refused = embedPlanOf('http://localhost:3000/x', own)
+    assert.equal(isHeightResizable(video), false)
+    assert.equal(embedStageHeight(video, 700), null)
+    assert.equal(isHeightResizable(maps), true)
+    assert.equal(embedStageHeight(maps, null), 450)
+    assert.equal(embedStageHeight(maps, 700), 700)
+    assert.equal(embedStageHeight(generic, null), 450)
+    assert.equal(embedStageHeight(generic, 300), 300)
+    assert.equal(isHeightResizable(refused), false)
+    assert.equal(embedStageHeight(refused, 300), null)
   })
 })

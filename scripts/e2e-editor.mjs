@@ -28910,6 +28910,175 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('임베드 높이 · 북마크 ↔ 임베드 (EM-3 · F-09-10)')) { try {
+      // 임베드의 높이(정본 §3.4 [보강 EM-3] ①) — 정한 높이 모양(지도 · 일반)만 손잡이가 서고, 끄는 동안은 화면만 · 놓을 때 한 번 저장(되돌리기 한 걸음) ·
+      // 키보드 ↑↓ 20px · Shift 100px(키마다 저장) · 동영상(비율)은 손잡이도 저장값도 무시 · 공개 화면도 저장된 높이를 따른다.
+      // 바꾸기(②) — 블록 메뉴의 "임베드로 바꾸기" / "북마크로 바꾸기": id · 주소 · 캡션은 그대로, 임베드 → 북마크는 height 를 버린다 · 자기 출처는 꺼진다.
+      // 바깥 네트워크에 기대지 않는다 — 바깥 호스트는 막는다.
+      const stamp = Date.now().toString(36)
+      const mk = async (title) => (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const page = await mk(`임베드 높이 ${stamp}`)
+      const para = (id) => ({ id, type: 'paragraph', title: [], properties: {}, format: {}, children: [] })
+      const blk = (id, type, properties) => ({ id, type, title: [], properties, format: {}, children: [] })
+      const K = Object.fromEntries(['first', 'maps', 'yt', 'gen', 'bm', 'own', 'emb'].map((k) => [k, randomUUID()]))
+      const mapsUrl = `https://www.google.com/maps/embed?pb=em3-${stamp}`
+      const ytUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+      const genUrl = `https://www.example.com/em3/${stamp}`
+      const bmUrl = `https://www.example.org/bm/${stamp}`
+      const embUrl = `https://www.example.com/emb/${stamp}`
+      const cap = (t) => [textRun(t)]
+      const capText = (c) => (c ?? []).map((r) => r.plain_text ?? r.text?.content ?? '').join('')
+      await saveBody(page, { blocks: [
+        para(K.first),
+        blk(K.maps, 'embed', { url: mapsUrl }),
+        blk(K.yt, 'embed', { url: ytUrl, height: 900 }),
+        blk(K.gen, 'embed', { url: genUrl, height: 300 }),
+        blk(K.bm, 'bookmark', { url: bmUrl, caption: cap(`북마크 ${stamp}`) }),
+        blk(K.own, 'bookmark', { url: `${BASE}/w/${workspaceId}/${page}` }),
+        blk(K.emb, 'embed', { url: embUrl, height: 500, caption: cap(`임베드 ${stamp}`) }),
+      ] })
+      await send('Network.setBlockedURLs', { urls: ['*google.com*', '*youtube.com*', '*youtube-nocookie.com*', '*example.com*', '*example.org*'] })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${K.first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+        await waitHydrated(`[data-block-id="${K.first}"]`)
+        const B = (k) => `[data-block-id="${K[k]}"]`
+        const serverBlock = async (k, pred = () => true) => {
+          for (let i = 0; i < 60; i += 1) {
+            const found = (await readBody(page)).doc.blocks.find((b) => b.id === K[k])
+            if (found && pred(found)) return found
+            await sleep(250)
+          }
+          return null
+        }
+        const stageH = (k) => evaluate(`parseFloat(document.querySelector('${B(k)} .blk-embed-stage')?.style.height || '-1')`)
+        const handleSel = (k) => `${B(k)} [data-testid="embed-resize"]`
+        await waitFor(`!!document.querySelector('${handleSel('maps')}')`, 10000)
+        await evaluate(`document.querySelector('${B('maps')}').scrollIntoView({ block: 'center' })`)
+        const attrs = await evaluate(`(() => { const h = document.querySelector('${handleSel('maps')}'); return { role: h.getAttribute('role'), o: h.getAttribute('aria-orientation'), now: h.getAttribute('aria-valuenow'), min: h.getAttribute('aria-valuemin'), max: h.getAttribute('aria-valuemax'), tab: h.tabIndex } })()`)
+        check('지도 임베드 — 높이 손잡이는 separator(가로) · valuenow/min/max · 탭으로 닿는다', attrs.role === 'separator' && attrs.o === 'horizontal' && attrs.now === '450' && attrs.min === '120' && attrs.max === '1600' && attrs.tab === 0, JSON.stringify(attrs))
+
+        // ★ 끌기 — 끄는 동안은 화면만, 놓을 때 한 번 저장
+        const h0 = await rect(handleSel('maps'))
+        const hx = h0.x + h0.w / 2
+        const hy = h0.y + h0.h / 2
+        await move(hx, hy)
+        await press(hx, hy)
+        for (let i = 1; i <= 6; i += 1) await move(hx, hy + i * 20, true)
+        const mid = await stageH('maps')
+        // 누른 채 3초 — 그 사이 서버를 거듭 읽는다(800ms 한 번으로는 끄는 동안 매번 저장하는 반사실을 놓쳤다 · 놓은 뒤의 저장은 이보다 빨리 닿는다)
+        let midServer = null
+        for (const end = Date.now() + 3000; Date.now() < end; await sleep(250)) {
+          midServer = (await readBody(page)).doc.blocks.find((b) => b.id === K.maps)
+          if (midServer?.properties?.height !== undefined) break
+        }
+        check('★ 지도 임베드 손잡이를 끌면 판의 높이가 따라 바뀐다 — 끄는 동안은 서버에 쓰지 않는다', mid === 570 && midServer?.properties?.height === undefined, JSON.stringify({ mid, height: midServer?.properties?.height }))
+        await release(hx, hy + 120)
+        const dragged = await serverBlock('maps', (b) => b.properties?.height !== undefined)
+        const savedH = dragged?.properties?.height
+        check('★ 놓으면 height 를 한 번 저장한다 — 범위 안의 정수(570)', Number.isInteger(savedH) && savedH >= 120 && savedH <= 1600 && savedH === 570 && dragged?.properties?.url === mapsUrl, JSON.stringify(dragged?.properties))
+
+        // ★ 되돌리기 한 번이면 이전 높이(저장값 없음 = 기본 450)
+        await clickSelector(`${B('first')} p`)
+        await key('z', MOD)
+        const undone = await serverBlock('maps', (b) => b.properties?.height === undefined)
+        const undoneStage = await waitFor(`parseFloat(document.querySelector('${B('maps')} .blk-embed-stage')?.style.height || '-1') === 450`, 5000)
+        check('★ 끌고 놓은 뒤 되돌리기 한 번이면 이전 높이로 돌아온다', undone !== null && undoneStage, JSON.stringify({ undone: undone?.properties, undoneStage }))
+
+        // ★ 키보드 — ↓ 20 · Shift+↓ 100 · ↑ 20, 키마다 저장
+        await evaluate(`document.querySelector('${handleSel('maps')}').focus()`)
+        await key('ArrowDown')
+        const k1 = await serverBlock('maps', (b) => b.properties?.height === 470)
+        await key('ArrowDown', SHIFT)
+        const k2 = await serverBlock('maps', (b) => b.properties?.height === 570)
+        await key('ArrowUp')
+        const k3 = await serverBlock('maps', (b) => b.properties?.height === 550)
+        const now = await evaluate(`document.querySelector('${handleSel('maps')}')?.getAttribute('aria-valuenow')`)
+        check('★ 손잡이에 포커스를 두고 ArrowDown(+20) · Shift+ArrowDown(+100) · ArrowUp(-20) — 키마다 저장하고 aria-valuenow 가 따른다',
+          k1 !== null && k2 !== null && k3 !== null && now === '550' && (await stageH('maps')) === 550, JSON.stringify({ k1: k1?.properties?.height, k2: k2?.properties?.height, k3: k3?.properties?.height, now }))
+
+        // ★ 동영상(비율) — 손잡이도 저장된 높이도 무시
+        await evaluate(`document.querySelector('${B('yt')}').scrollIntoView({ block: 'center' })`)
+        await waitFor(`!!document.querySelector('${B('yt')} iframe')`, 5000)
+        const yt = await evaluate(`(() => { const s = document.querySelector('${B('yt')} .blk-embed-stage'); return { handle: !!document.querySelector('${B('yt')} [data-testid="embed-resize"]'), styleH: s.style.height, aspect: s.style.aspectRatio, h: s.getBoundingClientRect().height, w: s.getBoundingClientRect().width } })()`)
+        check('★ YouTube 임베드 — 손잡이가 없고 저장된 height(900)를 무시한다(16:9 비율)', !yt.handle && yt.styleH === '' && yt.aspect !== '' && Math.abs(yt.h - yt.w * 9 / 16) < 4 && yt.h < 900, JSON.stringify(yt))
+
+        // 일반(façade) — 저장된 높이로 판이 선다
+        await evaluate(`document.querySelector('${B('gen')}').scrollIntoView({ block: 'center' })`)
+        const gen = await waitFor(`!!document.querySelector('${B('gen')} [data-testid="embed-facade"]')`, 5000)
+        check('일반 주소의 판(façade)도 저장된 높이(300)를 따르고 손잡이가 선다', gen && (await stageH('gen')) === 300 && (await evaluate(`!!document.querySelector('${handleSel('gen')}')`)), String(await stageH('gen')))
+
+        // ── 바꾸기 ─────────────────────────────────────────────────────
+        const MENU = '[role="menu"][aria-label="블록 메뉴"]'
+        const openMenu = async (k) => {
+          for (let t = 0; t < 4; t += 1) {
+            await evaluate(`document.querySelector('${B(k)}').scrollIntoView({ block: 'center' })`)
+            const l = await rect(`${B(k)} > *:first-child`)
+            await move(l.x + 30, l.y + 10)
+            await waitFor(`(() => { const gr = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect(); return !!gr && Math.abs(gr.y - ${l.y}) < 14 })()`, 3000)
+            await clickSelector('.blk-gutter-grip')
+            if (await waitFor(`!!document.querySelector('${MENU}')`, 3000)) return true
+          }
+          return false
+        }
+        const menuItem = (label) => evaluate(`(() => {
+          const b = [...document.querySelectorAll('${MENU} [role="menuitem"]')].find((x) => x.textContent.trim() === ${JSON.stringify(label)})
+          if (!b) return null
+          const r = b.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: b.getAttribute('aria-disabled') }
+        })()`)
+
+        // ★ 자기 출처 북마크 — 꺼진다
+        const ownOpen = await openMenu('own')
+        const ownItem = await menuItem('임베드로 바꾸기')
+        check('★ 자기 출처 주소의 북마크는 "임베드로 바꾸기" 가 꺼져 있다', ownOpen && ownItem !== null && ownItem.disabled === 'true', JSON.stringify({ ownOpen, ownItem }))
+        await key('Escape')
+        await waitFor(`!document.querySelector('${MENU}')`, 3000)
+
+        // ★ 북마크 → 임베드
+        const bmOpen = await openMenu('bm')
+        const toEmbed = await menuItem('임베드로 바꾸기')
+        if (toEmbed !== null) await click(toEmbed.x, toEmbed.y)
+        const swapped = await serverBlock('bm', (b) => b.type === 'embed')
+        check('★ 북마크의 블록 메뉴 "임베드로 바꾸기" — 블록 id · 주소 · 캡션은 그대로, 서버의 타입이 embed 가 된다',
+          bmOpen && toEmbed?.disabled !== 'true' && swapped !== null && swapped.properties?.url === bmUrl && capText(swapped.properties?.caption) === `북마크 ${stamp}`,
+          JSON.stringify({ bmOpen, toEmbed, swapped }))
+        const swappedDom = await waitFor(`!!document.querySelector('${B('bm')} .blk-embed')`, 5000)
+
+        // ★ 임베드 → 북마크 — height 를 버린다
+        const embOpen = await openMenu('emb')
+        const toBookmark = await menuItem('북마크로 바꾸기')
+        if (toBookmark !== null) await click(toBookmark.x, toBookmark.y)
+        const back = await serverBlock('emb', (b) => b.type === 'bookmark')
+        check('★ 임베드의 블록 메뉴 "북마크로 바꾸기" — 블록 id · 주소 · 캡션은 그대로, height 는 버려진다',
+          embOpen && swappedDom && back !== null && back.properties?.url === embUrl && capText(back.properties?.caption) === `임베드 ${stamp}` && back.properties?.height === undefined,
+          JSON.stringify({ embOpen, toBookmark, back }))
+      } finally {
+        await send('Network.setBlockedURLs', { urls: [] }).catch(() => undefined)
+      }
+
+      // ★ 공개 화면 — 저장된 높이를 따른다(동영상은 비율)
+      const publicPage = await mk(`임베드 높이 공개 ${stamp}`)
+      const pm = blk(randomUUID(), 'embed', { url: `https://www.google.com/maps/embed?pb=pub-${stamp}`, height: 700 })
+      const py = blk(randomUUID(), 'embed', { url: ytUrl, height: 900 })
+      const pg = blk(randomUUID(), 'embed', { url: genUrl, height: 300 })
+      await saveBody(publicPage, { blocks: [pm, py, pg] })
+      await sleep(1500)
+      const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+      const published = await publishPage(ctx, publicPage)
+      const token = published.ok ? published.value.token : null
+      await send('Network.setBlockedURLs', { urls: ['*google.com*', '*youtube.com*', '*youtube-nocookie.com*', '*example.com*'] })
+      try {
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        await waitFor(`document.querySelectorAll('[data-testid="public-embed"]').length === 3`, 15000)
+        const pub = await evaluate(`[...document.querySelectorAll('[data-testid="public-embed"]')].map((f) => { const s = f.querySelector('.pub-embed-stage'); return { styleH: s.style.height, aspect: s.style.aspectRatio, handle: !!f.querySelector('[data-testid="embed-resize"]') } })`)
+        check('★ 공개 화면 — 지도(700) · 일반 façade(300)는 저장된 높이를 따르고, 동영상은 비율(저장된 900 무시) · 손잡이는 없다',
+          pub[0]?.styleH === '700px' && pub[2]?.styleH === '300px' && pub[1]?.styleH === '' && pub[1]?.aspect !== '' && pub.every((p) => !p.handle), JSON.stringify(pub))
+      } finally {
+        await send('Network.setBlockedURLs', { urls: [] }).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('접속자 표시 (AW-1 · F-05-03)')) { try {
       // 접속자 표시(정본 §3.7 presence [보강 AW-1]) — 두 번째 사람(Node 의 provider · 쿠키 헤더)이 이름을 사칭한 awareness 로 한 블록에 서면
       // 브라우저의 상단 바에 **그 사람의 진짜 이름**으로 아바타가 서고(서버가 덮어쓴다) 그 블록에 표시가 붙는다 · 누르면 그 블록으로 · 브라우저의

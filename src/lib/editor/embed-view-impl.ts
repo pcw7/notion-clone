@@ -10,9 +10,10 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import type { EditorView, NodeView } from '@tiptap/pm/view'
 
 import { readCaption } from '../block/image.ts'
-import { EMBED_TYPE, MAX_EMBED_URL_LENGTH, isEmbedUrl, readEmbedUrl, withEmbedUrl } from '../block/embed-block.ts'
+import { EMBED_TYPE, MAX_EMBED_HEIGHT, MAX_EMBED_URL_LENGTH, MIN_EMBED_HEIGHT, clampEmbedHeight, isEmbedUrl, readEmbedHeight, readEmbedUrl, withEmbedHeight, withEmbedUrl } from '../block/embed-block.ts'
 import { EMBED_ALLOW, EMBED_REFERRER_POLICY, EMBED_SANDBOX } from '../block/embed-attrs.ts'
-import { embedPlanOf, ownHostsOf, type EmbedGeneric, type EmbedKnown } from '../block/embed-source.ts'
+import { embedPlanOf, embedStageHeight, isHeightResizable, ownHostsOf, type EmbedGeneric, type EmbedKnown, type EmbedSource } from '../block/embed-source.ts'
+import { separateUndoStep } from './code-block.ts'
 import type { EmbedViewDeps } from './embed-view.ts'
 
 function containerIdAt(view: EditorView, getPos: () => number | undefined): string {
@@ -55,6 +56,17 @@ export function mountEmbed(dom: HTMLElement, node: PmNode, view: EditorView, get
   // 판을 그린 주소 · 일반 주소를 눌러서 불러온 주소 — 판은 이 둘이 바뀔 때만 다시 만든다
   let stageKey = ''
   let loadedUrl = ''
+  // 높이 손잡이(EM-3) — 끄는 동안의 화면 높이(저장은 놓을 때 한 번) · 지금 판의 계획
+  let dragHeight: number | null = null
+  let stagePlan: EmbedSource | null = null
+  const handle = element('div', 'blk-embed-resize')
+  handle.setAttribute('role', 'separator')
+  handle.setAttribute('aria-orientation', 'horizontal')
+  handle.setAttribute('aria-label', '임베드 높이')
+  handle.setAttribute('aria-valuemin', String(MIN_EMBED_HEIGHT))
+  handle.setAttribute('aria-valuemax', String(MAX_EMBED_HEIGHT))
+  handle.setAttribute('data-testid', 'embed-resize')
+  handle.tabIndex = 0
 
   const setUrl = (url: string | null): boolean => {
     if (!view.editable) return false
@@ -66,6 +78,83 @@ export function mountEmbed(dom: HTMLElement, node: PmNode, view: EditorView, get
     view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...found.attrs, props }))
     return true
   }
+
+  /** 높이를 저장한다 — 블록 속성 하나 · 되돌리기 한 걸음. 같은 값이면 쓰지 않는다. */
+  const saveHeight = (height: number): void => {
+    if (!view.editable) return
+    const pos = getPos()
+    if (pos === undefined) return
+    const found = view.state.doc.nodeAt(pos)
+    if (!found || found.type.name !== EMBED_TYPE) return
+    const before = found.attrs.props as Record<string, unknown>
+    const next = clampEmbedHeight(height)
+    if (readEmbedHeight(before) === next) return
+    separateUndoStep(view.state)
+    view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...found.attrs, props: withEmbedHeight(before, next) }))
+    separateUndoStep(view.state)
+  }
+
+  const currentHeight = (): number => {
+    const plan = stagePlan
+    return dragHeight ?? (plan ? embedStageHeight(plan, readEmbedHeight(current.attrs.props)) : null) ?? stage.offsetHeight
+  }
+
+  /** 판의 높이와 손잡이 — 정한 높이 모양만 · 편집할 수 있을 때만 손잡이가 선다. */
+  const applyHeight = (): void => {
+    const plan = stagePlan
+    if (plan === null || !isHeightResizable(plan)) {
+      handle.remove()
+      return
+    }
+    const height = dragHeight ?? embedStageHeight(plan, readEmbedHeight(current.attrs.props)) ?? 450
+    stage.style.height = `${height}px`
+    if (!view.editable) {
+      handle.remove()
+      return
+    }
+    handle.setAttribute('aria-valuenow', String(height))
+    if (handle.parentElement !== stage) stage.append(handle)
+  }
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || !view.editable) return
+    event.preventDefault()
+    const startY = event.clientY
+    const startHeight = currentHeight()
+    try {
+      handle.setPointerCapture(event.pointerId)
+    } catch {
+      // 캡처를 못 해도 끌기는 된다
+    }
+    dom.classList.add('blk-embed-resizing')
+    dragHeight = startHeight
+    const move = (e: PointerEvent): void => {
+      dragHeight = clampEmbedHeight(startHeight + e.clientY - startY)
+      applyHeight()
+    }
+    const done = (e: PointerEvent): void => {
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', done)
+      handle.removeEventListener('pointercancel', done)
+      dom.classList.remove('blk-embed-resizing')
+      const final = dragHeight
+      dragHeight = null
+      if (e.type === 'pointerup' && final !== null) saveHeight(final)
+      applyHeight()
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', done)
+    handle.addEventListener('pointercancel', done)
+  })
+
+  handle.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    if (!view.editable) return
+    event.preventDefault()
+    event.stopPropagation()
+    const step = event.shiftKey ? 100 : 20
+    saveHeight(currentHeight() + (event.key === 'ArrowDown' ? step : -step))
+  })
 
   const openLink = (url: string): HTMLAnchorElement => {
     const link = element('a', 'blk-embed-open', '원래 주소 열기')
@@ -107,6 +196,7 @@ export function mountEmbed(dom: HTMLElement, node: PmNode, view: EditorView, get
   /** 판 — 알려진 서비스는 바로 · 일반은 눌러야 · 그리지 않을 때는 이유와 주소. */
   const renderStage = (url: string): string => {
     const plan = embedPlanOf(url, ownHostsOf([window.location.origin]))
+    stagePlan = plan
     const key = `${url}|${plan.kind}|${plan.kind === 'generic' ? String(loadedUrl === url) : ''}`
     if (key === stageKey && stage.parentElement === dom) return plan.kind === 'refused' ? '' : plan.label
     stageKey = key
@@ -127,12 +217,10 @@ export function mountEmbed(dom: HTMLElement, node: PmNode, view: EditorView, get
     }
     if (plan.kind === 'known') {
       if (plan.aspect !== undefined) stage.style.aspectRatio = String(plan.aspect)
-      else stage.style.height = `${plan.height ?? 450}px`
       stage.append(embedFrame(plan))
       return plan.label
     }
     // 일반 — 눌러야 불러온다(남의 아무 주소가 저절로 열리지 않는다)
-    stage.style.height = `${plan.height}px`
     if (loadedUrl === url) {
       stage.append(embedFrame(plan))
     } else {
@@ -163,6 +251,7 @@ export function mountEmbed(dom: HTMLElement, node: PmNode, view: EditorView, get
     if (url !== null) {
       dom.dataset.state = 'ready'
       const label = renderStage(url)
+      applyHeight()
       if (stage.parentElement !== dom) dom.prepend(stage)
       const caption = readCaption(props)
       if (caption !== '') dom.append(element('figcaption', 'blk-embed-caption', caption))
@@ -188,6 +277,7 @@ export function mountEmbed(dom: HTMLElement, node: PmNode, view: EditorView, get
     } else {
       dom.dataset.state = 'empty'
       stage.remove()
+      stagePlan = null
       stageKey = ''
       loadedUrl = ''
       const caption = readCaption(props)

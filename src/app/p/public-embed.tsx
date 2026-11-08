@@ -9,8 +9,8 @@ import { headers } from 'next/headers'
 import type { ReactNode } from 'react'
 
 import { readCaption } from '@/lib/block/image'
-import { readEmbedUrl } from '@/lib/block/embed-block'
-import { EMBED_ALLOW, EMBED_REFERRER_POLICY, EMBED_SANDBOX, embedPlanOf, ownHostsOf } from '@/lib/block/embed-source'
+import { readEmbedHeight, readEmbedUrl } from '@/lib/block/embed-block'
+import { EMBED_ALLOW, EMBED_REFERRER_POLICY, EMBED_SANDBOX, embedPlanOf, embedStageHeight, ownHostsOf } from '@/lib/block/embed-source'
 import { PublicEmbedFacade } from './public-embed-facade'
 
 const FOREIGN_REL = 'noopener noreferrer nofollow ugc'
@@ -22,6 +22,8 @@ export async function PublicEmbed({ properties }: { properties: Record<string, u
   const requestHeaders = await headers()
   const own = ownHostsOf([requestHeaders.get('host'), requestHeaders.get('x-forwarded-host')?.split(',')[0]?.trim(), process.env.NEXT_PUBLIC_APP_URL])
   const plan = embedPlanOf(url, own)
+  // 저장된 높이(EM-3) — 정한 높이 모양만 따른다(동영상은 비율)
+  const stored = readEmbedHeight(properties)
 
   let body: ReactNode
   if (plan.kind === 'refused') {
@@ -34,10 +36,10 @@ export async function PublicEmbed({ properties }: { properties: Record<string, u
       </div>
     )
   } else if (plan.kind === 'generic') {
-    body = <PublicEmbedFacade src={plan.src} label={plan.label} height={plan.height} />
+    body = <PublicEmbedFacade src={plan.src} label={plan.label} height={embedStageHeight(plan, stored) ?? plan.height} />
   } else {
     body = (
-      <div className="pub-embed-stage" style={plan.aspect !== undefined ? { aspectRatio: String(plan.aspect) } : { height: plan.height }}>
+      <div className="pub-embed-stage" style={plan.aspect !== undefined ? { aspectRatio: String(plan.aspect) } : { height: embedStageHeight(plan, stored) ?? undefined }}>
         <iframe
           className="pub-embed-iframe"
           data-testid="public-embed-frame"

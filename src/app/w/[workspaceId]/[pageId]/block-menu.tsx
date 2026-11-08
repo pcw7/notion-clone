@@ -46,6 +46,8 @@ import {
 } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { editTableCommand } from '@/lib/editor/table'
+import { ownHostsOf } from '@/lib/block/embed-origin'
+import { swapBookmarkEmbedCommand } from '@/lib/editor/file-block-commands'
 import { rememberColor } from '@/lib/editor/last-color'
 
 export type BlockMenuProps = {
@@ -65,7 +67,7 @@ export type BlockMenuProps = {
 
 export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose, onNotice, onCodeMenu }: BlockMenuProps) {
   // 여는 순간의 선택으로 계산한다. 메뉴가 열려 있는 동안 문서는 바뀌지 않는다.
-  const [items] = useState(() => blockMenuItems(view.state, deps))
+  const [items] = useState(() => blockMenuItems(view.state, deps, ownHostsOf([window.location.origin])))
   const [cursor, setCursor] = useState<MenuCursor>(() => ({ index: firstEnabled(items), sub: null }))
   // 마우스를 올린 상위 항목의 하위 메뉴는 포커스를 옮기지 않고 보여만 준다.
   const [peek, setPeek] = useState<number | null>(null)
@@ -124,6 +126,9 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
         break
       case 'table_edit':
         editTableCommand(action.blockId, action.change, deps.newId)(view.state, dispatch)
+        break
+      case 'embed_swap':
+        swapBookmarkEmbedCommand(action.blockId, ownHostsOf([window.location.origin]))(view.state, dispatch)
         break
       case 'code_language':
       case 'code_caption': {
