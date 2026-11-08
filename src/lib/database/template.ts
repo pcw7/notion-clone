@@ -391,7 +391,8 @@ export async function createRowFromTemplateIn(
          FROM page_property_value v
          JOIN property pr ON pr.id = v.property_id
         WHERE v.page_id = $1 AND pr.data_source_id = $2
-          AND pr.deleted_at IS NULL AND pr.writable <> 'readonly'`,
+          AND pr.deleted_at IS NULL AND pr.writable <> 'readonly'
+          AND pr.type <> 'verification'`, // 검증 칸은 옮기지 않는다(VF-1 ⑨)
       [template.id, dataSourceId],
     )
     const given = input.cells ?? []

@@ -41,6 +41,8 @@ export const ENTITLEMENTS = {
   'search.teamspace_filter': 'boolean',
   /** 공개 링크의 만료를 정할 수 있는가(F-06-08 · 10n-50 — 06 *"만료는 유료 플랜 기능"*) — Plus · Business · Enterprise. 지우기는 무관하다. */
   'publish.link_expiry': 'boolean',
+  /** 검증 속성을 더하고 행을 검증할 수 있는가(F-03-23 · VF-1) — Business · Enterprise. 해제 · 있던 값의 읽기는 무관하다. */
+  'database.verification': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

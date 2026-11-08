@@ -111,6 +111,7 @@ import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/li
 import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, type TableVariant } from '@/lib/database/list-layout'
 import { ROLLUP_FUNCTION_LABEL, rollupFunctionsFor, rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
+import { toVerificationCell } from '@/lib/database/verification-cell'
 import * as api from './table-api'
 import type { RowCell } from '@/lib/database/row'
 import {
@@ -118,6 +119,7 @@ import {
   FormulaDisplay,
   RelationChips,
   RollupDisplay,
+  VerificationDisplay,
   TYPE_ICON,
   TYPE_LABEL,
   type PeopleNames,
@@ -442,7 +444,7 @@ export function DatabaseTable(props: {
     // rollup 칸은 **읽기 전용이다** — 값이 행에 없고 읽을 때 계산된다(정본 [보강] rollup v1). 고칠 것은 설정뿐이고
     // 그것은 속성의 일이다(칸의 일이 아니다). 선택만 한다.
     // 고유 ID 칸도 읽기 전용이다 — 번호는 시스템이 매긴다(정본 [보강] 고유 ID ⑥ · 2a-1). 수식 칸도(2i-2) — 고칠 것은 식이다.
-    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula') {
+    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula' || column.type === 'verification') {
       setMode({ kind: 'selected', at })
       return
     }
@@ -1678,6 +1680,8 @@ export function DatabaseTable(props: {
                         ? ({ kind: 'unique_id', column, value: formatUniqueId(column.uniqueId.prefix, row.uniqueSeq) } as const)
                         : column.type === 'button'
                           ? ({ kind: 'button', column } as const)
+                          : column.type === 'verification'
+                          ? ({ kind: 'verification', column, value: toVerificationCell(row.properties[column.propertyId], new Date()) } as const)
                           : column.type === 'formula'
                           ? ({
                               kind: 'formula',
@@ -1696,6 +1700,8 @@ export function DatabaseTable(props: {
                           ? isList && !isSelected && cell.value === ''
                           : cell.kind === 'button'
                             ? false
+                            : cell.kind === 'verification'
+                            ? isList && !isSelected && cell.value === null
                             : cell.kind === 'formula'
                             ? isList && !isSelected && cell.value === null && cell.error === null
                             : isRollupCollapsed(variant, cell.value, isSelected)
@@ -1708,10 +1714,12 @@ export function DatabaseTable(props: {
                           ? cell.value === ''
                           : cell.kind === 'button'
                             ? false
+                            : cell.kind === 'verification'
+                            ? cell.value === null
                             : cell.kind === 'formula'
                             ? cell.value === null && cell.error === null
                             : rollupIsEmpty(cell.value)
-                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button'
+                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button' || cell.kind === 'verification'
                   const content =
                     // rollup · 고유 ID 는 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
                     isList && empty && !readOnlyCell ? (
@@ -1735,6 +1743,8 @@ export function DatabaseTable(props: {
                         name={column.name}
                         canPress={access.canEditContent}
                       />
+                    ) : cell.kind === 'verification' ? (
+                      <VerificationDisplay cell={cell.value} names={peopleNames} />
                     ) : cell.kind === 'formula' ? (
                       <FormulaDisplay value={cell.value} error={cell.error} />
                     ) : (

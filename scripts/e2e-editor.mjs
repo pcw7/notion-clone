@@ -31823,6 +31823,81 @@ async function main() {
         await waitFor(`[...document.querySelectorAll('[data-testid="row-properties"] [data-testid="db-person-chip"]')].some((c) => c.textContent === ${JSON.stringify(mateName)})`, 15000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검증 속성 — 서버 · 칸 읽기 (VF-1 · F-03-23)')) { try {
+      // 검증 속성을 API 로 더하고(Business) → 행을 PUT 으로 검증 → 표의 칸이 "✓ 검증됨 · N일 남음" → 지난 날짜(SQL)는 "만료" →
+      // DELETE 로 풀면 빈 칸 → 낮은 플랜은 검증 · 속성 더하기가 plan_required, 해제는 된다. 요금제는 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      try {
+        await setWorkspacePlan(workspaceId, 'business')
+        const db = (await api('POST', '/databases', { name: `검증표 ${stamp}` })).body.database
+        const view = db.defaultViewId
+        const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const row = (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('위키 글')] } }] })).body.row.id
+        const added = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '검증', type: 'verification' })
+        const pid = added.body?.property?.id
+        const owners = (added.body?.schema?.properties ?? []).filter((p) => p.name === '소유자' && p.type === 'people')
+        check('★ 검증 속성을 더하면 201 · 소유자 사람 속성이 함께 선다', added.status === 201 && typeof pid === 'string' && owners.length === 1, JSON.stringify(added.body).slice(0, 200))
+
+        const CELL = `tr[data-row-id="${row}"] td[data-property-id="${pid}"]`
+        const open = async () => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+          await waitFor(`!!document.querySelector('tr[data-row-id="${row}"]')`, 20000)
+        }
+        const verifyUrl = `/rows/${row}/verification`
+        const future = new Date(Date.now() + 30 * 86400000).toISOString()
+        const put = await api('PUT', verifyUrl, { propertyId: pid, expiresAt: future })
+        check('★ PUT 으로 검증 — 200 · 서버 시각 · 부른 사람 · 만료 안 됨', put.status === 200 && put.body?.cell?.state === 'verified' && put.body.cell.expired === false && typeof put.body.cell.verified_by === 'string', JSON.stringify(put.body))
+        await open()
+        const shown = await waitFor(`(document.querySelector('${CELL} [data-testid="db-verification"]')?.textContent ?? '').includes('검증됨')`, 15000)
+        const text = await evaluate(`document.querySelector('${CELL} [data-testid="db-verification"]')?.textContent ?? ''`)
+        const title = await evaluate(`document.querySelector('${CELL} [data-testid="db-verification"]')?.getAttribute('title') ?? ''`)
+        check('★ 표의 칸 — "✓ 검증됨 · N일 남음" 과 누가 · 언제 · 언제까지 머리말', shown && /30일 남음/.test(text) && title.includes('검증') && title.includes('까지'), `${text} | ${title}`)
+
+        const forever = await api('PUT', verifyUrl, { propertyId: pid, expiresAt: null })
+        await open()
+        await waitFor(`(document.querySelector('${CELL} [data-testid="db-verification"]')?.textContent ?? '').includes('무기한')`, 15000)
+        check('다시 검증하면 덮어쓴다 — 무기한', forever.status === 200 && (await evaluate(`document.querySelector('${CELL} [data-testid="db-verification"]')?.textContent ?? ''`)).includes('무기한'))
+
+        const past = await api('PUT', verifyUrl, { propertyId: pid, expiresAt: new Date(Date.now() - 60000).toISOString() })
+        check('★ 지난 만료는 400 invalid_value', past.status === 400 && past.body?.error === 'invalid_value', JSON.stringify(past.body))
+        const patched = await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: pid, value: { type: 'verification', state: 'verified', verified_by: put.body.cell.verified_by, verified_at: new Date().toISOString(), expires_at: null } }] })
+        check('★ 일반 칸 쓰기(PATCH)는 검증 값을 받지 않는다 — 400', patched.status === 400, JSON.stringify(patched.body).slice(0, 160))
+
+        // 시각이 지난 값 — 쓰기 없이 만료가 된다(읽을 때 정한다)
+        await dbQuery(`UPDATE page_property_value SET value = jsonb_set(jsonb_set(value, '{verified_at}', to_jsonb(to_char(now() - interval '10 days', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))), '{expires_at}', to_jsonb(to_char(now() - interval '1 day', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))) WHERE page_id = $1 AND property_id = $2`, [row, pid])
+        await open()
+        await waitFor(`document.querySelector('${CELL} [data-testid="db-verification"]')?.getAttribute('data-state') === 'expired'`, 15000)
+        const expiredText = await evaluate(`document.querySelector('${CELL} [data-testid="db-verification"]')?.textContent ?? ''`)
+        check('★ 지난 날짜 — 칸이 "만료"', expiredText === '만료', expiredText)
+
+        const del = await api('DELETE', `${verifyUrl}?propertyId=${pid}`)
+        await open()
+        await sleep(300)
+        const emptied = await evaluate(`!document.querySelector('${CELL} [data-testid="db-verification"]')`)
+        check('★ DELETE 로 풀면 빈 칸', del.status === 200 && emptied, `${del.status}`)
+
+        await api('PUT', verifyUrl, { propertyId: pid, expiresAt: null })
+        await setWorkspacePlan(workspaceId, 'free')
+        const blocked = await api('PUT', verifyUrl, { propertyId: pid, expiresAt: null })
+        const db2 = (await api('POST', '/databases', { name: `검증표2 ${stamp}` })).body.database
+        const blockedAdd = await api('POST', `/data-sources/${db2.dataSourceId}/properties`, { name: '검증', type: 'verification' })
+        const freeUnverify = await api('DELETE', `${verifyUrl}?propertyId=${pid}`)
+        check('★ 낮은 플랜 — 검증 · 속성 더하기는 403 plan_required, 해제는 200',
+          blocked.status === 403 && blocked.body?.error === 'plan_required' && blockedAdd.status === 403 && freeUnverify.status === 200,
+          `${blocked.status} ${blockedAdd.status} ${freeUnverify.status}`)
+      } finally {
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.

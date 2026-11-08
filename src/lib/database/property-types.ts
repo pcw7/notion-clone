@@ -130,6 +130,12 @@ export type SystemPropertyType = (typeof SYSTEM_PROPERTY_TYPES)[number]
 export const ACTION_PROPERTY_TYPES = ['button'] as const
 export type ActionPropertyType = (typeof ACTION_PROPERTY_TYPES)[number]
 
+/**
+ * **검증 타입** — 값은 셀이지만 일반 칸 쓰기가 받지 않는다 (VF-1 · 정본 §3.5 [보강 VF-1] ⑨). 검증한 사람 · 시각을 남이 적지 못하게
+ * 전용 명령(`verification.ts`)만 쓴다 — 그래서 `MVP_PROPERTY_TYPES` 밖이다(`prepareCells` 가 `unknown_property` 로 거부).
+ */
+export const VERIFICATION_PROPERTY_TYPES = ['verification'] as const
+
 /** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입 + 파생 타입 + 시스템 타입 + 액션 타입. 스키마(`PropertySummary.type`)가 이것이다. */
 export const APP_PROPERTY_TYPES = [
   ...MVP_PROPERTY_TYPES,
@@ -137,6 +143,7 @@ export const APP_PROPERTY_TYPES = [
   ...DERIVED_PROPERTY_TYPES,
   ...SYSTEM_PROPERTY_TYPES,
   ...ACTION_PROPERTY_TYPES,
+  ...VERIFICATION_PROPERTY_TYPES,
 ] as const
 export type AppPropertyType = (typeof APP_PROPERTY_TYPES)[number]
 

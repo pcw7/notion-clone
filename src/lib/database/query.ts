@@ -53,6 +53,7 @@ import { refreshDerivedValues } from './derived-values.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessIn } from './row-access.ts'
 import type { SubItemFilterScope } from './sub-item-scope.ts'
+import { withVerificationExpiry } from './verification-cell.ts'
 // 상수는 화면과 나눠 쓴다(`limits.ts` 머리말). 기존 import 경로를 깨지 않게 다시 내보낸다.
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION } from './limits.ts'
 
@@ -394,7 +395,7 @@ export function toQueriedRow(row: RowRow): QueriedRow {
     title: plainTitleOf(row.properties),
     icon: readPageIcon(row.page_icon),
     orderKey: row.order_key,
-    properties: row.properties_cache ?? {},
+    properties: withVerificationExpiry(row.properties_cache ?? {}),
     uniqueSeq: row.unique_seq === null || row.unique_seq === undefined ? null : Number(row.unique_seq),
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,

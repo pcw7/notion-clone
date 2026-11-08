@@ -432,6 +432,11 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
       columns.push({ ...base, type: 'button' })
       continue
     }
+    // 검증(VF-1) — 설정(소유자 속성)은 화면이 읽지 않는다. 칸은 읽기 전용이다.
+    if (r.type === 'verification') {
+      columns.push({ ...base, type: 'verification' })
+      continue
+    }
     // 수식(2i-2) — 값은 읽을 때 계산한다(`computeFormulaValues`). 여기는 사람이 읽는 식(지금 이름으로)과 결과 타입만.
     if (r.type === 'formula') {
       const config = readFormulaConfig(r.config)

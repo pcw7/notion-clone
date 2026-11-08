@@ -104,6 +104,13 @@ function messageOf(status: number, body: ErrorBody): string {
     // ── 고유 ID (2a-1) ──
     case 'unique_id_exists':
       return 'ID 속성은 표에 하나만 둘 수 있습니다.'
+    // ── 검증 속성 (VF-1) ──
+    case 'plan_required':
+      return '검증 속성은 Business 이상 요금제에서 쓸 수 있습니다.'
+    case 'verification_exists':
+      return '검증 속성은 표에 하나만 둘 수 있습니다.'
+    case 'owner_linked':
+      return '검증 속성이 가리키는 소유자 속성입니다. 검증 속성을 먼저 지우세요.'
     // ── 하위 항목 (2b-1) ──
     case 'managed_property':
       return '하위 항목 속성은 따로 지울 수 없습니다. 하위 항목을 끄세요.'

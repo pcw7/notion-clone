@@ -48,6 +48,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
 import { isUuid } from '../ids.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import {
   DEFAULT_PROPERTY_TYPE,
   OPTION_COLORS,
@@ -175,6 +176,12 @@ export type PropertyFailure =
   | 'formula_cycle'
   /** 수식이 수식을 읽는 깊이가 15 를 넘는다(2i-2 · 03 F-03-12). */
   | 'formula_too_deep'
+  /** 요금제가 허락하지 않는다 — 검증 속성을 더하기(VF-1 · `database.verification`). 지우기 · 있던 값의 읽기는 무관하다. */
+  | 'plan_required'
+  /** 이 표에 살아 있는 검증 속성이 이미 있다(VF-1 ② — 하나뿐이다). */
+  | 'verification_exists'
+  /** 검증 속성이 가리키는 소유자 속성이다(VF-1 ②) — 검증 속성을 먼저 지운다. */
+  | 'owner_linked'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -358,7 +365,7 @@ export type AddPropertyInput = {
    * 셀 타입 · 고유 ID · 버튼. relation · rollup 은 그 모듈의 명령으로 만든다(config 가 다른 프로퍼티를 가리킨다). 버튼은 automation 이
    * 함께 생긴다(액션 0개 — `automation/button-property.ts` 가 고친다 · 정본 §3.10 [보강] 자동화 엔진 · 버튼 속성 ②).
    */
-  readonly type?: MvpPropertyType | 'unique_id' | 'button'
+  readonly type?: MvpPropertyType | 'unique_id' | 'button' | 'verification'
   readonly description?: string
   readonly config?: Record<string, unknown>
   /** 고유 ID 의 접두사(`normalizeUniqueIdPrefix` 가 다듬는다). 다른 타입에 주면 `invalid_config`. */
@@ -382,9 +389,9 @@ export async function addProperty(
   // ★ `title` 을 추가로 만들 수 없다. data_source 를 만들 때 하나가 생기고
   //   그것이 전부다(불변식 P1). DB 도 막지만 이유를 말해 주는 쪽이 낫다.
   if (type === 'title') return fail('title_immutable')
-  if (!isMvpPropertyType(type) && type !== 'unique_id' && type !== 'button') return fail('unsupported_type')
+  if (!isMvpPropertyType(type) && type !== 'unique_id' && type !== 'button' && type !== 'verification') return fail('unsupported_type')
   // 고유 ID 의 설정은 접두사 하나다(data source 에 저장한다 — 정본 ⑦). config 로 받지 않는다. 버튼의 설정은 automation 의 액션이다.
-  if ((type === 'unique_id' || type === 'button') && input.config !== undefined) return fail('invalid_config')
+  if ((type === 'unique_id' || type === 'button' || type === 'verification') && input.config !== undefined) return fail('invalid_config')
   if (type !== 'unique_id' && input.prefix !== undefined) return fail('invalid_config')
   const prefix = input.prefix === undefined ? null : normalizeUniqueIdPrefix(input.prefix)
   if (prefix !== null && !prefix.ok) return fail('invalid_config')
@@ -403,12 +410,22 @@ export async function addProperty(
     // U1 — DB 의 부분 UNIQUE 도 막지만 그쪽은 23505 를 던질 뿐이다. 이유를 말한다.
     if (type === 'unique_id' && (await hasLiveUniqueId(tx, dataSourceId))) return fail('unique_id_exists')
 
+    // 검증 속성(VF-1) — 플랜 · 표에 하나 · 소유자 사람 속성을 같은 트랜잭션에서 잇는다(config 는 받지 않고 여기서 만든다).
+    let verificationConfig: Record<string, unknown> | null = null
+    if (type === 'verification') {
+      if (!(await entitlement(ctx.workspaceId, 'database.verification', tx))) return fail('plan_required')
+      if (await hasLiveVerification(tx, dataSourceId)) return fail('verification_exists')
+      const owner = await ensureVerificationOwner(tx, dataSourceId)
+      if (typeof owner !== 'string') return owner
+      verificationConfig = { owner_property_id: owner }
+    }
+
     const inserted = await insertPropertyIn(tx, dataSourceId, {
       name,
       type,
       description: input.description ?? null,
       // status 의 config 는 받지 않는다 — 기본 옵션 id 는 아래에서 만든 옵션에서 나온다.
-      config: type === 'status' ? {} : (input.config ?? {}),
+      config: verificationConfig ?? (type === 'status' ? {} : (input.config ?? {})),
     })
     if (isSchemaFailure(inserted)) return inserted
     if (type === 'status') await seedStatus(tx, inserted)
@@ -428,6 +445,25 @@ export async function addProperty(
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
+}
+
+/** 이 표에 살아 있는 검증 속성이 있는가(VF-1 ②). */
+async function hasLiveVerification(tx: Tx, dataSourceId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM property WHERE data_source_id = $1 AND type = 'verification' AND deleted_at IS NULL`,
+    [dataSourceId],
+  )
+  return row !== null
+}
+
+/** 검증 속성의 소유자 — 이미 "소유자" 라는 살아 있는 사람 속성이 있으면 그것, 없으면 만든다(VF-1 ② · 03 "Owner 자동 동반 생성"). */
+async function ensureVerificationOwner(tx: Tx, dataSourceId: string): Promise<string | PropertyResult<never>> {
+  const found = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM property WHERE data_source_id = $1 AND name = '소유자' AND type = 'people' AND deleted_at IS NULL`,
+    [dataSourceId],
+  )
+  if (found !== null) return found.id
+  return insertPropertyIn(tx, dataSourceId, { name: '소유자', type: 'people', description: null, config: {} })
 }
 
 /** 이 표에 살아 있는 ID 프로퍼티가 있는가(불변식 U1). */
@@ -726,6 +762,16 @@ export async function deleteProperty(
     // API 문서 명시: title 은 삭제할 수 없다. DB 의 `ck_property_title_alive` 도
     // 막지만 그쪽은 CHECK 위반을 던질 뿐이라 이유가 화면에 닿지 않는다.
     if (target.type === 'title') return fail('title_immutable')
+    // 검증 속성이 가리키는 소유자 속성은 지우지 못한다(VF-1 ②) — 검증 속성을 먼저 지운다. 검증 속성 자신은 지울 수 있다.
+    if (
+      await tx.queryMaybe<{ one: number }>(
+        `SELECT 1 AS one FROM property
+          WHERE data_source_id = $1 AND type = 'verification' AND deleted_at IS NULL AND config ->> 'owner_property_id' = $2`,
+        [dataSourceId, propertyId],
+      )
+    ) {
+      return fail('owner_linked')
+    }
 
     await tx.query(
       `UPDATE property SET deleted_at = now(), updated_at = now()
@@ -763,6 +809,20 @@ export async function restoreProperty(
     if (target === null) return fail('not_found')
     // U1 — 지운 사이에 새 ID 프로퍼티를 더했으면 되살릴 수 없다(번호는 이미 그쪽이 보여 준다).
     if (target.type === 'unique_id' && (await hasLiveUniqueId(tx, dataSourceId))) return fail('unique_id_exists')
+    // 검증 속성도 하나뿐이다(VF-1 ②). 소유자 속성이 그사이 지워졌으면 다시 잇는다(지운 동안은 소유자를 지울 수 있었다).
+    if (target.type === 'verification') {
+      if (await hasLiveVerification(tx, dataSourceId)) return fail('verification_exists')
+      const cfg = await tx.queryOne<{ config: { owner_property_id?: string } }>(`SELECT config FROM property WHERE id = $1`, [propertyId])
+      const live = await tx.queryMaybe<{ one: number }>(
+        `SELECT 1 AS one FROM property WHERE id = $2 AND data_source_id = $1 AND type = 'people' AND deleted_at IS NULL`,
+        [dataSourceId, cfg.config.owner_property_id ?? ''],
+      )
+      if (live === null) {
+        const owner = await ensureVerificationOwner(tx, dataSourceId)
+        if (typeof owner !== 'string') return owner
+        await tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [propertyId, JSON.stringify({ owner_property_id: owner })])
+      }
+    }
 
     const dup = await tx.queryMaybe<{ one: number }>(
       `SELECT 1 AS one FROM property
