@@ -31881,6 +31881,79 @@ async function main() {
       await api('DELETE', `/pages/${db.id}/publish`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 화면의 뷰 — 차트 (PV-3 · F-06-08)')) { try {
+      // 첫 뷰가 차트면 공개 경로의 자기 집계(공유 필터를 지난 공개 행)를 서버가 SVG 로 그린다. 세로 막대는 옵션 순서(없음 · 진행 중 · 끝)로 개수 ·
+      // 합계로 바꾸면 값이 바뀐다 · 도넛은 조각 · 숫자는 합 하나 · 날짜로 묶으면 표. 공개 화면은 세션을 읽지 않는다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `공개 차트 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '기한', type: 'date' })).body.property.id
+      const doing = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '진행 중' })).body.option.id
+      const done = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '끝' })).body.option.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, n, option) => api('POST', `/views/${view}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: score, value: { type: 'number', number: n } },
+          ...(option === null ? [] : [{ propertyId: stage, value: { type: 'select', select: { id: option } } }]),
+        ],
+      })
+      for (const [t, n, o] of [['가', 5, doing], ['나', 20, doing], ['다', 30, done], ['라', 40, null], ['마', 25, done]]) await row(t, n, o)
+      await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: '숨은 양식' })
+      // 점수 > 15 → 가는 필터 밖: 없음 1(라) · 진행 중 1(나) · 끝 2(다 · 마)
+      await api('PATCH', `/views/${view}`, { filter: { property_id: score, operator: 'greater_than', value: 15 } })
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('PV-3 · 데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+      const patched = await api('PATCH', `/views/${view}`, { type: 'chart', groupBy: { property_id: stage }, chart: { kind: 'column' } })
+      check('PV-3 · 첫 뷰를 단계로 묶은 세로 막대 차트로 바꾼다', patched.status === 200, JSON.stringify(patched.body).slice(0, 200))
+
+      const openPublic = async () => send('Page.navigate', { url: `${BASE}/p/${token}` })
+      const barsJs = `[...document.querySelectorAll('[data-testid="public-chart-bar"]')].map((b) => (b.getAttribute('data-group') || '(없음)') + '=' + b.getAttribute('data-value')).join('|')`
+      await openPublic()
+      check('★ 공개 세로 막대 차트 — 막대는 옵션 순서(없음 · 진행 중 · 끝)로 개수 1 · 1 · 2 · 필터 밖의 행은 세지 않는다',
+        await waitFor(`${barsJs} === ${JSON.stringify(`(없음)=1|${doing}=1|${done}=2`)} && document.querySelector('[data-testid="public-db-chart"]')?.getAttribute('data-kind') === 'column'`, 15000),
+        await evaluate(barsJs))
+      check('차트는 차트 상자 안에 서고 표는 없다', await evaluate(`!!document.querySelector('[data-testid="public-db-chart"] svg') && !document.querySelector('.pub-db-table')`))
+
+      // 합계 — 점수의 합: 없음 40 · 진행 중 20 · 끝 55
+      await api('PATCH', `/views/${view}`, { groupBy: { property_id: stage, calculation: { property_id: score, function: 'sum' } }, chart: { kind: 'bar' } })
+      await openPublic()
+      check('★ 합계(점수)로 바꾸면 막대 값이 합이 된다(가로 막대 40 · 20 · 55)',
+        await waitFor(`${barsJs} === ${JSON.stringify(`(없음)=40|${doing}=20|${done}=55`)} && document.querySelector('[data-testid="public-db-chart"]')?.getAttribute('data-kind') === 'bar'`, 15000),
+        await evaluate(barsJs))
+
+      // 도넛
+      await api('PATCH', `/views/${view}`, { chart: { kind: 'donut' } })
+      await openPublic()
+      const slicesJs = `[...document.querySelectorAll('[data-testid="public-chart-slice"]')].map((b) => b.getAttribute('data-value')).join(',')`
+      check('★ 도넛은 조각을 그린다(합계 40 · 20 · 55 — 막대는 없다)',
+        await waitFor(`${slicesJs} === '40,20,55' && !document.querySelector('[data-testid="public-chart-bar"]')`, 15000), await evaluate(slicesJs))
+
+      // 숫자 — 범위 안의 모든 행에 계산 한 번(40 + 20 + 30 + 25)
+      await api('PATCH', `/views/${view}`, { chart: { kind: 'number' } })
+      await openPublic()
+      check('★ 숫자 종류는 합 하나를 보인다(115)',
+        await waitFor(`document.querySelector('[data-testid="public-chart-number"]')?.getAttribute('data-value') === '115'`, 15000),
+        await evaluate(`document.querySelector('[data-testid="public-chart-number"]')?.textContent ?? '(없음)'`))
+
+      // 날짜로 묶으면 표 — 행은 그대로
+      await api('PATCH', `/views/${view}`, { groupBy: { property_id: due }, chart: { kind: 'column' } })
+      await openPublic()
+      const tableJs = `[...document.querySelectorAll('.pub-db-table [data-testid="public-db-row-link"]')].map((a) => a.textContent.trim()).sort().join(',')`
+      check('★ 날짜로 묶은 차트는 표로 그린다(차트 상자 없음 · 행은 나 · 다 · 라 · 마)',
+        await waitFor(`${tableJs} === '나,다,라,마' && !document.querySelector('[data-testid="public-db-chart"]')`, 15000), await evaluate(tableJs))
+
+      await api('DELETE', `/pages/${db.id}/publish`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 속성 — 칸 · 고르개 (6g-2a · F-03-07)')) { try {
       // 속성 추가의 "사람" → 칸에서 Enter 로 고르개 → 이름으로 찾아 고르면 칩 · 서버 값 → × 로 빼면 빈 칸 → 행 화면에도 칩.
       const stamp = Date.now()

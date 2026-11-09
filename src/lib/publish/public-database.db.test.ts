@@ -332,3 +332,110 @@ describe('⑤ ★ 캘린더 · 타임라인의 창 (PV-2)', () => {
     assert.deepEqual(march.rows.map((r) => r.id), [rows.before])
   })
 })
+
+// ── PV-3 — 차트 ────────────────────────────────────────────────────────
+
+describe('⑥ ★ 차트의 자기 집계 (PV-3)', () => {
+  /**
+   * 차트 표 — 점수(숫자) · 상태(할 일 · 끝) · 행: A(10 · 할 일) B(20 · 할 일) C(30 · 끝) F(5 · 값 없음) +
+   * 공개로 안 열리는 D(40 · 할 일 · 상속 끊음) E(50 · 끝 · 휴지통) + 필터 밖 G(100 · 끝). 뷰: 점수 < 60.
+   */
+  async function charted() {
+    const ws = await createBareWorkspace('공개 차트')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique('공개 차트') }))
+    const ds = db.dataSourceId
+    unwrap(await addProperty(boss.ctx, ds, { name: '점수', type: 'number' }))
+    unwrap(await addProperty(boss.ctx, ds, { name: '상태', type: 'select' }))
+    unwrap(await addProperty(boss.ctx, ds, { name: '기한', type: 'date' }))
+    const schema = unwrap(await getSchema(boss.ctx, ds))
+    const id = (name: string) => schema.properties.find((p) => p.name === name)!.id
+    const [title, score, status, due] = [id('이름'), id('점수'), id('상태'), id('기한')]
+    const todo = unwrap(await addSelectOption(boss.ctx, ds, status, { name: '할 일', color: 'red' })).option.id
+    const done = unwrap(await addSelectOption(boss.ctx, ds, status, { name: '끝', color: 'green' })).option.id
+    const row = async (name: string, n: number, option: string | null) =>
+      unwrap(
+        await createRow(boss.ctx, ds, {
+          cells: [
+            { propertyId: title, value: { type: 'title', title: [textRun(name)] } as CellValue },
+            { propertyId: score, value: { type: 'number', number: n } as CellValue },
+            ...(option === null ? [] : [{ propertyId: status, value: { type: 'select', select: { id: option } } as CellValue }]),
+          ],
+        }),
+      ).id
+    const rows = {
+      A: await row('A', 10, todo), B: await row('B', 20, todo), C: await row('C', 30, done), F: await row('F', 5, null),
+      D: await row('D', 40, todo), E: await row('E', 50, done), G: await row('G', 100, done),
+    }
+    assert.ok((await stopInheriting(boss.ctx, rows.D)).ok)
+    assert.ok((await trashRow(boss.ctx, rows.E)).ok)
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { filter: { property_id: score, operator: 'less_than', value: 60 } }))
+    const token = unwrap(await publishPage(boss.ctx, db.id)).token!
+    return { boss, db, ds, score, status, due, todo, done, rows, token }
+  }
+
+  const chartOf = async (token: string) => {
+    const table = await tableOf(token)
+    assert.ok(table !== null && typeof table !== 'string')
+    return table
+  }
+  const summary = (t: { chart: { groups: readonly { key: string; count: number; value: unknown }[] } | null }) =>
+    t.chart?.groups.map((g) => [g.key, g.count])
+
+  test('선택으로 묶은 개수 — 공개로 열리는 행 · 필터를 지난 행만 센다 · 옵션 순서 · 값 없음 맨 앞', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, status, todo, done, token } = await charted()
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'chart', groupBy: { property_id: status }, chart: { kind: 'column' } }))
+    const table = await chartOf(token)
+    assert.equal(table.layout, 'chart')
+    assert.equal(table.viewType, 'chart')
+    assert.equal(table.chart?.kind, 'column')
+    assert.deepEqual(summary(table), [['', 1], [todo, 2], [done, 1]], '끊은 D · 휴지통 E · 필터 밖 G 는 세지 않는다')
+    assert.deepEqual(table.rows, [], '차트는 행을 싣지 않는다')
+
+    // 숨긴 그룹은 뺀다
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: status, hidden: [todo] } }))
+    assert.deepEqual(summary(await chartOf(token)), [['', 1], [done, 1]])
+  })
+
+  test('숫자 속성의 합계 · 평균 — 값이 행에서 나온다 · 숫자 종류는 모든 행에 한 번', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, status, score, todo, done, token } = await charted()
+    unwrap(
+      await updateView(boss.ctx, db.defaultViewId, {
+        type: 'chart', groupBy: { property_id: status, calculation: { property_id: score, function: 'sum' } }, chart: { kind: 'bar' },
+      }),
+    )
+    const sum = await chartOf(token)
+    const values = (c: typeof sum) => c.chart!.groups.map((g) => [g.key, (g.value as { value: number }).value])
+    assert.deepEqual(values(sum), [['', 5], [todo, 30], [done, 30]], 'D(40) · E(50) · G(100) 는 합에 없다')
+    assert.equal(sum.chart?.calculation?.propertyName, '점수')
+
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: status, calculation: { property_id: score, function: 'average' } } }))
+    assert.deepEqual(values(await chartOf(token)), [['', 5], [todo, 15], [done, 30]])
+
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: status, calculation: { property_id: score, function: 'sum' } }, chart: { kind: 'number' } }))
+    const number = await chartOf(token)
+    assert.equal(number.layout, 'chart')
+    assert.deepEqual(number.chart?.total, { kind: 'number', value: 65 })
+    assert.deepEqual(number.chart?.groups, [])
+  })
+
+  test('그리지 못하는 X축 · Y계산은 표 — 날짜로 묶음 · 숫자로 묶음 · 날짜 계산', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, status, score, due, rows, token } = await charted()
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'chart', groupBy: { property_id: due }, chart: { kind: 'column' } }))
+    const byDate = await chartOf(token)
+    assert.equal(byDate.layout, 'table')
+    assert.equal(byDate.viewType, 'chart')
+    assert.equal(byDate.chart, null)
+    assert.ok(byDate.rows.some((r) => r.id === rows.A), '표는 행을 싣는다')
+
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: score } }))
+    assert.equal((await chartOf(token)).layout, 'table')
+
+    // 날짜 계산(가장 이른 날짜)은 Y값이 아니다 — 앱과 같이 저장만 해 두고 공개 화면은 표로
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: status, calculation: { property_id: due, function: 'earliest_date' } } }))
+    assert.equal((await chartOf(token)).layout, 'table')
+  })
+})

@@ -20,6 +20,7 @@ import { monthCells, PUBLIC_WINDOW_MAX_ROWS } from '@/lib/publish/public-window'
 import type { PublicPageView } from '@/lib/publish/public-read'
 import { RichText, UNTITLED, publicHref, titleText } from './public-blocks'
 import { checkboxLabel, publicCell } from './public-cells'
+import { PublicChartView } from './public-chart'
 
 function CellView({ column, value, uniqueSeq, view }: { column: PublicColumn; value: unknown; uniqueSeq: number | null; view: PublicPageView }): ReactNode {
   const cell = publicCell(column, value, uniqueSeq)
@@ -248,6 +249,15 @@ export function PublicTableView({ table, view }: { table: PublicTable; view: Pub
             이 기간의 처음 {PUBLIC_WINDOW_MAX_ROWS}개 항목만 보입니다.
           </p>
         )}
+      </section>
+    )
+  }
+  // 차트(PV-3) — 행이 아니라 집계로 그린다(서버 SVG)
+  if (table.layout === 'chart' && table.chart !== null) {
+    return (
+      <section className="pub-db" data-testid="public-table" data-layout="chart" aria-label={table.viewName || '데이터베이스'}>
+        {table.viewName !== '' && <p className="pub-db-view">{table.viewName}</p>}
+        <PublicChartView chart={table.chart} />
       </section>
     )
   }
