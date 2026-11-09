@@ -44,6 +44,7 @@ import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { notTemplateRow } from '../search/template-rows.ts'
+import { verificationBadgeSql } from '../database/verification-state.ts'
 import { canListMembers, listMembers } from '../workspace/list.ts'
 import { emojiLabelsIn } from '../emoji/custom-emoji.ts'
 import { plainTitleOf } from './page.ts'
@@ -131,6 +132,8 @@ export type MentionLabels = {
   readonly pages: Readonly<Record<string, string | null>>
   /** 페이지 id → 아이콘(8c-2) — **볼 수 있고 아이콘이 있는 것만**(제목과 같은 필터). */
   readonly pageIcons: Readonly<Record<string, PageIcon>>
+  /** 페이지 id → true(VF-4) — **볼 수 있고 지금 검증된 것만**(제목과 같은 필터 · 만료는 빠진다). */
+  readonly pageVerified: Readonly<Record<string, true>>
   /** 커스텀 이모지 id → 이름 · 지웠는가(7c-3a). 이 워크스페이스에 없으면 null. */
   readonly emoji: Readonly<Record<string, { readonly name: string; readonly deleted: boolean } | null>>
 }
@@ -169,6 +172,7 @@ export async function loadMentionLabels(
       users: await userLabels(tx, ctx, userIds),
       pages: pages.titles,
       pageIcons: pages.icons,
+      pageVerified: pages.verified,
       emoji: await emojiLabelsIn(tx, ctx.workspaceId, emojiIds),
     }
   })
@@ -191,16 +195,18 @@ async function pageLabels(
   tx: Tx,
   ctx: SessionContext,
   ids: readonly string[],
-): Promise<{ titles: Record<string, string | null>; icons: Record<string, PageIcon> }> {
+): Promise<{ titles: Record<string, string | null>; icons: Record<string, PageIcon>; verified: Record<string, true> }> {
   const titles: Record<string, string | null> = Object.fromEntries(ids.map((id) => [id, null]))
   const icons: Record<string, PageIcon> = {}
-  if (ids.length === 0) return { titles, icons }
+  const verified: Record<string, true> = {}
+  if (ids.length === 0) return { titles, icons, verified }
   const scopes = await readableScopes(tx, ctx)
-  if (scopes.length === 0) return { titles, icons }
+  if (scopes.length === 0) return { titles, icons, verified }
   // 데이터베이스를 가리키는 멘션도 이름을 받는다 — 그 아이콘은 `database.icon` 이다(8c-3b · 블록의 `format` 은 페이지 행만 갖는다).
-  const rows = await tx.query<{ id: string; properties: { title?: unknown }; page_icon: unknown }>(
+  const rows = await tx.query<{ id: string; properties: { title?: unknown }; page_icon: unknown; verification: string | null }>(
     `SELECT b.id, b.properties,
-            CASE WHEN b.type = 'database' THEN d.icon ELSE b.format -> 'page_icon' END AS page_icon
+            CASE WHEN b.type = 'database' THEN d.icon ELSE b.format -> 'page_icon' END AS page_icon,
+            ${verificationBadgeSql('b.id')} AS verification
        FROM block b
        LEFT JOIN database d ON b.type = 'database' AND d.id = b.id
       WHERE b.id = ANY($1::uuid[]) AND b.workspace_id = $2 AND b.type IN ('page', 'database')
@@ -211,6 +217,7 @@ async function pageLabels(
     titles[r.id] = plainTitleOf(r.properties)
     const icon = readPageIcon(r.page_icon)
     if (icon !== null) icons[r.id] = icon
+    if (r.verification === 'verified') verified[r.id] = true
   }
-  return { titles, icons }
+  return { titles, icons, verified }
 }

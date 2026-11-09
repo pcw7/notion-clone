@@ -32303,6 +32303,91 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검증 배지 — 검색 · 멘션 (VF-4 · F-03-23)')) { try {
+      // 행 셋(검증됨 · 만료(SQL) · 검증 안 됨) → Cmd+K 검색 결과에 "✓" · "만료" · 없음 → 다른 페이지 본문에서 검증된 행을 멘션하면 칩 뒤에 "✓"
+      // (만료된 행의 칩은 조용하다) → 검증을 풀고 다시 열면 배지가 없다. 요금제는 끝에 반드시 되돌린다.
+      const x = String(Date.now()).slice(-7)
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      try {
+        await setWorkspacePlan(workspaceId, 'business')
+        const db = (await api('POST', '/databases', { name: `배지표${x}` })).body.database
+        const view = db.defaultViewId
+        const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const newRow = async (title) =>
+          (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const rowOk = await newRow(`배지통과${x}`)
+        const rowGone = await newRow(`배지만료${x}`)
+        const rowNone = await newRow(`배지없음${x}`)
+        const added = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '검증', type: 'verification' })
+        const pid = added.body?.property?.id
+        const putOk = await api('PUT', `/rows/${rowOk}/verification`, { propertyId: pid, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString() })
+        const putGone = await api('PUT', `/rows/${rowGone}/verification`, { propertyId: pid, expiresAt: new Date(Date.now() + 86400000).toISOString() })
+        await dbQuery(`UPDATE page_property_value SET value = jsonb_set(jsonb_set(value, '{verified_at}', to_jsonb(to_char(now() - interval '10 days', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))), '{expires_at}', to_jsonb(to_char(now() - interval '1 day', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))) WHERE page_id = $1 AND property_id = $2`, [rowGone, pid])
+        check('전제 — 속성 · 행 셋(검증됨 · 만료 · 검증 안 됨)', added.status === 201 && putOk.status === 200 && putGone.status === 200, `${added.status} ${putOk.status} ${putGone.status}`)
+
+        // ── 검색 ──
+        const HIT = (id) => `[data-testid="search-hit"][data-page-id="${id}"]`
+        const askFor = async (query, id) => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+          await waitFor(`!!document.querySelector('[data-testid="sidebar-workspace-switcher"]')`, 15000)
+          for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+            await key('k', MOD)
+            await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+          }
+          await evaluate(`(() => { const el = document.querySelector('[data-testid="search-input"]'); el?.focus(); el?.select() })()`)
+          await typeText(query)
+          return waitFor(`!!document.querySelector('${HIT(id)}')`, 15000)
+        }
+        const badgeOf = (id) => evaluate(`JSON.stringify({ ok: !!document.querySelector('${HIT(id)} [data-testid="search-result-verified"]'),
+          gone: !!document.querySelector('${HIT(id)} [data-testid="search-result-expired"]'),
+          title: document.querySelector('${HIT(id)} [data-testid="search-result-verified"]')?.getAttribute('title') ?? null })`).then(JSON.parse)
+        const shownOk = await askFor(`배지통과${x}`, rowOk)
+        const okBadge = await badgeOf(rowOk)
+        check('★ 검색 — 검증된 행은 제목 옆에 "✓"(검증됨 머리말)', shownOk && okBadge.ok && !okBadge.gone && okBadge.title === '검증됨', JSON.stringify(okBadge))
+        const shownGone = await askFor(`배지만료${x}`, rowGone)
+        const goneBadge = await badgeOf(rowGone)
+        check('★ 검색 — 만료된 행은 "만료" 글자', shownGone && goneBadge.gone && !goneBadge.ok && (await evaluate(`document.querySelector('${HIT(rowGone)} [data-testid="search-result-expired"]')?.textContent ?? ''`)) === '만료', JSON.stringify(goneBadge))
+        const shownNone = await askFor(`배지없음${x}`, rowNone)
+        const noneBadge = await badgeOf(rowNone)
+        check('★ 검색 — 검증 안 된 행은 배지가 없다', shownNone && !noneBadge.ok && !noneBadge.gone, JSON.stringify(noneBadge))
+
+        // ── 멘션 ──
+        const host = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `배지멘션${x}` }) })).json()).page.id
+        const blockId = randomUUID()
+        const doc = (await readBody(host)).doc
+        await saveBody(host, {
+          blocks: [...doc.blocks, { id: blockId, type: 'paragraph', title: [textRun('참고 '), pageMentionRun(rowOk), textRun(' 와 '), pageMentionRun(rowGone)], properties: {}, format: {}, children: [] }],
+        })
+        const CHIP = (id) => `[data-block-id="${blockId}"] .blk-mention-page[data-mention-id="${id}"]`
+        const openHost = async (id) => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+          return waitFor(`!!document.querySelector(${JSON.stringify(CHIP(id))}) && (document.querySelector(${JSON.stringify(CHIP(id))}).textContent ?? '').length > 2`, 15000)
+        }
+        await openHost(rowOk)
+        check('★ 멘션 — 검증된 행의 칩 뒤에 "✓"',
+          await waitFor(`!!document.querySelector(${JSON.stringify(`${CHIP(rowOk)} [data-testid="mention-verified"]`)})`, 10000),
+          String(await evaluate(`document.querySelector(${JSON.stringify(CHIP(rowOk))})?.textContent ?? '(없음)'`)))
+        check('멘션 — 만료된 행의 칩은 조용하다(배지 없음)',
+          await evaluate(`!!document.querySelector(${JSON.stringify(CHIP(rowGone))}) && !document.querySelector(${JSON.stringify(`${CHIP(rowGone)} [data-testid="mention-verified"]`)})`))
+
+        const del = await api('DELETE', `/rows/${rowOk}/verification?propertyId=${pid}`)
+        await openHost(rowOk)
+        await sleep(500)
+        check('★ 검증을 풀고 다시 열면 멘션에 배지가 없다',
+          del.status === 200 && (await evaluate(`!!document.querySelector(${JSON.stringify(CHIP(rowOk))}) && !document.querySelector('[data-testid="mention-verified"]')`)),
+          `${del.status}`)
+      } finally {
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.

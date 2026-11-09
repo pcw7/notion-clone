@@ -74,6 +74,8 @@ export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & Bookma
    * ③) — 서버가 제목과 같은 권한 필터로 준 맵에서 읽는다(볼 수 있고 아이콘이 있는 것만).
    */
   pageIcon: (pageId: string) => PageIcon | null
+  /** 페이지 멘션 칩 뒤의 "✓"(VF-4) — 검증된 페이지만(만료는 조용히). 없으면 그리지 않는다. */
+  pageVerified?: (pageId: string) => boolean
 }
 
 /** 컨테이너의 blockId 를 찾는다. 노드 뷰는 내용 노드만 받으므로 위로 올라간다. */
@@ -413,6 +415,13 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
     if (icon !== null) dom.append(icon)
   }
   dom.append(shown.text)
+  if (target.kind === 'page' && !shown.denied && deps.pageVerified?.(target.id) === true) {
+    const mark = document.createElement('span')
+    mark.dataset.testid = 'mention-verified'
+    mark.title = '검증됨'
+    mark.textContent = ' ✓'
+    dom.append(mark)
+  }
   if (target.kind === 'user') {
     dom.classList.add('blk-mention-user')
     return { dom, stopEvent: () => true }

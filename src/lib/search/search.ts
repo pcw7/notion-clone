@@ -101,6 +101,7 @@ import { EDITED_RANGE_DAYS, NO_SEARCH_FILTERS, SEARCH_ME, narrowsWithoutQuery, n
 import { entitlement } from '../billing/entitlement.ts'
 import { isMyTeamspaceIn } from '../workspace/teamspace.ts'
 import { detectScript, minQueryLength, type Script } from './script.ts'
+import { verificationBadgeSql, type VerificationBadge } from '../database/verification-state.ts'
 
 /**
  * 기본 결과 수.
@@ -152,6 +153,8 @@ export type SearchHit = {
   readonly lastEditedAt: Date
   /** 제목이 걸렸는가. 정렬의 1차 축이고, 화면이 강조에 쓸 수 있다. */
   readonly titleHit: boolean
+  /** 검증 배지(VF-4) — 검증 속성이 있는 데이터베이스의 행이고 검증 칸이 있을 때만. 만료는 읽을 때 정한다. */
+  readonly verification: VerificationBadge | null
 }
 
 export type SearchInput = {
@@ -284,6 +287,7 @@ type HitRow = {
   title_hit: boolean
   sort_key: string
   snippet: string
+  verification: VerificationBadge | null
 }
 
 type Narrow = { readonly sql: string; readonly params: readonly string[] }
@@ -339,6 +343,7 @@ function buildFuzzySql(narrow: Narrow): string {
            coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) AS edited_at,
            false AS title_hit, '' AS sort_key,
            ${nodeIconSql('s')} AS page_icon,
+           ${verificationBadgeSql('s.doc_id')} AS verification,
            coalesce(left(s.body_text, ${SNIPPET_LENGTH}), '') AS snippet
       FROM search_document s
      WHERE s.workspace_id = $1
@@ -388,6 +393,7 @@ function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
     )
     SELECT k.doc_id, k.type, k.title_text, k.ancestor_ids, k.edited_at, k.title_hit, k.sort_key,
            ${nodeIconSql('k')} AS page_icon,
+           ${verificationBadgeSql('k.doc_id')} AS verification,
            CASE
              WHEN k.body_text IS NULL OR k.body_text = '' THEN ''
              -- 일치 지점 주변을 자른다. 닻($3)은 쿼리의 첫 말이다(8l-1 — 쿼리 전체로
@@ -547,6 +553,7 @@ export async function searchPages(
       breadcrumb: breadcrumbs.get(row.doc_id) ?? [],
       lastEditedAt: row.edited_at,
       titleHit: row.title_hit,
+      verification: row.verification,
     }))
 
     const last = page[page.length - 1]

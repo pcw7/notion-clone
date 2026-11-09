@@ -91,6 +91,7 @@ export async function GET(
       breadcrumb: hit.breadcrumb,
       lastEditedAt: hit.lastEditedAt.toISOString(),
       titleHit: hit.titleHit,
+      verification: hit.verification,
     })),
     hasMore: results.has_more,
     nextCursor: results.next_cursor,
