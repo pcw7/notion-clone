@@ -17,12 +17,8 @@ import { useEffect, useRef, useState } from 'react'
 import { textRun, toPlainText, type RichTextRun } from '@/lib/contracts/rich-text'
 import type { PropertySummary } from '@/lib/database/property'
 import { isAutomationCellType } from '@/lib/database/property-types'
+import { joinNotifyMessage as join, MAX_NOTIFY_MESSAGE, MAX_NOTIFY_USERS, splitNotifyMessage as split } from './notify-message'
 import * as api from './table-api'
-
-/** 서버 `actions.ts` 의 상한 · 슬롯 모양과 같다(그 파일은 서버 전용 import 가 딸려 와 화면에서 가져오지 않는다). */
-const MAX_NOTIFY_USERS = 20
-const MAX_NOTIFY_MESSAGE = 500
-const NOTIFY_SLOT = /{{row:([^{}s]{1,64})}}/g
 
 type NotifyConfig = { readonly to: { readonly users: readonly string[]; readonly people_property_ids: readonly string[] } }
 
@@ -35,19 +31,6 @@ function read(config: Record<string, unknown>) {
   const message = Array.isArray(config.message) ? toPlainText(config.message as RichTextRun[]) : ''
   return { users: ids(to.users), people: ids(to.people_property_ids), message }
 }
-
-/** 토큰 글 → [글, 슬롯, 글, 슬롯, 글] 조각(짝수 칸이 글 · 홀수 칸이 속성 id). */
-function split(message: string): string[] {
-  const parts: string[] = []
-  let last = 0
-  for (const m of message.matchAll(new RegExp(NOTIFY_SLOT.source, 'g'))) {
-    parts.push(message.slice(last, m.index), m[1])
-    last = m.index + m[0].length
-  }
-  parts.push(message.slice(last))
-  return parts
-}
-const join = (parts: readonly string[]): string => parts.map((s, i) => (i % 2 === 1 ? `{{row:${s}}}` : s)).join('')
 
 export default function NotifyEditor({
   p,

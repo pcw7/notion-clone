@@ -18278,6 +18278,8 @@ async function main() {
       }
       const chipOnly = await evaluate(`!(document.querySelector('${EDITOR} [data-testid="db-automation-notify-message"]')?.textContent ?? '').includes('{{row:')`)
       const selected = await evaluate(`[...document.querySelectorAll('${EDITOR} [data-testid="db-automation-notify-user"]')].map((e) => e.dataset.userId).join(',')`)
+      // 저장 전의 칩 · 슬롯 후보 — 칩이 서지 않을 때 무엇이 어긋났는지 상세에 남긴다(기대: ${note}:메모)
+      const chipsBefore = await evaluate(`({ chips: [...document.querySelectorAll('${EDITOR} [data-testid="db-automation-notify-chip"]')].map((e) => e.dataset.propertyId + ':' + e.textContent), options: [...document.querySelectorAll('${EDITOR} [data-testid="db-automation-notify-slot-option"]')].map((e) => e.dataset.propertyId + ':' + e.textContent) })`)
       await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
       const closed = await waitFor(`!document.querySelector('${EDITOR}') && !!document.querySelector('[data-testid="db-automation-item"]')`, 8000)
       const listed = async () => (await api('GET', `/data-sources/${ds}/automations`)).body?.automations ?? []
@@ -18294,7 +18296,7 @@ async function main() {
           && plain === `새 행: {{row:${note}}}`,
         JSON.stringify([closed, made?.actions]))
       check('★ 편집 중 값 슬롯은 속성 이름의 칩으로 보이고 토큰 글은 보이지 않는다 · 고른 멤버가 칩으로 선다',
-        chipShown && chipOnly && selected === fixedMate.userId, JSON.stringify([chipShown, chipOnly, selected, await evaluate(`document.querySelector('${EDITOR} [data-testid="db-automation-notify-message"]')?.innerHTML ?? null`)]))
+        chipShown && chipOnly && selected === fixedMate.userId, JSON.stringify([chipShown, chipOnly, selected, `기대 ${note}:메모`, chipsBefore]))
 
       // 다시 열면 칩 · 멤버 · 사람 칸이 그대로
       const item = `[data-testid="db-automation-item"][data-automation-id="${made?.id}"]`
