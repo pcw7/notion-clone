@@ -457,7 +457,7 @@ async function hasLiveVerification(tx: Tx, dataSourceId: string): Promise<boolea
 }
 
 /** 검증 속성의 소유자 — 이미 "소유자" 라는 살아 있는 사람 속성이 있으면 그것, 없으면 만든다(VF-1 ② · 03 "Owner 자동 동반 생성"). */
-async function ensureVerificationOwner(tx: Tx, dataSourceId: string): Promise<string | PropertyResult<never>> {
+export async function ensureVerificationOwner(tx: Tx, dataSourceId: string): Promise<string | PropertyResult<never>> {
   const found = await tx.queryMaybe<{ id: string }>(
     `SELECT id FROM property WHERE data_source_id = $1 AND name = '소유자' AND type = 'people' AND deleted_at IS NULL`,
     [dataSourceId],

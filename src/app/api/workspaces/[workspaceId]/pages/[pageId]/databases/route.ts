@@ -32,7 +32,11 @@ export async function POST(
   if (body.linkedDataSourceId != null && typeof body.linkedDataSourceId !== 'string') {
     return Response.json({ error: 'invalid_value' }, { status: 400 })
   }
+  // 템플릿(VF-5) — 지금은 `wiki` 뿐. 모르는 값은 형식이 틀렸다.
+  const template = (body as { template?: unknown }).template
+  if (template != null && template !== 'wiki') return Response.json({ error: 'invalid_value' }, { status: 400 })
   const created = await createInlineDatabase(session.ctx, {
+    ...(template === 'wiki' ? { template: 'wiki' as const } : {}),
     parentPageId: pageId,
     ...(typeof body.name === 'string' ? { name: body.name } : {}),
     ...(typeof body.at === 'string' ? { at: body.at } : {}),

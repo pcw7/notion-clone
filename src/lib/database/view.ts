@@ -747,7 +747,7 @@ export async function createView(
  * 컬럼 순서는 **스키마 순서를 물려받는다** — 새 뷰가 기존 표와 같은 순서로 보이는
  * 편이 예측 가능하다. 그 뒤로는 뷰마다 따로 움직인다(C-6).
  */
-async function seedViewProperties(tx: Tx, viewId: string, dataSourceId: string): Promise<void> {
+export async function seedViewProperties(tx: Tx, viewId: string, dataSourceId: string): Promise<void> {
   await tx.query(
     `INSERT INTO view_property (view_id, property_id, visible, order_idx)
      SELECT $1, p.id, true, p.order_idx

@@ -1074,9 +1074,9 @@ export function BodyEditor({
   const createRef = useCallback(async (
     kind: 'page' | 'database',
     // 연결된 데이터베이스(L-2) — 고르개를 열 때 잡은 자리(`at`)와 붙일 원본. 없으면 지금 캐럿 · 새 데이터베이스
-    options: { readonly at?: string | null; readonly linkedDataSourceId?: string } = {},
+    options: { readonly at?: string | null; readonly linkedDataSourceId?: string; readonly template?: 'wiki' } = {},
   ) => {
-    const label = kind === 'page' ? '하위 페이지' : options.linkedDataSourceId === undefined ? '데이터베이스' : '연결된 데이터베이스'
+    const label = kind === 'page' ? '하위 페이지' : options.template === 'wiki' ? '위키' : options.linkedDataSourceId === undefined ? '데이터베이스' : '연결된 데이터베이스'
     const view = viewRef.current
     const connection = connectionRef.current
     if (!view || !connection) return
@@ -1116,6 +1116,7 @@ export function BodyEditor({
               body: JSON.stringify({
                 ...(at === null ? {} : { at }),
                 ...(options.linkedDataSourceId === undefined ? {} : { linkedDataSourceId: options.linkedDataSourceId }),
+                ...(options.template === undefined ? {} : { template: options.template }),
               }),
             })
       const data = await res.json()
@@ -1313,6 +1314,10 @@ export function BodyEditor({
 
       if (command.kind === 'page' || command.kind === 'database') {
         void createRef(command.kind)
+        return
+      }
+      if (command.kind === 'wiki') {
+        void createRef('database', { template: 'wiki' })
         return
       }
       // 연결된 데이터베이스(L-2) — 원본을 먼저 고른다

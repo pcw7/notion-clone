@@ -89,6 +89,12 @@ export type LinkedDatabaseSlashCommand = SlashCommandBase & {
   readonly id: 'linked_database'
 }
 
+/** 위키 템플릿(VF-5) — `/데이터베이스` 와 같은 길(`createInlineDatabase`)에 위키의 모양을 입힌다. 호출자가 비동기로 다룬다. */
+export type WikiSlashCommand = SlashCommandBase & {
+  readonly kind: 'wiki'
+  readonly id: 'wiki'
+}
+
 /**
  * 컬럼 만들기(Phase 2 1c · F-01-12) — 블록 타입이 아니다. 컬럼의 틀은 `/` 로 하나씩 만들지 않고 N열째로 만든다(`columns.ts`).
  */
@@ -112,6 +118,7 @@ export type SlashCommand =
   | PageSlashCommand
   | DatabaseSlashCommand
   | LinkedDatabaseSlashCommand
+  | WikiSlashCommand
   | ColumnsSlashCommand
   | TableSlashCommand
   | ColorSlashCommand
@@ -194,6 +201,15 @@ const LINKED_DATABASE_COMMAND: LinkedDatabaseSlashCommand = {
   group: '페이지',
 }
 
+/** 위키(VF-5) — 소유자 · 태그 · 검증 속성과 뷰 셋을 갖춘 인라인 데이터베이스. */
+const WIKI_COMMAND: WikiSlashCommand = {
+  kind: 'wiki',
+  id: 'wiki',
+  label: '위키',
+  aliases: ['위키', 'wiki'],
+  group: '페이지',
+}
+
 /** 컬럼(Phase 2 1c) — 노션의 Layout 자리. "열" · "컬럼"으로 둘 다 찾는다. */
 const COLUMN_COMMANDS: readonly ColumnsSlashCommand[] = [
   { kind: 'columns', id: 'columns_2', count: 2, label: '2열', aliases: ['2열', '2단', '2 columns', '2columns', '컬럼', 'columns', '열'], group: '고급 블록' },
@@ -227,6 +243,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   PAGE_COMMAND,
   DATABASE_COMMAND,
   LINKED_DATABASE_COMMAND,
+  WIKI_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
   TABLE_COMMAND,

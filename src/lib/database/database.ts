@@ -60,6 +60,7 @@ import { insertLinkedAttachment, insertOwnedDataSource, readDataSources, type Da
 import { canViewOwnerDatabase } from './source-access.ts'
 import { isShiftMode, type DependencyShiftMode } from './dependency-shift.ts'
 import { normalizeDatabaseQuery } from './linked-picker.ts'
+import { applyWikiTemplate, WIKI_DATABASE_NAME } from './wiki-template.ts'
 
 export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
 
@@ -342,9 +343,12 @@ export async function createInlineDatabase(
      * 몸 — 부착 행 하나 + 그 소스를 보는 표 뷰 하나). 원본을 볼 수 없거나 없는 · 휴지통의 소스면 `not_found`.
      */
     readonly linkedDataSourceId?: string
+    /** 템플릿(VF-5) — `wiki` 면 위키의 모양(속성 · 뷰 셋)을 같은 트랜잭션에서 입힌다. 연결된 데이터베이스와는 함께 쓰지 않는다. */
+    readonly template?: 'wiki'
   },
 ): Promise<DatabaseResult<CreatedDatabase>> {
   let name = normalizeName(input.name)
+  if (input.template === 'wiki' && input.linkedDataSourceId === undefined && name === '') name = WIKI_DATABASE_NAME
   // uuid 가 아니면 없는 것과 같이 답한다(존재를 알리지 않는다 · asBlockId 는 던진다)
   if (!isUuid(input.parentPageId)) return { ok: false, reason: 'not_found' }
   if (input.linkedDataSourceId !== undefined && !isUuid(input.linkedDataSourceId)) return { ok: false, reason: 'not_found' }
@@ -381,6 +385,9 @@ export async function createInlineDatabase(
     const value = linked === null
       ? await insertDatabaseRows(tx, { id, name, isInline: true })
       : await insertLinkedDatabaseRows(tx, { id, name, dataSourceId: input.linkedDataSourceId!, source: linked })
+    if (input.template === 'wiki' && linked === null) {
+      await applyWikiTemplate(tx, { workspaceId: ctx.workspaceId, databaseId: id, dataSourceId: value.dataSourceId, defaultViewId: value.defaultViewId })
+    }
 
     parentBody.change(input.at ? placePageRefAt(id, input.at, 'database') : appendPageRef(null, id, 'database'))
     const result = await parentBody.finish()
