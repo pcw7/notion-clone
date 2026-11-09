@@ -32184,6 +32184,123 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검증 속성 — 필터 · 정렬 · 내보내기 · 공개 (VF-2b · F-03-23)')) { try {
+      // 행 셋 — 검증됨(30일) · 만료(SQL 로 지난 날짜) · 검증 안 됨. 필터 패널에서 "검증됨" 을 고르면 한 행만 남고(나머지는 API) →
+      // 정렬은 검증됨 → 만료 → 없음 → 내보낸 CSV · 행 Markdown 에 "검증됨(…)" · "만료(…)" → 게시한 공개 표에 배지만 있고 검증한 사람의 이름이 없다.
+      // 요금제는 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      let publishedDb = null
+      try {
+        await setWorkspacePlan(workspaceId, 'business')
+        const db = (await api('POST', '/databases', { name: `검증필터 ${stamp}` })).body.database
+        const view = db.defaultViewId
+        const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const newRow = async (title) =>
+          (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const rowOk = await newRow('검증된 행')
+        const rowGone = await newRow('만료된 행')
+        const rowNone = await newRow('검증 안 된 행')
+        const added = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '검증', type: 'verification' })
+        const pid = added.body?.property?.id
+        const putOk = await api('PUT', `/rows/${rowOk}/verification`, { propertyId: pid, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString() })
+        const putGone = await api('PUT', `/rows/${rowGone}/verification`, { propertyId: pid, expiresAt: new Date(Date.now() + 86400000).toISOString() })
+        await dbQuery(`UPDATE page_property_value SET value = jsonb_set(jsonb_set(value, '{verified_at}', to_jsonb(to_char(now() - interval '10 days', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))), '{expires_at}', to_jsonb(to_char(now() - interval '1 day', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))) WHERE page_id = $1 AND property_id = $2`, [rowGone, pid])
+        check('전제 — 속성 · 행 셋(검증됨 · 만료 · 검증 안 됨)', added.status === 201 && putOk.status === 200 && putGone.status === 200, `${added.status} ${putOk.status} ${putGone.status}`)
+        const rowsOf = async () => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).map((r) => r.id)
+        const sameSet = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+        const tableIds = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.getAttribute('data-row-id'))`
+
+        // ── 필터 — 패널에서 검증됨 · 만료, 나머지는 API ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('tr[data-row-id="${rowOk}"]')`, 20000)
+        await clickSelector('[data-testid="db-filter-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+        await clickSelector('[data-testid="db-filter-add"]')
+        await waitFor(`document.querySelectorAll('[data-testid="db-filter-rule"]').length === 1`, 3000)
+        const rule = '[data-testid="db-filter-rule"]:nth-child(1)'
+        await setSelect(`${rule} select[aria-label="필터 속성"]`, pid)
+        await waitFor(`!!document.querySelector('${rule} select[aria-label="필터 조건"] option[value="is"]')`, 3000)
+        const valueOptions = await evaluate(`[...document.querySelectorAll('${rule} select[data-testid="db-filter-value"] option')].map((o) => o.textContent).join(',')`)
+        check('★ 필터 패널 — 검증 속성의 값 고르개가 검증됨 · 만료 · 검증 안 됨', valueOptions === '검증됨,만료,검증 안 됨', valueOptions)
+        check('★ 필터 "검증 = 검증됨" — 표에 검증된 행만 남는다(패널에서 고른다)',
+          await waitFor(`(() => { const ids = ${tableIds}; return ids.length === 1 && ids[0] === '${rowOk}' })()`, 10000),
+          JSON.stringify(await evaluate(tableIds)))
+        await setSelect(`${rule} select[data-testid="db-filter-value"]`, 'expired')
+        check('★ 필터 "검증 = 만료" — 표에 만료된 행만 남는다(패널에서 바꾼다)',
+          await waitFor(`(() => { const ids = ${tableIds}; return ids.length === 1 && ids[0] === '${rowGone}' })()`, 10000),
+          JSON.stringify(await evaluate(tableIds)))
+
+        const filtered = async (operator, value) => {
+          await api('PATCH', `/views/${view}`, { filter: { property_id: pid, operator, value } })
+          return rowsOf()
+        }
+        check('★ 필터 "검증 = 검증 안 됨" — 칸이 없는 행만', sameSet(await filtered('is', 'unverified'), [rowNone]))
+        check('필터 "검증 ≠ 검증됨" — 만료 · 검증 안 됨', sameSet(await filtered('is_not', 'verified'), [rowGone, rowNone]))
+        check('★ 모르는 값은 저장되지 않는다 — 400',
+          (await api('PATCH', `/views/${view}`, { filter: { property_id: pid, operator: 'is', value: 'soon' } })).status === 400)
+        await api('PATCH', `/views/${view}`, { filter: null })
+
+        // ── 정렬 ──
+        await api('PATCH', `/views/${view}`, { sorts: [{ property_id: pid, direction: 'asc' }] })
+        const asc = await rowsOf()
+        check('★ 정렬 오름차순 — 검증됨 → 만료 → 검증 안 됨', JSON.stringify(asc) === JSON.stringify([rowOk, rowGone, rowNone]), JSON.stringify(asc))
+        await api('PATCH', `/views/${view}`, { sorts: [{ property_id: pid, direction: 'desc' }] })
+        const desc = await rowsOf()
+        check('정렬 내림차순 — 만료 → 검증됨, 검증 안 됨은 그래도 맨 뒤', JSON.stringify(desc) === JSON.stringify([rowGone, rowOk, rowNone]), JSON.stringify(desc))
+        await api('PATCH', `/views/${view}`, { sorts: [] })
+
+        // ── 내보내기 ──
+        const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${db.id}`, { headers: authed })
+        const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-verify-export-'))
+        try {
+          const file = join(dir, 'export.zip')
+          writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+          const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+          const python = findPython()
+          const zip = python === null
+            ? { texts: {}, error: 'python 을 찾지 못했다' }
+            : runPythonJson(python, [
+                'import sys, json, zipfile',
+                'z = zipfile.ZipFile(sys.argv[1])',
+                "print(json.dumps({'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith(('.md', '.csv'))}}))",
+              ].join('\n'), [file])
+          const all = Object.values(zip.texts ?? {}).join('\n')
+          check('★ 내보내기(CSV · 행 Markdown) — "검증됨(…까지)" 와 "만료(…)" 가 들어 있다',
+            zipRes.status === 200 && /검증됨\(\d{4}-\d{2}-\d{2} 까지\)/.test(all) && /만료\(\d{4}-\d{2}-\d{2}\)/.test(all), `${zipRes.status} ${zip.error ?? ''} ${all.slice(0, 200)}`)
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+
+        // ── 공개 표 ──
+        const published = await api('PUT', `/pages/${db.id}/publish`)
+        publishedDb = db.id
+        const token = published.body?.token
+        const verifier = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [putOk.body?.cell?.verified_by]))[0]?.name ?? null
+        const html = await (await fetch(`${BASE}/p/${token}`)).text()
+        check('★ 공개 표 — 검증 배지가 있다(검증됨 · 만료)', published.status === 200 && /✓ 검증됨 · ~\d{4}-\d{2}-\d{2}까지/.test(html) && html.includes('>만료<'), `${published.status} ${html.length}`)
+        check('★ 공개 표 — 검증한 사람의 이름 · id 가 없다', verifier !== null && !html.includes(verifier) && !html.includes(putOk.body.cell.verified_by), String(verifier))
+      } finally {
+        if (publishedDb !== null) await api('DELETE', `/pages/${publishedDb}/publish`)
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.

@@ -263,3 +263,24 @@ describe('⑦ rollup 열 (10n-37)', () => {
     assert.equal(csv, "\uFEFF합\r\n'=위험\r\n-5\r\n")
   })
 })
+
+describe('검증 칸의 글자 (VF-2b · 정본 [보강 VF-1] ⑥)', () => {
+  const V: CsvColumn = { propertyId: 'p-v', name: '검증', type: 'verification' }
+  const cell = (expires_at: string | null, extra: object = {}) => ({
+    type: 'verification', state: 'verified', verified_by: 'u1', verified_at: '2026-10-01T00:00:00.000Z', expires_at, ...extra,
+  })
+
+  test('★ 검증됨(만료일 까지) · 검증됨(무기한) · 만료(만료일) · 빈 칸 — 이름은 싣지 않는다', () => {
+    assert.equal(cellPlainText(V, cell('2026-12-01T00:00:00.000Z', { expired: false })), '검증됨(2026-12-01 까지)')
+    assert.equal(cellPlainText(V, cell(null, { expired: false })), '검증됨(무기한)')
+    assert.equal(cellPlainText(V, cell('2026-11-01T00:00:00.000Z', { expired: true })), '만료(2026-11-01)')
+    assert.equal(cellPlainText(V, undefined), '')
+    assert.equal(cellPlainText(V, { type: 'verification', state: 'bogus' }), '')
+    assert.ok(!cellPlainText(V, cell(null, { expired: false })).includes('u1'))
+  })
+
+  test('스냅숏이 만료를 끼우지 않았으면 지금으로 판정한다', () => {
+    assert.equal(cellPlainText(V, cell('2020-01-01T00:00:00.000Z')), '만료(2020-01-01)')
+    assert.equal(cellPlainText(V, cell('2999-01-01T00:00:00.000Z')), '검증됨(2999-01-01 까지)')
+  })
+})

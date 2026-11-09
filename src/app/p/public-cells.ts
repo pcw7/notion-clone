@@ -52,7 +52,17 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
       const text = dateText(record(cell.date))
       return text === null ? EMPTY : { kind: 'text', text }
     }
+    case 'verification':
+      return verificationBadge(cell)
   }
+}
+
+/** 검증 배지 — `✓ 검증됨 · ~2026-12-01까지` · `✓ 검증됨` · `만료`. 이름은 없다(공개 방문자에게 회원의 신원을 보이지 않는다 · VF-2b). 검증 안 됨은 빈 칸. */
+export function verificationBadge(cell: Record<string, unknown>): PublicCell {
+  if (cell.state !== 'verified') return EMPTY
+  if (cell.expired === true) return { kind: 'text', text: '만료' }
+  const until = typeof cell.expires_at === 'string' ? cell.expires_at.slice(0, 10) : null
+  return { kind: 'text', text: until === null ? '✓ 검증됨' : `✓ 검증됨 · ~${until}까지` }
 }
 
 /** 숫자 — 천 단위 쉼표(한국어). */

@@ -46,6 +46,7 @@ import { BOOKMARK_TYPE, bookmarkCacheUrl, readBookmarkUrl } from '../block/bookm
 import { readLinkPreviews } from '../link-preview/link-preview.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE, isRefType } from '../block/types.ts'
+import { withVerificationExpiry } from '../database/verification-cell.ts'
 import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
 import { uniqueIdCell } from '../database/unique-id-format.ts'
 import { readOptionsOf } from '../database/options.ts'
@@ -256,7 +257,7 @@ export async function readExportSnapshot(
               rolled[p] = { type: 'rollup_export', cell, targetType: info.targetType, targetOptions: info.targetOptions }
             }
           }
-          cellsOf.set(row.id, { ...cells, ...linked, ...rolled, ...(table.formulasOf?.(cells) ?? {}) })
+          cellsOf.set(row.id, { ...withVerificationExpiry(cells, now), ...linked, ...rolled, ...(table.formulasOf?.(cells) ?? {}) })
         }
       }
     }
@@ -429,7 +430,7 @@ function formulasFor(
 }
 
 /** 스냅숏이 값을 끼우는 셀 아닌 열 — 고유 ID(③) · 수식(10n-35) · relation(10n-36) · rollup(10n-37). */
-const COMPUTED_COLUMNS: readonly CsvColumn['type'][] = ['unique_id', 'formula', 'relation', 'rollup']
+const COMPUTED_COLUMNS: readonly CsvColumn['type'][] = ['unique_id', 'formula', 'relation', 'rollup', 'verification']
 
 /**
  * 열의 타입. 스키마 ENUM 은 24종이다 — 읽기는 관대하게(`property.ts` 의 `toSummary` 와 같은 규칙). 스냅숏이 값을 끼우는 열은 그대로 두고,

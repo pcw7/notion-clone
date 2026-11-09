@@ -568,3 +568,53 @@ describe('status 의 그룹 단위 (10n-23)', () => {
     assert.ok(sql.includes('g.kind::text = $2') && !sql.includes('::status_group_kind'), sql)
   })
 })
+
+describe('검증 필터 · 정렬 (VF-2b · 정본 [보강 VF-1] ⑥)', () => {
+  const VTYPES = new Map<string, string>([['pVer', 'verification']])
+  const NOW = new Date('2026-11-09T00:00:00.000Z')
+  const compileVer = (operator: string, value: unknown) => {
+    const params = new ParamBag(1)
+    const sql = compileFilter({ property_id: 'pVer', operator, value }, VTYPES, params, { me: null, today: '2026-11-09', now: NOW })
+    return { sql, values: params.values }
+  }
+
+  test('연산자는 is · is_not 둘', () => {
+    assert.deepEqual(operatorsFor('verification'), ['is', 'is_not'])
+    assert.equal(operatorArity('verification', 'is'), 1)
+  })
+
+  test('★ 검증됨 · 만료는 같은 "지금" 을 묶어 견준다 — 검증됨은 `>` · 만료는 `<=`', () => {
+    const verified = compileVer('is', 'verified')
+    assert.ok(verified.sql?.startsWith('EXISTS') && verified.sql.includes('> $1::timestamptz'), `${verified.sql}`)
+    assert.deepEqual(verified.values, [NOW.toISOString(), 'pVer'])
+    const expired = compileVer('is', 'expired')
+    assert.ok(expired.sql?.startsWith('EXISTS') && expired.sql.includes('<= $1::timestamptz'), `${expired.sql}`)
+    assert.deepEqual(expired.values, [NOW.toISOString(), 'pVer'])
+  })
+
+  test('★ 검증 안 됨은 "검증된 칸이 없다" — NOT EXISTS · 지금을 묶지 않는다 · 같지 않음은 반대', () => {
+    const none = compileVer('is', 'unverified')
+    assert.ok(none.sql?.startsWith('NOT EXISTS'), `${none.sql}`)
+    assert.deepEqual(none.values, ['pVer'])
+    assert.ok(compileVer('is_not', 'unverified').sql?.startsWith('EXISTS'))
+    assert.ok(compileVer('is_not', 'verified').sql?.startsWith('NOT EXISTS'))
+    assert.ok(compileVer('is_not', 'expired').sql?.startsWith('NOT EXISTS'))
+  })
+
+  test('값 검증 — 세 상태만 · 읽기 경로는 모르는 값을 건너뛴다', () => {
+    assert.deepEqual(validateFilter({ property_id: 'pVer', operator: 'is', value: 'expired' }, VTYPES), [])
+    assert.equal(validateFilter({ property_id: 'pVer', operator: 'is', value: 'soon' }, VTYPES).length, 1)
+    assert.equal(validateFilter({ property_id: 'pVer', operator: 'contains', value: 'verified' }, VTYPES).length, 1)
+    assert.equal(compileVer('is', 'soon').sql, null)
+  })
+
+  test('★ 정렬 — 검증됨 0 · 만료 1 · 없음 NULL(맨 뒤) · 지금을 묶는다', () => {
+    const params = new ParamBag(1)
+    const { orderBy, keys } = compileSorts([{ property_id: 'pVer', direction: 'asc' }], VTYPES, params, NOW)
+    assert.deepEqual(params.values, ['pVer', NOW.toISOString()])
+    assert.ok(orderBy.includes('NULLS LAST'))
+    const expr = keys[0]!.expr
+    assert.ok(expr.includes("THEN '0~'") && expr.includes("THEN '1' ||") && expr.includes("ELSE '0' ||") && expr.includes('IS DISTINCT FROM'), expr)
+    assert.equal(validateSorts([{ property_id: 'pVer', direction: 'desc' }], VTYPES).length, 0)
+  })
+})

@@ -771,6 +771,22 @@ export function RuleValue({
           ))}
         </select>
       )
+    case 'verification':
+      // 검증(VF-2b) — 세 상태. 만료는 보는 때의 시각으로 정해진다
+      return (
+        <select
+          aria-label="필터 값"
+          data-testid="db-filter-value"
+          value={typeof value === 'string' ? value : 'verified'}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          className={FIELD}
+        >
+          <option value="verified">검증됨</option>
+          <option value="expired">만료</option>
+          <option value="unverified">검증 안 됨</option>
+        </select>
+      )
     case 'checkbox':
       return (
         <select

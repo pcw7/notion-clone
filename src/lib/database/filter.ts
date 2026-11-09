@@ -63,9 +63,9 @@ import { relativeRange, type RelativeDateOperator } from './relative-date.ts'
  * `relation_edge` — [보강 10n-44]). relation 으로는 **정렬하지 않는다**(값이 집합이다 — `validateSorts` 가 거부하고 `compileSorts` 가 건너뛴다).
  * rollup 은 여기 없다: 저장된 값이 없다(정본 D1).
  */
-export type FilterableType = MvpPropertyType | 'unique_id' | 'relation'
+export type FilterableType = MvpPropertyType | 'unique_id' | 'relation' | 'verification'
 
-export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id', 'relation']
+export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id', 'relation', 'verification']
 
 /** 수식의 결과 타입 → 거를 때 쓰는 칸 타입(2j-2). 연산자 · 축 · 캐스트가 그 칸 타입의 것이다. */
 const FORMULA_FILTER_TYPE: Readonly<Record<string, FilterableType>> = Object.freeze({
@@ -115,7 +115,7 @@ export function propertyIdsIn(filter: FilterNode | null | undefined, sorts: read
 }
 
 export function isFilterableType(t: unknown): t is FilterableType {
-  return isMvpPropertyType(t) || t === 'unique_id' || t === 'relation'
+  return isMvpPropertyType(t) || t === 'unique_id' || t === 'relation' || t === 'verification'
 }
 
 /** 고유 ID 가 보는 열과 캐스트. `::numeric` 인 이유: 숫자 축과 같은 바인딩(`Number(value)`)이 NaN · 소수를 주어도 질의가 죽지 않는다. */
@@ -155,7 +155,12 @@ export function isGroup(node: FilterNode): node is FilterGroup {
  * 빠뜨린 길은 타입이 막는다. `me` 는 세션이 있으면 그 사람, 없으면(공개 화면 — 익명) `null`. `today` 는 보는 사람의 오늘(`YYYY-MM-DD` —
  * 시간대 쿠키 · `readViewerToday`) · 보는 사람이 없으면 UTC 의 오늘 — 상대 날짜 규칙(R-1)이 여기서 범위를 편다.
  */
-export type FilterContext = { readonly me: string | null; readonly today: string }
+export type FilterContext = {
+  readonly me: string | null
+  readonly today: string
+  /** 검증의 만료를 가르는 "지금"(VF-2b) — 없으면 컴파일할 때의 시각. 테스트가 고정한다. */
+  readonly now?: Date
+}
 
 /** 보는 사람이 없는 길(공개 화면 · 자동화의 조건) — "나" 는 아무도 아니고 오늘은 UTC 의 것이다(보는 사람마다 달라지지 않는다). */
 export function noViewer(today: string = todayIn('UTC')): FilterContext {
@@ -432,6 +437,22 @@ const RELATION_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze
   does_not_contain: { arity: 1, negate: true, predicate: () => 'TRUE' },
 })
 
+/** 검증(VF-2b · 정본 [보강 VF-1] ⑥)의 값 — 검증됨 · 만료 · 검증 안 됨. 만료는 저장하지 않고 읽을 때 "지금"과 견줘 정한다. */
+export const VERIFICATION_FILTER_VALUES: readonly string[] = Object.freeze(['verified', 'expired', 'unverified'])
+
+export function isVerificationFilterValue(value: unknown): value is 'verified' | 'expired' | 'unverified' {
+  return typeof value === 'string' && VERIFICATION_FILTER_VALUES.includes(value)
+}
+
+/**
+ * 검증 — 같음 · 같지 않음. 술어는 `compileFilter` 의 따로 된 길이 만든다(값에 따라 EXISTS 의 안쪽이 다르다 — 여기 `predicate` 는 쓰지 않는다).
+ * 검증 안 됨은 "검증된 칸이 없다"이므로 칸이 없는 행도 맞는다.
+ */
+const VERIFICATION_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  is: { arity: 1, predicate: () => 'TRUE' },
+  is_not: { arity: 1, negate: true, predicate: () => 'TRUE' },
+})
+
 /** 타입별 연산자. **축이 아니라 타입에 달린다**(select 이 텍스트와 다르기 때문). */
 const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorSpec>>>> =
   Object.freeze({
@@ -445,6 +466,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     unique_id: UNIQUE_ID_OPERATORS,
     people: PEOPLE_OPERATORS,
     relation: RELATION_OPERATORS,
+    verification: VERIFICATION_OPERATORS,
   })
 
 /** 이 타입이 노출하는 연산자 목록. 카탈로그와 같아야 한다(테스트가 확인). */
@@ -542,6 +564,10 @@ export function validateFilter(
   if (resolved.type === 'relation' && spec.arity === 1 && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
     return [{ path: `${path}.value`, message: '행 id(uuid) 여야 합니다' }]
   }
+  // 검증(VF-2b) — 값은 세 상태 중 하나
+  if (resolved.type === 'verification' && !isVerificationFilterValue(obj.value)) {
+    return [{ path: `${path}.value`, message: "'verified' · 'expired' · 'unverified' 중 하나여야 합니다" }]
+  }
   return []
 }
 
@@ -607,6 +633,7 @@ export class ParamBag {
 /** 사이드카 값으로 바인딩할 모양으로 바꾼다. 고유 ID 는 번호다(숫자 축과 같다). */
 function bindValue(type: FilterableType, value: unknown): unknown {
   if (type === 'unique_id') return typeof value === 'number' ? value : Number(value)
+  if (type === 'verification') return String(value)
   // relation 의 포함(10n-45) — 행 id. 읽기 경로는 검사를 다시 하지 않으므로 uuid 가 아니면 아무 행도 아닌 id 로 묶는다(뷰를 깨지 않는다)
   if (type === 'relation') return typeof value === 'string' && UUID_RE.test(value) ? value : NOBODY
   switch (AXIS[type]) {
@@ -669,6 +696,26 @@ export function compileFilter(
           WHERE e.from_page_id = p.id AND e.property_id = ${prop}${which}
             AND tb.lifecycle = 'live' AND tp.is_template = false)`
     return spec.negate ? `NOT ${linked}` : linked
+  }
+
+  // 검증(VF-2b) — 칸의 JSON 을 "지금"과 견준다. 만료는 저장하지 않으므로(①) 여기서 정한다. 모르는 값은 건너뛴다(읽기 경로).
+  if (rawType === 'verification') {
+    if (!isVerificationFilterValue(node.value)) return null
+    const verified = `v.value->>'state' = 'verified'`
+    let inner = verified
+    // 지금은 만료를 가를 때만 묶는다 — 안 쓰는 `$n` 은 Postgres 가 타입을 못 정해 질의가 죽는다
+    if (node.value !== 'unverified') {
+      const nowParam = params.bind((context.now ?? new Date()).toISOString())
+      const expiresAt = `(v.value->>'expires_at')::timestamptz`
+      inner =
+        node.value === 'verified'
+          ? `${verified} AND (v.value->>'expires_at' IS NULL OR ${expiresAt} > ${nowParam}::timestamptz)`
+          : `${verified} AND v.value->>'expires_at' IS NOT NULL AND ${expiresAt} <= ${nowParam}::timestamptz`
+    }
+    const exists = `EXISTS (SELECT 1 FROM page_property_value v
+          WHERE v.page_id = p.id AND v.property_id = ${params.bind(node.property_id)} AND ${inner})`
+    // 검증 안 됨 = 검증된 칸이 없다. 같지 않음은 그 반대
+    return (node.value === 'unverified') !== (node.operator === 'is_not') ? `NOT ${exists}` : exists
   }
 
   // 고유 ID — 값이 행에 있다. 셀이 없으니 EXISTS 로 감싸지 않고, 부정은 `IS NOT TRUE` 다(번호가 없는 행 — 템플릿뿐이지만 — 도
@@ -740,6 +787,7 @@ export function compileSorts(
   sorts: readonly SortKey[],
   types: PropertyTypes,
   params: ParamBag,
+  now: Date = new Date(),
 ): CompiledSort {
   const keys: { expr: string; direction: 'asc' | 'desc'; cast: string }[] = []
 
@@ -752,6 +800,23 @@ export function compileSorts(
     // 고유 ID — 행의 열을 그대로 정렬한다(서브쿼리가 없다).
     if (rawType === 'unique_id') {
       keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })
+      continue
+    }
+    // 검증(VF-2b) — 검증됨(0) < 만료(1) < 없음(NULL · 맨 뒤), 같은 줄 안은 만료 시각 순(무기한은 검증됨의 맨 뒤). 한 글자 키라 커서가 그대로 돈다.
+    if (rawType === 'verification') {
+      const prop = params.bind(sort.property_id)
+      const nowParam = params.bind(now.toISOString())
+      const at = `(sv.value->>'expires_at')::timestamptz`
+      const stamp = `to_char(${at} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')`
+      keys.push({
+        expr: `(SELECT CASE WHEN sv.value->>'state' IS DISTINCT FROM 'verified' THEN NULL
+                    WHEN sv.value->>'expires_at' IS NULL THEN '0~'
+                    WHEN ${at} <= ${nowParam}::timestamptz THEN '1' || ${stamp}
+                    ELSE '0' || ${stamp} END COLLATE "C"
+                  FROM page_property_value sv WHERE sv.page_id = p.id AND sv.property_id = ${prop})`,
+        direction: sort.direction,
+        cast: '::text',
+      })
       continue
     }
     // select · status(10n-46) — 사이드카는 옵션 id 라 그 순서는 뜻이 없다. 옵션의 순서(`order_idx` · 이진 순서)로 잇는다. status 는 범주
