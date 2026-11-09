@@ -700,7 +700,7 @@ export function RuleValue({
   /** `undefined` 는 "값 없음"이다 — 그 규칙은 저장 트리에서 빠진다. */
   onChange: (value: unknown) => void
 }) {
-  if (column.type === 'people' && people !== undefined) {
+  if ((column.type === 'people' || column.type === 'created_by' || column.type === 'last_edited_by') && people !== undefined) {
     return (
       <PeopleValue
         workspaceId={people.workspaceId}
@@ -803,6 +803,8 @@ export function RuleValue({
         </select>
       )
     case 'date':
+    case 'created_time':
+    case 'last_edited_time':
       return (
         <input
           type="date"

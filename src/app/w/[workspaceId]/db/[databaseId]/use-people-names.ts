@@ -34,7 +34,7 @@ export function usePeopleNames(
   initial: PeopleNames,
   rows: readonly RowJson[],
   columns: readonly ViewColumn[],
-): { readonly names: PeopleNames; readonly addNames: (known: PeopleNames) => void } {
+): { readonly names: PeopleNames; readonly metaLabels: PeopleNames; readonly addNames: (known: PeopleNames) => void } {
   const [names, setNames] = useState<PeopleNames>(initial)
   const asked = useRef<Set<string> | null>(null)
   const verifiedAsked = useRef<Set<string> | null>(null)
@@ -90,11 +90,34 @@ export function usePeopleNames(
     })
   }, [rows, propertyKey, workspaceId])
 
+  // 만든 · 마지막 편집 사람 칸(PT-3)의 이름표 — 서버가 모든 id 에 답한다(게스트에게는 "멤버"). 사람 칸의 지도와 섞지 않는다
+  const [metaLabels, setMetaLabels] = useState<PeopleNames>({})
+  const metaAsked = useRef<Set<string>>(new Set())
+  const metaKey = columns
+    .filter((c) => c.type === 'created_by' || c.type === 'last_edited_by')
+    .map((c) => c.type)
+    .join(',')
+  useEffect(() => {
+    if (metaKey === '') return
+    const types = metaKey.split(',')
+    const present = rows.flatMap((row) => types.map((t) => (t === 'created_by' ? row.createdBy : row.lastEditedBy)).filter((id): id is string => id !== null))
+    const missing = [...new Set(present)].filter((id) => !metaAsked.current.has(id))
+    if (missing.length === 0) return
+    for (const id of missing) metaAsked.current.add(id)
+    void api.loadAutoMetaLabels(workspaceId, missing).then((result) => {
+      if (!result.ok) {
+        for (const id of missing) metaAsked.current.delete(id)
+        return
+      }
+      setMetaLabels((current) => ({ ...current, ...result.value }))
+    })
+  }, [rows, metaKey, workspaceId])
+
   const addNames = (known: PeopleNames) => {
     asked.current ??= new Set()
     for (const id of Object.keys(known)) asked.current.add(id)
     setNames((current) => ({ ...current, ...known }))
   }
 
-  return { names, addNames }
+  return { names, metaLabels, addNames }
 }

@@ -83,7 +83,7 @@ import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
 import type { TreeMatch } from '@/lib/database/query'
 import { PageIconView } from '../../page-icon-view'
-import { isCellColumn, isSortable, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { isCellColumn, isSortable, relationOf, rollupOf, type AutoMetaColumn, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
 import { CONVERTIBLE_TYPES, isConvertibleType } from '@/lib/database/type-conversion'
 import type { Calculations } from '@/lib/database/calculate'
@@ -94,12 +94,14 @@ import {
   emptyValue,
   hasOptionRegistry,
   insertOption,
+  isAutoMetaType,
   isEmptyValue,
   isMvpPropertyType,
   isOptionType,
   optionIdOf,
   optionValue,
   readRelationValue,
+  type AutoMetaType,
   type CellValue,
   type MvpPropertyType,
   type OptionColor,
@@ -116,6 +118,7 @@ import { toVerificationCell, type VerificationCell } from '@/lib/database/verifi
 import * as api from './table-api'
 import type { RowCell } from '@/lib/database/row'
 import {
+  AutoMetaDisplay,
   CellDisplay,
   FormulaDisplay,
   RelationChips,
@@ -389,7 +392,7 @@ export function DatabaseTable(props: {
   // relation 칸의 제목 — 첫 화면은 서버가 줬고, "더 보기" · 새 행의 것은 여기서 받는다.
   const { labels, icons: relationIcons, addLabels } = useRelationLabels(workspaceId, props.relationLabels, props.relationIcons, rows, columns)
   // 사람 칸의 이름(6g-2) — 관계형 제목과 같은 모양
-  const { names: peopleNames, addNames: addPeopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, rows, columns)
+  const { names: peopleNames, metaLabels, addNames: addPeopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, rows, columns)
 
   // rollup 칸의 값 — 행에 없다. 읽을 때 계산하고, 첫 화면의 것은 서버가 함께 준다(`use-rollup-values.ts`).
   const { page: rollups, refresh: refreshRollups } = useRollupValues(
@@ -461,7 +464,8 @@ export function DatabaseTable(props: {
     // rollup 칸은 **읽기 전용이다** — 값이 행에 없고 읽을 때 계산된다(정본 [보강] rollup v1). 고칠 것은 설정뿐이고
     // 그것은 속성의 일이다(칸의 일이 아니다). 선택만 한다.
     // 고유 ID 칸도 읽기 전용이다 — 번호는 시스템이 매긴다(정본 [보강] 고유 ID ⑥ · 2a-1). 수식 칸도(2i-2) — 고칠 것은 식이다.
-    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula') {
+    // 만든 · 고친 시각과 사람도 읽기 전용이다 — 행 페이지 블록의 값이다(PT-3)
+    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula' || isAutoMetaType(column.type)) {
       setMode({ kind: 'selected', at })
       return
     }
@@ -849,13 +853,13 @@ export function DatabaseTable(props: {
     }
   }
 
-  const addColumn = async (name: string, type: MvpPropertyType): Promise<string | null> => {
+  const addColumn = async (name: string, type: MvpPropertyType | AutoMetaType): Promise<string | null> => {
     const result = await api.addColumn(workspaceId, dataSourceId, name, type)
     if (!result.ok) return result.message
     const property = result.value
-    // 이 명령은 셀 타입만 만든다. relation 은 `addRelationColumn` 이 다른 명령으로 만든다.
+    // 이 명령은 셀 타입과 만든 · 고친 시각과 사람(PT-3)만 만든다. relation 은 `addRelationColumn` 이 다른 명령으로 만든다.
     const cellType = property.type
-    if (!isMvpPropertyType(cellType)) return null
+    if (!isMvpPropertyType(cellType) && !isAutoMetaType(cellType)) return null
     // 다시 읽지 않고 붙인다. 이미 불러온 행들을 버리면 "더 보기"로 모은 것이 사라진다.
     // 기존 행에는 이 컬럼의 값이 없으므로 빈 값으로 그려진다.
     setColumns((current) => [
@@ -1728,6 +1732,8 @@ export function DatabaseTable(props: {
                       ? ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
                       : column.type === 'unique_id'
                         ? ({ kind: 'unique_id', column, value: formatUniqueId(column.uniqueId.prefix, row.uniqueSeq) } as const)
+                        : isAutoMetaType(column.type)
+                          ? ({ kind: 'auto_meta', column: column as AutoMetaColumn } as const)
                         : column.type === 'button'
                           ? ({ kind: 'button', column } as const)
                           : column.type === 'verification'
@@ -1748,6 +1754,8 @@ export function DatabaseTable(props: {
                         ? isRelationCollapsed(variant, cell.value, isSelected)
                         : cell.kind === 'unique_id'
                           ? isList && !isSelected && cell.value === ''
+                          : cell.kind === 'auto_meta'
+                            ? false
                           : cell.kind === 'button'
                             ? false
                             : cell.kind === 'verification'
@@ -1762,6 +1770,8 @@ export function DatabaseTable(props: {
                         ? cell.value.count === 0
                         : cell.kind === 'unique_id'
                           ? cell.value === ''
+                          : cell.kind === 'auto_meta'
+                            ? false
                           : cell.kind === 'button'
                             ? false
                             : cell.kind === 'verification'
@@ -1769,7 +1779,7 @@ export function DatabaseTable(props: {
                             : cell.kind === 'formula'
                             ? cell.value === null && cell.error === null
                             : rollupIsEmpty(cell.value)
-                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button'
+                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button' || cell.kind === 'auto_meta'
                   const content =
                     // rollup · 고유 ID 는 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
                     isList && empty && !readOnlyCell ? (
@@ -1785,6 +1795,8 @@ export function DatabaseTable(props: {
                       <span className="truncate tabular-nums text-neutral-600 dark:text-neutral-300" data-testid="db-unique-id">
                         {cell.value}
                       </span>
+                    ) : cell.kind === 'auto_meta' ? (
+                      <AutoMetaDisplay type={cell.column.type} row={row} labels={metaLabels} />
                     ) : cell.kind === 'button' ? (
                       <ButtonCell
                         workspaceId={workspaceId}

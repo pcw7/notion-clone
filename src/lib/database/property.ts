@@ -56,11 +56,13 @@ import {
   STATUS_GROUP_KINDS,
   emptyValue,
   isAppPropertyType,
+  isAutoMetaType,
   isMvpPropertyType,
   isOptionColor,
   hasOptionRegistry,
   isStatusGroupKind,
   type AppPropertyType,
+  type AutoMetaType,
   type MvpPropertyType,
   type OptionColor,
   type SelectOption,
@@ -365,7 +367,7 @@ export type AddPropertyInput = {
    * 셀 타입 · 고유 ID · 버튼. relation · rollup 은 그 모듈의 명령으로 만든다(config 가 다른 프로퍼티를 가리킨다). 버튼은 automation 이
    * 함께 생긴다(액션 0개 — `automation/button-property.ts` 가 고친다 · 정본 §3.10 [보강] 자동화 엔진 · 버튼 속성 ②).
    */
-  readonly type?: MvpPropertyType | 'unique_id' | 'button' | 'verification'
+  readonly type?: MvpPropertyType | AutoMetaType | 'unique_id' | 'button' | 'verification'
   readonly description?: string
   readonly config?: Record<string, unknown>
   /** 고유 ID 의 접두사(`normalizeUniqueIdPrefix` 가 다듬는다). 다른 타입에 주면 `invalid_config`. */
@@ -389,9 +391,9 @@ export async function addProperty(
   // ★ `title` 을 추가로 만들 수 없다. data_source 를 만들 때 하나가 생기고
   //   그것이 전부다(불변식 P1). DB 도 막지만 이유를 말해 주는 쪽이 낫다.
   if (type === 'title') return fail('title_immutable')
-  if (!isMvpPropertyType(type) && type !== 'unique_id' && type !== 'button' && type !== 'verification') return fail('unsupported_type')
+  if (!isMvpPropertyType(type) && !isAutoMetaType(type) && type !== 'unique_id' && type !== 'button' && type !== 'verification') return fail('unsupported_type')
   // 고유 ID 의 설정은 접두사 하나다(data source 에 저장한다 — 정본 ⑦). config 로 받지 않는다. 버튼의 설정은 automation 의 액션이다.
-  if ((type === 'unique_id' || type === 'button' || type === 'verification') && input.config !== undefined) return fail('invalid_config')
+  if ((type === 'unique_id' || type === 'button' || type === 'verification' || isAutoMetaType(type)) && input.config !== undefined) return fail('invalid_config')
   if (type !== 'unique_id' && input.prefix !== undefined) return fail('invalid_config')
   const prefix = input.prefix === undefined ? null : normalizeUniqueIdPrefix(input.prefix)
   if (prefix !== null && !prefix.ok) return fail('invalid_config')

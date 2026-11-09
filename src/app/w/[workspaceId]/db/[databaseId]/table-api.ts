@@ -22,7 +22,7 @@ import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary, SchemaSnapshot } from '@/lib/database/property'
-import type { CellValue, MvpPropertyType, OptionColor, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
+import type { AutoMetaType, CellValue, MvpPropertyType, OptionColor, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
 import type { RowCell } from '@/lib/database/row'
 import type { RollupFunction, RollupPage } from '@/lib/database/rollup-functions'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
@@ -201,6 +201,11 @@ export function searchPeople(workspaceId: string, q: string): Promise<ApiResult<
 /** 칸에 든 사람의 이름(6g-2) — 활동 중인 사람만. 떠난 사람은 지도에 없다. */
 export function loadPeopleNames(workspaceId: string, ids: readonly string[]): Promise<ApiResult<Record<string, string>>> {
   return call(`${base(workspaceId)}/people?ids=${ids.map(encodeURIComponent).join(',')}`, {}, (body) => (body.names as Record<string, string>) ?? {})
+}
+
+/** 만든 · 고친 사람 칸의 이름표(PT-3) — 모든 id 에 답이 있다(게스트에게는 "멤버"). */
+export function loadAutoMetaLabels(workspaceId: string, ids: readonly string[]): Promise<ApiResult<Record<string, string>>> {
+  return call(`${base(workspaceId)}/people?meta=1&ids=${ids.map(encodeURIComponent).join(',')}`, {}, (body) => (body.names as Record<string, string>) ?? {})
 }
 
 /** 뷰 탭을 옮긴다 — 이 뷰를 `before` 앞에(null 이면 맨 뒤) · 10n-18. 답은 옮긴 뒤의 탭 순서(id 들). */
@@ -719,7 +724,7 @@ export function addColumn(
   workspaceId: string,
   dataSourceId: string,
   name: string,
-  type: MvpPropertyType | 'unique_id' | 'button' | 'verification',
+  type: MvpPropertyType | AutoMetaType | 'unique_id' | 'button' | 'verification',
   /** 고유 ID 의 접두사(2a-2). 비우면 보내지 않는다 — 서버가 옛 접두사를 그대로 둔다. */
   prefix?: string,
 ): Promise<ApiResult<PropertySummary>> {

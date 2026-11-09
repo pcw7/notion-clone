@@ -13,7 +13,8 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
-import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
+import { AUTO_META_COLUMN, isAutoMetaType } from './property-types.ts'
+import { calculationResult, canCalculateColumn, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
 import { compileFilter, ParamBag, propertyIdsIn, type FilterContext, type FilterNode } from './filter.ts'
 import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
@@ -49,7 +50,7 @@ export async function computeCalculations(
 ): Promise<Calculations> {
   const wanted = columns.filter(
     (c): c is CalculatedColumn & { calculation: Calculation } =>
-      c.calculation !== null && c.calculation !== undefined && canCalculate(c.type, c.calculation),
+      c.calculation !== null && c.calculation !== undefined && canCalculateColumn(c.type, c.calculation),
   )
   if (wanted.length === 0) return {}
   // 수식으로 거르면 그 캐시를 먼저 채운다(2j-2 — 표에 보이는 행과 같은 행을 센다)
@@ -163,6 +164,16 @@ async function readStats(
   // 상태 열의 완료 그룹(10n-30) — 그 열에만 완료 개수를 센다
   const completeOf = await completeIdsOf(tx, propertyIds.filter((id) => types.get(id) === 'status'))
   const columns = propertyIds.map((id, i) => {
+    // 만든 · 고친 시각과 사람(PT-3) — 칸이 없다. 행 페이지 블록의 열을 사이드카 모양(`date_start` · `text_value`)으로 빌려 같은 통계 식을 쓴다
+    const type = types.get(id)
+    if (isAutoMetaType(type)) {
+      const time = type === 'created_time' || type === 'last_edited_time'
+      const col = `fb.${AUTO_META_COLUMN[type]}`
+      return `(SELECT ${statsJsonSql('v')}
+               FROM r JOIN LATERAL (SELECT ${time ? `${col} AS date_start, NULL::text AS text_value` : `NULL::timestamptz AS date_start, ${col}::text AS text_value`},
+                                           NULL::timestamptz AS date_end, NULL::numeric AS num_value, false AS bool_value, NULL::jsonb AS value
+                                      FROM block fb WHERE fb.id = r.id) v ON true) AS c${i}`
+    }
     const p = params.bind(id)
     const complete = completeOf.get(id)
     const completeParam = complete === undefined ? null : params.bind(complete)

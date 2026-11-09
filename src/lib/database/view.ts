@@ -66,8 +66,8 @@ import {
   type CalendarLayout,
   type LiveCalendarLayout,
 } from './calendar.ts'
-import { hasOptionRegistry, isMvpPropertyType, readStatusDefault } from './property-types.ts'
-import { calculationsFor, isCalculation } from './calculations.ts'
+import { hasOptionRegistry, isAutoMetaType, isMvpPropertyType, readStatusDefault } from './property-types.ts'
+import { canCalculateColumn, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import { isOpenPagesIn, type OpenPagesIn } from './open-pages.ts'
@@ -425,6 +425,11 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
     }
     if (r.type === 'unique_id') {
       columns.push({ ...base, type: 'unique_id', uniqueId: { prefix: r.unique_id_prefix } })
+      continue
+    }
+    // 만든 · 고친 시각과 사람(PT-3) — 설정이 없다. 값은 행 페이지 블록의 열이다
+    if (isAutoMetaType(r.type)) {
+      columns.push({ ...base, type: r.type })
       continue
     }
     // 버튼(5a-3) — 설정(액션)은 여기 싣지 않는다. 편집기가 열 때 읽는다(`…/properties/{id}/actions`).
@@ -1201,7 +1206,7 @@ export async function setViewColumn(
     if (
       input.calculation !== undefined &&
       input.calculation !== null &&
-      !(isCalculation(input.calculation) && isMvpPropertyType(existing.type) && calculationsFor(existing.type).includes(input.calculation))
+      !(isCalculation(input.calculation) && canCalculateColumn(existing.type, input.calculation))
     ) {
       return fail('invalid_calculation')
     }

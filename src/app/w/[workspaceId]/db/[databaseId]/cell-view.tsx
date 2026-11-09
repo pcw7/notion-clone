@@ -4,7 +4,11 @@
  * 글자를 만드는 규칙은 `cell-format.ts` 에 있다. 여기는 그 글자에 모양만 입힌다.
  */
 
-import { cellText } from '@/lib/database/cell-format'
+import { useSyncExternalStore } from 'react'
+
+import { cellText, formatAutoMetaTime } from '@/lib/database/cell-format'
+import type { RowJson } from '@/lib/database/http'
+import { isAutoMetaTimeType, type AutoMetaType } from '@/lib/database/property-types'
 import { CONTACT_OPEN_LABEL, contactHref, contactLinkProps } from '@/lib/database/contact-links'
 import type { PageIcon } from '@/lib/block/page-icon'
 import { PageIconView } from '../../page-icon-view'
@@ -31,6 +35,10 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   url: 'URL',
   email: '이메일',
   phone_number: '전화',
+  created_time: '만든 시각',
+  created_by: '만든 사람',
+  last_edited_time: '마지막 편집 시각',
+  last_edited_by: '마지막 편집 사람',
   relation: '관계형',
   rollup: '롤업',
   formula: '수식',
@@ -53,6 +61,10 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   url: '⌁',
   email: '@',
   phone_number: '✆',
+  created_time: '◷',
+  created_by: '◉',
+  last_edited_time: '◷',
+  last_edited_by: '◉',
   relation: '↗',
   rollup: '∑',
   formula: 'ƒ',
@@ -166,6 +178,34 @@ function ContactCell({ type, text }: { type: ContactType; text: string }) {
           <span aria-hidden>↗</span>
         </a>
       )}
+    </span>
+  )
+}
+
+const subscribeNothing = () => () => {}
+const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
+const serverTimeZone = () => null
+
+/**
+ * 만든 · 고친 시각과 사람 칸(PT-3) — 날짜 칸과 같은 글(상대 시각 없음) · 사람 칸과 같은 칩. 시각은 보는 사람의 시간대로 — 서버 렌더는
+ * 그 시간대를 몰라(쿠키는 "오늘" 에만 읽는다) 마운트 뒤에 그린다. 사람은 이름표 지도(`labels` — 게스트에게는 "멤버")가 올 때까지, 만든
+ * 사람이 없는 행(익명 폼)은 빈 칸.
+ */
+export function AutoMetaDisplay({ type, row, labels }: { type: AutoMetaType; row: RowJson; labels: PeopleNames }) {
+  const timeZone = useSyncExternalStore(subscribeNothing, browserTimeZone, serverTimeZone)
+  if (isAutoMetaTimeType(type)) {
+    const iso = type === 'created_time' ? row.createdAt : row.lastEditedAt
+    return (
+      <span className="block truncate" data-testid="db-auto-time" data-iso={iso}>
+        {timeZone === null ? '' : formatAutoMetaTime(iso, timeZone)}
+      </span>
+    )
+  }
+  const id = type === 'created_by' ? row.createdBy : row.lastEditedBy
+  const label = id === null ? '' : (labels[id] ?? '')
+  return (
+    <span className="flex min-w-0 flex-wrap gap-1 overflow-hidden" data-testid="db-auto-person">
+      {label !== '' && <span className="max-w-full truncate rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-800">{label}</span>}
     </span>
   )
 }

@@ -33208,6 +33208,174 @@ async function main() {
           && (await evaluate(`${publicRow('첫 일')}.querySelector('a[data-testid="public-db-phone_number"]')?.getAttribute('href')`)) === 'tel:+821012345678')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('만든 · 고친 시각과 사람 속성 (PT-3 · F-03-08)')) { try {
+      // 속성 추가에서 만든 시각 · 만든 사람 · 마지막 편집 시각 · 마지막 편집 사람 → 칸이 행 페이지 블록의 값을 그린다(읽기 전용) → 다른 칸을 고치면
+      // 마지막 편집 시각이 오른다 → 필터("마지막 편집 사람 = 나") · 정렬(만든 시각 내림차순) → 공개 표는 시각만 그리고 사람은 그리지 않는다.
+      // 정본 §3.5 [보강 PT-1] ⑦.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const myName = (await api('GET', `/people?ids=${ctx.userId}`)).body?.names?.[ctx.userId]
+      const mateName = `메타 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+
+      const db = (await api('POST', '/databases', { name: `자동 메타 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const cols0 = (await api('GET', `/views/${view}`)).body.view.columns
+      const titleProp = cols0.find((c) => c.type === 'title').propertyId
+      const mk = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const r1 = await mk('첫 일')
+      const r2 = await mk('둘째 일')
+      const r3 = await mk('셋째 일')
+      await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })
+      // 만든 시각이 서로 다른 날이 되게 — 정렬을 가른다(첫 일이 가장 오래됨)
+      for (const [id, days] of [[r1, 3], [r2, 2], [r3, 1]]) await dbQuery(`UPDATE block SET created_at = now() - ($2 || ' days')::interval WHERE id = $1`, [id, String(days)])
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+
+      // ── 속성 추가 — 네 타입 ──
+      const serverColumns = async () => (await api('GET', `/views/${view}`)).body?.view?.columns ?? []
+      const addColumn = async (name, type) => {
+        let formOpened = false
+        for (let i = 0; i < 5 && !formOpened; i += 1) {
+          await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다
+          await clickSelector('[data-testid="db-add-column"]')
+          formOpened = await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 2000)
+        }
+        const offered = formOpened && (await evaluate(`[...document.querySelectorAll('select[aria-label="속성 유형"] option')].some((o) => o.value === ${JSON.stringify(type)})`))
+        await typeText(name)
+        await setSelect('select[aria-label="속성 유형"]', type)
+        await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+        const made = (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) &&
+          (await until(async () => (await serverColumns()).some((c) => c.name === name && c.type === type)))
+        return { offered, made }
+      }
+      const added = [
+        await addColumn('만든 시각', 'created_time'),
+        await addColumn('만든 사람', 'created_by'),
+        await addColumn('마지막 편집 시각', 'last_edited_time'),
+        await addColumn('마지막 편집 사람', 'last_edited_by'),
+      ]
+      check('★ 속성 추가의 유형 목록에 만든 시각 · 만든 사람 · 마지막 편집 시각 · 마지막 편집 사람이 선다', added.every((a) => a.offered), JSON.stringify(added))
+      check('★ 만들면 네 열이 서고 서버의 속성 타입도 created_time · created_by · last_edited_time · last_edited_by',
+        added.every((a) => a.made), JSON.stringify((await serverColumns()).map((c) => `${c.name}:${c.type}`)))
+      const cols = await serverColumns()
+      const prop = (name) => cols.find((c) => c.name === name)?.propertyId
+      const createdTimeProp = prop('만든 시각')
+      const createdByProp = prop('만든 사람')
+      const editedTimeProp = prop('마지막 편집 시각')
+      const editedByProp = prop('마지막 편집 사람')
+      const memoProp = prop('메모')
+      const colAt = (p) => cols.findIndex((c) => c.propertyId === p)
+      const cellSel = (rowAt, p) => `td[data-cell="${rowAt}:${colAt(p)}"]`
+      const serverRow = async (id) => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === id)
+      const localText = (iso) => evaluate(`(() => { const d = new Date(${JSON.stringify(iso)}); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '년 ' + (d.getMonth() + 1) + '월 ' + d.getDate() + '일 ' + p(d.getHours()) + ':' + p(d.getMinutes()) })()`)
+
+      // ── 칸이 행 페이지 블록의 값을 그린다 ──
+      const first = await serverRow(r1)
+      check('★ 만든 시각 칸은 그 행의 만든 시각을 날짜 칸과 같은 모양(연·월·일 시:분)으로 그린다',
+        await waitFor(`document.querySelector('${cellSel(0, createdTimeProp)} [data-testid="db-auto-time"]')?.dataset.iso === ${JSON.stringify(first?.createdAt)}`, 10000)
+          && (await evaluate(`document.querySelector('${cellSel(0, createdTimeProp)} [data-testid="db-auto-time"]').textContent`)) === (await localText(first.createdAt)),
+        String(await evaluate(`document.querySelector('${cellSel(0, createdTimeProp)}')?.textContent`)))
+      check('★ 만든 사람 칸은 만든 사람의 이름 칩',
+        await waitFor(`document.querySelector('${cellSel(0, createdByProp)} [data-testid="db-auto-person"]')?.textContent === ${JSON.stringify(myName)}`, 10000),
+        String(await evaluate(`document.querySelector('${cellSel(0, createdByProp)}')?.textContent`)))
+
+      // ── 읽기 전용 — 두 번 누르기 · Enter 로 편집기가 열리지 않는다 ──
+      const target = cellSel(0, createdTimeProp)
+      await waitHydrated(target)
+      await clickSelector(target)
+      await key('Enter')
+      await sleep(500)
+      const box = await evaluate(`(() => { const r = document.querySelector('${target}').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+      for (const clickCount of [1, 2]) {
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount })
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount })
+      }
+      await sleep(500)
+      check('★ 시각 칸은 읽기 전용 — Enter · 두 번 누르기로 편집기가 열리지 않고 값도 그대로',
+        (await evaluate(`document.querySelectorAll('[data-testid="db-cell-input"]').length`)) === 0
+          && (await evaluate(`document.querySelector('${target} [data-testid="db-auto-time"]')?.dataset.iso`)) === first.createdAt)
+      const personCell = cellSel(0, editedByProp)
+      await clickSelector(personCell)
+      await key('Enter')
+      await sleep(500)
+      check('★ 사람 칸도 읽기 전용 — Enter 로 편집기(고르개)가 열리지 않는다',
+        (await evaluate(`document.querySelectorAll('[data-testid="db-cell-input"], [data-testid="db-people-editor"], [role="listbox"]').length`)) === 0)
+
+      // ── 다른 칸을 고치면 마지막 편집 시각이 오른다 ──
+      const editedBefore = (await serverRow(r1)).lastEditedAt
+      await sleep(1100) // 시각이 분 단위로 보여도 값(data-iso)은 달라야 한다
+      const memoCell = cellSel(0, memoProp)
+      for (let i = 0; i < 5; i += 1) {
+        await waitHydrated(memoCell)
+        await clickSelector(memoCell)
+        await key('Enter')
+        if (await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 2000)) break
+      }
+      await typeText('고쳤다')
+      await key('Enter')
+      check('★ 다른 칸(메모)을 고치면 서버의 마지막 편집 시각이 오른다',
+        await until(async () => (await serverRow(r1))?.lastEditedAt > editedBefore), `${editedBefore} → ${(await serverRow(r1))?.lastEditedAt}`)
+      const editedNow = (await serverRow(r1)).lastEditedAt
+      check('★ 마지막 편집 시각 칸이 새 시각으로 바뀐다(만든 시각은 그대로)',
+        await waitFor(`document.querySelector('${cellSel(0, editedTimeProp)} [data-testid="db-auto-time"]')?.dataset.iso === ${JSON.stringify(editedNow)}`, 10000)
+          && (await evaluate(`document.querySelector('${cellSel(0, createdTimeProp)} [data-testid="db-auto-time"]')?.dataset.iso`)) === first.createdAt,
+        String(await evaluate(`document.querySelector('${cellSel(0, editedTimeProp)} [data-testid="db-auto-time"]')?.dataset.iso`)))
+      check('★ 마지막 편집 사람 칸에 고친 사람(나)이 선다',
+        await waitFor(`document.querySelector('${cellSel(0, editedByProp)} [data-testid="db-auto-person"]')?.textContent === ${JSON.stringify(myName)}`, 8000))
+
+      // ── 필터 — 마지막 편집 사람 = 나 ──  (둘째 일은 동료가 마지막으로 고쳤다 — 같은 열을 SQL 로 맞춘다)
+      await dbQuery(`UPDATE block SET last_edited_by = $2 WHERE id = $1`, [r2, mate.userId])
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('★ 마지막 편집 사람 칸 — 동료가 고친 행은 동료의 이름(첫 화면 뒤 이름표가 온다)',
+        await waitFor(`document.querySelector('${cellSel(1, editedByProp)} [data-testid="db-auto-person"]')?.textContent === ${JSON.stringify(mateName)}`, 15000),
+        String(await evaluate(`document.querySelector('${cellSel(1, editedByProp)}')?.textContent`)))
+      const rowIds = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const patched = await api('PATCH', `/views/${view}`, { filter: { property_id: editedByProp, operator: 'contains', value: { $context: 'me' } }, sorts: [] })
+      check('전제 — 마지막 편집 사람 = 나 필터를 저장한다', patched.status === 200, JSON.stringify(patched.body))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('★ 필터 "마지막 편집 사람 = 나" — 내가 고친 행만 남는다(동료가 고친 둘째 일은 빠진다)',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify([r1, r3]))}`, 15000),
+        JSON.stringify(await rowIds()))
+
+      // ── 정렬 — 만든 시각 내림차순 ──
+      await api('PATCH', `/views/${view}`, { filter: null, sorts: [{ property_id: createdTimeProp, direction: 'desc' }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('★ 정렬 "만든 시각 내림차순" — 가장 늦게 만든 행이 먼저',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify([r3, r2, r1]))}`, 15000),
+        JSON.stringify(await rowIds()))
+
+      // ── 공개 표 — 시각은 그리고 사람은 그리지 않는다 ──
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      check('★ 공개 표 — 만든 시각 · 마지막 편집 시각 열은 서고 만든 사람 · 마지막 편집 사람 열은 없다',
+        await waitFor(`!!document.querySelector('[data-testid="public-table"] th')`, 15000)
+          && (await evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="public-table"] th')].map((th) => th.textContent).filter((t) => t.includes('만든') || t.includes('편집')))`))
+            === JSON.stringify(['만든 시각', '마지막 편집 시각']),
+        String(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="public-table"] th')].map((th) => th.textContent))`)))
+      check('★ 공개 표 — 시각 칸은 날짜 모양(UTC)이고 표 어디에도 사람 이름이 없다',
+        (await evaluate(`/\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC/.test(document.querySelector('[data-testid="public-db-row"]')?.textContent ?? '')`))
+          && !(await evaluate(`document.querySelector('[data-testid="public-table"]').textContent.includes(${JSON.stringify(myName)}) || document.querySelector('[data-testid="public-table"]').textContent.includes(${JSON.stringify(mateName)})`)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) { try {
       // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
       // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).

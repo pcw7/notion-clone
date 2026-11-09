@@ -854,7 +854,7 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
 
 // 행 페이지의 아이콘(8c-3a)도 — `toQueriedRow` 가 읽는다. 표(`query.ts`)와 같은 열이어야 한 화면의 두 뷰가 같은 행을 그린다.
 const ROW_COLUMNS =
-  "b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon, p.unique_seq, b.created_at, b.last_edited_at, b.version"
+  "b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon, p.unique_seq, b.created_at, b.created_by, b.last_edited_at, b.last_edited_by, b.version"
 
 function nextCursorOf(order: CompiledSort, last: RowRow | undefined, hasMore: boolean): string | null {
   if (!hasMore || last === undefined) return null

@@ -10,6 +10,7 @@
 import {
   isMvpPropertyType,
   readRelationConfig,
+  type AutoMetaType,
   type MvpPropertyType,
   type RelationLimit,
   type SelectOption,
@@ -128,7 +129,21 @@ export type ButtonColumn = ColumnBase & { readonly type: 'button' }
  */
 export type VerificationColumn = ColumnBase & { readonly type: 'verification' }
 
-export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn | FormulaColumn | ButtonColumn | VerificationColumn
+/**
+ * 만든 · 고친 시각과 사람 컬럼(PT-3 · 정본 [보강 PT-1] ⑦). **값이 셀이 아니라 행 페이지 블록에 있다** — 행의 `createdAt` · `createdBy` ·
+ * `lastEditedAt` · `lastEditedBy`. 읽기 전용이라 셀 편집 · 셀 컬럼에 넘어가지 않는다(`isCellColumn` 이 거른다).
+ */
+export type AutoMetaColumn = ColumnBase & { readonly type: AutoMetaType }
+
+export type ViewColumn =
+  | CellColumn
+  | RelationColumn
+  | RollupColumn
+  | UniqueIdColumn
+  | AutoMetaColumn
+  | FormulaColumn
+  | ButtonColumn
+  | VerificationColumn
 
 /** 이 표의 하위 항목 짝(2b-2) — 컬럼(숨긴 것 포함)의 relation 표시에서 읽는다. 꺼져 있으면 null. */
 export function subItemPairOf(
@@ -177,7 +192,7 @@ export function cardParentsOnlyPair(
  * 거를 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2) + relation(10n-44 · 비어 있음 · 비어 있지 않음) — `filter.ts` `FILTERABLE_TYPES` 와 같은 목록.
  * 정렬은 따로 묻는다(`isSortable` — relation · 사람은 거를 수만 있다).
  */
-export type FilterableColumn = CellColumn | UniqueIdColumn | RelationColumn | VerificationColumn
+export type FilterableColumn = CellColumn | UniqueIdColumn | AutoMetaColumn | RelationColumn | VerificationColumn
 
 /** 그 타입 그대로 거를 수 있는 컬럼인가(셀 · 고유 ID). 수식까지 고르려면 `filterColumnOf` 를 쓴다. */
 export function isFilterableColumn(column: ViewColumn): column is FilterableColumn {
@@ -270,5 +285,5 @@ export function isSortable(column: ViewColumn): boolean {
   // 저장 경로(`validateSorts`)가 거부하는 둘을 같이 뺀다 — relation(10n-44 부터 거를 수 있지만 값이 집합이다) · 사람(사이드카가 사람 id 라
   // 순서에 뜻이 없다 · 정본 [보강] 사람 속성 ⑤). 사람은 10n-46 에서 더했다 — 그 전에는 사람 머리에 정렬이 서고 누르면 서버가 거부했다.
   const f = filterColumnOf(column)
-  return f !== null && f.type !== 'relation' && f.type !== 'people'
+  return f !== null && f.type !== 'relation' && f.type !== 'people' && f.type !== 'created_by' && f.type !== 'last_edited_by'
 }

@@ -5502,6 +5502,30 @@ try {
     }
   }
 
+  console.log('\n[96] 만든 · 고친 시각과 사람 속성 — 연산자 카탈로그 · 칸 거부 (0138 · 0025 / §3.5 [보강 PT-1] ⑦ · PT-3조각)')
+  {
+    // 시각은 날짜의 연산자 열넷(상대 날짜 포함) · 사람은 사람의 연산자 넷 — 칸이 없다(불변식 C1)
+    const operatorsOf = async (type) =>
+      (await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = $1::property_type ORDER BY order_idx`, [type])).rows
+        .map((r) => `${r.operator}:${r.arity}`)
+        .join(',')
+    const dateOperators = await operatorsOf('date')
+    for (const type of ['created_time', 'last_edited_time']) {
+      const got = await operatorsOf(type)
+      if (got === dateOperators && got.includes('past_week:0') && got.includes('next_year:0')) ok(`★ ${type} 연산자 — 날짜와 같은 열넷(상대 날짜 포함)`)
+      else fail(`${type} 연산자가 날짜와 어긋났다: ${got}`)
+    }
+    for (const type of ['created_by', 'last_edited_by']) {
+      const got = await operatorsOf(type)
+      if (got === 'contains:1,does_not_contain:1,is_empty:0,is_not_empty:0') ok(`★ ${type} 연산자 — 사람과 같은 넷`)
+      else fail(`${type} 연산자가 어긋났다: ${got}`)
+    }
+    await mustReject(
+      '★ 만든 사람 연산자를 두 번(0138 뒤에도)',
+      `INSERT INTO filter_operator (property_type, operator, arity, label_ko, order_idx) VALUES ('created_by', 'contains', 1, '중복', 9)`,
+    )
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

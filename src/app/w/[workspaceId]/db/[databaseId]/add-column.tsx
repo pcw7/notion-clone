@@ -52,7 +52,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { MVP_PROPERTY_TYPES, type MvpPropertyType } from '@/lib/database/property-types'
+import { AUTO_META_TYPES, MVP_PROPERTY_TYPES, type AutoMetaType, type MvpPropertyType } from '@/lib/database/property-types'
 import { DEFAULT_ROLLUP_FUNCTION, ROLLUP_FUNCTION_LABEL, resolveRollupSource, type RollupFunction } from '@/lib/database/rollup-functions'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary } from '@/lib/database/property'
@@ -62,10 +62,12 @@ import { FormulaEditor } from './formula-editor'
 import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan'
 import { AnchoredLayer } from '../../anchored-layer'
 
-type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button' | 'verification'
+type AddableType = Exclude<MvpPropertyType, 'title'> | AutoMetaType | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button' | 'verification'
 
 const ADDABLE_TYPES: readonly AddableType[] = [
   ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title'> => t !== 'title'),
+  // 만든 · 고친 시각과 사람(PT-3) — 칸이 없다. 만들면 행 페이지 블록의 값을 보여 준다
+  ...AUTO_META_TYPES,
   'relation',
   'rollup',
   'formula',
@@ -115,7 +117,7 @@ export function AddColumn({
   /** 이 표에 검증 속성이 이미 보인다 — 유형 목록에서 뺀다(표에 하나 · 서버도 `verification_exists`). */
   hasVerification: boolean
   /** 실패하면 사람이 읽을 이유를, 성공하면 `null` 을 돌려준다. */
-  onAdd: (name: string, type: MvpPropertyType) => Promise<string | null>
+  onAdd: (name: string, type: MvpPropertyType | AutoMetaType) => Promise<string | null>
   onAddRelation: (input: api.AddRelationInput) => Promise<string | null>
   onAddRollup: (input: api.AddRollupInput) => Promise<string | null>
   onAddUniqueId: (name: string, prefix: string) => Promise<string | null>

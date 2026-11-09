@@ -47,7 +47,9 @@ import { readLinkPreviews } from '../link-preview/link-preview.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE, isRefType } from '../block/types.ts'
 import { withVerificationExpiry } from '../database/verification-cell.ts'
-import { DEFAULT_PROPERTY_TYPE, hasOptionRegistry, isMvpPropertyType } from '../database/property-types.ts'
+import { AUTO_META_TYPES, DEFAULT_PROPERTY_TYPE, hasOptionRegistry, isAutoMetaTimeType, isMvpPropertyType, type AutoMetaType } from '../database/property-types.ts'
+import { editorLabel } from '../block/edit-info.ts'
+import { canListMembers } from '../workspace/list.ts'
 import { uniqueIdCell } from '../database/unique-id-format.ts'
 import { readOptionsOf } from '../database/options.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
@@ -164,21 +166,53 @@ export async function readExportSnapshot(
           unique_seq: string | null
           unique_id_property: string | null
           unique_id_prefix: string | null
+          created_at: Date
+          created_by: string | null
+          last_edited_at: Date
+          last_edited_by: string | null
+          meta_properties: { id: string; type: string }[] | null
         }>(
           `SELECT p.id, p.is_template, p.properties_cache, p.unique_seq, ds.unique_id_prefix,
                   (SELECT pr.id FROM property pr
-                    WHERE pr.data_source_id = p.data_source_id AND pr.type = 'unique_id' AND pr.deleted_at IS NULL) AS unique_id_property
-             FROM page p JOIN data_source ds ON ds.id = p.data_source_id
+                    WHERE pr.data_source_id = p.data_source_id AND pr.type = 'unique_id' AND pr.deleted_at IS NULL) AS unique_id_property,
+                  rb.created_at, rb.created_by, rb.last_edited_at, rb.last_edited_by,
+                  (SELECT json_agg(json_build_object('id', mp.id, 'type', mp.type::text)) FROM property mp
+                    WHERE mp.data_source_id = p.data_source_id AND mp.deleted_at IS NULL
+                      AND mp.type IN ('created_time', 'created_by', 'last_edited_time', 'last_edited_by')) AS meta_properties
+             FROM page p JOIN data_source ds ON ds.id = p.data_source_id JOIN block rb ON rb.id = p.id
             WHERE p.id = ANY($1::uuid[])`,
           [rowIds],
         )
     const templates = new Set(pageRows.filter((r) => r.is_template).map((r) => r.id))
+    // 만든 · 고친 시각과 사람(PT-3) — 칸이 없다(C1). 행 페이지 블록의 열을 글로 끼운다. 이름은 멤버 목록을 받을 수 있는 역할에게만(게스트는 "멤버")
+    const metaUserIds = [...new Set(pageRows.filter((r) => (r.meta_properties?.length ?? 0) > 0).flatMap((r) => [r.created_by, r.last_edited_by]).filter((id): id is string => id !== null))]
+    const metaNames = new Map(
+      metaUserIds.length === 0 || !canListMembers(ctx.role)
+        ? []
+        : (await tx.query<{ id: string; name: string }>(`SELECT id, name FROM "user" WHERE id = ANY($1::uuid[])`, [metaUserIds])).map((u) => [u.id, u.name] as const),
+    )
+    const autoMetaCells = (r: (typeof pageRows)[number]): Record<string, unknown> =>
+      Object.fromEntries(
+        (r.meta_properties ?? []).map((m) => {
+          const type = m.type as AutoMetaType
+          const text = isAutoMetaTimeType(type)
+            ? (type === 'created_time' ? r.created_at : r.last_edited_at).toISOString()
+            : (() => {
+                const id = type === 'created_by' ? r.created_by : r.last_edited_by
+                return id === null ? '' : editorLabel(id, metaNames, canListMembers(ctx.role))
+              })()
+          return [m.id, { type: 'auto_meta_export', text }]
+        }),
+      )
     const cellsOf = new Map(
       pageRows.map((r) => [
         r.id,
-        r.unique_id_property !== null && r.unique_seq !== null
-          ? { ...(r.properties_cache ?? {}), [r.unique_id_property]: uniqueIdCell(r.unique_id_prefix, Number(r.unique_seq)) }
-          : (r.properties_cache ?? {}),
+        {
+          ...(r.unique_id_property !== null && r.unique_seq !== null
+            ? { ...(r.properties_cache ?? {}), [r.unique_id_property]: uniqueIdCell(r.unique_id_prefix, Number(r.unique_seq)) }
+            : (r.properties_cache ?? {})),
+          ...autoMetaCells(r),
+        },
       ]),
     )
 
@@ -430,7 +464,7 @@ function formulasFor(
 }
 
 /** 스냅숏이 값을 끼우는 셀 아닌 열 — 고유 ID(③) · 수식(10n-35) · relation(10n-36) · rollup(10n-37). */
-const COMPUTED_COLUMNS: readonly CsvColumn['type'][] = ['unique_id', 'formula', 'relation', 'rollup', 'verification']
+const COMPUTED_COLUMNS: readonly CsvColumn['type'][] = ['unique_id', 'formula', 'relation', 'rollup', 'verification', ...AUTO_META_TYPES]
 
 /**
  * 열의 타입. 스키마 ENUM 은 24종이다 — 읽기는 관대하게(`property.ts` 의 `toSummary` 와 같은 규칙). 스냅숏이 값을 끼우는 열은 그대로 두고,
