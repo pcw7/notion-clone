@@ -102,7 +102,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation', 'url', 'email', 'phone_number'])
 
 /**
  * 내보내기의 relation 칸(10n-36) — 스냅숏이 엣지에서 읽어 끼운다. 캐시의 relation 봉투(`type: 'relation'`)와 태그가 다르다 — 캐시는
@@ -270,6 +270,13 @@ export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string 
     // 다중 선택(PT-1) — 옵션 이름을 `, ` 로(지운 옵션은 뺀다)
     case 'multi_select':
       return value.multi_select.flatMap((ref) => column.options?.find((option) => option.id === ref.id)?.name ?? []).join(', ')
+    // URL · 이메일 · 전화(PT-2) — 적힌 글 그대로
+    case 'url':
+      return value.url
+    case 'email':
+      return value.email
+    case 'phone_number':
+      return value.phone_number
   }
 }
 

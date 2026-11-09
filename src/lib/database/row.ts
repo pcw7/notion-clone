@@ -64,6 +64,7 @@ import { indexPageTitle } from '../search/index-page.ts'
 import {
   deriveSidecars,
   emptyValue,
+  isEmptyValue,
   isMvpPropertyType,
   optionValue,
   validateCellValue,
@@ -309,6 +310,11 @@ export type CellFiller = 'user' | 'automation'
 
 async function writeCells(tx: Tx, rowId: string, cells: readonly PreparedCell[], filledBy: CellFiller = 'user'): Promise<void> {
   for (const cell of cells) {
+    // URL · 이메일 · 전화(PT-2)는 빈 글이 칸이 아니다 — 칸 가드(0137)가 빈 글을 막는다. 비우면 칸을 지운다
+    if ((cell.value.type === 'url' || cell.value.type === 'email' || cell.value.type === 'phone_number') && isEmptyValue(cell.value)) {
+      await tx.query(`DELETE FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [rowId, cell.propertyId])
+      continue
+    }
     await tx.query(
       `INSERT INTO page_property_value (
          page_id, property_id, value,

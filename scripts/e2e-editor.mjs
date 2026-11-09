@@ -33068,6 +33068,146 @@ async function main() {
       await send('Network.setBlockedURLs', { urls: [] })
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('URL · 이메일 · 전화 속성 (PT-2 · F-03-04)')) { try {
+      // 속성 추가에서 URL · 이메일 · 전화 → 칸에 글을 쳐 저장(너그럽게 받는다: javascript: 도) → 그릴 때만 거른 링크(http(s) 만 href · 새 탭 ·
+      // noopener noreferrer / mailto: / tel: 은 숫자와 + 만) → 필터(포함) → 공개 표(nofollow ugc · javascript: 는 글로). 정본 §3.5 [보강 PT-1] ⑥.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `연락 속성 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const mk = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const r1 = await mk('첫 일')
+      const r2 = await mk('둘째 일')
+      const r3 = await mk('셋째 일')
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+
+      // ── 속성 추가 — 세 타입 ──
+      const serverColumns = async () => (await api('GET', `/views/${view}`)).body?.view?.columns ?? []
+      const addColumn = async (name, type) => {
+        let formOpened = false
+        for (let i = 0; i < 5 && !formOpened; i += 1) {
+          await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다
+          await clickSelector('[data-testid="db-add-column"]')
+          formOpened = await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 2000)
+        }
+        const offered = formOpened && (await evaluate(`[...document.querySelectorAll('select[aria-label="속성 유형"] option')].some((o) => o.value === ${JSON.stringify(type)})`))
+        await typeText(name)
+        await setSelect('select[aria-label="속성 유형"]', type)
+        await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+        const made = (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) &&
+          (await until(async () => (await serverColumns()).some((c) => c.name === name && c.type === type)))
+        return { offered, made }
+      }
+      const added = [await addColumn('주소', 'url'), await addColumn('메일', 'email'), await addColumn('전화', 'phone_number')]
+      check('★ 속성 추가의 유형 목록에 URL · 이메일 · 전화가 선다', added.every((a) => a.offered), JSON.stringify(added))
+      check('★ 만들면 세 열이 서고 서버의 속성 타입도 url · email · phone_number',
+        added.every((a) => a.made), JSON.stringify((await serverColumns()).map((c) => `${c.name}:${c.type}`)))
+      const cols = await serverColumns()
+      const urlProp = cols.find((c) => c.name === '주소')?.propertyId
+      const mailProp = cols.find((c) => c.name === '메일')?.propertyId
+      const telProp = cols.find((c) => c.name === '전화')?.propertyId
+      const colIndex = (prop) => cols.findIndex((c) => c.propertyId === prop)
+      const serverCell = async (row, prop) => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === row)?.properties?.[prop] ?? null
+      const typeInto = async (rowAt, prop, text) => {
+        const cell = `td[data-cell="${rowAt}:${colIndex(prop)}"]`
+        for (let i = 0; i < 5; i += 1) {
+          await waitHydrated(cell)
+          await clickSelector(cell)
+          await key('Enter')
+          if (await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 2000)) break
+        }
+        await typeText(text)
+        await key('Enter')
+      }
+
+      // ── URL 칸에 글을 쳐서 저장 ──
+      const goodUrl = 'https://example.com/a?x=1'
+      await typeInto(0, urlProp, goodUrl)
+      check('★ URL 칸에 글을 치면 서버에 저장된다',
+        await until(async () => (await serverCell(r1, urlProp))?.url === goodUrl), JSON.stringify(await serverCell(r1, urlProp)))
+      const linkOf = (rowAt, prop) => `document.querySelector('td[data-cell="${rowAt}:${colIndex(prop)}"] a[data-testid="db-contact-open"]')`
+      const attrs = (rowAt, prop) => evaluate(`(() => { const a = ${linkOf(rowAt, prop)}; return a ? [a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel'), a.getAttribute('aria-label')] : null })()`)
+      check('★ URL 칸은 http(s) 면 링크를 단다 — href · 새 탭 · rel="noopener noreferrer" · 이름이 있는 열기 단추',
+        await waitFor(`!!${linkOf(0, urlProp)}`, 8000)
+          && JSON.stringify(await attrs(0, urlProp)) === JSON.stringify([goodUrl, '_blank', 'noopener noreferrer', `링크 열기: ${goodUrl}`]),
+        JSON.stringify(await attrs(0, urlProp)))
+
+      // ── javascript: 는 저장은 되고 링크는 달리지 않는다 ──
+      await typeInto(1, urlProp, 'javascript:alert(1)')
+      check('★ javascript:alert(1) 도 글이라 저장된다(너그럽게 받는다)',
+        await until(async () => (await serverCell(r2, urlProp))?.url === 'javascript:alert(1)'), JSON.stringify(await serverCell(r2, urlProp)))
+      const jsCell = `td[data-cell="1:${colIndex(urlProp)}"]`
+      check('★ javascript: 값은 링크 없이 글로 그려진다 — href 가 있는 앵커가 칸에 없다',
+        await waitFor(`!!document.querySelector('${jsCell} [data-testid="db-url"]') && document.querySelector('${jsCell}').textContent.includes('javascript:alert(1)')`, 8000)
+          && (await evaluate(`document.querySelectorAll('${jsCell} a').length`)) === 0)
+
+      // ── 이메일 · 전화 — 값은 API 로 쓰고 링크만 본다 ──
+      const wrote = await api('PATCH', `/rows/${r1}`, {
+        cells: [
+          { propertyId: mailProp, value: { type: 'email', email: 'kim@example.com' } },
+          { propertyId: telProp, value: { type: 'phone_number', phone_number: '+82 10-1234-5678' } },
+        ],
+      })
+      await api('PATCH', `/rows/${r3}`, { cells: [{ propertyId: mailProp, value: { type: 'email', email: '메일 아님' } }] })
+      check('전제 — 이메일 · 전화 값을 쓴다', wrote.status === 200)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+      check('★ 이메일은 mailto: 링크가 된다',
+        await waitFor(`${linkOf(0, mailProp)}?.getAttribute('href') === 'mailto:kim@example.com'`, 8000), JSON.stringify(await attrs(0, mailProp)))
+      check('★ 전화 "+82 10-1234-5678" 은 숫자와 +만 남긴 tel:+821012345678 이 된다',
+        await waitFor(`${linkOf(0, telProp)}?.getAttribute('href') === 'tel:+821012345678'`, 8000), JSON.stringify(await attrs(0, telProp)))
+      check('꼴이 아닌 이메일("메일 아님")은 저장되지만 링크 없이 글로 그려진다',
+        (await serverCell(r3, mailProp))?.email === '메일 아님'
+          && (await evaluate(`document.querySelectorAll('td[data-cell="2:${colIndex(mailProp)}"] a').length`)) === 0
+          && (await evaluate(`document.querySelector('td[data-cell="2:${colIndex(mailProp)}"]').textContent.includes('메일 아님')`)))
+
+      // ── 필터 — 글과 같다 ──
+      const rowIds = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      await api('PATCH', `/views/${view}`, { filter: { property_id: urlProp, operator: 'contains', value: 'EXAMPLE' }, sorts: [] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('★ 필터 — URL "example 포함" 은 그 글을 든 행만 보인다(대소문자 무시)',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify([r1]))}`, 15000),
+        JSON.stringify(await rowIds()))
+      await api('PATCH', `/views/${view}`, { filter: null })
+
+      // ── 공개 표 ──
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      const publicRow = (title) => `[...document.querySelectorAll('[data-testid="public-db-row"]')].find((tr) => tr.textContent.includes(${JSON.stringify(title)}))`
+      check('★ 공개 표 — URL 링크가 서고 rel 에 nofollow ugc 가 있다',
+        await waitFor(`!!${publicRow('첫 일')}?.querySelector('a[data-testid="public-db-url"]')`, 15000)
+          && (await evaluate(`(() => { const a = ${publicRow('첫 일')}.querySelector('a[data-testid="public-db-url"]'); return [a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')].join('|') })()`))
+            === `${goodUrl}|_blank|noopener noreferrer nofollow ugc`,
+        String(await evaluate(`${publicRow('첫 일')}?.querySelector('a[data-testid="public-db-url"]')?.outerHTML`)))
+      check('★ 공개 표 — javascript: 값은 앵커 없이 글로 선다',
+        await waitFor(`!!${publicRow('둘째 일')}`, 8000)
+          && (await evaluate(`${publicRow('둘째 일')}.textContent.includes('javascript:alert(1)')`))
+          && (await evaluate(`${publicRow('둘째 일')}.querySelectorAll('a[href^="javascript:"]').length`)) === 0
+          && (await evaluate(`${publicRow('둘째 일')}.querySelectorAll('[data-testid="public-db-url"]').length`)) === 0)
+      check('공개 표 — 이메일 · 전화도 mailto: · tel: 링크',
+        (await evaluate(`${publicRow('첫 일')}.querySelector('a[data-testid="public-db-email"]')?.getAttribute('href')`)) === 'mailto:kim@example.com'
+          && (await evaluate(`${publicRow('첫 일')}.querySelector('a[data-testid="public-db-phone_number"]')?.getAttribute('href')`)) === 'tel:+821012345678')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) { try {
       // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
       // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).

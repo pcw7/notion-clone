@@ -5,6 +5,7 @@
  */
 
 import { cellText } from '@/lib/database/cell-format'
+import { CONTACT_OPEN_LABEL, contactHref, contactLinkProps } from '@/lib/database/contact-links'
 import type { PageIcon } from '@/lib/block/page-icon'
 import { PageIconView } from '../../page-icon-view'
 import { optionIdOf } from '@/lib/database/property-types'
@@ -15,7 +16,7 @@ import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functio
 import type { FormulaValue } from '@/lib/formula/formula'
 import { formulaCell } from '@/lib/database/formula-plan'
 import { Highlighted } from './search-term'
-import type { AppPropertyType, CellValue, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
+import type { AppPropertyType, CellValue, ContactType, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
 
 export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   title: '제목',
@@ -27,6 +28,9 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   date: '날짜',
   people: '사람',
   multi_select: '다중 선택',
+  url: 'URL',
+  email: '이메일',
+  phone_number: '전화',
   relation: '관계형',
   rollup: '롤업',
   formula: '수식',
@@ -46,6 +50,9 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   date: '◷',
   people: '◉',
   multi_select: '☰',
+  url: '⌁',
+  email: '@',
+  phone_number: '✆',
   relation: '↗',
   rollup: '∑',
   formula: 'ƒ',
@@ -138,6 +145,31 @@ export function PeopleChips({ ids, names }: { ids: readonly string[]; names: Peo
   )
 }
 
+function ContactCell({ type, text }: { type: ContactType; text: string }) {
+  const href = contactHref(type, text)
+  // 단추를 누르는 것은 고치는 동작이 아니다 — 칸의 누름 · 두 번 누름 · 키 처리로 번지지 않게 한다
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
+  return (
+    <span className="flex min-w-0 items-center gap-1" data-testid={`db-${type}`}>
+      <span className="min-w-0 flex-1 truncate">{text}</span>
+      {href !== null && (
+        <a
+          {...contactLinkProps(type, href)}
+          aria-label={`${CONTACT_OPEN_LABEL[type]}: ${text}`}
+          data-testid="db-contact-open"
+          className="flex-none rounded px-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800"
+          onClick={stop}
+          onMouseDown={stop}
+          onDoubleClick={stop}
+          onKeyDown={stop}
+        >
+          <span aria-hidden>↗</span>
+        </a>
+      )}
+    </span>
+  )
+}
+
 export function CellDisplay({ value, options, names = {} }: { value: CellValue; options: readonly SelectOption[]; names?: PeopleNames }) {
   switch (value.type) {
     case 'people':
@@ -176,6 +208,11 @@ export function CellDisplay({ value, options, names = {} }: { value: CellValue; 
     }
     case 'number':
       return <span className="block truncate text-right tabular-nums">{cellText(value)}</span>
+    // URL · 이메일 · 전화(PT-2) — 글을 누르면 고치고, 옆의 작은 단추가 링크를 연다(걸 수 없는 글은 단추 없이 글만)
+    case 'url':
+    case 'email':
+    case 'phone_number':
+      return <ContactCell type={value.type} text={cellText(value)} />
     default:
       // 제목 · 글 · 날짜 · URL 류 — 검색 중이면 맞은 글자를 강조한다(V-3 · 화면의 글자만 감싼다)
       return (

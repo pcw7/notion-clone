@@ -38,7 +38,7 @@ const valid = (type: Parameters<typeof validateCellValue>[0], v: unknown): boole
 describe('레지스트리', () => {
   test('MVP 6종 + status + people (마스터 W8-a "프로퍼티 5종" + 필수 title · 보드 4c-1 이 status 를 · 6g-1 이 사람을 더했다)', () => {
     assert.deepEqual([...MVP_PROPERTY_TYPES], [
-      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'people', 'multi_select',
+      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'people', 'multi_select', 'url', 'email', 'phone_number',
     ])
   })
 

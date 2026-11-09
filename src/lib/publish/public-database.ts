@@ -56,7 +56,7 @@ import {
 } from './public-window.ts'
 
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
-export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'checkbox', 'date', 'unique_id', 'verification'] as const
+export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'url', 'email', 'phone_number', 'checkbox', 'date', 'unique_id', 'verification'] as const
 export type PublicCellType = (typeof PUBLIC_CELL_TYPES)[number]
 
 /** 공개 표의 줄 상한 — 넘으면 `truncated`(공개 화면은 페이지를 넘기지 않는다 · v1). */
