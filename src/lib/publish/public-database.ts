@@ -40,8 +40,11 @@ import { readGalleryLayout, type GallerySize } from '../database/gallery.ts'
 import { cellDays, readCalendarLayout, shiftMonth, type CalendarWeekStart } from '../database/calendar.ts'
 import { readTimelineLayout, type TimelineZoom } from '../database/timeline.ts'
 import { shiftWindow, type TimelineWindow } from '../database/timeline-geometry.ts'
+import { isCalculation, type Calculation, type CalculationResult } from '../database/calculations.ts'
+import { readChartLayout, type ChartKind } from '../database/chart.ts'
 import type { PublicTarget } from './public-access.ts'
 import { boardKeyOf, isBoardGroupType, type BoardSpec } from './public-board.ts'
+import { buildChartGroups, chartCalculationSupported, chartResultOf, type ChartStatRow, type PublicChartGroup } from './public-chart.ts'
 import {
   calendarMonth,
   monthSpan,
@@ -86,8 +89,22 @@ export type PublicRow = {
   readonly barColor: string
 }
 
-/** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(차트 · 폼 · 못 그리는 보드 · 날짜 속성 없는 캘린더)는 표. */
-export type PublicLayout = 'table' | 'list' | 'gallery' | 'board' | 'calendar' | 'timeline'
+/** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(폼 · 못 그리는 보드 · 차트 · 날짜 속성 없는 캘린더)는 표. */
+export type PublicLayout = 'table' | 'list' | 'gallery' | 'board' | 'calendar' | 'timeline' | 'chart'
+
+/** 차트의 재료(PV-3) — 공개 경로의 자기 집계 결과. 숫자 종류(`number`)는 `groups` 가 비고 `total` 이 값이다. */
+export type PublicChart = {
+  readonly kind: ChartKind
+  readonly dataLabels: boolean
+  readonly cumulative: boolean
+  /** X축(그룹)의 정렬 — 누적을 그릴 수 있나 가를 때만 쓴다. */
+  readonly groupSort: string | null
+  /** 살아 있는 Y 계산(없으면 개수) — 숫자 종류의 이름줄에 쓴다. */
+  readonly calculation: { readonly function: Calculation; readonly propertyName: string | null } | null
+  readonly groups: readonly PublicChartGroup[]
+  /** 숫자 종류의 값 — 범위 안의 모든 행에 계산 한 번. 다른 종류는 null. */
+  readonly total: CalculationResult | null
+}
 
 /** 캘린더 · 타임라인의 창 — 주소의 값(또는 오늘)으로 정한다. `prev` · `next` 는 주소에 실을 값(`?m=` 의 달 · `?from=` 의 날짜). */
 export type PublicWindow = {
@@ -114,6 +131,8 @@ export type PublicTable = {
   readonly viewType: string
   /** 보드일 때만. */
   readonly board: PublicBoard | null
+  /** 차트일 때만(PV-3) — 이때 `rows` 는 비어 있다(그림은 집계에서 나온다). */
+  readonly chart: PublicChart | null
   /** 갤러리 카드 크기(뷰의 설정 · 갤러리가 아니면 기본값). */
   readonly cardSize: GallerySize
   /** 캘린더 · 타임라인일 때만. */
@@ -147,7 +166,7 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: Windo
   // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
   return (
     (await publicTableOf(tx, target.pageId, win)) ?? {
-      layout: 'table', viewType: 'table', board: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
+      layout: 'table', viewType: 'table', board: null, chart: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
     }
   )
 }
@@ -196,6 +215,14 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   )
 
   const types = await propertyTypes(tx, view.data_source_id)
+  // 차트(PV-3) — 그릴 수 있으면 행 대신 자기 집계. 아니면(null) 아래의 표로
+  const chart = await readChart(tx, view, types)
+  if (chart !== null) {
+    return {
+      layout: 'chart', viewType: view.type, board: null, chart, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      columns: [], rows: [], truncated: false,
+    }
+  }
   // `$1` 은 data source — 2번부터 발급한다
   const params = new ParamBag(2)
   // 공개 화면은 보는 사람이 없다 — "나"(6g-2c)는 아무도 아니다(포함은 0행 · 포함하지 않음은 모든 행)
@@ -258,6 +285,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     layout,
     viewType: view.type,
     board,
+    chart: null,
     cardSize: readGalleryLayout(view.configuration).cover_size,
     window: dated === null ? null : dated.window,
     viewName: view.name ?? '',
@@ -328,6 +356,87 @@ async function readDatedWindow(
       prev: shiftWindow(range, layout.zoom, -1).from, next: shiftWindow(range, layout.zoom, 1).from, nav,
     },
     colorBy,
+  }
+}
+
+/**
+ * 차트(PV-3) — 첫 뷰가 차트일 때 **자기 집계 질의**(그룹마다 행 수 · 숫자 속성의 통계)로 그린다. 행 집합은 표와 같다(공유 필터 · 공개로 열리는 행 ·
+ * 줄 상한은 없다 — 합계는 처음 100줄의 합이 아니다). 그릴 수 없으면 null(표 — viewType 은 `chart` 그대로):
+ *   · X축(`group_by`)이 선택 · 상태(옵션 단위) · 체크박스가 아니다 — 날짜 · 숫자 · 글 · 범주는 공개 경로에 버킷 계산을 두지 않는다(보드와 같다)
+ *   · Y 계산이 개수 · 숫자 속성의 통계가 아니다(수식 · 롤업 · 다른 타입의 칸 세기 — 값이 행에 없다)
+ * 쌓기(`sub_group_by`)는 읽지 않는다 — 막대는 하위 그룹으로 나누지 않은 그룹 합계다. 숫자 종류는 X축을 읽지 않고 모든 행에 계산 한 번.
+ */
+async function readChart(
+  tx: Tx,
+  view: { type: string; data_source_id: string; filter: unknown; group_by: unknown; configuration: unknown },
+  types: ReadonlyMap<string, string>,
+): Promise<PublicChart | null> {
+  if (view.type !== 'chart') return null
+  const layout = readChartLayout(view.configuration)
+  const g = typeof view.group_by === 'object' && view.group_by !== null ? (view.group_by as { calculation?: unknown; sort?: unknown }) : null
+  const raw = typeof g?.calculation === 'object' && g.calculation !== null ? (g.calculation as { property_id?: unknown; function?: unknown }) : null
+  const calcId = typeof raw?.property_id === 'string' ? raw.property_id : null
+  const calcType = calcId === null ? undefined : types.get(calcId)
+  // 지운 속성의 계산은 버리고 개수로(앱의 `liveGroupCalculation` 과 같다) — 있는데 못 집계하면 표
+  const rawFn = raw?.function
+  let fn: Calculation | null = calcId !== null && calcType !== undefined && isCalculation(rawFn) ? rawFn : null
+  if (fn !== null && !chartCalculationSupported(fn, calcType)) return null
+  // `count_all` 은 속성 없이 행 수 — 통계 열은 숫자 속성일 때만 읽는다
+  const numId = fn !== null && calcType === 'number' ? calcId : null
+  if (fn === 'count_all') fn = null
+
+  const total = layout.kind === 'number'
+  const board = total ? null : await readBoard(tx, view.data_source_id, view.group_by)
+  if (!total && board === null) return null
+  const groupId = board === null ? null : (view.group_by as { property_id: string }).property_id
+
+  // `$1` 은 data source — 2번부터 발급한다. 보는 사람이 없다(익명) — 표와 같은 필터 컴파일
+  const params = new ParamBag(2)
+  const filterSql = compileFilter((view.filter as FilterNode | null) ?? null, types, params, noViewer())
+  let keySql = `''`
+  if (board !== null && groupId !== null) {
+    const prop = `${params.bind(groupId)}::text`
+    if (board.spec.type === 'checkbox') {
+      keySql = `CASE WHEN (p.properties_cache -> ${prop} ->> 'checkbox') = 'true' THEN 'true' ELSE 'false' END`
+    } else {
+      // 모르는(지운) 옵션은 값 없음 — `boardKeyOf` 와 같다. 형은 허용 목록(select · status)의 상수
+      const id = `(p.properties_cache -> ${prop} -> '${board.spec.type}' ->> 'id')`
+      keySql = `CASE WHEN ${id} = ANY(${params.bind(board.spec.options.map((o) => o.id))}::text[]) THEN ${id} ELSE '' END`
+    }
+  }
+  const numSql =
+    numId === null
+      ? `NULL::numeric`
+      : (() => {
+          const cell = `p.properties_cache -> ${params.bind(numId)}::text`
+          return `CASE WHEN jsonb_typeof(${cell} -> 'number') = 'number' THEN (${cell} ->> 'number')::numeric END`
+        })()
+  const stats = await tx.query<{
+    key: string; n: number; filled: number; uniq: number
+    sum: number | null; avg: number | null; median: number | null; min: number | null; max: number | null
+  }>(
+    `SELECT ${total ? `''::text` : 'x.k'} AS key, count(*)::int AS n, count(x.num)::int AS filled, count(DISTINCT x.num)::int AS uniq,
+            sum(x.num)::float8 AS sum, avg(x.num)::float8 AS avg, min(x.num)::float8 AS min, max(x.num)::float8 AS max,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY x.num::float8) AS median
+       FROM (SELECT ${keySql} AS k, ${numSql} AS num
+               FROM page p
+               JOIN block b ON b.id = p.id
+              WHERE p.data_source_id = $1 AND ${OPENABLE_ROW}${filterSql === null ? '' : ` AND ${filterSql}`}) x
+      ${total ? '' : 'GROUP BY x.k'}`,
+    [view.data_source_id, ...params.values],
+  )
+  const rows: ChartStatRow[] = stats.map(({ uniq, ...s }) => ({ ...s, distinct: uniq }))
+
+  const calcName =
+    numId === null ? null : ((await tx.queryMaybe<{ name: string }>(`SELECT name FROM property WHERE id = $1`, [numId]))?.name ?? null)
+  return {
+    kind: layout.kind,
+    dataLabels: layout.data_labels,
+    cumulative: layout.cumulative,
+    groupSort: typeof g?.sort === 'string' ? g.sort : null,
+    calculation: fn === null ? null : { function: fn, propertyName: calcName },
+    groups: board === null ? [] : buildChartGroups(board.spec, rows, fn),
+    total: total ? chartResultOf(fn ?? 'count_all', rows[0] ?? { n: 0, filled: 0, distinct: 0, sum: null, avg: null, median: null, min: null, max: null }) : null,
   }
 }
 
