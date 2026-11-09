@@ -103,6 +103,8 @@ export type SearchHitRow = {
   breadcrumb: { id: string; title: string }[]
   lastEditedAt: string
   titleHit: boolean
+  /** 검증 배지(VF-4) — 최근 방문 줄에는 없다. */
+  verification?: 'verified' | 'expired' | null
 }
 
 export type RecentRow = { id: string; title: string; icon: PageIcon | null }
@@ -823,6 +825,12 @@ export function SearchOverlay({
                         className="mr-1.5 align-[-0.125em]"
                       />
                       <Highlighted text={row.title || UNTITLED} query={searching ? query : ''} />
+                      {row.verification === 'verified' && (
+                        <span data-testid="search-result-verified" title="검증됨" className="ml-1.5 text-xs text-emerald-600">✓</span>
+                      )}
+                      {row.verification === 'expired' && (
+                        <span data-testid="search-result-expired" className="ml-1.5 text-xs text-amber-600">만료</span>
+                      )}
                     </span>
 
                     {row.breadcrumb.length > 0 && (

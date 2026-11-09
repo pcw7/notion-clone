@@ -143,6 +143,8 @@ type MenuUi = { open: boolean; query: string; index: number; left: number; top: 
 type MentionLabelMap = {
   readonly users: Readonly<Record<string, string | null>>
   readonly pages: Readonly<Record<string, string | null>>
+  /** 검증된 페이지(VF-4) — 칩 뒤에 "✓". */
+  readonly pageVerified?: Readonly<Record<string, true>>
   /** 커스텀 이모지의 이름(7c-3a) — 지운 것도 이름이 있다. 이 워크스페이스에 없으면 null. */
   readonly emoji?: Readonly<Record<string, EmojiLabel | null>>
 }
@@ -491,6 +493,7 @@ export function BodyEditor({
     emoji: new Map(Object.entries(initialMentionLabels.emoji ?? {})),
   })
   const refreshingLabelsRef = useRef(false)
+  const pageVerifiedRef = useRef<Set<string>>(new Set(Object.keys(initialMentionLabels.pageVerified ?? {})))
   /** 하위 페이지 참조 · 멘션의 아이콘 — 문서에 없다(8c-2). 두 맵을 다시 읽을 때 함께 고친다(`mergePageIcons`). */
   const pageIconsRef = useRef<Map<string, PageIcon>>(new Map(Object.entries(initialPageIcons)))
   /** 한글 IME 조합 중인가 — 조합 중에는 후보를 묻지 않는다(07 F-07-08: "조합 중 문자열로 질의하면 후보가 요동침"). */
@@ -862,12 +865,17 @@ export function BodyEditor({
           users?: Record<string, string | null>
           pages?: Record<string, string | null>
           pageIcons?: Record<string, PageIcon>
+          pageVerified?: Record<string, true>
           emoji?: Record<string, EmojiLabel | null>
         }
         for (const [id, label] of Object.entries(data.users ?? {})) mentionLabelsRef.current.users.set(id, label)
         for (const [id, label] of Object.entries(data.pages ?? {})) mentionLabelsRef.current.pages.set(id, label)
         for (const [id, label] of Object.entries(data.emoji ?? {})) mentionLabelsRef.current.emoji.set(id, label)
         mergePageIcons(pageIconsRef.current, pages, data.pageIcons)
+        for (const id of pages) {
+          if (data.pageVerified?.[id]) pageVerifiedRef.current.add(id)
+          else pageVerifiedRef.current.delete(id)
+        }
         const view = viewRef.current
         const deps = editorDepsRef.current
         if (view && deps) view.setProps({ nodeViews: createNodeViews(deps) })
@@ -1492,6 +1500,7 @@ export function BodyEditor({
       }),
       pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
       pageIcon: (id) => pageIconsRef.current.get(id) ?? null,
+      pageVerified: (id) => pageVerifiedRef.current.has(id),
       mentionLabel: (kind, id) => (kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages).get(id),
       emojiLabel: (id) => mentionLabelsRef.current.emoji.get(id),
       onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
