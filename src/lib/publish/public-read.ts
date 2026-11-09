@@ -27,6 +27,7 @@ import { customEmojiIdOfRun, mentionTarget, type RichTextRun } from '../contract
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { openablePagesIn, resolvePublicPageIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
+import type { WindowQuery } from './public-window.ts'
 import { publicTableOf, readPublicRowPropertiesIn, readPublicTableIn, type PublicRowProperties, type PublicTable } from './public-database.ts'
 import { resolveSiteTokenIn, siteBasePath } from './site.ts'
 
@@ -82,7 +83,7 @@ export type PublicRead =
 type ScopeRow = BodyRow & { lifecycle: string }
 
 /** 토큰(과 하위 페이지 id)으로 공개 화면의 재료를 읽는다 — 판정과 같은 스냅샷에서. */
-export async function readPublicPage(token: string, pageId?: string, options: { readonly base?: string } = {}): Promise<PublicRead> {
+export async function readPublicPage(token: string, pageId?: string, options: { readonly base?: string; readonly window?: WindowQuery } = {}): Promise<PublicRead> {
   return withReadTransaction(async (tx) => {
     const access = await resolvePublicPageIn(tx, token, pageId)
     if (!access.ok) return access
@@ -159,7 +160,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),
         emoji: new Map(emoji.map((row) => [row.id, { name: row.name, deleted: row.deleted }])),
-        table: isDatabase ? await readPublicTableIn(tx, target) : null,
+        table: isDatabase ? await readPublicTableIn(tx, target, options.window ?? {}) : null,
         databases: inlineDatabases,
         files,
         bookmarks,
@@ -282,8 +283,8 @@ function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: 
  * 사이트 주소로 연다(6c-1 · 정본 [보강] 사이트 주소 ②) — 주소 → 그 링크의 토큰 → 토큰과 같은 판정 · 같은 읽기. 화면 안의 링크는 사이트
  * 주소로 만든다(⑤). 없거나 해제됐으면 `not_found`(이유를 말하지 않는다).
  */
-export async function readSitePage(domain: string, slug: string, pageId?: string): Promise<PublicRead> {
+export async function readSitePage(domain: string, slug: string, pageId?: string, window?: WindowQuery): Promise<PublicRead> {
   const token = await withReadTransaction((tx) => resolveSiteTokenIn(tx, domain, slug))
   if (token === null) return { ok: false, reason: 'not_found' }
-  return readPublicPage(token, pageId, { base: siteBasePath(domain, slug) })
+  return readPublicPage(token, pageId, { base: siteBasePath(domain, slug), ...(window === undefined ? {} : { window }) })
 }

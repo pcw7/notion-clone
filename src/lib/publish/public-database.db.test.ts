@@ -17,7 +17,7 @@ import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase } from '../database/database.ts'
 import { addDataSource, trashDataSource } from '../database/data-source.ts'
 import { applyRecordLayout } from '../database/layout.ts'
-import { addProperty, addSelectOption, getSchema } from '../database/property.ts'
+import { addProperty, addSelectOption, deleteProperty, getSchema } from '../database/property.ts'
 import type { CellValue } from '../database/property-types.ts'
 import { createRow, trashRow } from '../database/row.ts'
 import { createTemplate } from '../database/template.ts'
@@ -209,5 +209,126 @@ describe('③ 휴지통의 data source · 게시 해제', () => {
     unwrap(await unpublishPage(boss.ctx, db.id))
     assert.equal(await tableOf(token), 'not_found')
     assert.deepEqual(await resolvePublicPage(token, rows.C), { ok: false, reason: 'not_found' })
+  })
+})
+
+// ── PV-2 — 캘린더 · 타임라인 ─────────────────────────────────────────────
+
+describe('⑤ ★ 캘린더 · 타임라인의 창 (PV-2)', () => {
+  /** 날짜 있는 표 — 기한(날짜) · 점수(숫자) · 행: 범위(3/10~3/12) · 하루(3/20) · 앞에 걸침(2/27~3/02) · 밖(5/01) · 필터 밖(3/15 · 점수 5) · 날짜 없음. */
+  async function dated() {
+    const ws = await createBareWorkspace('공개 캘린더')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique('공개 일정') }))
+    const ds = db.dataSourceId
+    unwrap(await addProperty(boss.ctx, ds, { name: '기한', type: 'date' }))
+    unwrap(await addProperty(boss.ctx, ds, { name: '점수', type: 'number' }))
+    const schema = unwrap(await getSchema(boss.ctx, ds))
+    const id = (name: string) => schema.properties.find((p) => p.name === name)!.id
+    const [title, due, score] = [id('이름'), id('기한'), id('점수')]
+    const row = async (name: string, start: string | null, end: string | null, n = 10) =>
+      unwrap(
+        await createRow(boss.ctx, ds, {
+          cells: [
+            { propertyId: title, value: { type: 'title', title: [textRun(name)] } as CellValue },
+            { propertyId: score, value: { type: 'number', number: n } as CellValue },
+            ...(start === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start, ...(end === null ? {} : { end }) } } as CellValue }]),
+          ],
+        }),
+      ).id
+    const rows = {
+      range: await row('범위', '2026-03-10', '2026-03-12'),
+      one: await row('하루', '2026-03-20', null),
+      before: await row('앞에 걸침', '2026-02-27', '2026-03-02'),
+      out: await row('밖', '2026-05-01', null),
+      filtered: await row('필터 밖', '2026-03-15', null, 5),
+      none: await row('날짜 없음', null, null),
+    }
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { filter: { property_id: score, operator: 'greater_than', value: 7 } }))
+    const token = unwrap(await publishPage(boss.ctx, db.id)).token!
+    return { boss, db, ds, due, score, rows, token }
+  }
+
+  const windowOf = async (token: string, win: { m?: string; from?: string }) =>
+    withReadTransaction(async (tx) => {
+      const { resolvePublicPageIn } = await import('./public-access.ts')
+      const access = await resolvePublicPageIn(tx, token)
+      if (!access.ok) throw new Error(access.reason)
+      const table = await readPublicTableIn(tx, access.value, win)
+      assert.ok(table !== null)
+      return table
+    })
+
+  test('캘린더 — 달에 걸친 행만(범위 · 앞에서 걸친 것 포함) · 필터 · 날짜 없음 · 밖은 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, due, rows, token } = await dated()
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'calendar', calendar: { date_property_id: due } }))
+
+    const march = await windowOf(token, { m: '2026-03' })
+    assert.equal(march.layout, 'calendar')
+    assert.equal(march.viewType, 'calendar')
+    assert.equal(march.window?.month, '2026-03')
+    assert.deepEqual(march.window?.prev, '2026-02')
+    assert.deepEqual(march.window?.next, '2026-04')
+    assert.deepEqual(march.rows.map((r) => r.id), [rows.before, rows.range, rows.one], '날짜순 · 필터 밖 · 5월 · 날짜 없음은 없다')
+    assert.deepEqual(march.rows.find((r) => r.id === rows.range)!.span, { start: '2026-03-10', end: '2026-03-12' })
+
+    const may = await windowOf(token, { m: '2026-05' })
+    assert.deepEqual(may.rows.map((r) => r.id), [rows.out])
+
+    // 끝 날이 달의 첫날에 닿으면 든다 · 하루 전에 끝나면 없다(겹침 규칙의 경계)
+    const apr = await windowOf(token, { m: '2026-04' })
+    assert.deepEqual(apr.rows, [], '3월에 끝난 행은 4월에 없다')
+    const feb = await windowOf(token, { m: '2026-02' })
+    assert.deepEqual(feb.rows.map((r) => r.id), [rows.before], '2/27~3/02 는 2월에도 있다')
+
+    // 틀린 값은 오늘이 든 달
+    const bad = await windowOf(token, { m: 'garbage' })
+    assert.equal(bad.window?.month, new Date().toISOString().slice(0, 7))
+  })
+
+  test('타임라인 — 창에 걸친 행만 · 이전 · 다음 창 · 막대 색(color_by)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, ds, due, rows, token } = await dated()
+    unwrap(await addProperty(boss.ctx, ds, { name: '단계', type: 'select' }))
+    const stage = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.name === '단계')!.id
+    unwrap(await addSelectOption(boss.ctx, ds, stage, { name: '진행', color: 'blue' }))
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'timeline', timeline: { date_property_id: due, zoom: 'day', color_by: stage } }))
+
+    // day 줌 — 42일: 3/01 ~ 4/11
+    const win = await windowOf(token, { from: '2026-03-01' })
+    assert.equal(win.layout, 'timeline')
+    assert.equal(win.window?.from, '2026-03-01')
+    assert.equal(win.window?.to, '2026-04-11')
+    assert.deepEqual(win.rows.map((r) => r.id), [rows.before, rows.range, rows.one])
+    assert.equal(win.window?.prev, '2026-01-18')
+    assert.equal(win.window?.next, '2026-04-12')
+    assert.ok(win.rows.every((r) => r.barColor === 'default'), '단계가 빈 행은 기본 색')
+
+    const later = await windowOf(token, { from: win.window!.next })
+    assert.equal(later.window?.from, '2026-04-12')
+    assert.deepEqual(later.rows.map((r) => r.id), [rows.out], '4/12 ~ 5/23 에는 5/01 행만 든다')
+  })
+
+  test('날짜 속성이 지워진 캘린더 · 타임라인은 표 — viewType 은 그대로 · 행은 그대로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, ds, due, rows, token } = await dated()
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'calendar', calendar: { date_property_id: due } }))
+    unwrap(await deleteProperty(boss.ctx, ds, due))
+    const table = await windowOf(token, { m: '2026-03' })
+    assert.equal(table.layout, 'table')
+    assert.equal(table.viewType, 'calendar')
+    assert.equal(table.window, null)
+    assert.ok(table.rows.some((r) => r.id === rows.none), '표는 창으로 거르지 않는다')
+  })
+
+  test('보이는 행의 조건은 그대로 — 상속을 끊은 행 · 휴지통의 행은 창 안이어도 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, due, rows, token } = await dated()
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'calendar', calendar: { date_property_id: due } }))
+    assert.ok((await stopInheriting(boss.ctx, rows.range)).ok)
+    assert.ok((await trashRow(boss.ctx, rows.one)).ok)
+    const march = await windowOf(token, { m: '2026-03' })
+    assert.deepEqual(march.rows.map((r) => r.id), [rows.before])
   })
 })

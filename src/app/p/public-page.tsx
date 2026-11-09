@@ -17,12 +17,20 @@ import { cache, type ReactNode } from 'react'
 import { COVER_FALLBACK_BACKGROUND, coverBackground, pageCoverKey } from '@/lib/block/page-cover'
 
 import { readPublicPage, readSitePage, type PublicRead } from '@/lib/publish/public-read'
+import type { WindowQuery } from '@/lib/publish/public-window'
 import { publicTitle } from '@/lib/nav/screen-title'
 import { Blocks, RichText, Trail, UNTITLED, publicFileHref, titleText } from './public-blocks'
 import { PublicRowPropertiesView, PublicTableView } from './public-table'
 
-export const loadPublicPage = cache((token: string, pageId?: string): Promise<PublicRead> => readPublicPage(token, pageId))
-export const loadSitePage = cache((domain: string, slug: string, pageId?: string): Promise<PublicRead> => readSitePage(domain, slug, pageId))
+// 날짜 창(PV-2 · `?m=` · `?from=`)은 낱말로 받는다 — `cache` 는 인자의 동일성으로 묶는다
+export const loadPublicPage = cache(
+  (token: string, pageId?: string, m?: string | null, from?: string | null): Promise<PublicRead> =>
+    readPublicPage(token, pageId, m === undefined && from === undefined ? {} : { window: { m, from } }),
+)
+export const loadSitePage = cache(
+  (domain: string, slug: string, pageId?: string, m?: string | null, from?: string | null): Promise<PublicRead> =>
+    readSitePage(domain, slug, pageId, { m, from }),
+)
 
 /** 메타 robots 의 값 — 링크의 설정(정본 [보강] 공개 화면 ⑥). */
 export function robotsOf(read: PublicRead): string {
@@ -31,12 +39,12 @@ export function robotsOf(read: PublicRead): string {
   return read.value.target.aiCrawler === 'deny' ? `${base}, noai, noimageai` : base
 }
 
-export async function publicMetadata(token: string, pageId?: string): Promise<Metadata> {
-  return metadataOf(await loadPublicPage(token, pageId))
+export async function publicMetadata(token: string, pageId?: string, win: WindowQuery = {}): Promise<Metadata> {
+  return metadataOf(await loadPublicPage(token, pageId, win.m, win.from))
 }
 
-export async function siteMetadata(domain: string, slug: string, pageId?: string): Promise<Metadata> {
-  return metadataOf(await loadSitePage(domain, slug, pageId))
+export async function siteMetadata(domain: string, slug: string, pageId?: string, win: WindowQuery = {}): Promise<Metadata> {
+  return metadataOf(await loadSitePage(domain, slug, pageId, win.m, win.from))
 }
 
 function metadataOf(read: PublicRead): Metadata {
@@ -48,12 +56,12 @@ function metadataOf(read: PublicRead): Metadata {
   }
 }
 
-export async function PublicPage({ token, pageId }: { token: string; pageId?: string }): Promise<ReactNode> {
-  return <PublicView read={await loadPublicPage(token, pageId)} />
+export async function PublicPage({ token, pageId, win = {} }: { token: string; pageId?: string; win?: WindowQuery }): Promise<ReactNode> {
+  return <PublicView read={await loadPublicPage(token, pageId, win.m, win.from)} />
 }
 
-export async function SitePage({ domain, slug, pageId }: { domain: string; slug: string; pageId?: string }): Promise<ReactNode> {
-  return <PublicView read={await loadSitePage(domain, slug, pageId)} />
+export async function SitePage({ domain, slug, pageId, win = {} }: { domain: string; slug: string; pageId?: string; win?: WindowQuery }): Promise<ReactNode> {
+  return <PublicView read={await loadSitePage(domain, slug, pageId, win.m, win.from)} />
 }
 
 function PublicView({ read }: { read: PublicRead }): ReactNode {

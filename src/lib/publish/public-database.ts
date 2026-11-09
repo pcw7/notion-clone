@@ -37,8 +37,20 @@ import {
 import { toVerificationCell } from '../database/verification-cell.ts'
 import type { Tx } from '../db/tx.ts'
 import { readGalleryLayout, type GallerySize } from '../database/gallery.ts'
+import { cellDays, readCalendarLayout, shiftMonth, type CalendarWeekStart } from '../database/calendar.ts'
+import { readTimelineLayout, type TimelineZoom } from '../database/timeline.ts'
+import { shiftWindow, type TimelineWindow } from '../database/timeline-geometry.ts'
 import type { PublicTarget } from './public-access.ts'
 import { boardKeyOf, isBoardGroupType, type BoardSpec } from './public-board.ts'
+import {
+  calendarMonth,
+  monthSpan,
+  overlapsWindow,
+  publicToday,
+  PUBLIC_WINDOW_MAX_ROWS,
+  timelineWindow,
+  type WindowQuery,
+} from './public-window.ts'
 
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
 export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'unique_id', 'verification'] as const
@@ -68,10 +80,29 @@ export type PublicRow = {
   readonly uniqueSeq: number | null
   /** 보드의 열 키(`public-board.ts`) — 보드가 아니면 null. 그룹 기준 속성이 안 보이는 열이어도 서버가 정한다. */
   readonly groupKey: string | null
+  /** 캘린더 · 타임라인의 날짜(날짜 글자 · 양끝 포함) — 그 모양이 아니면 null. */
+  readonly span: { readonly start: string; readonly end: string } | null
+  /** 타임라인 막대의 색(옵션 색 이름) — `color_by` 가 없으면 'default'. */
+  readonly barColor: string
 }
 
-/** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(캘린더 · 타임라인 · 차트 · 폼 · 못 그리는 보드)는 표. */
-export type PublicLayout = 'table' | 'list' | 'gallery' | 'board'
+/** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(차트 · 폼 · 못 그리는 보드 · 날짜 속성 없는 캘린더)는 표. */
+export type PublicLayout = 'table' | 'list' | 'gallery' | 'board' | 'calendar' | 'timeline'
+
+/** 캘린더 · 타임라인의 창 — 주소의 값(또는 오늘)으로 정한다. `prev` · `next` 는 주소에 실을 값(`?m=` 의 달 · `?from=` 의 날짜). */
+export type PublicWindow = {
+  readonly kind: 'calendar' | 'timeline'
+  readonly from: string
+  readonly to: string
+  readonly month: string | null
+  readonly zoom: TimelineZoom
+  readonly weekStart: CalendarWeekStart
+  readonly showWeekends: boolean
+  readonly prev: string
+  readonly next: string
+  /** 이전 · 다음 링크를 그리나 — 연 페이지 자신의 표일 때만(본문 안의 인라인 데이터베이스는 주소의 창을 따르지 않는다). */
+  readonly nav: boolean
+}
 
 /** 보드의 재료 — 그룹 기준의 이름 · 열을 짓는 명세(옵션은 스키마 순서). */
 export type PublicBoard = { readonly propertyName: string; readonly spec: BoardSpec }
@@ -85,6 +116,8 @@ export type PublicTable = {
   readonly board: PublicBoard | null
   /** 갤러리 카드 크기(뷰의 설정 · 갤러리가 아니면 기본값). */
   readonly cardSize: GallerySize
+  /** 캘린더 · 타임라인일 때만. */
+  readonly window: PublicWindow | null
   readonly viewName: string
   readonly columns: readonly PublicColumn[]
   readonly rows: readonly PublicRow[]
@@ -108,13 +141,13 @@ type ColumnRow = { property_id: string; name: string; type: string; unique_id_pr
  * 데이터베이스를 여는 공개 화면의 표 — 게시 루트인 데이터베이스(6a-2c-2) · 게시된 페이지 안의 인라인 데이터베이스(I-4b). 연 것이
  * 데이터베이스가 아니면 null. 부르는 쪽이 같은 트랜잭션에서 판정(`resolvePublicPageIn`)을 지났다.
  */
-export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<PublicTable | null> {
+export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: WindowQuery | null = null): Promise<PublicTable | null> {
   const node = await tx.queryMaybe<{ type: string }>(`SELECT type FROM block WHERE id = $1`, [target.pageId])
   if (node?.type !== 'database') return null
   // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
   return (
-    (await publicTableOf(tx, target.pageId)) ?? {
-      layout: 'table', viewType: 'table', board: null, cardSize: 'medium', viewName: '', columns: [], rows: [], truncated: false,
+    (await publicTableOf(tx, target.pageId, win)) ?? {
+      layout: 'table', viewType: 'table', board: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
     }
   )
 }
@@ -122,8 +155,10 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<P
 /**
  * 데이터베이스 하나의 공개 표. 부르는 쪽이 그 데이터베이스가 열린다는 것을 같은 트랜잭션에서 확인했다(`resolvePublicPageIn` ·
  * `openablePagesIn` — 공개 본문의 인라인 데이터베이스 · I-4b). 이 함수는 판정을 다시 하지 않고 **행마다의 공개 조건**만 건다.
+ *
+ * `win` — 연 페이지 자신의 표일 때 주소의 창 값(PV-2). 없으면(인라인) 오늘이 든 창이고 이전 · 다음 링크가 없다.
  */
-export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicTable | null> {
+export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery | null = null): Promise<PublicTable | null> {
 
   // 소유한 data source 의 첫 뷰 — 붙인 소스(linked)는 다른 데이터베이스의 행이다(그 데이터베이스는 게시되지 않았다)
   const view = await tx.queryMaybe<{
@@ -169,7 +204,24 @@ export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicT
   const byKeys = compileSorts(Array.isArray(view.sorts) ? (view.sorts as SortKey[]) : [], types, params)
   // 정렬이 없으면 그 뷰의 수동 순서(10n-59 — 편집 화면과 같은 차례)
   const sorted = byKeys.keys.length === 0 ? compileManualOrder(params.bind(view.id)) : byKeys
-  const limit = params.bind(PUBLIC_TABLE_MAX_ROWS + 1)
+  // 캘린더 · 타임라인(PV-2) — 날짜 속성이 살아 있는 날짜 속성일 때만. 아니면 표(viewType 은 그대로)
+  const dated = await readDatedWindow(tx, view, types, win)
+  const cap = dated === null ? PUBLIC_TABLE_MAX_ROWS : PUBLIC_WINDOW_MAX_ROWS
+  const limit = params.bind(cap + 1)
+  // 창에 걸친 행만 — 앱(`queryWindow`)과 같은 규칙: 시작 < 끝날 + 1 이고 coalesce(끝, 시작) ≥ 첫날 − 1(양끝을 하루씩 넓힌다 ·
+  // 시각이 있는 값은 시간대에 따라 UTC 날짜가 하루 어긋난다 — 칸에 놓는 것은 아래에서 칸 값의 날짜 글자로 다시 가른다)
+  let joinSql = ''
+  let windowSql = ''
+  let orderBy = sorted.orderBy
+  if (dated !== null) {
+    const dateParam = params.bind(dated.datePropertyId)
+    const fromParam = params.bind(dated.window.from)
+    const toParam = params.bind(dated.window.to)
+    joinSql = `JOIN page_property_value dv ON dv.page_id = p.id AND dv.property_id = ${dateParam} AND dv.date_start IS NOT NULL`
+    windowSql = ` AND dv.date_start < ((${toParam}::date + 2)::timestamp AT TIME ZONE 'UTC')
+        AND coalesce(dv.date_end, dv.date_start) >= ((${fromParam}::date - 1)::timestamp AT TIME ZONE 'UTC')`
+    orderBy = `dv.date_start, ${sorted.orderBy}`
+  }
   const rows = await tx.query<{
     id: string
     properties: Record<string, unknown> | null
@@ -180,32 +232,102 @@ export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicT
     `SELECT b.id, b.properties, b.format, p.properties_cache, p.unique_seq
        FROM page p
        JOIN block b ON b.id = p.id
-      WHERE p.data_source_id = $1 AND ${OPENABLE_ROW}${filterSql === null ? '' : ` AND ${filterSql}`}
-      ORDER BY ${sorted.orderBy}
+       ${joinSql}
+      WHERE p.data_source_id = $1 AND ${OPENABLE_ROW}${filterSql === null ? '' : ` AND ${filterSql}`}${windowSql}
+      ORDER BY ${orderBy}
       LIMIT ${limit}`,
     [view.data_source_id, ...params.values],
   )
 
-  const shown = rows.slice(0, PUBLIC_TABLE_MAX_ROWS)
+  const shown = rows.slice(0, cap)
   const board = view.type === 'board' ? await readBoard(tx, view.data_source_id, view.group_by) : null
   const groupId = board === null ? null : (view.group_by as { property_id: string }).property_id
-  const layout: PublicLayout = board !== null ? 'board' : view.type === 'list' || view.type === 'gallery' ? view.type : 'table'
+  const layout: PublicLayout = dated !== null ? dated.window.kind : board !== null ? 'board' : view.type === 'list' || view.type === 'gallery' ? view.type : 'table'
+  const spanOf = (cache: Record<string, unknown> | null) => (dated === null ? null : cellDays(cache?.[dated.datePropertyId]))
+  const colorOf = (cache: Record<string, unknown> | null): string => {
+    if (dated === null || dated.colorBy === null) return 'default'
+    const v = cache?.[dated.colorBy.propertyId] as { select?: { id?: string } | null; status?: { id?: string } | null } | undefined
+    const ref = v?.select ?? v?.status ?? null
+    return dated.colorBy.options.find((o) => o.id === ref?.id)?.color ?? 'default'
+  }
+  const kept = shown
+    .map((row) => ({ row, span: spanOf(row.properties_cache) }))
+    // 창 밖(넓혀 물은 가장자리) · 칸 값에서 날짜 글자를 못 읽는 행은 뺀다
+    .filter(({ span }) => dated === null || (span !== null && overlapsWindow(span.start, span.end, dated.window)))
   return {
     layout,
     viewType: view.type,
     board,
     cardSize: readGalleryLayout(view.configuration).cover_size,
+    window: dated === null ? null : dated.window,
     viewName: view.name ?? '',
     columns,
-    rows: shown.map((row) => ({
+    rows: kept.map(({ row, span }) => ({
       id: row.id,
       title: readTitle(row.properties),
       icon: pageIconOfFormat(row.format),
       cells: pick(row.properties_cache, columns),
       uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
       groupKey: board === null || groupId === null ? null : boardKeyOf(board.spec, row.properties_cache?.[groupId]),
+      span,
+      barColor: colorOf(row.properties_cache),
     })),
-    truncated: rows.length > PUBLIC_TABLE_MAX_ROWS,
+    truncated: rows.length > cap,
+  }
+}
+
+/**
+ * 캘린더 · 타임라인의 창 — 첫 뷰가 그 레이아웃이고 날짜 속성이 살아 있는 날짜 속성일 때. 아니면 null(표로 그린다).
+ * 창은 주소의 값(`?m=` · `?from=`)이고 틀리면 오늘이 든 창이다.
+ */
+async function readDatedWindow(
+  tx: Tx,
+  view: { type: string; data_source_id: string; configuration: unknown },
+  types: ReadonlyMap<string, string>,
+  win: WindowQuery | null,
+): Promise<{
+  datePropertyId: string
+  window: PublicWindow
+  colorBy: { propertyId: string; options: readonly PublicOption[] } | null
+} | null> {
+  if (view.type !== 'calendar' && view.type !== 'timeline') return null
+  const today = publicToday()
+  const nav = win !== null
+  if (view.type === 'calendar') {
+    const layout = readCalendarLayout(view.configuration)
+    if (layout.date_property_id === null || types.get(layout.date_property_id) !== 'date') return null
+    const month = calendarMonth(win?.m, today)
+    const span = monthSpan(month)
+    return {
+      datePropertyId: layout.date_property_id,
+      window: {
+        kind: 'calendar', ...span, month, zoom: 'week', weekStart: layout.week_start, showWeekends: layout.show_weekends,
+        prev: shiftMonth(month, -1), next: shiftMonth(month, 1), nav,
+      },
+      colorBy: null,
+    }
+  }
+  const layout = readTimelineLayout(view.configuration)
+  if (layout.date_property_id === null || types.get(layout.date_property_id) !== 'date') return null
+  const range: TimelineWindow = timelineWindow(win?.from, layout.zoom, today)
+  const colorType = layout.color_by === null ? undefined : types.get(layout.color_by)
+  const colorBy =
+    layout.color_by !== null && (colorType === 'select' || colorType === 'status')
+      ? {
+          propertyId: layout.color_by,
+          options: await tx.query<PublicOption>(
+            `SELECT id, name, color::text AS color FROM select_option WHERE property_id = $1 ORDER BY order_idx, id`,
+            [layout.color_by],
+          ),
+        }
+      : null
+  return {
+    datePropertyId: layout.date_property_id,
+    window: {
+      kind: 'timeline', from: range.from, to: range.to, month: null, zoom: layout.zoom, weekStart: 'sunday', showWeekends: true,
+      prev: shiftWindow(range, layout.zoom, -1).from, next: shiftWindow(range, layout.zoom, 1).from, nav,
+    },
+    colorBy,
   }
 }
 
