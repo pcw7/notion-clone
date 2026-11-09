@@ -20,7 +20,7 @@
  * 평균은 0 이 아니라 빈 값이다(SQL `AVG` 가 NULL 인 것과 같은 뜻). 비율은 행이 0개면 빈 값이다(0으로 나누지 않는다).
  */
 
-import { isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
+import { isAutoMetaType, isMvpPropertyType, type AutoMetaType, type MvpPropertyType } from './property-types.ts'
 
 /** 저장되는 함수 이름(마이그레이션 0054 의 CHECK 과 같은 목록 — 순서는 화면의 목록 순서). */
 export const CALCULATIONS = [
@@ -77,8 +77,15 @@ export const CALCULATION_LABEL: Readonly<Record<Calculation, string>> = {
 const COMMON: readonly Calculation[] = ['count_all', 'count_values', 'count_empty', 'count_unique', 'percent_empty', 'percent_not_empty']
 
 /** 이 타입이 고를 수 있는 함수(04 *"사용 가능 함수는 프로퍼티 타입에 의존한다"*). 체크박스에는 빈 값이 없어 세기 계열 대신 체크 계열이다. */
-export function calculationsFor(type: MvpPropertyType): readonly Calculation[] {
+export function calculationsFor(type: MvpPropertyType | AutoMetaType): readonly Calculation[] {
   switch (type) {
+    // 만든 · 고친 시각(PT-3)은 날짜와 같고(가장 이른 · 늦은 · 기간) 사람은 사람처럼 세기만이다. 값이 언제나 있어 빈 칸 세기는 0 이다
+    case 'created_time':
+    case 'last_edited_time':
+      return ['count_all', 'earliest_date', 'latest_date', 'date_range']
+    case 'created_by':
+    case 'last_edited_by':
+      return ['count_all', 'count_values', 'count_empty', 'percent_empty', 'percent_not_empty']
     case 'number':
       return [...COMMON, 'sum', 'average', 'median', 'min', 'max', 'range']
     case 'date':
@@ -104,6 +111,14 @@ export function calculationsFor(type: MvpPropertyType): readonly Calculation[] {
  */
 export function canCalculate(type: string, fn: Calculation): boolean {
   return isMvpPropertyType(type) && calculationsFor(type).includes(fn)
+}
+
+/**
+ * 표 아래 열 집계로 이 함수를 계산할 수 있는가 — `canCalculate` + 만든 · 고친 시각과 사람(PT-3 · 값이 block 의 열이라 `calculate.ts` 만 읽는다.
+ * 보드 그룹 머리의 집계(`group.ts`)는 `page_property_value` 만 읽으므로 `canCalculate` 를 그대로 쓴다).
+ */
+export function canCalculateColumn(type: string, fn: Calculation): boolean {
+  return canCalculate(type, fn) || (isAutoMetaType(type) && calculationsFor(type).includes(fn))
 }
 
 /**

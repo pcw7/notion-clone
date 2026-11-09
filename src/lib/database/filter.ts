@@ -50,7 +50,18 @@
  * 부르는 쪽의 일이다 — 거르기 직전에 `refreshDerivedValues`(읽기는 READ ONLY 다).
  */
 
-import { MVP_PROPERTY_TYPES, isMvpPropertyType, isStatusGroupKind, type MvpPropertyType } from './property-types.ts'
+import {
+  AUTO_META_COLUMN,
+  AUTO_META_TYPES,
+  MVP_PROPERTY_TYPES,
+  isAutoMetaPersonType,
+  isAutoMetaTimeType,
+  isAutoMetaType,
+  isMvpPropertyType,
+  isStatusGroupKind,
+  type AutoMetaType,
+  type MvpPropertyType,
+} from './property-types.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 import { todayIn } from './date-group.ts'
 import { relativeRange, type RelativeDateOperator } from './relative-date.ts'
@@ -63,9 +74,9 @@ import { relativeRange, type RelativeDateOperator } from './relative-date.ts'
  * `relation_edge` — [보강 10n-44]). relation 으로는 **정렬하지 않는다**(값이 집합이다 — `validateSorts` 가 거부하고 `compileSorts` 가 건너뛴다).
  * rollup 은 여기 없다: 저장된 값이 없다(정본 D1).
  */
-export type FilterableType = MvpPropertyType | 'unique_id' | 'relation' | 'verification'
+export type FilterableType = MvpPropertyType | AutoMetaType | 'unique_id' | 'relation' | 'verification'
 
-export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id', 'relation', 'verification']
+export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, ...AUTO_META_TYPES, 'unique_id', 'relation', 'verification']
 
 /** 수식의 결과 타입 → 거를 때 쓰는 칸 타입(2j-2). 연산자 · 축 · 캐스트가 그 칸 타입의 것이다. */
 const FORMULA_FILTER_TYPE: Readonly<Record<string, FilterableType>> = Object.freeze({
@@ -115,7 +126,15 @@ export function propertyIdsIn(filter: FilterNode | null | undefined, sorts: read
 }
 
 export function isFilterableType(t: unknown): t is FilterableType {
-  return isMvpPropertyType(t) || t === 'unique_id' || t === 'relation' || t === 'verification'
+  return isMvpPropertyType(t) || isAutoMetaType(t) || t === 'unique_id' || t === 'relation' || t === 'verification'
+}
+
+/**
+ * 자동 메타(PT-3)가 읽는 값 — 칸이 없다. 그 행 페이지 블록의 열을 상관 서브쿼리로 읽는다(`block b` 별칭에 기대지 않는다 — 바깥 질의가
+ * `page p` 만 갖는 곳도 있다). 열 이름은 화이트리스트(`AUTO_META_COLUMN`)에서만 온다.
+ */
+function autoMetaValue(type: AutoMetaType): string {
+  return `(SELECT fb.${AUTO_META_COLUMN[type]} FROM block fb WHERE fb.id = p.id)`
 }
 
 /** 고유 ID 가 보는 열과 캐스트. `::numeric` 인 이유: 숫자 축과 같은 바인딩(`Number(value)`)이 NaN · 소수를 주어도 질의가 죽지 않는다. */
@@ -432,6 +451,17 @@ const PEOPLE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
 })
 
 /**
+ * 만든 · 마지막 편집 사람(PT-3 · 정본 [보강 PT-1] ⑦) — 사람의 연산자(포함 · 포함하지 않음 · 비어 있음). 칸이 없고 값이 block 의 열 하나라
+ * `negate` 는 `NOT EXISTS` 가 아니라 `IS NOT TRUE` 로 접는다(`compileFilter`) — 만든 사람이 없는 행(익명 폼)도 "포함하지 않음" 에 걸린다.
+ */
+const AUTO_PERSON_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  contains: { arity: 1, predicate: (c, p) => `${c}::text = ${p}::text` },
+  does_not_contain: { arity: 1, negate: true, predicate: (c, p) => `${c}::text = ${p}::text` },
+  is_empty: { arity: 0, negate: true, predicate: (c) => `${c} IS NOT NULL` },
+  is_not_empty: { arity: 0, predicate: (c) => `${c} IS NOT NULL` },
+})
+
+/**
  * 다중 선택(PT-1 · 정본 §3.5 [보강 PT-1] ③) — 사람과 같은 모양: 포함은 값의 jsonb 포함 연산, 값은 옵션 id 하나. 옵션 이름을 바꿔도 따라온다.
  * 포함하지 않음은 `NOT EXISTS` — 칸이 없는 행도 맞는다.
  */
@@ -490,6 +520,11 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     url: TEXT_OPERATORS,
     email: TEXT_OPERATORS,
     phone_number: TEXT_OPERATORS,
+    // 만든 · 고친 시각과 사람(PT-3) — 시각은 날짜의 연산자(상대 날짜 포함) · 사람은 사람의 연산자
+    created_time: DATE_OPERATORS,
+    last_edited_time: DATE_OPERATORS,
+    created_by: AUTO_PERSON_OPERATORS,
+    last_edited_by: AUTO_PERSON_OPERATORS,
     relation: RELATION_OPERATORS,
     verification: VERIFICATION_OPERATORS,
   })
@@ -582,7 +617,7 @@ export function validateFilter(
     return [{ path: `${path}.value`, message: "'todo' · 'in_progress' · 'complete' 중 하나여야 합니다" }]
   }
   // 사람(6g-1 · 6g-2c) — 값은 사람 id 하나 또는 "나"(컨텍스트 노드)
-  if (resolved.type === 'people' && spec.arity === 1 && !isMeNode(obj.value) && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
+  if ((resolved.type === 'people' || isAutoMetaPersonType(resolved.type)) && spec.arity === 1 && !isMeNode(obj.value) && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
     return [{ path: `${path}.value`, message: '사람 id 또는 { "$context": "me" } 여야 합니다' }]
   }
   // 다중 선택(PT-1) — 값은 옵션 id 하나
@@ -617,7 +652,8 @@ export function validateSorts(sorts: unknown, types: PropertyTypes): ValidationI
       issues.push({ path: `sorts[${i}].direction`, message: "'asc' 또는 'desc' 여야 합니다" })
     }
     // 사람(6g-1)은 정렬 키가 아니다(정본 §3.5 [보강] 사람 속성 ⑤) — 사이드카는 사람 id 라 그 순서는 뜻이 없다
-    if (types.get(key.property_id) === 'people') {
+    // 만든 · 고친 사람(PT-3)도 같다 — 사람 id 의 순서는 뜻이 없다
+    if (types.get(key.property_id) === 'people' || isAutoMetaPersonType(types.get(key.property_id))) {
       issues.push({ path: `sorts[${i}].property_id`, message: '사람으로는 정렬할 수 없습니다' })
     }
     // relation(10n-44)도 — 거를 수는 있지만 값이 집합이라 순서가 없다
@@ -664,6 +700,9 @@ export class ParamBag {
 function bindValue(type: FilterableType, value: unknown): unknown {
   if (type === 'unique_id') return typeof value === 'number' ? value : Number(value)
   if (type === 'verification') return String(value)
+  // 만든 · 고친 시각(PT-3)은 날짜와 같고 사람은 id 글이다
+  if (isAutoMetaTimeType(type)) return value instanceof Date ? value.toISOString() : String(value)
+  if (isAutoMetaPersonType(type)) return String(value)
   // relation 의 포함(10n-45) — 행 id. 읽기 경로는 검사를 다시 하지 않으므로 uuid 가 아니면 아무 행도 아닌 id 로 묶는다(뷰를 깨지 않는다)
   if (type === 'relation') return typeof value === 'string' && UUID_RE.test(value) ? value : NOBODY
   switch (AXIS[type]) {
@@ -755,6 +794,19 @@ export function compileFilter(
     return spec.negate ? `(${inner}) IS NOT TRUE` : inner
   }
 
+  // 만든 · 고친 시각과 사람(PT-3) — 칸이 없다. 행 페이지 블록의 열을 바로 본다. 사람은 "나" 도 받는다(사람 칸과 같다)
+  if (isAutoMetaType(rawType)) {
+    const time = isAutoMetaTimeType(rawType)
+    const raw = !time && isMeNode(node.value) ? (context.me ?? NOBODY) : node.value
+    const valueParam = spec.relative
+      ? relativeBounds(node.operator as RelativeDateOperator, context.today, params)
+      : spec.arity === 1
+        ? params.bind(bindValue(rawType, raw))
+        : ''
+    const inner = spec.predicate(autoMetaValue(rawType), valueParam, time ? '::timestamptz' : '')
+    return spec.negate ? `(${inner}) IS NOT TRUE` : inner
+  }
+
   const axis = AXIS[rawType]
   const propParam = params.bind(node.property_id)
   // "나"(6g-2c) — 지금 보는 사람으로 묶는다. 보는 사람이 없으면 아무도 아니다(포함은 0행 · 포함하지 않음은 모든 행)
@@ -832,6 +884,16 @@ export function compileSorts(
       keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })
       continue
     }
+    // 만든 · 고친 시각(PT-3) — block 의 열. 커서가 마이크로초를 잃지 않게 UTC 글로 정렬한다(사람은 정렬하지 않는다 — 저장 경로가 막는다)
+    if (isAutoMetaTimeType(rawType)) {
+      keys.push({
+        expr: `(SELECT to_char(fb.${AUTO_META_COLUMN[rawType]} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') COLLATE "C" FROM block fb WHERE fb.id = p.id)`,
+        direction: sort.direction,
+        cast: '::text',
+      })
+      continue
+    }
+    if (isAutoMetaPersonType(rawType)) continue
     // 검증(VF-2b) — 검증됨(0) < 만료(1) < 없음(NULL · 맨 뒤), 같은 줄 안은 만료 시각 순(무기한은 검증됨의 맨 뒤). 한 글자 키라 커서가 그대로 돈다.
     if (rawType === 'verification') {
       const prop = params.bind(sort.property_id)

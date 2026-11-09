@@ -19,7 +19,7 @@
 
 import type { RowJson } from '@/lib/database/http'
 import type { ViewColumn } from '@/lib/database/view'
-import { isEmptyValue, readRelationValue } from '@/lib/database/property-types'
+import { isAutoMetaType, isEmptyValue, readRelationValue } from '@/lib/database/property-types'
 import { cellText, readCell } from '@/lib/database/cell-format'
 import { formatUniqueId } from '@/lib/database/unique-id-format'
 import { showsRollupBadge, type RollupPage } from '@/lib/database/rollup-functions'
@@ -126,6 +126,8 @@ export function CardBadges({
         }
         // 검증(VF-1)은 카드에 그리지 않는다 — 배지는 VF-4 에서
         if (column.type === 'verification') return null
+        // 만든 · 고친 시각과 사람(PT-3)도 카드에는 아직 그리지 않는다(값이 칸이 아니라 행의 것이다)
+        if (isAutoMetaType(column.type)) return null
         const value = readCell(column.type, row.properties[column.propertyId])
         if (value.type === 'checkbox' ? !value.checkbox : isEmptyValue(value)) return null
         return (

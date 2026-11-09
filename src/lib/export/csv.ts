@@ -44,7 +44,7 @@
 
 import { toPlainText } from '../contracts/rich-text.ts'
 import { LEFT_USER, readCell } from '../database/cell-format.ts'
-import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
+import { isAutoMetaType, optionIdOf, type AutoMetaType, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
 import { isVerificationExpired, readVerification } from '../database/verification-cell.ts'
 import { uniqueIdCellText } from '../database/unique-id-format.ts'
 import type { FormulaValue } from '../formula/formula.ts'
@@ -54,7 +54,7 @@ export type CsvColumn = {
   readonly propertyId: string
   readonly name: string
   /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다) + 수식(10n-35 — 값은 스냅숏이 계산해 끼운 `FormulaValue`). */
-  readonly type: MvpPropertyType | 'unique_id' | 'formula' | 'relation' | 'rollup' | 'verification'
+  readonly type: MvpPropertyType | AutoMetaType | 'unique_id' | 'formula' | 'relation' | 'rollup' | 'verification'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
   /** 사람 칸(6g-1)의 이름 — 사람 id → 이름(이 워크스페이스의 활동 중인 사람만). 없는 id 는 "떠난 사용자". */
@@ -102,7 +102,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation', 'url', 'email', 'phone_number'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation', 'url', 'email', 'phone_number', 'created_by', 'last_edited_by'])
 
 /**
  * 내보내기의 relation 칸(10n-36) — 스냅숏이 엣지에서 읽어 끼운다. 캐시의 relation 봉투(`type: 'relation'`)와 태그가 다르다 — 캐시는
@@ -213,6 +213,17 @@ function readFormulaValue(raw: unknown): FormulaValue {
   return null
 }
 
+/**
+ * 내보내기의 만든 · 고친 시각과 사람 칸(PT-3) — 칸이 없다(C1). 스냅숏이 행 페이지 블록의 열에서 읽어 글로 끼운다 — 시각은 UTC ISO,
+ * 사람은 이름표(게스트에게는 "멤버" · 만든 사람이 없으면 빈 글).
+ */
+export type ExportAutoMetaCell = { readonly type: 'auto_meta_export'; readonly text: string }
+
+function autoMetaPlainText(raw: unknown): string {
+  const cell = raw as Partial<ExportAutoMetaCell> | null
+  return cell?.type === 'auto_meta_export' && typeof cell.text === 'string' ? cell.text : ''
+}
+
 /** 수식 값의 글자 — 결과 타입대로 같은 칸의 모양(참거짓은 체크박스처럼 · 날짜 범위는 ` → `). 값이 없으면 빈 칸(거짓 `No` 와 가른다). */
 function formulaPlainText(raw: unknown): string {
   const v = readFormulaValue(raw)
@@ -237,6 +248,8 @@ function formulaPlainText(raw: unknown): string {
 export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string = UNTITLED_ROW): string {
   // 고유 ID 는 우리가 만든 값이다(접두사는 영숫자) — 수식 막기 대상이 아니다(`USER_TEXT` 밖).
   if (column.type === 'unique_id') return uniqueIdCellText(raw)
+  // 만든 · 고친 시각과 사람(PT-3) — 스냅숏이 끼운 글
+  if (isAutoMetaType(column.type)) return autoMetaPlainText(raw)
   // 수식(10n-35) — 스냅숏이 계산해 끼운 값. 셀 읽기(`readCell`)를 거치지 않는다
   if (column.type === 'formula') return formulaPlainText(raw)
   // relation(10n-36) — 스냅숏이 엣지에서 읽어 끼운 제목 · 볼 수 없는 개수

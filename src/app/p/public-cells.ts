@@ -67,6 +67,14 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
       const text = typeof cell[column.type] === 'string' ? (cell[column.type] as string) : ''
       return text === '' ? EMPTY : { kind: 'contact', type: column.type, text, href: contactHref(column.type, text) }
     }
+    // 만든 · 마지막 편집 시각(PT-3) — 값은 행 페이지 블록의 열이다(읽을 때 끼운 `{type, <type>: ISO}`). 공개 화면은 보는 사람의 시간대를
+    // 모르므로(쿠키를 읽으면 같은 게시 페이지가 보는 사람마다 달라진다) UTC 로 적고 그렇다고 밝힌다. 사람 둘은 공개 열이 아니다
+    case 'created_time':
+    case 'last_edited_time': {
+      // 날짜 칸의 시각 있는 모양(`YYYY-MM-DD HH:mm`)과 같다
+      const text = dateText({ start: typeof cell[column.type] === 'string' ? (cell[column.type] as string) : '' })
+      return text === null ? EMPTY : { kind: 'text', text: `${text} UTC` }
+    }
     case 'checkbox':
       return { kind: 'checkbox', checked: cell.checkbox === true }
     case 'date': {
@@ -75,6 +83,9 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
     }
     case 'verification':
       return verificationBadge(cell)
+    // 공개 열이 아닌 타입(만든 · 마지막 편집 **사람** 등 — 회원의 신원)은 값이 와도 그리지 않는다
+    default:
+      return EMPTY
   }
 }
 

@@ -69,7 +69,10 @@ export type QueriedRow = {
   /** 고유 ID 의 번호(`page.unique_seq` · 2a-1 — `RowSummary.uniqueSeq` 와 같은 뜻). */
   readonly uniqueSeq: number | null
   readonly createdAt: Date
+  /** 만든 · 마지막으로 고친 사람(PT-3 · `block.created_by` / `last_edited_by`) — 만든 사람이 없으면(익명 폼) null. */
+  readonly createdBy: string | null
   readonly lastEditedAt: Date
+  readonly lastEditedBy: string | null
   readonly version: string
   /** 하위 항목 트리의 맞춤(H-1 · P-1)이 걸린 질의에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. 그 밖의 질의에는 없다. */
   readonly treeMatch?: TreeMatch
@@ -152,7 +155,10 @@ export type RowRow = {
   /** bigint 라 pg 가 문자열로 준다. */
   unique_seq: string | null
   created_at: Date
+  /** 만든 · 마지막으로 고친 사람 — 익명 폼 제출 행은 만든 사람이 없다(PT-3). */
+  created_by: string | null
   last_edited_at: Date
+  last_edited_by: string | null
   version: string
   /** 하위 항목 트리의 맞춤(H-1 · P-1)에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. */
   tree_matched?: boolean
@@ -290,7 +296,7 @@ export async function queryRows(
 
     const rows = await tx.query<RowRow>(
       `${withSql}SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-              p.unique_seq, b.created_at, b.last_edited_at, b.version${sortColumns}${hitColumns}
+              p.unique_seq, b.created_at, b.created_by, b.last_edited_at, b.last_edited_by, b.version${sortColumns}${hitColumns}
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE ${where.join(' AND ')}
@@ -398,7 +404,9 @@ export function toQueriedRow(row: RowRow): QueriedRow {
     properties: withVerificationExpiry(row.properties_cache ?? {}),
     uniqueSeq: row.unique_seq === null || row.unique_seq === undefined ? null : Number(row.unique_seq),
     createdAt: row.created_at,
+    createdBy: row.created_by ?? null,
     lastEditedAt: row.last_edited_at,
+    lastEditedBy: row.last_edited_by ?? null,
     version: row.version,
     ...(typeof row.tree_matched === 'boolean' ? { treeMatch: { matched: row.tree_matched, below: row.tree_below === true } } : {}),
   }

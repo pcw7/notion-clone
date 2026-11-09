@@ -10,6 +10,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
+import { editorLabel, editorNames } from '../block/edit-info.ts'
 import { isUuid } from '../ids.ts'
 import { canListMembers, listMembers } from '../workspace/list.ts'
 import { MAX_PEOPLE, type CellValue } from './property-types.ts'
@@ -195,3 +196,15 @@ export async function loadPeopleNames(ctx: SessionContext, ids: readonly string[
   return Object.fromEntries(await withReadTransaction((tx) => peopleNamesIn(tx, ctx.workspaceId, wanted)))
 }
 
+
+/**
+ * 만든 · 마지막 편집 사람 칸의 이름표(PT-3 · 정본 [보강 PT-1] ⑦) — id 마다 하나씩, **지도에 없는 id 가 없다**. 이름은 멤버 목록을 받을 수
+ * 있는 역할에게만이고 게스트에게는 "멤버"(편집 이력 ED-1 의 `editorLabel` 과 같은 규칙) · 떠난 사람도 이름을 찾으면 이름이다.
+ */
+export async function loadAutoMetaLabels(ctx: SessionContext, ids: readonly string[]): Promise<Record<string, string>> {
+  const wanted = [...new Set(ids.filter(isUuid))].slice(0, PEOPLE_NAMES_LIMIT)
+  if (wanted.length === 0) return {}
+  const names = await editorNames(ctx, wanted)
+  const canSee = canListMembers(ctx.role)
+  return Object.fromEntries(wanted.map((id) => [id, editorLabel(id, names, canSee)]))
+}

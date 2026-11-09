@@ -175,7 +175,7 @@ async function queryWindow(ctx: SessionContext, viewId: string, input: WindowInp
     const limitParam = params.bind(maxRows + 1)
     const rows = await tx.query<RowRow>(
       `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-              p.unique_seq, b.created_at, b.last_edited_at, b.version
+              p.unique_seq, b.created_at, b.created_by, b.last_edited_at, b.last_edited_by, b.version
          FROM page p
          JOIN block b ON b.id = p.id
          JOIN page_property_value dv ON dv.page_id = p.id AND dv.property_id = ${dateParam} AND dv.date_start IS NOT NULL

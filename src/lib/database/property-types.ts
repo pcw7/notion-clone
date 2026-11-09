@@ -133,6 +133,33 @@ export type SystemPropertyType = (typeof SYSTEM_PROPERTY_TYPES)[number]
  * 버튼은 셀이 없다(셀 가드 0078) — 정렬 · 필터 · rollup · 수식이 읽는 값이 없다. 무엇을 하는지는 속성마다 하나인 automation
  * (kind `button_property`)의 액션이 정한다(`automation/button-property.ts`). 셀 타입 밖에 두어 `prepareCells` 가 거부한다.
  */
+/**
+ * **자동 메타 타입** — 만든 · 고친 시각과 사람 (PT-3 · 정본 §3.5 [보강 PT-1] ⑦). 칸이 없다(불변식 C1 · 0025 가드) —
+ * 행 페이지 블록의 `created_at` · `created_by` · `last_edited_at` · `last_edited_by` 를 읽을 때 투영한다. 읽기 전용.
+ */
+export const AUTO_META_TYPES = ['created_time', 'created_by', 'last_edited_time', 'last_edited_by'] as const
+export type AutoMetaType = (typeof AUTO_META_TYPES)[number]
+
+export function isAutoMetaType(t: unknown): t is AutoMetaType {
+  return t === 'created_time' || t === 'created_by' || t === 'last_edited_time' || t === 'last_edited_by'
+}
+
+/** 자동 메타 중 시각 · 사람. */
+export function isAutoMetaTimeType(t: unknown): t is 'created_time' | 'last_edited_time' {
+  return t === 'created_time' || t === 'last_edited_time'
+}
+export function isAutoMetaPersonType(t: unknown): t is 'created_by' | 'last_edited_by' {
+  return t === 'created_by' || t === 'last_edited_by'
+}
+
+/** 자동 메타 타입이 읽는 block 열. 화이트리스트 — SQL 에 이 값만 들어간다. */
+export const AUTO_META_COLUMN: Readonly<Record<AutoMetaType, 'created_at' | 'created_by' | 'last_edited_at' | 'last_edited_by'>> = Object.freeze({
+  created_time: 'created_at',
+  created_by: 'created_by',
+  last_edited_time: 'last_edited_at',
+  last_edited_by: 'last_edited_by',
+})
+
 export const ACTION_PROPERTY_TYPES = ['button'] as const
 export type ActionPropertyType = (typeof ACTION_PROPERTY_TYPES)[number]
 
@@ -148,6 +175,7 @@ export const APP_PROPERTY_TYPES = [
   ...EDGE_PROPERTY_TYPES,
   ...DERIVED_PROPERTY_TYPES,
   ...SYSTEM_PROPERTY_TYPES,
+  ...AUTO_META_TYPES,
   ...ACTION_PROPERTY_TYPES,
   ...VERIFICATION_PROPERTY_TYPES,
 ] as const

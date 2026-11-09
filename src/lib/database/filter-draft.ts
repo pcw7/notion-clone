@@ -205,8 +205,12 @@ function valueLabel(value: unknown, operator: string, column: RuleColumn, names:
     case 'verification':
       return value === 'verified' ? '검증됨' : value === 'expired' ? '만료' : value === 'unverified' ? '검증 안 됨' : String(value)
     case 'date':
+    case 'created_time':
+    case 'last_edited_time':
       return typeof value === 'string' ? formatDate({ start: value }) : String(value)
     case 'people':
+    case 'created_by':
+    case 'last_edited_by':
       // "나"(6g-2c) — 보는 사람마다 다르다
       if (isMeNode(value)) return '나'
       // 떠난 사람의 규칙은 남는다 — 그 사람이 든 행만 맞는다(지운 옵션과 같은 태도)
@@ -216,10 +220,15 @@ function valueLabel(value: unknown, operator: string, column: RuleColumn, names:
   }
 }
 
+/** 사람 값을 받는 필터 타입 — 사람 + 만든 · 마지막 편집 사람(PT-3). */
+function isPeopleFilterType(type: FilterableType | undefined): boolean {
+  return type === 'people' || type === 'created_by' || type === 'last_edited_by'
+}
+
 /** 필터 규칙들에 든 사람 id — 사람 속성의 값이 있는 규칙만(칩 · 패널이 이름을 물을 것). */
 export function filterPeopleIds(rules: readonly FilterRule[], types: ReadonlyMap<string, FilterableType>): string[] {
   const ids = rules.flatMap((rule) =>
-    types.get(rule.property_id) === 'people' && typeof rule.value === 'string' && rule.value !== '' ? [rule.value] : [],
+    isPeopleFilterType(types.get(rule.property_id)) && typeof rule.value === 'string' && rule.value !== '' ? [rule.value] : [],
   )
   return [...new Set(ids)]
 }

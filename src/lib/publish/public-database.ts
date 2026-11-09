@@ -56,7 +56,9 @@ import {
 } from './public-window.ts'
 
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
-export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'url', 'email', 'phone_number', 'checkbox', 'date', 'unique_id', 'verification'] as const
+// 만든 · 마지막 편집 **시각**(PT-3)도 그린다 — 값은 행 페이지 블록의 열이라 읽을 때 끼운다(`pick`). **사람 둘(created_by · last_edited_by)은 넣지
+// 않는다** — 회원의 신원이다(사람 속성을 그리지 않는 것과 같은 까닭 · [보강 PT-1] ⑦ ⑩)
+export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'url', 'email', 'phone_number', 'created_time', 'last_edited_time', 'checkbox', 'date', 'unique_id', 'verification'] as const
 export type PublicCellType = (typeof PUBLIC_CELL_TYPES)[number]
 
 /** 공개 표의 줄 상한 — 넘으면 `truncated`(공개 화면은 페이지를 넘기지 않는다 · v1). */
@@ -255,8 +257,10 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     format: Record<string, unknown> | null
     properties_cache: Record<string, unknown> | null
     unique_seq: string | null
+    created_at: Date
+    last_edited_at: Date
   }>(
-    `SELECT b.id, b.properties, b.format, p.properties_cache, p.unique_seq
+    `SELECT b.id, b.properties, b.format, p.properties_cache, p.unique_seq, b.created_at, b.last_edited_at
        FROM page p
        JOIN block b ON b.id = p.id
        ${joinSql}
@@ -294,7 +298,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
       id: row.id,
       title: readTitle(row.properties),
       icon: pageIconOfFormat(row.format),
-      cells: pick(row.properties_cache, columns),
+      cells: pick(row.properties_cache, columns, row),
       uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
       groupKey: board === null || groupId === null ? null : boardKeyOf(board.spec, row.properties_cache?.[groupId]),
       span,
@@ -475,8 +479,14 @@ async function readBoard(tx: Tx, dataSourceId: string, raw: unknown): Promise<Pu
  * 닫는다 — `chainOpens`).
  */
 export async function readPublicRowPropertiesIn(tx: Tx, target: PublicTarget): Promise<PublicRowProperties | null> {
-  const row = await tx.queryMaybe<{ data_source_id: string; properties_cache: Record<string, unknown> | null; unique_seq: string | null }>(
-    `SELECT data_source_id, properties_cache, unique_seq FROM page WHERE id = $1`,
+  const row = await tx.queryMaybe<{
+    data_source_id: string
+    properties_cache: Record<string, unknown> | null
+    unique_seq: string | null
+    created_at: Date
+    last_edited_at: Date
+  }>(
+    `SELECT p.data_source_id, p.properties_cache, p.unique_seq, b.created_at, b.last_edited_at FROM page p JOIN block b ON b.id = p.id WHERE p.id = $1`,
     [target.pageId],
   )
   if (row === null) return null
@@ -494,7 +504,7 @@ export async function readPublicRowPropertiesIn(tx: Tx, target: PublicTarget): P
       [row.data_source_id],
     ),
   )
-  return { columns, cells: pick(row.properties_cache, columns), uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq) }
+  return { columns, cells: pick(row.properties_cache, columns, row), uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq) }
 }
 
 /**
@@ -535,10 +545,19 @@ async function propertyTypes(tx: Tx, dataSourceId: string): Promise<ReadonlyMap<
   return new Map(rows.map((r) => [r.id, r.type === 'formula' ? formulaTypeKey(r.result_type ?? '') : r.type]))
 }
 
+/** 행 페이지 블록의 시각 — 만든 · 마지막 편집 시각 열이 읽는다(PT-3). */
+type RowTimes = { readonly created_at: Date; readonly last_edited_at: Date }
+
 /** 보이는 공개 열의 값만 — 캐시의 다른 칸(숨긴 열 · 그리지 않는 타입)은 싣지 않는다. */
-function pick(cache: Record<string, unknown> | null, columns: readonly PublicColumn[]): Record<string, unknown> {
+function pick(cache: Record<string, unknown> | null, columns: readonly PublicColumn[], times: RowTimes): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const column of columns) {
+    // 만든 · 마지막 편집 시각(PT-3) — 칸이 없다. 행 페이지 블록의 열을 ISO 로 끼운다
+    if (column.type === 'created_time' || column.type === 'last_edited_time') {
+      const at = column.type === 'created_time' ? times.created_at : times.last_edited_at
+      out[column.id] = { type: column.type, [column.type]: at.toISOString() }
+      continue
+    }
     const value = cache?.[column.id]
     if (value === undefined) continue
     // 검증 — 배지에 필요한 것만(상태 · 만료 시각 · 만료 여부). 검증한 사람 · 시각은 공개 방문자에게 가지 않는다(회원의 신원)

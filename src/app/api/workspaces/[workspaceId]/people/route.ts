@@ -8,7 +8,7 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { loadPeopleNames, searchPeople } from '@/lib/database/people'
+import { loadAutoMetaLabels, loadPeopleNames, searchPeople } from '@/lib/database/people'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/people'>
 
@@ -21,7 +21,9 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const ids = params.get('ids')
   if (ids !== null) {
     const list = ids.split(',').map((s) => s.trim()).filter((s) => s !== '')
-    return Response.json({ ok: true, names: await loadPeopleNames(session.ctx, list) })
+    // `meta=1` — 만든 · 고친 사람 칸(PT-3): 모든 id 에 이름표를 준다(게스트에게는 "멤버")
+    const names = params.get('meta') === '1' ? await loadAutoMetaLabels(session.ctx, list) : await loadPeopleNames(session.ctx, list)
+    return Response.json({ ok: true, names })
   }
   const q = (params.get('q') ?? '').slice(0, 100)
   return Response.json({ ok: true, people: await searchPeople(session.ctx, q) })

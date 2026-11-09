@@ -116,6 +116,29 @@ export function formatDate(date: DateValue): string {
   return date.end ? `${one(date.start)} → ${one(date.end)}` : one(date.start)
 }
 
+/**
+ * 만든 · 마지막 편집 시각의 글(PT-3) — 날짜 칸의 시각 있는 모양(`2026년 9월 13일 15:21`)과 같고 상대 시각은 쓰지 않는다. 순간(ISO)을 보는
+ * 사람의 시간대의 달력으로 푼다. 읽을 수 없는 값이면 빈 글.
+ */
+export function formatAutoMetaTime(iso: string, timeZone = 'UTC'): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return ''
+  let parts: Intl.DateTimeFormatPart[]
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(at)
+  } catch {
+    return formatAutoMetaTime(iso, 'UTC')
+  }
+  const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? ''
+  const hour = get('hour') === '24' ? '00' : get('hour')
+  return `${Number(get('year'))}년 ${Number(get('month'))}월 ${Number(get('day'))}일 ${hour}:${get('minute')}`
+}
+
+/** 만든 · 마지막 편집 사람의 글 — 이름표 하나. 사람이 없으면(익명 폼으로 만든 행) 빈 글. */
+export function autoMetaPersonText(id: string | null, labels: Readonly<Record<string, string>>): string {
+  return id === null ? '' : (labels[id] ?? '')
+}
+
 // ── 편집 ──────────────────────────────────────────────────────────────
 
 /** 편집을 시작할 때 입력칸에 넣을 글자. select · checkbox 는 입력칸으로 고치지 않는다. */
@@ -284,6 +307,11 @@ export function defaultColumnWidth(type: AppPropertyType): number {
     case 'people':
     // 칩이 여럿 서고 넘치면 줄바꿈한다(PT-1)
     case 'multi_select':
+    // 만든 · 고친 시각은 날짜와 시각 · 사람은 이름 하나다(PT-3)
+    case 'created_time':
+    case 'last_edited_time':
+    case 'created_by':
+    case 'last_edited_by':
       return 200
     // 고유 ID 는 `TASK-123` 정도다(접두사 7자까지 · 2a-1).
     case 'unique_id':

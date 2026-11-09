@@ -106,7 +106,11 @@ export type RowSummary = {
    */
   readonly uniqueSeq: number | null
   readonly createdAt: Date
+  /** 만든 사람(PT-3 · `block.created_by`) — 익명 폼 제출 행은 null. */
+  readonly createdBy: string | null
   readonly lastEditedAt: Date
+  /** 마지막으로 고친 사람(PT-3 · `block.last_edited_by`). */
+  readonly lastEditedBy: string | null
   /** `block.version` [X-6]. 낙관적 잠금에 쓴다. */
   readonly version: string
   /** 종속 관계로 따라 옮겨진 행 id(TL-5 ⑤) — 쓰기 응답에만 있다. 없으면 옮긴 행이 없다. */
@@ -867,7 +871,9 @@ type RowRow = {
   /** bigint 라 pg 가 문자열로 준다. */
   unique_seq: string | null
   created_at: Date
+  created_by: string | null
   last_edited_at: Date
+  last_edited_by: string | null
   version: string
 }
 
@@ -891,7 +897,9 @@ function toRowSummary(row: RowRow): RowSummary {
     properties: withVerificationExpiry(row.properties_cache ?? {}),
     uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
     createdAt: row.created_at,
+    createdBy: row.created_by,
     lastEditedAt: row.last_edited_at,
+    lastEditedBy: row.last_edited_by,
     version: row.version,
   }
 }
@@ -899,7 +907,7 @@ function toRowSummary(row: RowRow): RowSummary {
 export async function readRow(tx: Tx, rowId: string): Promise<RowSummary | null> {
   const row = await tx.queryMaybe<RowRow>(
     `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-            p.unique_seq, b.created_at, b.last_edited_at, b.version
+            p.unique_seq, b.created_at, b.created_by, b.last_edited_at, b.last_edited_by, b.version
        FROM page p JOIN block b ON b.id = p.id
       WHERE p.id = $1`,
     [rowId],
@@ -937,7 +945,7 @@ export async function listRows(
 
     const rows = await tx.query<RowRow>(
       `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-              p.unique_seq, b.created_at, b.last_edited_at, b.version
+              p.unique_seq, b.created_at, b.created_by, b.last_edited_at, b.last_edited_by, b.version
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE p.data_source_id = $1

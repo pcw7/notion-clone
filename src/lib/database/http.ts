@@ -281,7 +281,11 @@ export type RowJson = {
   readonly properties: Readonly<Record<string, unknown>>
   /** 고유 ID 의 번호(2a-1 · `page.unique_seq`). 접두사는 컬럼에 있다. 없으면 null. */
   readonly uniqueSeq: number | null
+  /** 만든 시각 · 만든 사람 · 마지막으로 고친 사람(PT-3) — 만든 · 고친 속성 칸의 값. 만든 사람이 없으면(익명 폼) null. */
+  readonly createdAt: string
+  readonly createdBy: string | null
   readonly lastEditedAt: string
+  readonly lastEditedBy: string | null
   readonly version: string
   /** 하위 항목 트리의 맞춤(H-1 · P-1)이 걸린 읽기에서만 — 맥락 행인가 · 아래에 맞은 행이 있는가. 쓰기 응답에는 없다. */
   readonly treeMatch?: TreeMatch
@@ -294,7 +298,10 @@ export function rowJson(row: {
   readonly icon: PageIcon | null
   readonly properties: Readonly<Record<string, unknown>>
   readonly uniqueSeq: number | null
+  readonly createdAt: Date
+  readonly createdBy: string | null
   readonly lastEditedAt: Date
+  readonly lastEditedBy: string | null
   readonly version: string
   readonly treeMatch?: TreeMatch
 }): RowJson {
@@ -304,7 +311,10 @@ export function rowJson(row: {
     icon: row.icon,
     properties: row.properties,
     uniqueSeq: row.uniqueSeq,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
     lastEditedAt: row.lastEditedAt.toISOString(),
+    lastEditedBy: row.lastEditedBy,
     version: row.version,
     ...(row.treeMatch === undefined ? {} : { treeMatch: row.treeMatch }),
   }
