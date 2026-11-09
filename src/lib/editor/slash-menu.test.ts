@@ -112,6 +112,14 @@ describe('커맨드 카탈로그', () => {
     assert.equal(filterSlashCommands('데이터')[0]?.kind, 'database', '/데이터베이스 는 그대로 먼저')
   })
 
+  test('★ 위키 커맨드(VF-5) — 연결된 데이터베이스 바로 뒤 · "위키" · "wiki" 로 찾는다', () => {
+    const at = SLASH_COMMANDS.findIndex((c) => c.kind === 'wiki')
+    assert.ok(at > 0, '/위키 가 없다')
+    assert.equal(SLASH_COMMANDS[at - 1]?.kind, 'linked_database')
+    assert.equal(filterSlashCommands('위키')[0]?.kind, 'wiki')
+    assert.equal(filterSlashCommands('wiki')[0]?.kind, 'wiki')
+  })
+
   test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록 → 색이다(색은 맨 끝 — Phase 2 1e-1)', () => {
     const groups: string[] = []
     for (const c of SLASH_COMMANDS) {

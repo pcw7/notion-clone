@@ -32388,6 +32388,114 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('위키 템플릿 (VF-5 · F-02-23)')) { try {
+      // 본문 빈 줄에서 `/위키` → 이름 "위키"인 인라인 데이터베이스 → 데이터베이스 화면의 표 머리(소유자 · 태그 · 검증)와 탭 셋
+      // (모든 페이지 · 내가 소유한 페이지 · 검증 필요) → "내가 소유한 페이지"는 소유자가 나인 행만 · "검증 필요"는 검증된 행이 빠진다 →
+      // 낮은 플랜은 탭 둘 · 검증 칸 없음. 요금제는 끝에 반드시 되돌린다.
+      const x = String(Date.now()).slice(-7)
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { withReadTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      // 빈 줄이 있는 새 페이지에서 `/위키` 를 쳐 만든다 — 서버가 본문에 넣은 데이터베이스 블록 id 를 돌려준다
+      const makeWiki = async (label) => {
+        const host = (await api('POST', '/pages', { title: `위키 ${label} ${x}` })).body.page.id
+        const line = randomUUID()
+        await saveBody(host, { blocks: [{ id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+        let focused = false
+        for (let i = 0; i < 20 && !focused; i += 1) {
+          await clickSelector(`[data-block-id="${line}"] p`)
+          focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+        }
+        await typeText('/')
+        await typeText('위키')
+        await waitFor(`[...document.querySelectorAll('[role="listbox"][aria-label="블록 삽입"] [role="option"]')].some((o) => (o.textContent ?? '').includes('위키'))`, 3000)
+        await key('Enter')
+        let dbId = null
+        for (let i = 0; i < 40 && dbId === null; i += 1) {
+          dbId = (await readBody(host)).doc.blocks.find((b) => b.type === 'database')?.id ?? null
+          if (dbId === null) await sleep(250)
+        }
+        return { host, dbId }
+      }
+      const shapeOf = (dbId) => withReadTransaction(async (tx) => ({
+        props: await tx.query(
+          `SELECT p.id, p.name, p.type FROM property p JOIN data_source ds ON ds.id = p.data_source_id
+            WHERE ds.owner_database_id = $1 AND p.deleted_at IS NULL ORDER BY p.order_idx`, [dbId]),
+        views: await tx.query(`SELECT id, name FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx`, [dbId]),
+        dataSourceId: (await tx.queryOne(`SELECT id FROM data_source WHERE owner_database_id = $1`, [dbId])).id,
+      }))
+      const tabsOf = () => evaluate(`[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()).join('|')`)
+
+      try {
+        await setWorkspacePlan(workspaceId, 'business')
+        const { dbId } = await makeWiki('비즈니스')
+        const LINK = `[data-block-id="${dbId}"] .blk-database-link`
+        const appeared = dbId !== null && await waitFor(`(document.querySelector(${JSON.stringify(LINK)})?.textContent ?? '').includes('위키')`, 10000)
+        check('★ /위키 — 이름 "위키"인 인라인 데이터베이스가 빈 줄 자리에 선다', appeared, String(appeared))
+
+        const shape = await shapeOf(dbId)
+        const propId = (name) => shape.props.find((p) => p.name === name)?.id
+        const viewId = (name) => shape.views.find((v) => v.name === name)?.id
+        check('★ 속성 — 이름 · 소유자 · 태그 · 검증(사람 속성은 하나)',
+          shape.props.map((p) => p.name).join('|') === '이름|소유자|태그|검증' && shape.props.filter((p) => p.type === 'people').length === 1, JSON.stringify(shape.props))
+        check('★ 뷰 — 모든 페이지 · 내가 소유한 페이지 · 검증 필요 (이 순서)',
+          shape.views.map((v) => v.name).join('|') === '모든 페이지|내가 소유한 페이지|검증 필요', JSON.stringify(shape.views))
+
+        // 행 셋 — 소유자가 나 · 소유자 없음(검증됨) · 소유자 없음
+        const all = viewId('모든 페이지')
+        const titleProp = propId('이름')
+        const newRow = async (title, extra = []) =>
+          (await api('POST', `/views/${all}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...extra] })).body.row.id
+        const rowMine = await newRow(`내글${x}`, [{ propertyId: propId('소유자'), value: { type: 'people', people: [{ id: ctx.userId }] } }])
+        const rowDone = await newRow(`검증끝${x}`)
+        const rowOpen = await newRow(`검증전${x}`)
+        const put = await api('PUT', `/rows/${rowDone}/verification`, { propertyId: propId('검증'), expiresAt: null })
+        check('전제 — 행 셋을 만들고 하나를 검증했다', [rowMine, rowDone, rowOpen].every((id) => typeof id === 'string') && put.status === 200, `${put.status}`)
+
+        const rowsIn = async (view, mustHave) => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${viewId(view)}` })
+          await waitFor(`!!document.querySelector('tr[data-row-id="${mustHave}"]')`, 20000)
+          return evaluate(`[...document.querySelectorAll('tr[data-row-id]')].map((e) => e.dataset.rowId)`)
+        }
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${all}` })
+        await waitFor(`!!document.querySelector('tr[data-row-id="${rowMine}"]')`, 20000)
+        check('★ 탭 — 모든 페이지 · 내가 소유한 페이지 · 검증 필요', (await tabsOf()) === '모든 페이지|내가 소유한 페이지|검증 필요', await tabsOf())
+        const inAll = await evaluate(`[...document.querySelectorAll('tr[data-row-id]')].map((e) => e.dataset.rowId)`)
+        check('모든 페이지 — 셋 모두', [rowMine, rowDone, rowOpen].every((id) => inAll.includes(id)), JSON.stringify(inAll))
+        const inMine = await rowsIn('내가 소유한 페이지', rowMine)
+        check('★ 내가 소유한 페이지 — 소유자가 나인 행만', inMine.includes(rowMine) && !inMine.includes(rowDone) && !inMine.includes(rowOpen), JSON.stringify(inMine))
+        const inNeed = await rowsIn('검증 필요', rowOpen)
+        check('★ 검증 필요 — 검증된 행은 빠지고 안 된 행은 남는다', inNeed.includes(rowOpen) && inNeed.includes(rowMine) && !inNeed.includes(rowDone), JSON.stringify(inNeed))
+
+        // 데이터베이스 화면의 표 머리 — 본문의 작은 표는 사람 · 검증 칸을 그리지 않는다
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${all}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] th[data-property-id]').length >= 4`, 15000)
+        const headers = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] th[data-property-id]')].map((e) => e.textContent.trim())`)
+        check('★ 표 머리에 소유자 · 태그 · 검증 칸이 있다', ['소유자', '태그', '검증'].every((n) => headers.some((h) => h.includes(n))), JSON.stringify(headers))
+
+        // 낮은 플랜 — 탭 둘 · 검증 칸 없음
+        await setWorkspacePlan(workspaceId, 'free')
+        const free = await makeWiki('무료')
+        const freeShape = await shapeOf(free.dbId)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${free.dbId}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 20000)
+        const freeHeaders = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] th[data-property-id]')].map((e) => e.textContent.trim())`)
+        check('★ 낮은 플랜 — 탭 둘 · 검증 칸 없음(위키 자체는 만들어진다)',
+          freeShape.views.map((v) => v.name).join('|') === '모든 페이지|내가 소유한 페이지' && !freeShape.props.some((p) => p.type === 'verification')
+            && !freeHeaders.some((h) => h.includes('검증')) && freeHeaders.some((h) => h.includes('소유자')),
+          JSON.stringify({ views: freeShape.views.map((v) => v.name), props: freeShape.props.map((p) => p.name), freeHeaders }))
+      } finally {
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.
