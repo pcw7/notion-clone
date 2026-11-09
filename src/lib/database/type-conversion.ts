@@ -59,6 +59,11 @@ export function cellToText(value: CellValue, optionName: (id: string) => string 
     // 다중 선택도 바꿀 수 있는 타입이 아니다(PT-1b 에서 연다)
     case 'multi_select':
       return ''
+    // URL · 이메일 · 전화도 아직 바꿀 수 있는 타입이 아니다(PT-2)
+    case 'url':
+    case 'email':
+    case 'phone_number':
+      return ''
   }
 }
 
@@ -166,6 +171,12 @@ export function isBlank(value: CellValue): boolean {
       return value.people.length === 0
     case 'multi_select':
       return value.multi_select.length === 0
+    case 'url':
+      return value.url.length === 0
+    case 'email':
+      return value.email.length === 0
+    case 'phone_number':
+      return value.phone_number.length === 0
   }
 }
 

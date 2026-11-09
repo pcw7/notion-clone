@@ -102,6 +102,12 @@ function needOf(type: string | undefined, leaf: FilterLeaf, me: string | null): 
       return type === 'title'
         ? { kind: 'value', value: { type: 'title', title: [textRun(v)] } }
         : { kind: 'value', value: { type: 'rich_text', rich_text: [textRun(v)] } }
+    case 'url':
+    case 'email':
+    case 'phone_number':
+      // 글과 같다(PT-2) — 같음이면 그 글을 채운다
+      if (leaf.operator !== 'equals' || typeof v !== 'string' || v === '') return null
+      return { kind: 'value', value: { type, [type]: v } as CellValue }
     case 'number': {
       if (leaf.operator !== 'equals') return null
       // 값은 수 또는 수를 적은 글자로 저장된다(바인딩이 `Number()` 로 읽는다 · `filter.ts` `bindValue`)

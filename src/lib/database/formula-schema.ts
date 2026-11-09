@@ -153,6 +153,11 @@ export function cellToFormulaValue(type: MvpPropertyType, raw: unknown, optionNa
     // 다중 선택도 — 글 목록 값은 PT-1b(정본 [보강 PT-1] ⑤)
     case 'multi_select':
       return null
+    // URL · 이메일 · 전화도 수식이 읽지 않는다(PT-2)
+    case 'url':
+    case 'email':
+    case 'phone_number':
+      return null
   }
 }
 

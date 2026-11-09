@@ -5428,6 +5428,80 @@ try {
     else fail(`다중 선택 연산자가 어긋났다: ${JSON.stringify(rows)}`)
   }
 
+  console.log('\n[95] URL · 이메일 · 전화 속성 — 칸 모양 · 빈 글 · 길이 상한 · 필터 연산자 (0137 / §3.5 [보강 PT-1] ⑥ · PT-2조각)')
+  {
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '연락', 1)`, [dsId, dbBlock])
+    const props = {}
+    for (const [i, type] of ['url', 'email', 'phone_number'].entries()) {
+      props[type] = `${type.slice(0, 3)}${randomUUID().replaceAll('-', '').slice(0, 18)}`
+      await client.query(
+        `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+         VALUES ($1, $2, $3, $4::property_type, '{}'::jsonb, $5, now(), now())`,
+        [props[type], dsId, type, type, `a${i}`],
+      )
+    }
+    const rowPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowPage, wsId, dsId, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowPage, dsId])
+
+    const put = `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, $3::jsonb)
+                 ON CONFLICT (page_id, property_id) DO UPDATE SET value = EXCLUDED.value`
+    const cell = (type, text) => JSON.stringify({ type, [type]: text })
+    await client.query(put, [rowPage, props.url, cell('url', 'javascript:alert(1)')])
+    ok('URL 칸 — javascript: 글도 저장된다(적는 것은 너그럽게 · 거르는 것은 그릴 때)')
+    await client.query(put, [rowPage, props.email, cell('email', '공백 있는 글')])
+    ok('이메일 칸 — 모양이 느슨한 글도 저장된다')
+    await client.query(put, [rowPage, props.phone_number, cell('phone_number', '+82 10-1234-5678')])
+    ok('전화 칸 — 정상 경로가 통과한다')
+    await client.query(put, [rowPage, props.url, cell('url', 'h'.repeat(2048))])
+    await client.query(put, [rowPage, props.email, cell('email', 'e'.repeat(254))])
+    await client.query(put, [rowPage, props.phone_number, cell('phone_number', '1'.repeat(64))])
+    ok('★ 상한 길이(2048 · 254 · 64자) — 통과한다')
+
+    const tryReject = async (label, type, value) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, [rowPage, props[type], value])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === 'tg_ppv_contact_shape') ok(`${label} — tg_ppv_contact_shape 가 거부함 (${e.code})`)
+        else fail(`${label} — tg_ppv_contact_shape 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await tryReject('★ 글이 아닌 값(숫자)', 'url', JSON.stringify({ type: 'url', url: 5 }))
+    await tryReject('★ 글이 아닌 값(배열)', 'email', JSON.stringify({ type: 'email', email: ['a@b.c'] }))
+    await tryReject('★ 빈 글 — 빈 값은 칸이 없다', 'url', cell('url', ''))
+    await tryReject('★ 빈 글(이메일)', 'email', cell('email', ''))
+    await tryReject('★ 봉투에 모르는 키', 'phone_number', JSON.stringify({ type: 'phone_number', phone_number: '1', extra: 1 }))
+    await tryReject('★ 봉투의 type 이 속성과 다르다', 'url', cell('email', 'a@b.c'))
+    await tryReject('★ 키 이름이 다르다', 'phone_number', JSON.stringify({ type: 'phone_number', text: '1' }))
+    await tryReject('★ URL 2049자 — 상한', 'url', cell('url', 'h'.repeat(2049)))
+    await tryReject('★ 이메일 255자 — 상한', 'email', cell('email', 'e'.repeat(255)))
+    await tryReject('★ 전화 65자 — 상한', 'phone_number', cell('phone_number', '1'.repeat(65)))
+
+    for (const type of ['url', 'email', 'phone_number']) {
+      const { rows } = await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = $1::property_type ORDER BY order_idx`, [type])
+      if (rows.map((r) => `${r.operator}:${r.arity}`).join(',') === 'contains:1,does_not_contain:1,equals:1,does_not_equal:1,starts_with:1,ends_with:1,is_empty:0,is_not_empty:0') ok(`★ ${type} 연산자 — 글과 같은 여덟 개`)
+      else fail(`${type} 연산자가 어긋났다: ${JSON.stringify(rows)}`)
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

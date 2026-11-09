@@ -73,6 +73,10 @@ export const MVP_PROPERTY_TYPES = [
   'people',
   // 다중 선택(PT-1 · 정본 §3.5 [보강 PT-1]) — 값은 옵션 id 의 배열. 옵션은 select 와 같은 표를 쓴다
   'multi_select',
+  // URL · 이메일 · 전화(PT-2 · 정본 [보강 PT-1] ⑥) — 값은 글 하나. 적는 건 너그럽게 · 링크는 그릴 때 엄격하게(`contact-links.ts`)
+  'url',
+  'email',
+  'phone_number',
 ] as const
 export type MvpPropertyType = (typeof MVP_PROPERTY_TYPES)[number]
 
@@ -261,6 +265,14 @@ export function hasOptionRegistry(t: unknown): t is OptionType | 'multi_select' 
 /** 다중 선택 한 칸의 최대 옵션 수(정본 [보강 PT-1] ①). 마이그레이션 0136 의 100 과 같은 수다. */
 export const MAX_MULTI_SELECT = 100
 
+/** 글 하나짜리 연락 칸의 최대 길이(정본 [보강 PT-1] ⑥). 마이그레이션 0137 의 수와 같다. */
+export const CONTACT_MAX_LENGTH = { url: 2048, email: 254, phone_number: 64 } as const
+export type ContactType = keyof typeof CONTACT_MAX_LENGTH
+
+export function isContactType(t: unknown): t is ContactType {
+  return t === 'url' || t === 'email' || t === 'phone_number'
+}
+
 /**
  * status 의 세 범주. **고정이다** — F-03-05: *"You can't change the three main categories."*
  *
@@ -380,6 +392,10 @@ export type CellValue =
   | { readonly type: 'people'; readonly people: readonly PersonRef[] }
   /** 순서 있는 옵션 id 의 집합 — 고른 차례 · 같은 옵션은 한 번(PT-1). */
   | { readonly type: 'multi_select'; readonly multi_select: readonly OptionRef[] }
+  /** 글 하나 — 빈 글은 칸이 없다(PT-2). */
+  | { readonly type: 'url'; readonly url: string }
+  | { readonly type: 'email'; readonly email: string }
+  | { readonly type: 'phone_number'; readonly phone_number: string }
 
 /** `page_property_value` 의 사이드카 컬럼. 한 셀은 보통 하나만 채운다. */
 export type Sidecars = {
@@ -420,6 +436,12 @@ export function emptyValue(type: MvpPropertyType): CellValue {
       return { type: 'people', people: [] }
     case 'multi_select':
       return { type: 'multi_select', multi_select: [] }
+    case 'url':
+      return { type: 'url', url: '' }
+    case 'email':
+      return { type: 'email', email: '' }
+    case 'phone_number':
+      return { type: 'phone_number', phone_number: '' }
   }
 }
 
@@ -446,6 +468,12 @@ export function isEmptyValue(value: CellValue): boolean {
       return value.people.length === 0
     case 'multi_select':
       return value.multi_select.length === 0
+    case 'url':
+      return value.url.length === 0
+    case 'email':
+      return value.email.length === 0
+    case 'phone_number':
+      return value.phone_number.length === 0
   }
 }
 
@@ -624,6 +652,16 @@ export function validateCellValue(
       }
       return []
     }
+
+    case 'url':
+    case 'email':
+    case 'phone_number': {
+      // 너그럽게 받는다 — 글이고 길이 안이면 된다(링크로 거는지는 그릴 때 걸러낸다 · `contact-links.ts`)
+      const text = v[type]
+      if (typeof text !== 'string') return [{ path: `${path}.${type}`, message: '문자열이어야 합니다' }]
+      if (text.length > CONTACT_MAX_LENGTH[type]) return [{ path: `${path}.${type}`, message: `${CONTACT_MAX_LENGTH[type]}자까지입니다` }]
+      return []
+    }
   }
 }
 
@@ -669,6 +707,13 @@ export function deriveSidecars(value: CellValue): Sidecars {
     case 'multi_select':
       // 옵션 id 를 공백으로 — people 과 같은 축(비었는지 · 찬 칸 수). 필터 · 정렬은 `value` 의 배열을 본다
       return { ...NO_SIDECARS, text: nullIfEmpty(value.multi_select.map((o) => o.id).join(' ')) }
+
+    case 'url':
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.url) }
+    case 'email':
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.email) }
+    case 'phone_number':
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.phone_number) }
   }
 }
 

@@ -45,7 +45,7 @@ export function normalizeSearch(raw: unknown): string | null {
 }
 
 /** 글로 찾는 타입(사이드카가 사람이 쓴 글). */
-const TEXT_SEARCH_TYPES: ReadonlySet<string> = new Set(['title', 'rich_text'])
+const TEXT_SEARCH_TYPES: ReadonlySet<string> = new Set(['title', 'rich_text', 'url', 'email', 'phone_number'])
 
 /** 수로 읽히는 검색어(V-1) — `-` · 소수점은 받고 지수 표기는 아니다. 숫자 칸의 같은 값을 찾는다. */
 const NUMBER_TERM = /^-?\d{1,15}(?:\.\d{1,15})?$/

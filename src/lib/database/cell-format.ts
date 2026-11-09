@@ -31,6 +31,7 @@
 
 import { MAX_RUN_CONTENT, textRun, toPlainText } from '../contracts/rich-text.ts'
 import {
+  CONTACT_MAX_LENGTH,
   emptyValue,
   validateCellValue,
   optionIdOf,
@@ -90,6 +91,12 @@ export function cellText(
     case 'multi_select':
       // 지워진 옵션(이름을 못 찾는 id)은 뺀다 — select 가 빈 칸이 되는 것과 같다
       return value.multi_select.flatMap((ref) => options.find((o) => o.id === ref.id)?.name ?? []).join(', ')
+    case 'url':
+      return value.url
+    case 'email':
+      return value.email
+    case 'phone_number':
+      return value.phone_number
   }
 }
 
@@ -129,6 +136,12 @@ export function draftOf(value: CellValue): string {
     case 'people':
     case 'multi_select':
       return ''
+    case 'url':
+      return value.url
+    case 'email':
+      return value.email
+    case 'phone_number':
+      return value.phone_number
   }
 }
 
@@ -159,6 +172,15 @@ export function parseDraft(type: MvpPropertyType, draft: string, previous: CellV
       }
       const runs = text === '' ? [] : [textRun(text)]
       return checked(type === 'title' ? { type: 'title', title: runs } : { type: 'rich_text', rich_text: runs })
+    }
+
+    case 'url':
+    case 'email':
+    case 'phone_number': {
+      // 너그럽게 — 앞뒤 공백만 걷고 길이만 본다. 링크로 거는지는 그릴 때 정한다(`contact-links.ts`)
+      const text = draft.replace(/\r?\n/g, ' ').trim()
+      if (text.length > CONTACT_MAX_LENGTH[type]) return { ok: false, message: `${CONTACT_MAX_LENGTH[type]}자를 넘을 수 없습니다` }
+      return checked({ type, [type]: text } as CellValue)
     }
 
     case 'number': {
@@ -237,6 +259,9 @@ export function defaultColumnWidth(type: AppPropertyType): number {
     case 'title':
       return 280
     case 'rich_text':
+    // 주소 · 메일은 길다(PT-2)
+    case 'url':
+    case 'email':
     // relation 은 제목 칩이 여럿 선다 — 텍스트와 같은 폭.
     case 'relation':
       return 220
@@ -244,6 +269,7 @@ export function defaultColumnWidth(type: AppPropertyType): number {
     case 'select':
     case 'status':
     case 'date':
+    case 'phone_number':
     // rollup 은 대개 숫자 하나다(합 · 개수 · 비율). `show_original` 은 넘치면 말줄임한다.
     case 'rollup':
     // 수식(2i-2)도 대개 값 하나다 — 글이 길면 말줄임한다.

@@ -13,6 +13,7 @@ import type { ReactNode } from 'react'
 
 import { buildBoardColumns } from '@/lib/publish/public-board'
 import { weekdayLabels } from '@/lib/database/calendar'
+import { contactLinkProps } from '@/lib/database/contact-links'
 import { headerTicks, placeBar, windowWidth } from '@/lib/database/timeline-geometry'
 import type { PublicBoard, PublicColumn, PublicRow, PublicRowProperties, PublicTable, PublicWindow } from '@/lib/publish/public-database'
 import { PUBLIC_TABLE_MAX_ROWS } from '@/lib/publish/public-database'
@@ -52,6 +53,16 @@ function CellView({ column, value, uniqueSeq, view }: { column: PublicColumn; va
       )
     case 'text':
       return cell.text
+    case 'contact': {
+      // 걸 수 없는 글(javascript: 따위)은 링크 없이 글로 — 공개 화면은 `nofollow ugc` 도 붙는다
+      if (cell.href === null) return cell.text
+      const props = contactLinkProps(cell.type, cell.href, true)
+      return (
+        <a data-testid={`public-db-${cell.type}`} {...props}>
+          {cell.text}
+        </a>
+      )
+    }
     case 'empty':
       return null
   }

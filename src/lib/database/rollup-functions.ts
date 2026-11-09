@@ -318,6 +318,12 @@ export function uniqueKey(v: CellValue): string | null {
       return `p:${v.people.map((p) => p.id).join(' ')}`
     case 'multi_select':
       return `m:${v.multi_select.map((o) => o.id).join(' ')}`
+    case 'url':
+      return `t:${v.url}`
+    case 'email':
+      return `t:${v.email}`
+    case 'phone_number':
+      return `t:${v.phone_number}`
   }
 }
 

@@ -8,6 +8,8 @@
  */
 
 import type { RichTextRun } from '../../lib/contracts/rich-text.ts'
+import { contactHref } from '../../lib/database/contact-links.ts'
+import type { ContactType } from '../../lib/database/property-types.ts'
 import { formatUniqueId } from '../../lib/database/unique-id-format.ts'
 import type { PublicColumn, PublicOption } from '../../lib/publish/public-database.ts'
 
@@ -19,6 +21,8 @@ export type PublicCell =
   | { readonly kind: 'options'; readonly options: readonly PublicOption[] }
   | { readonly kind: 'checkbox'; readonly checked: boolean }
   | { readonly kind: 'text'; readonly text: string }
+  /** URL · 이메일 · 전화(PT-2) — `href` 는 걸 수 있는 글일 때만(아니면 글로 그린다). */
+  | { readonly kind: 'contact'; readonly type: ContactType; readonly text: string; readonly href: string | null }
   | { readonly kind: 'empty' }
 
 const EMPTY: PublicCell = { kind: 'empty' }
@@ -56,6 +60,12 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
         return found === undefined ? [] : [found]
       })
       return options.length === 0 ? EMPTY : { kind: 'options', options }
+    }
+    case 'url':
+    case 'email':
+    case 'phone_number': {
+      const text = typeof cell[column.type] === 'string' ? (cell[column.type] as string) : ''
+      return text === '' ? EMPTY : { kind: 'contact', type: column.type, text, href: contactHref(column.type, text) }
     }
     case 'checkbox':
       return { kind: 'checkbox', checked: cell.checkbox === true }

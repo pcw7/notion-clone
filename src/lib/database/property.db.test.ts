@@ -268,7 +268,7 @@ describe('addProperty', () => {
     if (skipReason) return t.skip(skipReason)
     const { dataSourceId } = await newTable()
     // @ts-expect-error — 런타임 방어를 확인한다
-    const r = await addProperty(fx.owner.ctx, dataSourceId, { name: '주소', type: 'url' })
+    const r = await addProperty(fx.owner.ctx, dataSourceId, { name: '주소', type: 'place' })
     assert.equal(r.ok, false)
     if (!r.ok) assert.equal(r.reason, 'unsupported_type')
   })

@@ -232,6 +232,10 @@ const AXIS: Readonly<Record<MvpPropertyType, Axis>> = Object.freeze({
   people: 'text',
   // 다중 선택(PT-1) — 사이드카는 옵션 id 를 공백으로 이은 것. 비었는지만 이 축으로 묻고, 포함은 값으로 묻는다
   multi_select: 'text',
+  // URL · 이메일 · 전화(PT-2) — 사이드카는 적힌 글 그대로. 글과 같은 연산자
+  url: 'text',
+  email: 'text',
+  phone_number: 'text',
 })
 
 const COLUMN: Readonly<Record<Axis, string>> = Object.freeze({
@@ -483,6 +487,9 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     unique_id: UNIQUE_ID_OPERATORS,
     people: PEOPLE_OPERATORS,
     multi_select: MULTI_SELECT_OPERATORS,
+    url: TEXT_OPERATORS,
+    email: TEXT_OPERATORS,
+    phone_number: TEXT_OPERATORS,
     relation: RELATION_OPERATORS,
     verification: VERIFICATION_OPERATORS,
   })
