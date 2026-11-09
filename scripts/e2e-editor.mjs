@@ -32888,6 +32888,186 @@ async function main() {
       await send('Network.setBlockedURLs', { urls: [] })
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('다중 선택 속성 (PT-1 · F-03-03)')) { try {
+      // 속성 추가에서 "다중 선택" → 칸의 고르개에서 옵션 여럿(고른 차례 · 체크 · Backspace 로 마지막 칩 빼기 · 찾기 칸에서 새 옵션) → 필터(포함) ·
+      // 정렬(옵션 순서가 가장 앞인 값 · 빈 칸은 뒤) · CSV("가, 나") · 공개 표의 칩 · 옵션 지우기(칸에서 그 id 만 빠진다). 정본 §3.5 [보강 PT-1].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `다중 선택 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const mk = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const r1 = await mk('첫 일')
+      const r2 = await mk('둘째 일')
+      const r3 = await mk('셋째 일')
+      const r4 = await mk('넷째 일')
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4`, 15000)
+
+      // ── 속성 추가 ──
+      let formOpened = false
+      for (let i = 0; i < 5 && !formOpened; i += 1) {
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다
+        await clickSelector('[data-testid="db-add-column"]')
+        formOpened = await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 2000)
+      }
+      check('★ 속성 추가의 유형 목록에 다중 선택이 선다',
+        formOpened && (await evaluate(`[...document.querySelectorAll('select[aria-label="속성 유형"] option')].some((o) => o.value === 'multi_select' && o.textContent.includes('다중 선택'))`)))
+      await typeText('태그')
+      await setSelect('select[aria-label="속성 유형"]', 'multi_select')
+      await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+      const serverColumns = async () => (await api('GET', `/views/${view}`)).body?.view?.columns ?? []
+      check('★ 만들면 다중 선택 열이 선다 — 서버의 속성 타입도',
+        (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) &&
+          (await until(async () => (await serverColumns()).some((c) => c.name === '태그' && c.type === 'multi_select'))),
+        JSON.stringify((await serverColumns()).map((c) => `${c.name}:${c.type}`)))
+      const tag = (await serverColumns()).find((c) => c.name === '태그')?.propertyId
+      const addOpt = async (name) => (await api('POST', `/data-sources/${db.dataSourceId}/properties/${tag}/options`, { name })).body.option.id
+      const optA = await addOpt('가')
+      const optB = await addOpt('나')
+      const serverIds = async (row) => (((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === row)?.properties?.[tag]?.multi_select ?? []).map((o) => o.id)
+      const sameIds = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+      // ── 고르개 ──
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4`, 15000)
+      const CELL = (row) => `tr[data-row-id="${row}"] td[data-property-id="${tag}"]`
+      const chips = (row) => `document.querySelectorAll('${CELL(row)} [data-testid="db-option-chip"]')`
+      const chipNames = (row) => evaluate(`[...${chips(row)}].map((e) => e.textContent).join(',')`)
+      const OPT = (id) => `[data-testid="db-select-editor"] [data-testid="db-option"][data-option-id="${id}"]`
+      let opened = false
+      for (let i = 0; i < 5 && !opened; i += 1) {
+        await clickSelector(CELL(r1))
+        await key('Enter')
+        opened = await waitFor(`!!document.querySelector('[data-testid="db-select-editor"]')`, 2000)
+      }
+      check('전제 — 다중 선택 칸에서 Enter 로 고르개가 열린다', opened)
+      await clickSelector(OPT(optB))
+      await waitFor(`${chips(r1)}.length === 1`, 8000)
+      await clickSelector(OPT(optA))
+      check('★ 옵션 둘을 고르면 칸에 칩이 둘 서고 고른 차례(나 → 가)로 서버에 저장된다',
+        (await waitFor(`${chips(r1)}.length === 2`, 8000)) && (await chipNames(r1)) === '나,가' && (await until(async () => sameIds(await serverIds(r1), [optB, optA]))),
+        `${await chipNames(r1)} · ${JSON.stringify(await serverIds(r1))}`)
+      check('고른 옵션에는 체크가 서고 고르개는 열린 채다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-select-editor"] [data-testid="db-option-checked"]').length === 2`, 3000))
+
+      await key('Backspace')
+      check('★ 찾기 칸이 비었을 때 Backspace 는 마지막 칩을 뺀다 — 서버도',
+        (await waitFor(`${chips(r1)}.length === 1`, 8000)) && (await chipNames(r1)) === '나' && (await until(async () => sameIds(await serverIds(r1), [optB]))),
+        `${await chipNames(r1)} · ${JSON.stringify(await serverIds(r1))}`)
+
+      await typeText('다')
+      check('찾기 칸에 없는 이름을 치면 "만들기" 줄이 선다', await waitFor(`!!document.querySelector('[data-testid="db-create-option"]')`, 5000))
+      await key('Enter')
+      check('★ 찾기 칸에서 새 옵션을 만들면 옵션이 더해지고 그 칸에 들어간다 — 서버도',
+        (await waitFor(`${chips(r1)}.length === 2 && ${JSON.stringify('나,다')} === [...${chips(r1)}].map((e) => e.textContent).join(',')`, 8000)) &&
+          (await until(async () => {
+            const column = (await serverColumns()).find((c) => c.propertyId === tag)
+            const made = column?.options?.find((o) => o.name === '다')
+            return made !== undefined && sameIds(await serverIds(r1), [optB, made.id])
+          })),
+        `${await chipNames(r1)} · ${JSON.stringify(await serverIds(r1))}`)
+      await key('Escape')
+      check('Esc 로 고르개가 닫힌다 — 칩은 남는다',
+        (await waitFor(`!document.querySelector('[data-testid="db-select-editor"]')`, 3000)) && (await chipNames(r1)) === '나,다')
+      const optC = (await serverColumns()).find((c) => c.propertyId === tag).options.find((o) => o.name === '다').id
+
+      // ── 나머지 행의 값은 API 로 — 필터 · 정렬 · 내보내기 · 공개 표가 읽는다 ──
+      const put = (row, ids) => api('PATCH', `/rows/${row}`, { cells: [{ propertyId: tag, value: { type: 'multi_select', multi_select: ids.map((id) => ({ id })) } }] })
+      check('전제 — 값을 쓴다(둘째 가 · 넷째 가 나)', (await put(r2, [optA])).status === 200 && (await put(r4, [optA, optB])).status === 200)
+
+      // ── CSV ──
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${db.id}`, { headers: authed })
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-multi-export-'))
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { texts: {} }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith('.csv')}}))",
+            ].join('\n'), [file])
+        const csv = (Object.entries(zip.texts ?? {}).find(([n]) => n.endsWith('.csv'))?.[1] ?? '').replace('﻿', '')
+        const line = csv.split('\r\n').find((l) => l.startsWith('넷째 일'))
+        check('★ CSV 에 옵션 이름이 ", " 로 이어진다 — 가, 나', line === '넷째 일,"가, 나"', JSON.stringify(csv.slice(0, 200)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+
+      // ── 공개 표 ──
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      const publicRow = `[...document.querySelectorAll('[data-testid="public-db-row"]')].find((tr) => tr.textContent.includes('넷째 일'))`
+      check('★ 공개 표 — 다중 선택 칸이 칩으로 선다(고른 차례)',
+        await waitFor(`${JSON.stringify('가,나')} === [...(${publicRow}?.querySelectorAll('[data-testid="public-db-multi"] .pub-option') ?? [])].map((e) => e.textContent).join(',')`, 15000),
+        String(await evaluate(`[...(${publicRow}?.querySelectorAll('[data-testid="public-db-multi"] .pub-option') ?? [])].map((e) => e.textContent).join(',')`)))
+
+      // ── 필터 · 정렬 ──
+      const rowIds = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const showsRows = async (patch, expected) => {
+        await api('PATCH', `/views/${view}`, patch)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        const ok = await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+        return { ok, got: ok ? expected : await rowIds() }
+      }
+      const filtered = await showsRows({ filter: { property_id: tag, operator: 'contains', value: optA }, sorts: [] }, [r2, r4])
+      check('★ 필터 — "가 포함" 은 가를 든 행만 보인다', filtered.ok, JSON.stringify(filtered.got))
+      const asc = await showsRows({ filter: null, sorts: [{ property_id: tag, direction: 'asc' }] }, [r2, r4, r1, r3])
+      check('★ 정렬 오름차순 — 옵션 순서가 가장 앞인 값으로(가 · 가 · 나) · 빈 칸은 맨 뒤', asc.ok, JSON.stringify(asc.got))
+      const desc = await showsRows({ sorts: [{ property_id: tag, direction: 'desc' }] }, [r1, r2, r4, r3])
+      check('★ 정렬 내림차순에서도 빈 칸은 맨 뒤', desc.ok, JSON.stringify(desc.got))
+
+      // ── 옵션 지우기 — 칸에서 그 id 만 빠진다. 표 변경 신호(SSE)는 막는다 — 화면이 직접 칸을 고치는지 본다(같은 일을 하는 길이 둘이면 한쪽이 검사되지 않는다)
+      await showsRows({ sorts: [] }, [r1, r2, r3, r4])
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`${chips(r4)}.length === 2 && ${chips(r1)}.length === 2`, 15000)
+      opened = false
+      for (let i = 0; i < 5 && !opened; i += 1) {
+        await clickSelector(CELL(r4))
+        await key('Enter')
+        opened = await waitFor(`document.querySelectorAll('[data-testid="db-select-editor"] [data-testid="db-option-menu"]').length === 3`, 2000)
+      }
+      check('전제 — 고르개가 열리고 옵션 줄마다 ··· 가 선다', opened)
+      await clickSelector(`[data-testid="db-option"][data-option-id="${optB}"] [data-testid="db-option-menu"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-option-edit"]')`, 3000)
+      await clickSelector('[data-testid="db-option-delete"]')
+      check('옵션 지우기는 그 옵션을 쓰는 행 수를 말한다 — 다중 선택도 센다',
+        await waitFor(`(document.querySelector('[data-testid="db-option-delete-ask"]')?.textContent ?? '').includes('2개 행')`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="db-option-delete-ask"]')?.textContent ?? null`)))
+      await clickSelector('[data-testid="db-option-delete-confirm"]')
+      check('★ 옵션을 지우면 그 옵션이 든 칸에서 그 칩만 빠진다 — 다른 칩은 남는다',
+        await waitFor(`${chips(r1)}.length === 1 && ${chips(r4)}.length === 1`, 8000) && (await chipNames(r1)) === '다' && (await chipNames(r4)) === '가',
+        `${await chipNames(r1)} · ${await chipNames(r4)}`)
+      check('★ 서버 — 옵션이 없고 칸에서 그 id 만 빠졌다(첫 일은 다 · 넷째는 가 · 둘째는 그대로)',
+        await until(async () => !((await serverColumns()).find((c) => c.propertyId === tag)?.options ?? []).some((o) => o.id === optB)
+          && sameIds(await serverIds(r1), [optC]) && sameIds(await serverIds(r4), [optA]) && sameIds(await serverIds(r2), [optA])),
+        JSON.stringify({ r1: await serverIds(r1), r4: await serverIds(r4), r2: await serverIds(r2) }))
+      await key('Escape')
+      await send('Network.setBlockedURLs', { urls: [] })
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) { try {
       // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
       // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).

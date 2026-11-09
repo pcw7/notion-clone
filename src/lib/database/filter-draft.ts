@@ -196,6 +196,7 @@ function valueLabel(value: unknown, operator: string, column: RuleColumn, names:
   if (column.type === 'status' && isStatusGroupOperator(operator)) return isStatusGroupKind(value) ? STATUS_GROUP_LABEL[value] : String(value)
   switch (column.type) {
     case 'select':
+    case 'multi_select':
     case 'status':
       // F-03-17: *"필터가 참조하던 select 옵션 삭제 → 규칙은 남고 매칭 0건. UI 에 '삭제된 옵션' 배지."*
       return column.options.find((o) => o.id === value)?.name ?? '지워진 옵션'

@@ -32,7 +32,7 @@ import { compileLiveFormulas, evaluateRowFormulas, type FormulaSourceProperty, t
 import { formulaCell } from './formula-plan.ts'
 import { readOptionsOf } from './options.ts'
 import { isUuid } from '../ids.ts'
-import { deriveSidecars, isOptionType } from './property-types.ts'
+import { deriveSidecars, hasOptionRegistry } from './property-types.ts'
 
 /** 한 번에 쓰는 줄 수 — 파라미터 하나(jsonb)에 싣는다. */
 const UPSERT_CHUNK = 1000
@@ -118,7 +118,7 @@ async function writeValues(
   rows: readonly { id: string; properties_cache: Record<string, unknown> | null }[],
   now: Date,
 ): Promise<void> {
-  const options = await readOptionsOf(tx, properties.filter((p) => isOptionType(p.type)).map((p) => p.id))
+  const options = await readOptionsOf(tx, properties.filter((p) => hasOptionRegistry(p.type)).map((p) => p.id))
   const optionNames = new Map<string, string>()
   for (const list of options.values()) for (const o of list) optionNames.set(o.id, o.name)
   const typeOf = new Map(properties.map((p) => [p.id, p.type]))

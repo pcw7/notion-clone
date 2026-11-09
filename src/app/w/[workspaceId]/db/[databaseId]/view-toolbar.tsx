@@ -750,6 +750,7 @@ export function RuleValue({
   }
   switch (column.type) {
     case 'select':
+    case 'multi_select':
     case 'status':
       return (
         <select

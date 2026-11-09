@@ -32,7 +32,7 @@
  */
 
 import { escapeLike, type ParamBag, type PropertyTypes } from './filter.ts'
-import { isOptionType } from './property-types.ts'
+import { hasOptionRegistry } from './property-types.ts'
 
 /** 검색어의 길이 상한. 그보다 긴 글은 자른다(거부하지 않는다 — 붙여 넣은 글이 조금 길다고 검색이 멈추면 안 된다). */
 export const MAX_SEARCH_LENGTH = 200
@@ -81,7 +81,7 @@ export function compileSearch(
   let hasUniqueId = false
   for (const [id, type] of types) {
     if (TEXT_SEARCH_TYPES.has(type)) textIds.push(id)
-    else if (isOptionType(type)) optionIds.push(id)
+    else if (hasOptionRegistry(type)) optionIds.push(id)
     else if (type === 'number') numberIds.push(id)
     else if (type === 'unique_id') hasUniqueId = true
     else if (type === 'relation') relationIds.push(id)
@@ -96,7 +96,8 @@ export function compileSearch(
   }
   if (optionIds.length > 0) {
     parts.push(`SELECT sv.page_id FROM page_property_value sv
-         JOIN select_option so ON so.property_id = sv.property_id AND so.id::text = sv.text_value
+         JOIN select_option so ON so.property_id = sv.property_id
+          AND so.id::text = ANY(string_to_array(sv.text_value, ${params.bind(' ')}::text))
         WHERE sv.property_id = ANY(${params.bind(optionIds)}::text[])
           AND lower(so.name) LIKE '%' || lower(${pattern}) || '%'`)
   }

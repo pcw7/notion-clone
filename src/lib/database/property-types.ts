@@ -71,6 +71,8 @@ export const MVP_PROPERTY_TYPES = [
   'date',
   // 사람(6g-1 · F-03-07 · 정본 §3.5 [보강] 사람 속성) — 값은 사람 id 의 집합. 정렬 · 그룹 · 수식 · 롤업 · 타입 바꾸기는 받지 않는다(⑤)
   'people',
+  // 다중 선택(PT-1 · 정본 §3.5 [보강 PT-1]) — 값은 옵션 id 의 배열. 옵션은 select 와 같은 표를 쓴다
+  'multi_select',
 ] as const
 export type MvpPropertyType = (typeof MVP_PROPERTY_TYPES)[number]
 
@@ -251,6 +253,14 @@ export function isOptionType(t: unknown): t is OptionType {
   return t === 'select' || t === 'status'
 }
 
+/** 옵션 레지스트리(`select_option`)에 옵션을 두는 타입 — 단일 참조 타입 + 다중 선택(PT-1). 옵션을 읽고 · 만들고 · 고치는 길이 묻는다. */
+export function hasOptionRegistry(t: unknown): t is OptionType | 'multi_select' {
+  return t === 'select' || t === 'status' || t === 'multi_select'
+}
+
+/** 다중 선택 한 칸의 최대 옵션 수(정본 [보강 PT-1] ①). 마이그레이션 0136 의 100 과 같은 수다. */
+export const MAX_MULTI_SELECT = 100
+
 /**
  * status 의 세 범주. **고정이다** — F-03-05: *"You can't change the three main categories."*
  *
@@ -368,6 +378,8 @@ export type CellValue =
   | { readonly type: 'date'; readonly date: DateValue | null }
   /** 순서 있는 집합 — 같은 사람은 한 번(6g-1). */
   | { readonly type: 'people'; readonly people: readonly PersonRef[] }
+  /** 순서 있는 옵션 id 의 집합 — 고른 차례 · 같은 옵션은 한 번(PT-1). */
+  | { readonly type: 'multi_select'; readonly multi_select: readonly OptionRef[] }
 
 /** `page_property_value` 의 사이드카 컬럼. 한 셀은 보통 하나만 채운다. */
 export type Sidecars = {
@@ -406,6 +418,8 @@ export function emptyValue(type: MvpPropertyType): CellValue {
       return { type: 'date', date: null }
     case 'people':
       return { type: 'people', people: [] }
+    case 'multi_select':
+      return { type: 'multi_select', multi_select: [] }
   }
 }
 
@@ -430,6 +444,8 @@ export function isEmptyValue(value: CellValue): boolean {
       return false
     case 'people':
       return value.people.length === 0
+    case 'multi_select':
+      return value.multi_select.length === 0
   }
 }
 
@@ -593,6 +609,21 @@ export function validateCellValue(
       }
       return []
     }
+
+    case 'multi_select': {
+      // 모양만 본다 — 이 속성의 옵션인가는 쓰는 트랜잭션이 본다(`options.ts` `optionIssuesIn`)
+      const list = v.multi_select
+      if (!Array.isArray(list)) return [{ path: `${path}.multi_select`, message: '배열이어야 합니다' }]
+      if (list.length > MAX_MULTI_SELECT) return [{ path: `${path}.multi_select`, message: `옵션은 ${MAX_MULTI_SELECT}개까지입니다` }]
+      const seen = new Set<string>()
+      for (const [i, item] of list.entries()) {
+        const id = typeof item === 'object' && item !== null && !Array.isArray(item) ? (item as Record<string, unknown>).id : undefined
+        if (typeof id !== 'string' || !UUID.test(id)) return [{ path: `${path}.multi_select[${i}].id`, message: '옵션 id(uuid)가 필요합니다' }]
+        if (seen.has(id.toLowerCase())) return [{ path: `${path}.multi_select[${i}].id`, message: '같은 옵션이 두 번 있습니다' }]
+        seen.add(id.toLowerCase())
+      }
+      return []
+    }
   }
 }
 
@@ -634,6 +665,10 @@ export function deriveSidecars(value: CellValue): Sidecars {
     case 'people':
       // 사람 id 를 공백으로 — 정렬하지 않는다. 비었는지 · 찬 칸 수를 다른 타입과 같은 축으로 센다(정본 [보강] 사람 속성 ③)
       return { ...NO_SIDECARS, text: nullIfEmpty(value.people.map((p) => p.id).join(' ')) }
+
+    case 'multi_select':
+      // 옵션 id 를 공백으로 — people 과 같은 축(비었는지 · 찬 칸 수). 필터 · 정렬은 `value` 의 배열을 본다
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.multi_select.map((o) => o.id).join(' ')) }
   }
 }
 

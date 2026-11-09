@@ -58,7 +58,7 @@ import {
   isAppPropertyType,
   isMvpPropertyType,
   isOptionColor,
-  isOptionType,
+  hasOptionRegistry,
   isStatusGroupKind,
   type AppPropertyType,
   type MvpPropertyType,
@@ -292,7 +292,7 @@ function toSummary(
     type: isAppPropertyType(row.type) ? row.type : DEFAULT_PROPERTY_TYPE,
     config: row.config ?? {},
     orderKey: row.order_idx,
-    ...(isOptionType(row.type) ? { options: optionsOf.get(row.id) ?? [] } : {}),
+    ...(hasOptionRegistry(row.type) ? { options: optionsOf.get(row.id) ?? [] } : {}),
     ...(row.type === 'unique_id' ? { prefix: uniqueIdPrefix } : {}),
   }
 }
@@ -311,7 +311,7 @@ export async function readSchema(tx: Tx, dataSourceId: string): Promise<SchemaSn
       [dataSourceId],
     ),
   ])
-  const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.id))
+  const optionsOf = await readOptionsOf(tx, rows.filter((r) => hasOptionRegistry(r.type)).map((r) => r.id))
   return {
     dataSourceId,
     schemaVersion: ds.schema_version,
@@ -916,10 +916,10 @@ export async function addSelectOption(
       [propertyId, dataSourceId],
     )
     if (target === null) return fail('not_found')
-    // select · status 가 같은 레지스트리를 쓴다(0013 머리말). multi_select 는 그 타입이 들어올 때 연다.
-    if (!isOptionType(target.type)) return fail('unsupported_type')
+    // select · status · multi_select 가 같은 레지스트리를 쓴다(0013 머리말 · PT-1)
+    if (!hasOptionRegistry(target.type)) return fail('unsupported_type')
     // 불변식 SG3: status 옵션은 그룹이 있고, 그 밖의 옵션은 없다. DB 트리거도 막지만 이유를 말해 주는 쪽이 낫다.
-    if (target.type === 'select' && input.group !== undefined) return fail('invalid_group')
+    if (target.type !== 'status' && input.group !== undefined) return fail('invalid_group')
 
     const groupKind: StatusGroupKind | null = target.type === 'status' ? (input.group ?? 'todo') : null
     const group =
@@ -1007,7 +1007,7 @@ async function optionOf(
     [propertyId, dataSourceId],
   )
   if (property === null) return fail('not_found')
-  if (!isOptionType(property.type)) return fail('unsupported_type')
+  if (!hasOptionRegistry(property.type)) return fail('unsupported_type')
   const option = await tx.queryMaybe<{ id: string; name: string; color: string; group_kind: string | null }>(
     `SELECT o.id, o.name, o.color::text AS color, g.kind::text AS group_kind
        FROM select_option o
@@ -1122,14 +1122,35 @@ export async function deleteSelectOption(
     if (isSchemaFailure(found)) return found
 
     await tx.query(`DELETE FROM select_option WHERE id = $1`, [optionId])
-    const cleared = await tx.query<{ page_id: string }>(
-      `UPDATE page_property_value
-          SET value = $3::jsonb, num_value = NULL, text_value = NULL, date_start = NULL, date_end = NULL, bool_value = NULL,
-              updated_at = now()
-        WHERE property_id = $1 AND text_value = $2
-        RETURNING page_id`,
-      [propertyId, optionId, JSON.stringify(emptyValue(found.type as MvpPropertyType))],
-    )
+    // 다중 선택은 칸을 비우지 않고 그 id 만 뺀다(PT-1 ① — 같은 명령의 다중 갈래). 사이드카(공백으로 이은 id)도 다시 쓴다
+    const cleared =
+      found.type === 'multi_select'
+        ? await tx.query<{ page_id: string }>(
+            `UPDATE page_property_value v
+                SET value = jsonb_build_object('type', 'multi_select', 'multi_select', kept.list),
+                    text_value = kept.ids, updated_at = now()
+               FROM (
+                 SELECT w.page_id,
+                        coalesce(jsonb_agg(e.x ORDER BY e.n) FILTER (WHERE e.x ->> 'id' <> $2), '[]'::jsonb) AS list,
+                        nullif(string_agg(e.x ->> 'id', ' ' ORDER BY e.n) FILTER (WHERE e.x ->> 'id' <> $2), '') AS ids
+                   FROM page_property_value w
+                  CROSS JOIN LATERAL jsonb_array_elements(w.value -> 'multi_select') WITH ORDINALITY e(x, n)
+                  WHERE w.property_id = $1
+                    AND w.value -> 'multi_select' @> jsonb_build_array(jsonb_build_object('id', $2::text))
+                  GROUP BY w.page_id
+               ) kept
+              WHERE v.property_id = $1 AND v.page_id = kept.page_id
+              RETURNING v.page_id`,
+            [propertyId, optionId],
+          )
+        : await tx.query<{ page_id: string }>(
+            `UPDATE page_property_value
+                SET value = $3::jsonb, num_value = NULL, text_value = NULL, date_start = NULL, date_end = NULL, bool_value = NULL,
+                    updated_at = now()
+              WHERE property_id = $1 AND text_value = $2
+              RETURNING page_id`,
+            [propertyId, optionId, JSON.stringify(emptyValue(found.type as MvpPropertyType))],
+          )
     await tx.query(
       `DELETE FROM row_position WHERE group_key = $2 AND view_id IN (SELECT id FROM view WHERE data_source_id = $1)`,
       [dataSourceId, optionId],
@@ -1188,7 +1209,8 @@ export async function countOptionUsage(
          FROM page_property_value v
          JOIN page p ON p.id = v.page_id
          JOIN block b ON b.id = p.id
-        WHERE v.property_id = $1 AND v.text_value = $2 AND p.is_template = false AND b.lifecycle = 'live'`,
+        WHERE v.property_id = $1 AND p.is_template = false AND b.lifecycle = 'live'
+          AND (v.text_value = $2 OR v.value -> 'multi_select' @> jsonb_build_array(jsonb_build_object('id', $2::text)))`,
       [propertyId, optionId],
     )
     return { ok: true, value: { rows: Number(counted.n) } } as const

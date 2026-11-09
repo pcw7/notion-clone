@@ -47,7 +47,7 @@ import { readLinkPreviews } from '../link-preview/link-preview.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE, isRefType } from '../block/types.ts'
 import { withVerificationExpiry } from '../database/verification-cell.ts'
-import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
+import { DEFAULT_PROPERTY_TYPE, hasOptionRegistry, isMvpPropertyType } from '../database/property-types.ts'
 import { uniqueIdCell } from '../database/unique-id-format.ts'
 import { readOptionsOf } from '../database/options.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
@@ -373,7 +373,7 @@ async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly str
     [sourceIds],
   )
   // 옵션을 읽는 곳은 `database/options.ts` 하나다 — status 옵션의 그룹 순서가 표 · 보드 · 익스포트에서 같다.
-  const optionsOf = await readOptionsOf(tx, properties.filter((p) => isOptionType(p.type)).map((p) => p.id))
+  const optionsOf = await readOptionsOf(tx, properties.filter((p) => hasOptionRegistry(p.type)).map((p) => p.id))
   // 사람 칸의 이름(6g-1 · 정본 §3.5 [보강] 사람 속성 ⑦) — 이 워크스페이스의 활동 중인 사람. 칸에 든 사람만 읽는다
   const peopleProperties = new Set(properties.filter((p) => p.type === 'people').map((p) => p.id))
   const names =
@@ -404,7 +404,7 @@ async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly str
           propertyId: p.id,
           name: p.name,
           type: columnTypeOf(p.type),
-          ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
+          ...(hasOptionRegistry(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
           ...(p.type === 'people' ? { names } : {}),
         })),
     })

@@ -111,6 +111,10 @@ function needOf(type: string | undefined, leaf: FilterLeaf, me: string | null): 
     case 'select':
       if (leaf.operator !== 'equals' || typeof v !== 'string' || v === '') return null
       return { kind: 'value', value: { type: 'select', select: { id: v } } }
+    case 'multi_select':
+      // 포함은 그 옵션 하나를 든 칸이 조건을 채운다
+      if (leaf.operator !== 'contains' || typeof v !== 'string' || v === '') return null
+      return { kind: 'value', value: { type: 'multi_select', multi_select: [{ id: v }] } }
     case 'status':
       // 상태의 is_empty 는 빈 값을 적는다 — 안 적으면 기본 옵션(`default_option_id`)이 들어가 새 행이 조건 밖이 된다
       if (leaf.operator === 'is_empty') return { kind: 'empty' }

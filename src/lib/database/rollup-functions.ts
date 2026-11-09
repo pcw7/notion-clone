@@ -316,11 +316,14 @@ export function uniqueKey(v: CellValue): string | null {
       return `d:${v.date?.start}|${v.date?.end ?? ''}|${v.date?.time_zone ?? ''}`
     case 'people':
       return `p:${v.people.map((p) => p.id).join(' ')}`
+    case 'multi_select':
+      return `m:${v.multi_select.map((o) => o.id).join(' ')}`
   }
 }
 
 /** 칸 하나가 담은 값의 수 — `count_values`. 사람(값 여럿)만 하나씩 센다(대상이 될 수 있게 되는 날을 위해 — 지금은 막혀 있다). */
-const valuesInCell = (v: CellValue): number => (v.type === 'people' ? v.people.length : isEmptyValue(v) ? 0 : 1)
+const valuesInCell = (v: CellValue): number =>
+  v.type === 'people' ? v.people.length : v.type === 'multi_select' ? v.multi_select.length : isEmptyValue(v) ? 0 : 1
 
 /**
  * 집계한다. `values` 는 **집계에 넣기로 한 연결 행마다 하나**다(칸이 없는 행은 그 타입의 빈 값) — 엣지 순서대로.

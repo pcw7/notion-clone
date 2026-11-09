@@ -87,6 +87,9 @@ export function cellText(
       return value.date === null ? '' : formatDate(value.date)
     case 'people':
       return value.people.map((person) => names.get(person.id) ?? LEFT_USER).join(', ')
+    case 'multi_select':
+      // 지워진 옵션(이름을 못 찾는 id)은 뺀다 — select 가 빈 칸이 되는 것과 같다
+      return value.multi_select.flatMap((ref) => options.find((o) => o.id === ref.id)?.name ?? []).join(', ')
   }
 }
 
@@ -124,6 +127,7 @@ export function draftOf(value: CellValue): string {
     case 'status':
     case 'checkbox':
     case 'people':
+    case 'multi_select':
       return ''
   }
 }
@@ -187,6 +191,7 @@ export function parseDraft(type: MvpPropertyType, draft: string, previous: CellV
     case 'status':
     case 'checkbox':
     case 'people':
+    case 'multi_select':
       return { ok: false, message: '입력칸으로 고치는 타입이 아닙니다' }
   }
 }
@@ -251,6 +256,8 @@ export function defaultColumnWidth(type: AppPropertyType): number {
       return 170
     // 사람 이름 두셋(6g-1)
     case 'people':
+    // 칩이 여럿 서고 넘치면 줄바꿈한다(PT-1)
+    case 'multi_select':
       return 200
     // 고유 ID 는 `TASK-123` 정도다(접두사 7자까지 · 2a-1).
     case 'unique_id':

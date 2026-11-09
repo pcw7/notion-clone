@@ -92,6 +92,7 @@ import { SearchEmpty } from './view-search'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
+  hasOptionRegistry,
   insertOption,
   isEmptyValue,
   isMvpPropertyType,
@@ -470,8 +471,8 @@ export function DatabaseTable(props: {
       return
     }
 
-    // 사람 칸(6g-2)은 초안이 없다 — 고르는 순간마다 저장된다(`people-editor.tsx`). 여는 것이 전부다.
-    if (column.type === 'people') {
+    // 사람 칸(6g-2)은 초안이 없다 — 고르는 순간마다 저장된다(`people-editor.tsx`). 여는 것이 전부다. 다중 선택(PT-1)도 같다.
+    if (column.type === 'people' || column.type === 'multi_select') {
       setMode({ kind: 'editing', at })
       return
     }
@@ -492,7 +493,7 @@ export function DatabaseTable(props: {
     const column = columns[at.col]
     if (row === undefined || column === undefined || !isCellColumn(column)) return true
     // select · status · 사람은 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
-    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people') return true
+    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people' || column.type === 'multi_select') return true
 
     const previous = valueAt(row, column)
     const parsed = parseDraft(column.type, draft, previous)
@@ -645,6 +646,21 @@ export function DatabaseTable(props: {
   }
 
   /**
+   * 다중 선택 칸을 고친다(PT-1) — 고를 때마다 저장하고 편집은 열린 채다(여럿을 고른다 · 사람 칸과 같다). `toggle` 은 있으면 빼고 없으면 더한다
+   * (Backspace 로 마지막 칩 빼기도 이 길) · `add` 는 더하기만(새 옵션 만들기 — 같은 이름이 이미 골라져 있으면 그대로).
+   */
+  const pickMulti = (at: CellPos, optionId: string, mode: 'toggle' | 'add' = 'toggle') => {
+    const row = rows[at.row]
+    const column = columns[at.col]
+    if (row === undefined || column === undefined || !isCellColumn(column) || column.type !== 'multi_select') return
+    const previous = valueAt(row, column)
+    const had = previous.type === 'multi_select' ? previous.multi_select.map((o) => o.id) : []
+    const next = had.includes(optionId) ? (mode === 'add' ? had : had.filter((id) => id !== optionId)) : [...had, optionId]
+    if (next === had) return
+    void saveCell(row.id, column, { type: 'multi_select', multi_select: next.map((id) => ({ id })) }, previous)
+  }
+
+  /**
    * 사람 칸을 고친다(6g-2) — 고를 때마다. 편집은 열린 채다(여럿을 고른다). 이름은 먼저 넣는다(칩이 깜빡이지 않게).
    * 서버에는 **더하기 · 빼기**로 보낸다(정본 [보강] 사람 속성 ⑫) — 통째 값이면 그사이 다른 사람이 더한 사람을 지운다. 답(합친 행)이
    * 화면의 칸을 바꾼다.
@@ -677,7 +693,8 @@ export function DatabaseTable(props: {
     setColumns((current) =>
       current.map((c) => (c.propertyId === column.propertyId ? { ...c, options: insertOption(c.options, option) } : c)),
     )
-    pickOption(at, option.id)
+    if (column.type === 'multi_select') pickMulti(at, option.id, 'add')
+    else pickOption(at, option.id)
   }
 
   /**
@@ -756,11 +773,18 @@ export function DatabaseTable(props: {
           ),
         )
         setRows((current) =>
-          current.map((row) =>
-            optionIdOf(valueAt(row, column)) === optionId
+          current.map((row) => {
+            // 다중 선택은 칸을 비우지 않고 그 id 만 뺀다(서버와 같다)
+            const value = valueAt(row, column)
+            if (value.type === 'multi_select') {
+              return value.multi_select.some((o) => o.id === optionId)
+                ? { ...row, properties: { ...row.properties, [column.propertyId]: { type: 'multi_select', multi_select: value.multi_select.filter((o) => o.id !== optionId) } } }
+                : row
+            }
+            return optionIdOf(value) === optionId
               ? { ...row, properties: { ...row.properties, [column.propertyId]: optionValue(column.type as OptionType, null) } }
-              : row,
-          ),
+              : row
+          }),
         )
         return true
       },
@@ -1943,19 +1967,23 @@ export function DatabaseTable(props: {
                         </span>
                       )}
                       <CellSlot active={isRecord}>
-                      {isEditing && cell.kind === 'cell' && isOptionType(cell.column.type) ? (
+                      {isEditing && cell.kind === 'cell' && hasOptionRegistry(cell.column.type) ? (
                         <>
                           {display}
                           <SelectEditor
                             options={column.options}
                             currentId={optionIdOf(cell.value)}
+                            // 다중 선택(PT-1) — 고른 옵션 전부 · 고르개는 여러 개를 고르며 열린 채다
+                            {...(cell.value.type === 'multi_select' ? { currentIds: cell.value.multi_select.map((o) => o.id) } : {})}
                             isStatus={column.type === 'status'}
                             defaultOptionId={column.defaultOptionId ?? null}
                             // List 의 속성은 오른쪽에 붙어 있다 — 왼쪽 기준으로 열면 화면 밖으로 나간다.
                             align={isList ? 'right' : 'left'}
                             canCreate={access.canEditStructure}
                             {...(access.canEditStructure ? { edit: optionEditFor(cell.column) } : {})}
-                            onPick={(optionId) => pickOption(at, optionId)}
+                            onPick={(optionId) =>
+                              cell.value.type === 'multi_select' && optionId !== null ? pickMulti(at, optionId) : pickOption(at, optionId)
+                            }
                             onCreate={(name, group) => void createOption(at, name, group)}
                           />
                         </>
