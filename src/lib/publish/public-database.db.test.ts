@@ -154,6 +154,48 @@ describe('② ★ 표에 서는 행 = 공개로 열리는 행', () => {
   })
 })
 
+describe('④ ★ 첫 뷰의 레이아웃 (PV-1)', () => {
+  test('보드(선택으로 묶음)는 레이아웃 · 옵션 · 숨긴 그룹을 싣고 행은 표와 같다 · 날짜로 묶으면 표로 돌아간다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, ds, db, token, status, rows } = await board()
+    const tableLayout = await tableOf(token)
+    assert.ok(tableLayout !== null && typeof tableLayout !== 'string')
+    assert.equal(tableLayout.layout, 'table')
+    assert.equal(tableLayout.board, null)
+
+    const doneId = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.id === status)!.options!.find((o) => o.name === '끝')!.id
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'board', groupBy: { property_id: status, hidden: [doneId] } }))
+    const asBoard = await tableOf(token)
+    assert.ok(asBoard !== null && typeof asBoard !== 'string')
+    assert.equal(asBoard.layout, 'board')
+    assert.equal(asBoard.viewType, 'board')
+    assert.equal(asBoard.board?.spec.type, 'select')
+    assert.deepEqual(asBoard.board?.spec.options.map((o) => o.name), ['할 일', '끝'], '옵션은 스키마 순서')
+    assert.deepEqual(asBoard.board?.spec.hidden, [doneId])
+    assert.deepEqual(asBoard.rows.map((r) => r.id), tableLayout.rows.map((r) => r.id), '고르는 행 · 순서는 표와 같다')
+    assert.ok(asBoard.rows.every((r) => r.groupKey !== null))
+
+    // 날짜로 묶은 보드는 공개 경로가 버킷을 계산하지 않는다 — 표
+    unwrap(await addProperty(boss.ctx, ds, { name: '기한', type: 'date' }))
+    const dateId = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.name === '기한')!.id
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: dateId } }))
+    const fallback = await tableOf(token)
+    assert.ok(fallback !== null && typeof fallback !== 'string')
+    assert.equal(fallback.layout, 'table')
+    assert.equal(fallback.viewType, 'board')
+    assert.equal(fallback.board, null)
+    assert.deepEqual(fallback.rows.map((r) => r.id), [rows.C, rows.B], '행은 그대로')
+
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'gallery', groupBy: null, gallery: { cover_size: 'large' } }))
+    const gallery = await tableOf(token)
+    assert.ok(gallery !== null && typeof gallery !== 'string')
+    assert.equal(gallery.layout, 'gallery')
+    assert.equal(gallery.cardSize, 'large')
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'list' }))
+    assert.equal(((await tableOf(token)) as { layout: string }).layout, 'list')
+  })
+})
+
 describe('③ 휴지통의 data source · 게시 해제', () => {
   test('휴지통의 data source 의 행은 열리지 않는다 · 해제하면 표 · 행 모두 닫힌다', async (t) => {
     if (skipReason) return t.skip(skipReason)

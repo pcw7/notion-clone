@@ -36,7 +36,9 @@ import {
 } from '../database/filter.ts'
 import { toVerificationCell } from '../database/verification-cell.ts'
 import type { Tx } from '../db/tx.ts'
+import { readGalleryLayout, type GallerySize } from '../database/gallery.ts'
 import type { PublicTarget } from './public-access.ts'
+import { boardKeyOf, isBoardGroupType, type BoardSpec } from './public-board.ts'
 
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
 export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'unique_id', 'verification'] as const
@@ -64,9 +66,25 @@ export type PublicRow = {
   /** 셀 값 — 속성 id → 값(`properties_cache` 그대로 · 보이는 공개 열의 것만). */
   readonly cells: Readonly<Record<string, unknown>>
   readonly uniqueSeq: number | null
+  /** 보드의 열 키(`public-board.ts`) — 보드가 아니면 null. 그룹 기준 속성이 안 보이는 열이어도 서버가 정한다. */
+  readonly groupKey: string | null
 }
 
+/** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(캘린더 · 타임라인 · 차트 · 폼 · 못 그리는 보드)는 표. */
+export type PublicLayout = 'table' | 'list' | 'gallery' | 'board'
+
+/** 보드의 재료 — 그룹 기준의 이름 · 열을 짓는 명세(옵션은 스키마 순서). */
+export type PublicBoard = { readonly propertyName: string; readonly spec: BoardSpec }
+
 export type PublicTable = {
+  /** 그리는 모양(실제로 그릴 것 — 보드인데 그룹이 못 그리는 타입이면 'table'). */
+  readonly layout: PublicLayout
+  /** 뷰에 저장된 레이아웃 그대로(`view.type`). */
+  readonly viewType: string
+  /** 보드일 때만. */
+  readonly board: PublicBoard | null
+  /** 갤러리 카드 크기(뷰의 설정 · 갤러리가 아니면 기본값). */
+  readonly cardSize: GallerySize
   readonly viewName: string
   readonly columns: readonly PublicColumn[]
   readonly rows: readonly PublicRow[]
@@ -94,7 +112,11 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<P
   const node = await tx.queryMaybe<{ type: string }>(`SELECT type FROM block WHERE id = $1`, [target.pageId])
   if (node?.type !== 'database') return null
   // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
-  return (await publicTableOf(tx, target.pageId)) ?? { viewName: '', columns: [], rows: [], truncated: false }
+  return (
+    (await publicTableOf(tx, target.pageId)) ?? {
+      layout: 'table', viewType: 'table', board: null, cardSize: 'medium', viewName: '', columns: [], rows: [], truncated: false,
+    }
+  )
 }
 
 /**
@@ -104,8 +126,17 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<P
 export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicTable | null> {
 
   // 소유한 data source 의 첫 뷰 — 붙인 소스(linked)는 다른 데이터베이스의 행이다(그 데이터베이스는 게시되지 않았다)
-  const view = await tx.queryMaybe<{ id: string; name: string | null; data_source_id: string; filter: unknown; sorts: unknown }>(
-    `SELECT v.id, v.name, v.data_source_id, v.filter, v.sorts
+  const view = await tx.queryMaybe<{
+    id: string
+    name: string | null
+    type: string
+    data_source_id: string
+    filter: unknown
+    sorts: unknown
+    group_by: unknown
+    configuration: unknown
+  }>(
+    `SELECT v.id, v.name, v.type::text AS type, v.data_source_id, v.filter, v.sorts, v.group_by, v.configuration
        FROM view v
        JOIN data_source ds ON ds.id = v.data_source_id
       WHERE v.database_id = $1 AND v.owner_kind = 'database_view' AND ds.owner_database_id = $1 AND ds.lifecycle = 'live'
@@ -156,7 +187,14 @@ export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicT
   )
 
   const shown = rows.slice(0, PUBLIC_TABLE_MAX_ROWS)
+  const board = view.type === 'board' ? await readBoard(tx, view.data_source_id, view.group_by) : null
+  const groupId = board === null ? null : (view.group_by as { property_id: string }).property_id
+  const layout: PublicLayout = board !== null ? 'board' : view.type === 'list' || view.type === 'gallery' ? view.type : 'table'
   return {
+    layout,
+    viewType: view.type,
+    board,
+    cardSize: readGalleryLayout(view.configuration).cover_size,
     viewName: view.name ?? '',
     columns,
     rows: shown.map((row) => ({
@@ -165,8 +203,39 @@ export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicT
       icon: pageIconOfFormat(row.format),
       cells: pick(row.properties_cache, columns),
       uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
+      groupKey: board === null || groupId === null ? null : boardKeyOf(board.spec, row.properties_cache?.[groupId]),
     })),
     truncated: rows.length > PUBLIC_TABLE_MAX_ROWS,
+  }
+}
+
+/**
+ * 보드의 그룹 기준 — 살아 있는 선택 · 상태(옵션 단위) · 체크박스일 때만. 아니면 null(표로 그린다 — 날짜 · 숫자 · 글 · 범주로 묶은 상태는 공개 경로에
+ * 버킷 계산을 두지 않는다 · 정본 [보강 PV-1] ②).
+ */
+async function readBoard(tx: Tx, dataSourceId: string, raw: unknown): Promise<PublicBoard | null> {
+  const g = typeof raw === 'object' && raw !== null ? (raw as { property_id?: unknown; hidden?: unknown; hide_empty?: unknown; status_by?: unknown }) : null
+  if (g === null || typeof g.property_id !== 'string' || g.status_by !== undefined) return null
+  const prop = await tx.queryMaybe<{ name: string; type: string }>(
+    `SELECT name, type::text AS type FROM property WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+    [g.property_id, dataSourceId],
+  )
+  if (prop === null || !isBoardGroupType(prop.type)) return null
+  const options =
+    prop.type === 'checkbox'
+      ? []
+      : await tx.query<{ id: string; name: string; color: string }>(
+          `SELECT id, name, color::text AS color FROM select_option WHERE property_id = $1 ORDER BY order_idx, id`,
+          [g.property_id],
+        )
+  return {
+    propertyName: prop.name,
+    spec: {
+      type: prop.type,
+      options,
+      hidden: Array.isArray(g.hidden) ? g.hidden.filter((k): k is string => typeof k === 'string') : [],
+      hideEmpty: g.hide_empty === true,
+    },
   }
 }
 

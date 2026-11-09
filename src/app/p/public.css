@@ -155,6 +155,19 @@
 .pub-db-row-link:hover { text-decoration: underline; }
 .pub-option { display: inline-block; border-radius: 3px; padding: 0 0.375rem; background: rgba(135, 131, 120, 0.15); white-space: nowrap; }
 .pub-checkbox { font-size: 1rem; }
+/* 공개 화면의 뷰(PV-1) — 목록 · 갤러리 · 보드 */
+.pub-db-list { list-style: none; margin: 0; padding: 0; font-size: 0.875rem; }
+.pub-db-list-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.375rem 0; border-bottom: 1px solid rgba(55, 53, 47, 0.09); }
+.pub-card-props { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; color: #6b7280; }
+.pub-card { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.625rem 0.75rem; border: 1px solid rgba(55, 53, 47, 0.16); border-radius: 6px; font-size: 0.875rem; }
+.pub-db-gallery { --pub-card-w: 15rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pub-card-w), 1fr)); gap: 0.75rem; }
+.pub-db-gallery[data-size='small'] { --pub-card-w: 10rem; }
+.pub-db-gallery[data-size='large'] { --pub-card-w: 20rem; }
+.pub-db-board { display: flex; gap: 0.75rem; overflow-x: auto; align-items: flex-start; padding-bottom: 0.5rem; }
+.pub-board-column { display: flex; flex-direction: column; gap: 0.5rem; flex: 0 0 15rem; }
+.pub-board-head { margin: 0; font-size: 0.875rem; font-weight: 500; }
+.pub-board-count { color: #9ca3af; font-size: 0.75rem; }
+:root[data-theme='dark'] .pub-db-list-item, :root[data-theme='dark'] .pub-card { border-color: rgba(255, 255, 255, 0.14); }
 .pub-props { display: flex; flex-direction: column; gap: 0.375rem; margin: -0.75rem 0 1.5rem; font-size: 0.875rem; }
 .pub-prop { display: flex; gap: 1rem; }
 .pub-prop dt { flex: none; width: 9rem; color: #6b7280; }

@@ -11,7 +11,8 @@
 
 import type { ReactNode } from 'react'
 
-import type { PublicColumn, PublicRow, PublicRowProperties, PublicTable } from '@/lib/publish/public-database'
+import { buildBoardColumns } from '@/lib/publish/public-board'
+import type { PublicBoard, PublicColumn, PublicRow, PublicRowProperties, PublicTable } from '@/lib/publish/public-database'
 import { PUBLIC_TABLE_MAX_ROWS } from '@/lib/publish/public-database'
 import type { PublicPageView } from '@/lib/publish/public-read'
 import { RichText, UNTITLED, publicHref, titleText } from './public-blocks'
@@ -52,7 +53,111 @@ function RowTitle({ row, view }: { row: PublicRow; view: PublicPageView }): Reac
   )
 }
 
+/** 목록의 줄 · 갤러리 · 보드의 카드가 쓰는 속성 줄 — 제목 열은 머리라 뺀다. 값이 빈 칸은 그리지 않는다. */
+function CardProps({ table, row, view }: { table: PublicTable; row: PublicRow; view: PublicPageView }): ReactNode {
+  const shown = table.columns.filter((c) => c.type !== 'title' && publicCell(c, row.cells[c.id], row.uniqueSeq).kind !== 'empty')
+  if (shown.length === 0) return null
+  return (
+    <span className="pub-card-props">
+      {shown.map((column) => (
+        <span key={column.id} className="pub-card-prop" title={column.name}>
+          <CellView column={column} value={row.cells[column.id]} uniqueSeq={row.uniqueSeq} view={view} />
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function RowCard({ table, row, view }: { table: PublicTable; row: PublicRow; view: PublicPageView }): ReactNode {
+  return (
+    <div className="pub-card" data-testid="public-card" data-row-id={row.id}>
+      <RowTitle row={row} view={view} />
+      <CardProps table={table} row={row} view={view} />
+    </div>
+  )
+}
+
+function ListView({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
+  return (
+    <ul className="pub-db-list" data-testid="public-db-list">
+      {table.rows.map((row) => (
+        <li key={row.id} className="pub-db-list-item" data-testid="public-db-row" data-row-id={row.id}>
+          <RowTitle row={row} view={view} />
+          <CardProps table={table} row={row} view={view} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function GalleryView({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
+  return (
+    <div className="pub-db-gallery" data-size={table.cardSize} data-testid="public-db-gallery">
+      {table.rows.map((row) => (
+        <RowCard key={row.id} table={table} row={row} view={view} />
+      ))}
+    </div>
+  )
+}
+
+function BoardView({ table, board, view }: { table: PublicTable; board: PublicBoard; view: PublicPageView }): ReactNode {
+  const columns = buildBoardColumns(board.spec, table.rows, (row) => row.groupKey ?? '')
+  return (
+    <div className="pub-db-board" data-testid="public-db-board">
+      {columns.map((column) => (
+        <section key={column.key} className="pub-board-column" data-testid="public-board-column" data-group={column.key} aria-label={column.name}>
+          <h3 className="pub-board-head">
+            <span className="pub-option" data-color={column.color === null || column.color === 'default' ? undefined : `${column.color}_background`}>
+              {column.name}
+            </span>{' '}
+            <span className="pub-board-count">{column.rows.length}</span>
+          </h3>
+          {column.rows.map((row) => (
+            <RowCard key={row.id} table={table} row={row} view={view} />
+          ))}
+        </section>
+      ))}
+    </div>
+  )
+}
+
 export function PublicTableView({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
+  const body =
+    table.layout === 'table'
+      ? undefined
+      : table.rows.length === 0
+        ? null
+        : table.layout === 'board' && table.board !== null
+          ? <BoardView table={table} board={table.board} view={view} />
+          : table.layout === 'list'
+            ? <ListView table={table} view={view} />
+            : table.layout === 'gallery'
+              ? <GalleryView table={table} view={view} />
+              : undefined
+  // 목록 · 갤러리 · 보드는 자기 그림 — 아니면(undefined) 표
+  if (body !== undefined) {
+    return (
+      <section className="pub-db" data-testid="public-table" data-layout={table.layout} aria-label={table.viewName || '데이터베이스'}>
+        {table.viewName !== '' && <p className="pub-db-view">{table.viewName}</p>}
+        {body === null ? (
+          <p className="pub-note" data-testid="public-table-empty">
+            표시할 항목이 없습니다.
+          </p>
+        ) : (
+          body
+        )}
+        {table.truncated && (
+          <p className="pub-note" data-testid="public-table-truncated">
+            처음 {PUBLIC_TABLE_MAX_ROWS}개 항목만 보입니다.
+          </p>
+        )}
+      </section>
+    )
+  }
+  return <PublicTableGrid table={table} view={view} />
+}
+
+function PublicTableGrid({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
   // 제목 열은 늘 첫 자리에 링크로 선다 — 뷰가 제목을 다른 자리에 두었으면 그 자리
   const hasTitle = table.columns.some((c) => c.type === 'title')
   return (
