@@ -58,3 +58,15 @@ describe('③ 날짜 · 숫자', () => {
     assert.equal(numberText(1000000), '1,000,000')
   })
 })
+
+describe('검증 배지 (VF-2b)', () => {
+  const V = col('verification')
+  test('★ 검증됨 · 만료일 · 무기한 · 만료 · 검증 안 됨 — 이름은 없다', () => {
+    const text = (value: unknown) => publicCell(V, value, null)
+    assert.deepEqual(text({ type: 'verification', state: 'verified', expires_at: '2026-12-01T00:00:00.000Z', expired: false }), { kind: 'text', text: '✓ 검증됨 · ~2026-12-01까지' })
+    assert.deepEqual(text({ type: 'verification', state: 'verified', expires_at: null, expired: false }), { kind: 'text', text: '✓ 검증됨' })
+    assert.deepEqual(text({ type: 'verification', state: 'verified', expires_at: '2026-11-01T00:00:00.000Z', expired: true }), { kind: 'text', text: '만료' })
+    assert.deepEqual(text(undefined), { kind: 'empty' })
+    assert.deepEqual(text({ type: 'verification', state: 'bogus' }), { kind: 'empty' })
+  })
+})

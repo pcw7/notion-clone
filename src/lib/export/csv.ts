@@ -45,6 +45,7 @@
 import { toPlainText } from '../contracts/rich-text.ts'
 import { LEFT_USER, readCell } from '../database/cell-format.ts'
 import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
+import { isVerificationExpired, readVerification } from '../database/verification-cell.ts'
 import { uniqueIdCellText } from '../database/unique-id-format.ts'
 import type { FormulaValue } from '../formula/formula.ts'
 import type { RollupCell } from '../database/rollup-functions.ts'
@@ -53,7 +54,7 @@ export type CsvColumn = {
   readonly propertyId: string
   readonly name: string
   /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다) + 수식(10n-35 — 값은 스냅숏이 계산해 끼운 `FormulaValue`). */
-  readonly type: MvpPropertyType | 'unique_id' | 'formula' | 'relation' | 'rollup'
+  readonly type: MvpPropertyType | 'unique_id' | 'formula' | 'relation' | 'rollup' | 'verification'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
   /** 사람 칸(6g-1)의 이름 — 사람 id → 이름(이 워크스페이스의 활동 중인 사람만). 없는 id 는 "떠난 사용자". */
@@ -174,6 +175,20 @@ function relationPlainText(raw: unknown, untitled: string): string {
   return [titles, hidden].filter((part) => part !== '').join(' ')
 }
 
+/**
+ * 검증 칸의 글자(VF-2b · 정본 [보강 VF-1] ⑥) — `검증됨(2026-12-01 까지)` · `검증됨(무기한)` · `만료(2026-11-01)` · 빈 칸. 만료는 스냅숏이
+ * 끼운 `expired`(내보낸 시각 기준)를 따르고, 없으면 지금으로 판정한다. 날짜는 UTC 의 날(검증 머리말과 같다) — 이름은 싣지 않는다.
+ */
+export function verificationPlainText(raw: unknown): string {
+  const v = readVerification(raw)
+  if (v === null) return ''
+  const day = (iso: string) => iso.slice(0, 10)
+  const flagged = (raw as { expired?: unknown }).expired
+  const expired = typeof flagged === 'boolean' ? flagged : isVerificationExpired(v, new Date())
+  if (expired) return `만료(${day(v.expires_at ?? v.verified_at)})`
+  return v.expires_at === null ? '검증됨(무기한)' : `검증됨(${day(v.expires_at)} 까지)`
+}
+
 /** 이 칸에 수식 막기를 거는가 — 사용자가 쓴 글자의 타입이거나, 수식의 **글 결과**(10n-35 · 머리말). */
 function guardsUserText(column: CsvColumn, raw: unknown): boolean {
   if (column.type === 'formula') return readFormulaValue(raw)?.type === 'text'
@@ -228,6 +243,8 @@ export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string 
   if (column.type === 'relation') return relationPlainText(raw, untitled)
   // rollup(10n-37) — 스냅숏이 계산한 칸
   if (column.type === 'rollup') return rollupPlainText(raw, untitled)
+  // 검증(VF-2b) — 값은 셀이지만 셀 읽기(`readCell`)의 타입이 아니다
+  if (column.type === 'verification') return verificationPlainText(raw)
   const value = readCell(column.type, raw)
   switch (value.type) {
     case 'title':

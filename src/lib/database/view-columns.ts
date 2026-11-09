@@ -177,7 +177,7 @@ export function cardParentsOnlyPair(
  * 거를 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2) + relation(10n-44 · 비어 있음 · 비어 있지 않음) — `filter.ts` `FILTERABLE_TYPES` 와 같은 목록.
  * 정렬은 따로 묻는다(`isSortable` — relation · 사람은 거를 수만 있다).
  */
-export type FilterableColumn = CellColumn | UniqueIdColumn | RelationColumn
+export type FilterableColumn = CellColumn | UniqueIdColumn | RelationColumn | VerificationColumn
 
 /** 그 타입 그대로 거를 수 있는 컬럼인가(셀 · 고유 ID). 수식까지 고르려면 `filterColumnOf` 를 쓴다. */
 export function isFilterableColumn(column: ViewColumn): column is FilterableColumn {

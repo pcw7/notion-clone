@@ -134,7 +134,7 @@ export function ruleFor(
   return {
     property_id: propertyId,
     operator: first?.operator ?? '',
-    ...(type === 'checkbox' ? { value: true } : {}),
+    ...(type === 'checkbox' ? { value: true } : type === 'verification' ? { value: 'verified' } : {}),
   }
 }
 
@@ -201,6 +201,8 @@ function valueLabel(value: unknown, operator: string, column: RuleColumn, names:
       return column.options.find((o) => o.id === value)?.name ?? '지워진 옵션'
     case 'checkbox':
       return value === true || value === 'true' ? '체크됨' : '체크 안 됨'
+    case 'verification':
+      return value === 'verified' ? '검증됨' : value === 'expired' ? '만료' : value === 'unverified' ? '검증 안 됨' : String(value)
     case 'date':
       return typeof value === 'string' ? formatDate({ start: value }) : String(value)
     case 'people':

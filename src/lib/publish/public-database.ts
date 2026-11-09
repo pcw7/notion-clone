@@ -16,7 +16,7 @@
  * 보이는 열. 행은 공개 경로가 여는 것만(정본 ③ — `live` · 템플릿 아님 · 막는 모더레이션 없음 · 상속이 끊기지 않음). 처음
  * `PUBLIC_TABLE_MAX_ROWS` 줄까지(넘으면 `truncated`). 하위 항목은 펴지 않고 평평하게 둔다.
  *
- * **열은 값이 행에 있는 타입만** — 제목 · 글 · 숫자 · 선택 · 상태 · 체크박스 · 날짜 · 고유 ID. 관계형(대상이 공개인지를 따로 물어야
+ * **열은 값이 행에 있는 타입만** — 제목 · 글 · 숫자 · 선택 · 상태 · 체크박스 · 날짜 · 고유 ID · 검증(배지만 — 검증한 사람 · 시각은 싣지 않는다 · VF-2b). 관계형(대상이 공개인지를 따로 물어야
  * 한다) · 롤업 · 수식(읽을 때 계산 — 보는 사람의 권한이 든다) · 버튼(누를 수 없다)은 그리지 않는다. 수식으로 거르는 뷰는 그 캐시가
  * 낡을 수 있다(공개 경로는 캐시를 채우지 않는다 — 앱에서 누군가 그 표를 열면 채워진다).
  */
@@ -34,11 +34,12 @@ import {
   type FilterNode,
   type SortKey,
 } from '../database/filter.ts'
+import { toVerificationCell } from '../database/verification-cell.ts'
 import type { Tx } from '../db/tx.ts'
 import type { PublicTarget } from './public-access.ts'
 
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
-export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'unique_id'] as const
+export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'unique_id', 'verification'] as const
 export type PublicCellType = (typeof PUBLIC_CELL_TYPES)[number]
 
 /** 공개 표의 줄 상한 — 넘으면 `truncated`(공개 화면은 페이지를 넘기지 않는다 · v1). */
@@ -239,7 +240,14 @@ function pick(cache: Record<string, unknown> | null, columns: readonly PublicCol
   const out: Record<string, unknown> = {}
   for (const column of columns) {
     const value = cache?.[column.id]
-    if (value !== undefined) out[column.id] = value
+    if (value === undefined) continue
+    // 검증 — 배지에 필요한 것만(상태 · 만료 시각 · 만료 여부). 검증한 사람 · 시각은 공개 방문자에게 가지 않는다(회원의 신원)
+    if (column.type === 'verification') {
+      const cell = toVerificationCell(value, new Date())
+      if (cell !== null) out[column.id] = { type: 'verification', state: cell.state, expires_at: cell.expires_at, expired: cell.expired }
+      continue
+    }
+    out[column.id] = value
   }
   return out
 }

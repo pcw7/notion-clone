@@ -5339,6 +5339,17 @@ try {
     else fail(`일의 종류가 어긋났다: ${kindDef}`)
   }
 
+  console.log('\n[93]검증 필터 연산자 — 카탈로그 (0135 / §3.5 [보강 VF-1] ⑥ · VF-2b조각)')
+  {
+    const { rows } = await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = 'verification' ORDER BY order_idx`)
+    if (rows.map((r) => `${r.operator}:${r.arity}`).join(',') === 'is:1,is_not:1') ok('★ 검증 연산자 — 같음 · 같지 않음 둘(값 하나씩)')
+    else fail(`검증 연산자가 어긋났다: ${JSON.stringify(rows)}`)
+    await mustReject(
+      '★ 검증 연산자를 두 번(0135 뒤에도)',
+      `INSERT INTO filter_operator (property_type, operator, arity, label_ko, order_idx) VALUES ('verification', 'is', 1, '중복', 9)`,
+    )
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
