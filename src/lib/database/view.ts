@@ -66,7 +66,7 @@ import {
   type CalendarLayout,
   type LiveCalendarLayout,
 } from './calendar.ts'
-import { isMvpPropertyType, isOptionType, readStatusDefault } from './property-types.ts'
+import { hasOptionRegistry, isMvpPropertyType, readStatusDefault } from './property-types.ts'
 import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
@@ -389,7 +389,7 @@ type ColumnRow = {
 /** 읽은 줄 → 컬럼. 뷰의 컬럼과 행의 속성 목록이 같은 함수로 만든다(옵션 · relation · rollup 을 읽는 곳이 한 곳). */
 async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn[]> {
   // 옵션을 읽는 곳은 `options.ts` 하나다(그쪽 머리말 — status 옵션은 그룹 순서가 먼저다).
-  const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.property_id))
+  const optionsOf = await readOptionsOf(tx, rows.filter((r) => hasOptionRegistry(r.type)).map((r) => r.property_id))
 
   // 수식의 식을 사람이 읽는 모양으로 되돌릴 때 쓰는 이름(뷰의 컬럼은 표의 속성 전부다 — 숨긴 것도)
   const nameOf = new Map(rows.map((r) => [r.property_id, r.name]))

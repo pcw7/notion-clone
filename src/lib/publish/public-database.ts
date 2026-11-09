@@ -56,7 +56,7 @@ import {
 } from './public-window.ts'
 
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
-export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'unique_id', 'verification'] as const
+export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'checkbox', 'date', 'unique_id', 'verification'] as const
 export type PublicCellType = (typeof PUBLIC_CELL_TYPES)[number]
 
 /** 공개 표의 줄 상한 — 넘으면 `truncated`(공개 화면은 페이지를 넘기지 않는다 · v1). */
@@ -509,7 +509,7 @@ const OPENABLE_ROW = `p.is_template = false
 /** 공개 타입의 열만 · 선택 · 상태의 옵션을 붙여. */
 async function publicColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<PublicColumn[]> {
   const kept = rows.filter((r) => isPublicType(r.type))
-  const optionIds = kept.filter((r) => r.type === 'select' || r.type === 'status').map((r) => r.property_id)
+  const optionIds = kept.filter((r) => r.type === 'select' || r.type === 'status' || r.type === 'multi_select').map((r) => r.property_id)
   const options =
     optionIds.length === 0
       ? []

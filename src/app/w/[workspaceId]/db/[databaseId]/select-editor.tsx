@@ -62,6 +62,7 @@ export type OptionEditActions = {
 export function SelectEditor({
   options,
   currentId,
+  currentIds,
   canCreate,
   isStatus = false,
   defaultOptionId = null,
@@ -72,6 +73,11 @@ export function SelectEditor({
 }: {
   options: readonly SelectOption[]
   currentId: string | null
+  /**
+   * 다중 선택(PT-1)이면 고른 옵션 id 들(고른 차례). 있으면 여러 개 고르기다 — 옵션 줄은 체크(✓)를 달고 누르면 넣거나 뺀다(`onPick` 이 토글) ·
+   * 찾기 칸이 비었을 때 Backspace 는 마지막 칩을 뺀다 · "선택 지우기" 는 없다.
+   */
+  currentIds?: readonly string[]
   /** 새 옵션을 만들 수 있는가(`edit_structure`). 없으면 "만들기" 항목을 그리지 않는다. */
   canCreate: boolean
   /**
@@ -91,6 +97,7 @@ export function SelectEditor({
   /** 새 옵션 — status 면 고른 그룹(10n-22). select 는 그룹 없이. */
   onCreate: (name: string, group?: StatusGroupKind) => void
 }) {
+  const multi = currentIds !== undefined
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -164,6 +171,10 @@ export function SelectEditor({
       // ★ 표의 Enter(저장하고 아래 칸)가 아니라 이 목록의 Enter 다(머리말).
       event.preventDefault()
       choose(active)
+    } else if (event.key === 'Backspace' && multi && query === '' && currentIds.length > 0) {
+      // 다중 선택 — 마지막 칩 빼기(토글이 곧 빼기다)
+      event.preventDefault()
+      onPick(currentIds[currentIds.length - 1])
     }
   }
 
@@ -375,7 +386,13 @@ export function SelectEditor({
                   기본
                 </span>
               )}
-              {option.id === currentId && <span className="text-xs text-neutral-400">선택됨</span>}
+              {multi
+                ? currentIds.includes(option.id) && (
+                    <span data-testid="db-option-checked" aria-label="선택됨" className="text-xs text-neutral-500">
+                      ✓
+                    </span>
+                  )
+                : option.id === currentId && <span className="text-xs text-neutral-400">선택됨</span>}
               {edit !== undefined && (
                 <button
                   type="button"
@@ -425,7 +442,7 @@ export function SelectEditor({
         )}
       </ul>
 
-      {currentId !== null && (
+      {!multi && currentId !== null && (
         <button
           type="button"
           data-testid="db-select-clear"

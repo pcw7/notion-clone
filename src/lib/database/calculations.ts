@@ -90,6 +90,8 @@ export function calculationsFor(type: MvpPropertyType): readonly Calculation[] {
       return [...COMMON, 'percent_complete']
     // 사람(6g-1) — 세기만. 고유 값 세기는 사이드카(사람 id 의 이음)의 조합을 세게 되어 뜻이 없다(정본 [보강] 사람 속성 ⑤)
     case 'people':
+    // 다중 선택(PT-1) — 같다. 고유 값 세기는 옵션 조합을 세게 되어 뜻이 없다. 값 세기는 칩 수의 합이다(`ColumnStats.values`)
+    case 'multi_select':
       return ['count_all', 'count_values', 'count_empty', 'percent_empty', 'percent_not_empty']
     default:
       return COMMON
@@ -139,6 +141,8 @@ export type ColumnStats = {
   readonly checked: number
   /** 상태 열에서 옵션이 완료 그룹에 든 칸 수(10n-30). 상태가 아니면 0. */
   readonly complete: number
+  /** 다중 선택 열의 칩 수의 합(PT-1) — 그 밖의 열은 0 이거나 없다. `count_values` 가 0 보다 크면 이것을 센다. */
+  readonly values?: number
 }
 
 /** 화면이 그리는 값 — 종류가 모양을 정한다(비율은 %, 날짜는 날짜, 기간은 일). */
@@ -157,7 +161,8 @@ export function calculationResult(fn: Calculation, s: ColumnStats): CalculationR
     case 'count_all':
       return { kind: 'count', value: s.total }
     case 'count_values':
-      return { kind: 'count', value: s.filled }
+      // 다중 선택은 칩 수의 합(`values`) · 그 밖은 값 있는 칸 수
+      return { kind: 'count', value: s.values !== undefined && s.values > 0 ? s.values : s.filled }
     case 'count_empty':
       return { kind: 'count', value: s.total - s.filled }
     case 'count_unique':

@@ -135,7 +135,7 @@ export function CardBadges({
             data-testid={testId}
             className="max-w-full truncate text-xs text-neutral-600 dark:text-neutral-300"
           >
-            {value.type === 'select' || value.type === 'status' || value.type === 'people' ? (
+            {value.type === 'select' || value.type === 'status' || value.type === 'people' || value.type === 'multi_select' ? (
               <CellDisplay value={value} options={column.options} names={peopleNames} />
             ) : value.type === 'checkbox' ? (
               `☑ ${column.name}`

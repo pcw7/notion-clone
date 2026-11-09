@@ -84,6 +84,8 @@ export type StatsRow = {
   checked: number
   /** 완료 그룹에 든 칸 수(10n-30) — 상태 열에만 센다(그 밖은 0). */
   complete: number
+  /** 다중 선택 열의 칩 수의 합(PT-1). */
+  values?: number
 }
 
 /**
@@ -101,6 +103,7 @@ export function statsJsonSql(v: string, completeIds: string | null = null): stri
                'min', min(${v}.num_value), 'max', max(${v}.num_value),
                'dmin', min(${v}.date_start), 'dmax', max(coalesce(${v}.date_end, ${v}.date_start)),
                'checked', count(*) FILTER (WHERE ${v}.bool_value),
+               'values', coalesce(sum(CASE WHEN jsonb_typeof(${v}.value -> 'multi_select') = 'array' THEN jsonb_array_length(${v}.value -> 'multi_select') END), 0),
                'complete', ${completeIds === null ? '0' : `count(*) FILTER (WHERE ${v}.text_value = ANY(${completeIds}::text[]))`})`
 }
 
@@ -134,6 +137,7 @@ export function columnStatsOf(total: number, s: StatsRow): ColumnStats {
     dateMax: s.dmax === null ? null : new Date(s.dmax).toISOString(),
     checked: Number(s.checked),
     complete: Number(s.complete ?? 0),
+    values: Number(s.values ?? 0),
   }
 }
 

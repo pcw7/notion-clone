@@ -26,6 +26,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   checkbox: '체크박스',
   date: '날짜',
   people: '사람',
+  multi_select: '다중 선택',
   relation: '관계형',
   rollup: '롤업',
   formula: '수식',
@@ -44,6 +45,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   checkbox: '☑',
   date: '◷',
   people: '◉',
+  multi_select: '☰',
   relation: '↗',
   rollup: '∑',
   formula: 'ƒ',
@@ -159,6 +161,18 @@ export function CellDisplay({ value, options, names = {} }: { value: CellValue; 
       const id = optionIdOf(value)
       const option = id === null ? undefined : options.find((o) => o.id === id)
       return option ? <OptionChip option={option} /> : null
+    }
+    // 다중 선택(PT-1) — 고른 차례의 칩 · 넘치면 줄바꿈. 지운 옵션(목록에 없는 id)은 그리지 않는다
+    case 'multi_select': {
+      const picked = value.multi_select.flatMap((ref) => options.find((o) => o.id === ref.id) ?? [])
+      if (picked.length === 0) return null
+      return (
+        <span className="flex min-w-0 flex-wrap gap-1" data-testid="db-multi-select">
+          {picked.map((option) => (
+            <OptionChip key={option.id} option={option} />
+          ))}
+        </span>
+      )
     }
     case 'number':
       return <span className="block truncate text-right tabular-nums">{cellText(value)}</span>

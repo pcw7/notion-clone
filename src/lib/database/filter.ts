@@ -230,6 +230,8 @@ const AXIS: Readonly<Record<MvpPropertyType, Axis>> = Object.freeze({
   date: 'date',
   // 사람(6g-1) — 사이드카는 사람 id 를 공백으로 이은 것(정본 §3.5 [보강] 사람 속성 ③). 비었는지만 이 축으로 묻고, 포함은 값으로 묻는다
   people: 'text',
+  // 다중 선택(PT-1) — 사이드카는 옵션 id 를 공백으로 이은 것. 비었는지만 이 축으로 묻고, 포함은 값으로 묻는다
+  multi_select: 'text',
 })
 
 const COLUMN: Readonly<Record<Axis, string>> = Object.freeze({
@@ -426,6 +428,21 @@ const PEOPLE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
 })
 
 /**
+ * 다중 선택(PT-1 · 정본 §3.5 [보강 PT-1] ③) — 사람과 같은 모양: 포함은 값의 jsonb 포함 연산, 값은 옵션 id 하나. 옵션 이름을 바꿔도 따라온다.
+ * 포함하지 않음은 `NOT EXISTS` — 칸이 없는 행도 맞는다.
+ */
+const MULTI_SELECT_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  contains: { arity: 1, predicate: (_c, p) => `v.value -> 'multi_select' @> jsonb_build_array(jsonb_build_object('id', ${p}::text))` },
+  does_not_contain: {
+    arity: 1,
+    negate: true,
+    predicate: (_c, p) => `v.value -> 'multi_select' @> jsonb_build_array(jsonb_build_object('id', ${p}::text))`,
+  },
+  is_empty: TEXT_OPERATORS.is_empty,
+  is_not_empty: TEXT_OPERATORS.is_not_empty,
+})
+
+/**
  * relation(10n-44) — 이어진 행이 있는가. 칸이 아니라 엣지를 본다(`compileFilter` 의 따로 된 길 — 여기 `predicate` 는 쓰지 않는다). 살아 있는 ·
  * 템플릿이 아닌 대상 행만 센다 — 칸이 보여 주는 것(칩 · "볼 수 없는 연결 N개")과 같다. 휴지통의 행만 이어진 칸은 비어 있다.
  * 포함 · 포함하지 않음(10n-45)은 값이 대상 행 id 하나다 — 같은 길에 "그 행으로" 를 더한다. 포함하지 않음은 아무것도 이어지지 않은 칸도 맞는다.
@@ -465,6 +482,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     date: DATE_OPERATORS,
     unique_id: UNIQUE_ID_OPERATORS,
     people: PEOPLE_OPERATORS,
+    multi_select: MULTI_SELECT_OPERATORS,
     relation: RELATION_OPERATORS,
     verification: VERIFICATION_OPERATORS,
   })
@@ -560,6 +578,10 @@ export function validateFilter(
   if (resolved.type === 'people' && spec.arity === 1 && !isMeNode(obj.value) && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
     return [{ path: `${path}.value`, message: '사람 id 또는 { "$context": "me" } 여야 합니다' }]
   }
+  // 다중 선택(PT-1) — 값은 옵션 id 하나
+  if (resolved.type === 'multi_select' && spec.arity === 1 && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
+    return [{ path: `${path}.value`, message: '옵션 id(uuid) 여야 합니다' }]
+  }
   // relation 의 포함(10n-45) — 값은 대상 표의 행 id 하나(그 표의 행인지는 묻지 않는다 — 아니면 맞는 칸이 없을 뿐이다)
   if (resolved.type === 'relation' && spec.arity === 1 && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
     return [{ path: `${path}.value`, message: '행 id(uuid) 여야 합니다' }]
@@ -595,6 +617,7 @@ export function validateSorts(sorts: unknown, types: PropertyTypes): ValidationI
     if (types.get(key.property_id) === 'relation') {
       issues.push({ path: `sorts[${i}].property_id`, message: '관계형 속성으로는 정렬할 수 없습니다' })
     }
+    // 다중 선택(PT-1)은 정렬한다 — 칸의 값 가운데 옵션 순서가 가장 앞인 것으로(compileSorts)
     // 같은 프로퍼티로 두 번 정렬하면 두 번째 키가 아무 일도 하지 않는다.
     // 조용히 무시하면 사용자는 자기 설정이 먹은 줄 안다.
     if (seen.has(key.property_id)) {
@@ -830,6 +853,19 @@ export function compileSorts(
       keys.push({
         expr: `(SELECT ${key} COLLATE "C" FROM ${SOURCE_TABLE[resolved.table]} sv
                   JOIN select_option o ON o.property_id = sv.property_id AND o.id::text = sv.text_value${status ? '\n                  LEFT JOIN status_group g ON g.id = o.group_id' : ''}
+                WHERE sv.page_id = p.id AND sv.property_id = ${param})`,
+        direction: sort.direction,
+        cast: '::text',
+      })
+      continue
+    }
+    // 다중 선택(PT-1 · [보강 PT-1] ③) — 칸의 옵션 가운데 순서(`order_idx`)가 가장 앞인 것으로. 지운 옵션 · 빈 칸은 NULL(맨 뒤 — 내림차순도)
+    if (rawType === 'multi_select') {
+      const param = params.bind(sort.property_id)
+      keys.push({
+        expr: `(SELECT min(o.order_idx COLLATE "C") FROM page_property_value sv
+                  CROSS JOIN LATERAL jsonb_array_elements(sv.value -> 'multi_select') e(x)
+                  JOIN select_option o ON o.property_id = sv.property_id AND o.id::text = e.x ->> 'id'
                 WHERE sv.page_id = p.id AND sv.property_id = ${param})`,
         direction: sort.direction,
         cast: '::text',

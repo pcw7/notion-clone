@@ -34,6 +34,16 @@ function CellView({ column, value, uniqueSeq, view }: { column: PublicColumn; va
           {cell.option.name}
         </span>
       )
+    case 'options':
+      return (
+        <span data-testid="public-db-multi" style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px' }}>
+          {cell.options.map((option) => (
+            <span key={option.id} className="pub-option" data-color={option.color === 'default' ? undefined : `${option.color}_background`}>
+              {option.name}
+            </span>
+          ))}
+        </span>
+      )
     case 'checkbox':
       return (
         <span className="pub-checkbox" role="img" aria-label={checkboxLabel(cell.checked)}>

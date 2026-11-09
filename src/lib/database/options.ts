@@ -107,12 +107,13 @@ export async function withoutMissingOptions<Cell extends { readonly propertyId: 
 async function missingOptionRefs(
   tx: Tx,
   cells: readonly { readonly propertyId: string; readonly value: CellValue }[],
-): Promise<{ propertyId: string; id: string; kind: 'select' | 'status' }[]> {
-  const refs: { propertyId: string; id: string; kind: 'select' | 'status' }[] = []
+): Promise<{ propertyId: string; id: string; kind: 'select' | 'status' | 'multi_select' }[]> {
+  const refs: { propertyId: string; id: string; kind: 'select' | 'status' | 'multi_select' }[] = []
   for (const cell of cells) {
     const v = cell.value
     if (v.type === 'select' && v.select !== null) refs.push({ propertyId: cell.propertyId, id: v.select.id, kind: 'select' })
     if (v.type === 'status' && v.status !== null) refs.push({ propertyId: cell.propertyId, id: v.status.id, kind: 'status' })
+    if (v.type === 'multi_select') for (const o of v.multi_select) refs.push({ propertyId: cell.propertyId, id: o.id, kind: 'multi_select' })
   }
   if (refs.length === 0) return []
   // FOR SHARE — 옵션 지우기와 줄을 선다(`optionIssuesIn` 머리말)

@@ -5350,6 +5350,84 @@ try {
     )
   }
 
+  console.log('\n[94] 다중 선택 속성 — 칸 모양 · 옵션 소속 · 중복 · 상한 · 필터 연산자 (0136 / §3.5 [보강 PT-1] ① ③ · PT-1조각)')
+  {
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '다중', 1)`, [dsId, dbBlock])
+    const tagProp = `tag${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const otherProp = `oth${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const putProp = `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+                     VALUES ($1, $2, $3, 'multi_select', '{}'::jsonb, $4, now(), now())`
+    await client.query(putProp, [tagProp, dsId, '태그', 'a0'])
+    await client.query(putProp, [otherProp, dsId, '다른 태그', 'a1'])
+    const optA = randomUUID()
+    const optB = randomUUID()
+    const optOther = randomUUID()
+    const putOpt = `INSERT INTO select_option (id, property_id, name, color, order_idx) VALUES ($1, $2, $3, 'default', $4)`
+    await client.query(putOpt, [optA, tagProp, 'A', 'a0'])
+    await client.query(putOpt, [optB, tagProp, 'B', 'a1'])
+    await client.query(putOpt, [optOther, otherProp, 'X', 'a0'])
+    const rowPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowPage, wsId, dsId, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowPage, dsId])
+
+    const put = `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, $3::jsonb)
+                 ON CONFLICT (page_id, property_id) DO UPDATE SET value = EXCLUDED.value`
+    const cell = (ids) => JSON.stringify({ type: 'multi_select', multi_select: ids.map((id) => ({ id })) })
+    await client.query(put, [rowPage, tagProp, cell([optB, optA])])
+    ok('다중 선택 칸(고른 차례 B, A) — 정상 경로가 통과한다')
+    await client.query(put, [rowPage, tagProp, cell([])])
+    ok('빈 배열 — 통과한다')
+
+    const tryReject = async (label, value, property = tagProp) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, [rowPage, property, value])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === 'tg_ppv_multi_select_shape') ok(`${label} — tg_ppv_multi_select_shape 가 거부함 (${e.code})`)
+        else fail(`${label} — tg_ppv_multi_select_shape 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await tryReject('★ 배열이 아닌 값', JSON.stringify({ type: 'multi_select', multi_select: { id: optA } }))
+    await tryReject('★ 원소가 {id} 가 아니다(이름 글자)', JSON.stringify({ type: 'multi_select', multi_select: ['A'] }))
+    await tryReject('★ 원소에 모르는 키', JSON.stringify({ type: 'multi_select', multi_select: [{ id: optA, name: 'A' }] }))
+    await tryReject('★ 봉투에 모르는 키', JSON.stringify({ type: 'multi_select', multi_select: [], extra: 1 }))
+    await tryReject('★ 같은 옵션 두 번', cell([optA, optA]))
+    await tryReject('★ 이 속성의 옵션이 아닌 id(다른 속성의 옵션)', cell([optA, optOther]))
+    await tryReject('★ 없는 옵션 id', cell([randomUUID()]))
+    await tryReject('★ uuid 가 아닌 id', JSON.stringify({ type: 'multi_select', multi_select: [{ id: 'abc' }] }))
+    // 101개 — 상한. 옵션은 100개만 만들 수 없으니 같은 속성에 101개를 만든다
+    const many = []
+    for (let i = 0; i < 101; i++) {
+      const id = randomUUID()
+      many.push(id)
+      await client.query(putOpt, [id, tagProp, `옵션${i}`, `m${String(i).padStart(3, '0')}`])
+    }
+    await client.query(put, [rowPage, tagProp, cell(many.slice(0, 100))])
+    ok('★ 옵션 100개 — 통과한다')
+    await tryReject('★ 옵션 101개 — 상한', cell(many))
+
+    const { rows } = await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = 'multi_select' ORDER BY order_idx`)
+    if (rows.map((r) => `${r.operator}:${r.arity}`).join(',') === 'contains:1,does_not_contain:1,is_empty:0,is_not_empty:0') ok('★ 다중 선택 연산자 — 포함 · 포함하지 않음 · 비어 있음 · 비어 있지 않음')
+    else fail(`다중 선택 연산자가 어긋났다: ${JSON.stringify(rows)}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

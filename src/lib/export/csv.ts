@@ -102,7 +102,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'people', 'relation'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation'])
 
 /**
  * 내보내기의 relation 칸(10n-36) — 스냅숏이 엣지에서 읽어 끼운다. 캐시의 relation 봉투(`type: 'relation'`)와 태그가 다르다 — 캐시는
@@ -267,6 +267,9 @@ export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string 
     // 사람(6g-1) — 이름을 `, ` 로(정본 [보강] 사람 속성 ⑦). 이름은 사람이 정한 글자라 수식 막기 대상이다(`USER_TEXT`)
     case 'people':
       return value.people.map((person) => column.names?.get(person.id) ?? LEFT_USER).join(', ')
+    // 다중 선택(PT-1) — 옵션 이름을 `, ` 로(지운 옵션은 뺀다)
+    case 'multi_select':
+      return value.multi_select.flatMap((ref) => column.options?.find((option) => option.id === ref.id)?.name ?? []).join(', ')
   }
 }
 

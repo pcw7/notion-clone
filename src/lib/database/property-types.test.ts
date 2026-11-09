@@ -38,7 +38,7 @@ const valid = (type: Parameters<typeof validateCellValue>[0], v: unknown): boole
 describe('레지스트리', () => {
   test('MVP 6종 + status + people (마스터 W8-a "프로퍼티 5종" + 필수 title · 보드 4c-1 이 status 를 · 6g-1 이 사람을 더했다)', () => {
     assert.deepEqual([...MVP_PROPERTY_TYPES], [
-      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'people',
+      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'people', 'multi_select',
     ])
   })
 
@@ -47,7 +47,7 @@ describe('레지스트리', () => {
   })
 
   test('스키마 ENUM 에는 있지만 MVP 가 아닌 타입은 거른다', () => {
-    assert.equal(isMvpPropertyType('multi_select'), false)
+    assert.equal(isMvpPropertyType('place'), false)
     assert.equal(isMvpPropertyType('formula'), false)
     assert.equal(isMvpPropertyType('nonsense'), false)
     assert.equal(isMvpPropertyType('number'), true)
@@ -198,7 +198,7 @@ describe('검증 — 쓰기 경로는 관대하지 않다', () => {
       assert.equal(valid('select', { type: 'select', select: { name: '진행중' } }), false)
     })
 
-    test('배열은 거부 — multi_select 는 MVP 밖이다', () => {
+    test('select 에 배열은 거부 — 여럿은 multi_select 의 몫이다', () => {
       assert.equal(valid('select', { type: 'select', select: [{ id: 'a' }] }), false)
     })
   })

@@ -15,6 +15,8 @@ import type { PublicColumn, PublicOption } from '../../lib/publish/public-databa
 export type PublicCell =
   | { readonly kind: 'runs'; readonly runs: readonly RichTextRun[] }
   | { readonly kind: 'option'; readonly option: PublicOption }
+  /** 다중 선택(PT-1) — 고른 차례의 옵션 칩들. */
+  | { readonly kind: 'options'; readonly options: readonly PublicOption[] }
   | { readonly kind: 'checkbox'; readonly checked: boolean }
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'empty' }
@@ -45,6 +47,15 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
       const option = typeof ref?.id === 'string' ? column.options.find((o) => o.id === ref.id) : undefined
       // 지운 옵션을 가리키는 값은 빈 칸 — 이름을 지어내지 않는다
       return option === undefined ? EMPTY : { kind: 'option', option }
+    }
+    case 'multi_select': {
+      const list = Array.isArray(cell.multi_select) ? cell.multi_select : []
+      // 지운 옵션을 가리키는 id 는 뺀다 — 이름을 지어내지 않는다
+      const options = list.flatMap((ref) => {
+        const found = typeof record(ref)?.id === 'string' ? column.options.find((o) => o.id === record(ref)!.id) : undefined
+        return found === undefined ? [] : [found]
+      })
+      return options.length === 0 ? EMPTY : { kind: 'options', options }
     }
     case 'checkbox':
       return { kind: 'checkbox', checked: cell.checkbox === true }

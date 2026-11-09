@@ -150,6 +150,9 @@ export function cellToFormulaValue(type: MvpPropertyType, raw: unknown, optionNa
     // 사람(6g-1)은 수식이 읽지 않는다 — `formulaTypeOfCell` 이 null 이라 `prop()` 이 찾지 못한다(정본 [보강] 사람 속성 ⑤)
     case 'people':
       return null
+    // 다중 선택도 — 글 목록 값은 PT-1b(정본 [보강 PT-1] ⑤)
+    case 'multi_select':
+      return null
   }
 }
 
