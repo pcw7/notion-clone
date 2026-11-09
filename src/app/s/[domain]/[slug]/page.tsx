@@ -6,14 +6,16 @@
 
 import type { Metadata } from 'next'
 
+import { windowQueryOf } from '@/lib/publish/public-window'
+
 import { SitePage, siteMetadata } from '../../../p/public-page'
 
-export async function generateMetadata({ params }: PageProps<'/s/[domain]/[slug]'>): Promise<Metadata> {
+export async function generateMetadata({ params, searchParams }: PageProps<'/s/[domain]/[slug]'>): Promise<Metadata> {
   const { domain, slug } = await params
-  return siteMetadata(domain, slug)
+  return siteMetadata(domain, slug, undefined, windowQueryOf(await searchParams))
 }
 
-export default async function SiteRootPage({ params }: PageProps<'/s/[domain]/[slug]'>) {
+export default async function SiteRootPage({ params, searchParams }: PageProps<'/s/[domain]/[slug]'>) {
   const { domain, slug } = await params
-  return <SitePage domain={domain} slug={slug} />
+  return <SitePage domain={domain} slug={slug} win={windowQueryOf(await searchParams)} />
 }

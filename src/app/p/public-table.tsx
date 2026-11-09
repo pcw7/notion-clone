@@ -12,8 +12,11 @@
 import type { ReactNode } from 'react'
 
 import { buildBoardColumns } from '@/lib/publish/public-board'
-import type { PublicBoard, PublicColumn, PublicRow, PublicRowProperties, PublicTable } from '@/lib/publish/public-database'
+import { weekdayLabels } from '@/lib/database/calendar'
+import { headerTicks, placeBar, windowWidth } from '@/lib/database/timeline-geometry'
+import type { PublicBoard, PublicColumn, PublicRow, PublicRowProperties, PublicTable, PublicWindow } from '@/lib/publish/public-database'
 import { PUBLIC_TABLE_MAX_ROWS } from '@/lib/publish/public-database'
+import { monthCells, PUBLIC_WINDOW_MAX_ROWS } from '@/lib/publish/public-window'
 import type { PublicPageView } from '@/lib/publish/public-read'
 import { RichText, UNTITLED, publicHref, titleText } from './public-blocks'
 import { checkboxLabel, publicCell } from './public-cells'
@@ -121,7 +124,133 @@ function BoardView({ table, board, view }: { table: PublicTable; board: PublicBo
   )
 }
 
+/** 이전 · 다음 링크 — 연 페이지 자신의 주소에 창 값(`?m=` · `?from=`)만 바꿔 싣는다. 본문 안의 인라인 데이터베이스에는 없다. */
+function WindowNav({ win, view, title }: { win: PublicWindow; view: PublicPageView; title: string }): ReactNode {
+  const key = win.kind === 'calendar' ? 'm' : 'from'
+  const base = publicHref(view, view.target.pageId)
+  return (
+    <div className="pub-win-head">
+      {win.nav && (
+        <a href={`${base}?${key}=${win.prev}`} rel="nofollow" className="pub-win-link" data-testid="public-window-prev" aria-label="이전">
+          ‹
+        </a>
+      )}
+      <span className="pub-win-title" data-testid="public-window-title">
+        {title}
+      </span>
+      {win.nav && (
+        <a href={`${base}?${key}=${win.next}`} rel="nofollow" className="pub-win-link" data-testid="public-window-next" aria-label="다음">
+          ›
+        </a>
+      )}
+    </div>
+  )
+}
+
+const rowName = (row: PublicRow): string => (titleText(row.title) === UNTITLED ? UNTITLED : titleText(row.title))
+
+function CalendarView({ table, win, view }: { table: PublicTable; win: PublicWindow; view: PublicPageView }): ReactNode {
+  const month = win.month ?? win.from.slice(0, 7)
+  const events = table.rows.flatMap((r) => (r.span === null ? [] : [{ id: r.id, start: r.span.start, end: r.span.end }]))
+  const rowById = new Map(table.rows.map((r) => [r.id, r]))
+  const weeks = monthCells(month, win.weekStart, win.showWeekends, events)
+  const [y, m] = month.split('-')
+  return (
+    <div className="pub-db-calendar" data-testid="public-db-calendar" data-month={month}>
+      <WindowNav win={win} view={view} title={`${y}년 ${Number(m)}월`} />
+      <div className="pub-cal-grid" style={{ gridTemplateColumns: `repeat(${weeks[0]?.length ?? 7}, minmax(0, 1fr))` }}>
+        {weekdayLabels(win.weekStart, win.showWeekends).map((label) => (
+          <div key={label} className="pub-cal-weekday">
+            {label}
+          </div>
+        ))}
+        {weeks.flat().map((cell) => (
+          <div key={cell.date} className="pub-cal-day" data-testid="public-calendar-day" data-date={cell.date} data-in-month={cell.inMonth ? 'true' : 'false'}>
+            <span className="pub-cal-num">{Number(cell.date.slice(8, 10))}</span>
+            {cell.ids.map((id) => {
+              const row = rowById.get(id)
+              return row === undefined ? null : (
+                <a key={id} href={publicHref(view, id)} className="pub-cal-item" data-testid="public-calendar-item" data-row-id={id}>
+                  {rowName(row)}
+                </a>
+              )
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TimelineView({ table, win, view }: { table: PublicTable; win: PublicWindow; view: PublicPageView }): ReactNode {
+  const range = { from: win.from, to: win.to }
+  const total = windowWidth(range, win.zoom)
+  const pct = (px: number): string => `${(px / total) * 100}%`
+  return (
+    <div className="pub-db-timeline" data-testid="public-db-timeline" data-from={win.from} data-to={win.to} data-zoom={win.zoom}>
+      <WindowNav win={win} view={view} title={`${win.from} – ${win.to}`} />
+      <div className="pub-tl-row pub-tl-ticks" aria-hidden="true">
+        <span />
+        <div className="pub-tl-track">
+          {headerTicks(range, win.zoom).map((tick) => (
+            <span key={tick.key} className="pub-tl-tick" style={{ left: pct(tick.left), width: pct(tick.width) }}>
+              {tick.label}
+            </span>
+          ))}
+        </div>
+      </div>
+      {table.rows.map((row) => {
+        const place = row.span === null ? null : placeBar(row.span.start, row.span.end, range, win.zoom)
+        return (
+          <div key={row.id} className="pub-tl-row" data-row-id={row.id}>
+            <a href={publicHref(view, row.id)} className="pub-tl-label">
+              {rowName(row)}
+            </a>
+            <div className="pub-tl-track">
+              {place !== null && (
+                <a
+                  href={publicHref(view, row.id)}
+                  className="pub-tl-bar"
+                  data-testid="public-timeline-bar"
+                  data-row-id={row.id}
+                  data-start={row.span?.start}
+                  data-end={row.span?.end}
+                  data-color={row.barColor === 'default' ? undefined : `${row.barColor}_background`}
+                  data-clipped-start={place.clippedStart ? '' : undefined}
+                  data-clipped-end={place.clippedEnd ? '' : undefined}
+                  style={{ left: pct(place.left), width: pct(place.width) }}
+                  aria-label={rowName(row)}
+                />
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function PublicTableView({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
+  const win = table.window
+  // 캘린더 · 타임라인(PV-2) — 창 안의 행만 · 끌기 · 만들기는 없다
+  if (win !== null && (table.layout === 'calendar' || table.layout === 'timeline')) {
+    return (
+      <section className="pub-db" data-testid="public-table" data-layout={table.layout} aria-label={table.viewName || '데이터베이스'}>
+        {table.viewName !== '' && <p className="pub-db-view">{table.viewName}</p>}
+        {table.layout === 'calendar' ? <CalendarView table={table} win={win} view={view} /> : <TimelineView table={table} win={win} view={view} />}
+        {table.layout === 'timeline' && table.rows.length === 0 && (
+          <p className="pub-note" data-testid="public-table-empty">
+            이 기간에 항목이 없습니다.
+          </p>
+        )}
+        {table.truncated && (
+          <p className="pub-note" data-testid="public-table-truncated">
+            이 기간의 처음 {PUBLIC_WINDOW_MAX_ROWS}개 항목만 보입니다.
+          </p>
+        )}
+      </section>
+    )
+  }
   const body =
     table.layout === 'table'
       ? undefined

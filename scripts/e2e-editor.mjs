@@ -31805,6 +31805,82 @@ async function main() {
       await api('DELETE', `/pages/${db.id}/publish`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 화면의 뷰 — 캘린더 · 타임라인 (PV-2 · F-06-08)')) { try {
+      // 첫 뷰가 캘린더 · 타임라인이면 주소의 창(?m= · ?from=)에 걸친 행만 그린다. 여러 날 일정은 걸친 날마다 · 창 밖 · 필터 밖의 행은 없다.
+      // 항목 · 막대는 그 행의 공개 주소로 간다. 날짜 속성이 없어지면 표. 공개 화면은 세션을 읽지 않는다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `공개 일정 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '기한', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, n, start, end) => api('POST', `/views/${view}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: score, value: { type: 'number', number: n } },
+          { propertyId: due, value: { type: 'date', date: { start, ...(end === undefined ? {} : { end }) } } },
+        ],
+      })
+      const ids = {}
+      for (const [t, n, s, e] of [['가', 10, '2031-03-10', '2031-03-12'], ['나', 10, '2031-03-20'], ['다', 10, '2031-05-01'], ['라', 5, '2031-03-15']]) ids[t] = (await row(t, n, s, e)).body.row.id
+      // 점수 > 7 → 라는 필터 밖
+      await api('PATCH', `/views/${view}`, { filter: { property_id: score, operator: 'greater_than', value: 7 } })
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('PV-2 · 데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+      const patched = await api('PATCH', `/views/${view}`, { type: 'calendar', calendar: { date_property_id: due } })
+      check('PV-2 · 첫 뷰를 기한 캘린더로 바꾼다', patched.status === 200, JSON.stringify(patched.body).slice(0, 200))
+
+      const openPublic = async (query = '') => send('Page.navigate', { url: `${BASE}/p/${token}${query}` })
+      const daysJs = `[...document.querySelectorAll('[data-testid="public-calendar-day"]')].filter((d) => d.querySelector('[data-testid="public-calendar-item"]')).map((d) => d.getAttribute('data-date') + ':' + [...d.querySelectorAll('[data-testid="public-calendar-item"]')].map((a) => a.textContent.trim()).join('/')).join('|')`
+      const wantMarch = '2031-03-10:가|2031-03-11:가|2031-03-12:가|2031-03-20:나'
+      await openPublic('?m=2031-03')
+      check('★ 공개 캘린더 ?m= — 3일 범위는 3일에 · 하루는 그날에 · 창 밖 · 필터 밖의 행은 없다',
+        await waitFor(`${daysJs} === ${JSON.stringify(wantMarch)}`, 15000), await evaluate(daysJs))
+      check('캘린더는 캘린더 상자 안에 서고 표는 없다', await evaluate(`!!document.querySelector('[data-testid="public-db-calendar"]') && !document.querySelector('.pub-db-table')`))
+      const itemHref = await evaluate(`document.querySelector('[data-testid="public-calendar-item"]')?.getAttribute('href') ?? '(링크 없음)'`)
+      check('★ 캘린더 항목은 그 행의 공개 주소로 간다', itemHref === `/p/${token}/${ids['가']}`, itemHref)
+
+      const nextHref = await evaluate(`document.querySelector('[data-testid="public-window-next"]')?.getAttribute('href') ?? ''`)
+      const prevHref = await evaluate(`document.querySelector('[data-testid="public-window-prev"]')?.getAttribute('href') ?? ''`)
+      check('★ 캘린더 다음 · 이전 링크는 ?m= 을 한 달씩 옮긴다', nextHref === `/p/${token}?m=2031-04` && prevHref === `/p/${token}?m=2031-02`, `${prevHref} · ${nextHref}`)
+      await send('Page.navigate', { url: `${BASE}${nextHref}` })
+      check('★ 다음 달(4월)에는 3월의 행이 없다', await waitFor(`document.querySelector('[data-testid="public-db-calendar"]')?.getAttribute('data-month') === '2031-04' && !document.querySelector('[data-testid="public-calendar-item"]')`, 15000), await evaluate(daysJs))
+      await openPublic('?m=2031-05')
+      check('5월에는 다만 5/01 에', await waitFor(`${daysJs} === '2031-05-01:다'`, 15000), await evaluate(daysJs))
+      await openPublic('?m=엉터리')
+      check('틀린 ?m= 은 오늘이 든 달', await waitFor(`document.querySelector('[data-testid="public-db-calendar"]')?.getAttribute('data-month') === ${JSON.stringify(new Date().toISOString().slice(0, 7))}`, 15000))
+
+      // 타임라인 — 일 줌: 창은 ?from= 에서 42일
+      const tl = await api('PATCH', `/views/${view}`, { type: 'timeline', timeline: { date_property_id: due, zoom: 'day' } })
+      check('PV-2 · 첫 뷰를 기한 타임라인(일 줌)으로 바꾼다', tl.status === 200, JSON.stringify(tl.body).slice(0, 200))
+      const barsJs = `[...document.querySelectorAll('[data-testid="public-timeline-bar"]')].map((a) => a.getAttribute('aria-label')).join(',')`
+      await openPublic('?from=2031-03-01')
+      check('★ 공개 타임라인 ?from= — 창(3/01~4/11)에 걸친 행의 막대만(가 · 나) · 창 밖 · 필터 밖은 없다',
+        await waitFor(`${barsJs} === '가,나' && !!document.querySelector('[data-testid="public-db-timeline"]')`, 15000), await evaluate(barsJs))
+      const barHref = await evaluate(`document.querySelector('[data-testid="public-timeline-bar"]')?.getAttribute('href') ?? ''`)
+      check('타임라인 막대는 그 행의 공개 주소로 간다', barHref === `/p/${token}/${ids['가']}`, barHref)
+      const tlNext = await evaluate(`document.querySelector('[data-testid="public-window-next"]')?.getAttribute('href') ?? ''`)
+      const tlPrev = await evaluate(`document.querySelector('[data-testid="public-window-prev"]')?.getAttribute('href') ?? ''`)
+      check('★ 타임라인 다음 · 이전 링크는 창을 한 화면씩 옮긴다', tlNext === `/p/${token}?from=2031-04-12` && tlPrev === `/p/${token}?from=2031-01-18`, `${tlPrev} · ${tlNext}`)
+      await send('Page.navigate', { url: `${BASE}${tlNext}` })
+      check('★ 다음 창(4/12~)에는 5/01 행의 막대만', await waitFor(`${barsJs} === '다'`, 15000), await evaluate(barsJs))
+
+      // 날짜 속성이 없어지면 표 — 행은 그대로
+      await api('DELETE', `/data-sources/${db.dataSourceId}/properties/${due}`)
+      await openPublic('?from=2031-03-01')
+      const tableJs = `[...document.querySelectorAll('.pub-db-table [data-testid="public-db-row-link"]')].map((a) => a.textContent.trim()).sort().join(',')`
+      check('★ 날짜 속성이 없으면 표로 그린다(타임라인 상자 없음)',
+        await waitFor(`${tableJs} === '가,나,다' && !document.querySelector('[data-testid="public-db-timeline"]')`, 15000), await evaluate(tableJs))
+
+      await api('DELETE', `/pages/${db.id}/publish`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 속성 — 칸 · 고르개 (6g-2a · F-03-07)')) { try {
       // 속성 추가의 "사람" → 칸에서 Enter 로 고르개 → 이름으로 찾아 고르면 칩 · 서버 값 → × 로 빼면 빈 칸 → 행 화면에도 칩.
       const stamp = Date.now()

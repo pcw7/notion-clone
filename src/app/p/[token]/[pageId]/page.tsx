@@ -6,14 +6,16 @@
 
 import type { Metadata } from 'next'
 
+import { windowQueryOf } from '@/lib/publish/public-window'
+
 import { PublicPage, publicMetadata } from '../../public-page'
 
-export async function generateMetadata({ params }: PageProps<'/p/[token]/[pageId]'>): Promise<Metadata> {
+export async function generateMetadata({ params, searchParams }: PageProps<'/p/[token]/[pageId]'>): Promise<Metadata> {
   const { token, pageId } = await params
-  return publicMetadata(token, pageId)
+  return publicMetadata(token, pageId, windowQueryOf(await searchParams))
 }
 
-export default async function PublicSubPage({ params }: PageProps<'/p/[token]/[pageId]'>) {
+export default async function PublicSubPage({ params, searchParams }: PageProps<'/p/[token]/[pageId]'>) {
   const { token, pageId } = await params
-  return <PublicPage token={token} pageId={pageId} />
+  return <PublicPage token={token} pageId={pageId} win={windowQueryOf(await searchParams)} />
 }
