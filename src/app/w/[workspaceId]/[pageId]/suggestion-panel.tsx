@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { TextSelection } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 
-import { docSuggestions, type ResolveAction } from '@/lib/editor/suggestion-resolve'
+import { docSuggestions, formatChangeLabel, type ResolveAction } from '@/lib/editor/suggestion-resolve'
 import { KIND_LABEL, resolveInEditor, useSuggestionMeta } from './suggestion-actions'
 
 /** 미리보기 길이 — 메타 표의 preview 와 같다(앞 80자). */
@@ -126,11 +126,12 @@ export function SuggestionPanel({
                     <span className="flex-none text-xs text-neutral-500">{KIND_LABEL[s.kind]}</span>
                     <span
                       data-testid="suggestion-item-preview"
-                      className={`truncate ${s.kind === 'insert' ? 'text-green-700 underline dark:text-green-300' : s.kind === 'delete' ? 'text-red-700 line-through dark:text-red-300' : ''}`}
+                      className={`truncate ${s.kind === 'insert' ? 'text-green-700 underline dark:text-green-300' : s.kind === 'delete' ? 'text-red-700 line-through dark:text-red-300' : 'underline decoration-dotted'}`}
                     >
                       {preview === '' ? '(글 없음)' : preview}
                     </span>
                   </span>
+                  {s.kind === 'format' && <span className="text-xs text-neutral-500">{formatChangeLabel(view.state.doc, s.sid) ?? ''}</span>}
                   <span className="text-xs text-neutral-500">
                     {meta.name(s.sid, s.authorId)}
                     {stampOf(meta.createdAt(s.sid), now) === '' ? '' : ` · ${stampOf(meta.createdAt(s.sid), now)}`}

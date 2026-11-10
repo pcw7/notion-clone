@@ -444,12 +444,32 @@ for (const name of BOOLEAN_MARKS) {
 // (`collab/ydoc.ts` 머리말) — **이름 · attr 이 저장 포맷이다.** 셋 다 자기만 배제한다(같은 글자에 insert 와 delete 가 함께 설 수 있다
 // — 남이 넣자고 한 글을 지우자고 한다). `inclusive: false` — 끝에 붙여 친 글이 마크를 물려받지 않는다(모드가 꺼진 편집은 그냥 글).
 // parseDOM 이 없다 — 붙여넣은 HTML 이 남의 이름으로 제안을 만들 수 없다(글자만 들어온다). 맨 뒤에 둔다 — 마크 순서(겹칠 때의 안팎)는
-// 앞의 마크들 그대로다. 그리기는 `editor.css` 의 `.blk-suggest-*`.
+// 앞의 마크들 그대로다. 그리기는 `editor.css` 의 `.blk-suggest-*`. format 만 attr 이 둘 더 있다(SG-5a — 거절 · 원문이 되돌릴 서식).
 
 export const SUGGESTION_INSERT_MARK = 'suggestion_insert'
 export const SUGGESTION_DELETE_MARK = 'suggestion_delete'
-/** 서식 제안(SG-5) — 지금은 선언만 한다(이 마크가 든 문서도 읽힌다). */
+/** 서식 제안(SG-5a) — `{sid, author_id, added, removed}`. added · removed 는 그 범위에 더한 · 뺀 서식(`FormatEntry` 의 배열). */
 export const SUGGESTION_FORMAT_MARK = 'suggestion_format'
+
+/** 서식 제안이 다루는 마크(SG-5a) — 글자 서식 다섯과 색(글자색 · 배경색). 링크는 v1 밖이다. */
+export const FORMAT_SUGGESTION_MARKS: readonly string[] = [...BOOLEAN_MARKS, 'color']
+
+/** 서식 제안의 added · removed 한 칸 — 마크 이름과 attr. */
+export type FormatEntry = { readonly type: string; readonly attrs: Readonly<Record<string, unknown>> }
+
+export function isFormatEntry(value: unknown): value is FormatEntry {
+  if (typeof value !== 'object' || value === null) return false
+  const { type, attrs } = value as { type?: unknown; attrs?: unknown }
+  return typeof type === 'string' && FORMAT_SUGGESTION_MARKS.includes(type) && typeof attrs === 'object' && attrs !== null && !Array.isArray(attrs)
+}
+
+/** 협업 참여자가 쓴 값이다 — `FormatEntry` 의 배열이 아니면 JSON 읽기 · `Node.check` 가 거부한다. */
+const formatList = {
+  default: [] as FormatEntry[],
+  validate: (value: unknown): void => {
+    if (!Array.isArray(value) || !value.every(isFormatEntry)) throw new RangeError('서식 제안의 added · removed 는 {type, attrs} 의 배열이다')
+  },
+}
 
 const SUGGESTION_KINDS = [
   [SUGGESTION_INSERT_MARK, 'insert'],
@@ -460,7 +480,11 @@ const SUGGESTION_KINDS = [
 for (const [name, kind] of SUGGESTION_KINDS) {
   marks[name] = {
     // 협업 참여자는 Y.Doc 에 무엇이든 쓸 수 있다 — 문자열이 아니면 마크를 만들지 않는다(읽기는 서식만 뺀다 · `ydoc.ts`)
-    attrs: { sid: { validate: 'string' }, author_id: { validate: 'string' } },
+    attrs: {
+      sid: { validate: 'string' },
+      author_id: { validate: 'string' },
+      ...(kind === 'format' ? { added: formatList, removed: formatList } : {}),
+    },
     inclusive: false,
     toDOM: (mark) => [
       'span',

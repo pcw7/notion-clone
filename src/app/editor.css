@@ -1989,6 +1989,14 @@ span.blk-equation {
   text-decoration-line: line-through;
   text-decoration-color: var(--block-text-red);
 }
+/* 서식 제안(SG-5a) — 바뀐 서식이 그대로 보이게 글자색은 두고 초록 점선 밑줄만 */
+.blk-suggest-format {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--block-text-green);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
 
 /*
   멘션 칩 — F-07-08 (코멘트 5b조각).

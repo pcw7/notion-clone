@@ -5,6 +5,7 @@
  *
  *   ① **수락** — insert 는 마크만 뗀다(글은 남는다) · delete 는 그 글을 지운다 · format 은 마크만 뗀다
  *   ② **거절** — insert 는 그 글을 지운다 · delete 는 마크만 뗀다(글은 남는다) · format 은 마크만 뗀다
+ *   ②-1 **서식 제안**(SG-5a) — 수락은 마크만(바뀐 서식이 남는다) · 거절은 더한 것을 떼고 뺀 것을 다시 건다 · 모두 거절에도 · 바꾼 것을 한 줄로
  *   ③ **그 sid 만** — 다른 sid 의 마크 · 이웃 글 · 다른 블록은 그대로 · 한 글자에 두 제안이 서면 사라지는 쪽이 이긴다
  *   ④ **한 트랜잭션**(S9) — 여러 sid(모두 수락 · 모두 거절)도 트랜잭션 하나 · Y.Doc 에는 update 하나 · 없는 sid 면 null
  *   ⑤ **제안 모드가 비켜 간다** — 켜 둔 채 보내도 다시 쓰거나 막지 않는다
@@ -26,7 +27,7 @@ import { BODY_FRAGMENT, readBodyPm } from '../collab/ydoc.ts'
 import { docToPm } from './pm-adapter.ts'
 import { blockSchema } from './schema.ts'
 import { setSuggestionMode, suggestionModePlugin, suggestTransaction } from './suggestion-mode.ts'
-import { docSuggestions, resolveSuggestionsIn, resolveSuggestionTransaction, type ResolveAction } from './suggestion-resolve.ts'
+import { docSuggestions, formatChangeLabel, resolveSuggestionsIn, resolveSuggestionTransaction, type ResolveAction } from './suggestion-resolve.ts'
 
 const ME = randomUUID()
 const OTHER = randomUUID()
@@ -115,6 +116,64 @@ describe('② 거절', () => {
   test('format 은 마크만 뗀다', () => {
     const state = resolve(stateWith([['글', [fmt('f')]]]), ['f'], 'reject')
     assert.deepEqual(runsOf(state.doc, B1), ['글'])
+  })
+})
+
+// ── ②-1 서식 제안 (SG-5a) ─────────────────────────────────────────────
+
+describe('②-1 서식 제안의 수락 · 거절 (SG-5a)', () => {
+  const ITALIC = blockSchema.marks.italic!
+  const COLOR = blockSchema.marks.color!
+  const entry = (m: Mark) => ({ type: m.type.name, attrs: { ...m.attrs } })
+  const change = (sid: string, added: readonly Mark[], removed: readonly Mark[] = []): Mark =>
+    FORMAT.create({ sid, author_id: ME, added: added.map(entry), removed: removed.map(entry) })
+  /** 글 조각의 서식 — `글:서식+…`(제안 마크는 `F:sid`). */
+  const formatsOf = (doc: PmNode): string[] => {
+    const out: string[] = []
+    doc.resolve(textStart(doc, B1)).parent.forEach((node) => {
+      const names = node.marks.map((m) => (m.type === FORMAT ? `F:${String(m.attrs.sid)}` : m.type === COLOR ? `color=${String(m.attrs.color)}` : m.type.name))
+      out.push(`${node.text ?? ''}:${names.join('+')}`)
+    })
+    return out
+  }
+  const red = COLOR.create({ color: 'red' })
+  const blue = COLOR.create({ color: 'blue' })
+  // 굵게를 더한 글 · 기울임을 뺀 글 · 빨강을 파랑으로 바꾼 글 · 남의 손이 닿지 않은 글
+  const before = (): EditorState =>
+    stateWith([
+      ['가', [BOLD.create(), change('a', [BOLD.create()])]],
+      ['나', [change('b', [], [ITALIC.create()])]],
+      ['다', [blue, change('c', [blue], [red])]],
+      ['라'],
+    ])
+
+  test('★ 수락은 format 마크만 뗀다 — 바뀐 서식이 남는다', () => {
+    assert.deepEqual(formatsOf(resolve(before(), ['a', 'b', 'c'], 'accept').doc), ['가:bold', '나:', '다:color=blue', '라:'])
+  })
+
+  test('★ 거절은 더한 서식을 떼고 뺀 서식을 다시 건 뒤 마크를 뗀다 — 색은 원래 색으로', () => {
+    assert.deepEqual(formatsOf(resolve(before(), ['a', 'b', 'c'], 'reject').doc), ['가:', '나:italic', '다:color=red', '라:'])
+  })
+
+  test('그 sid 만 — 거절한 서식 제안 옆의 다른 서식 제안은 그대로 · 모두 거절은 한 트랜잭션에 서식 제안까지', () => {
+    assert.deepEqual(formatsOf(resolve(before(), ['a'], 'reject').doc), ['가:', '나:F:b', '다:color=blue+F:c', '라:'])
+    const all = new Set(docSuggestions(before().doc).map((s) => s.sid))
+    const tr = resolveSuggestionTransaction(before(), all, 'reject')!
+    assert.deepEqual(formatsOf(before().apply(tr).doc), ['가:', '나:italic', '다:color=red', '라:'])
+  })
+
+  test('★ 바꾼 것을 한 줄로 — 더함 · 뺌 · 바꿈(sid 의 조각을 모은다) · 그 sid 의 서식 제안이 없으면 null', () => {
+    const state = stateWith([
+      ['가', [BOLD.create(), ITALIC.create(), change('m', [BOLD.create(), ITALIC.create()])]],
+      ['나', [ITALIC.create(), change('m', [ITALIC.create()], [blockSchema.marks.underline!.create()])]],
+      ['다', [blue, change('c', [blue], [red])]],
+      ['라', [COLOR.create({ color: 'yellow_background' }), change('g', [COLOR.create({ color: 'yellow_background' })])]],
+      ['마', [ins('i')]],
+    ])
+    assert.equal(formatChangeLabel(state.doc, 'm'), '굵게 · 기울임 더함, 밑줄 뺌')
+    assert.equal(formatChangeLabel(state.doc, 'c'), '글자색 바꿈')
+    assert.equal(formatChangeLabel(state.doc, 'g'), '배경색 더함')
+    assert.equal(formatChangeLabel(state.doc, 'i'), null)
   })
 })
 
