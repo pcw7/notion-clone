@@ -58,6 +58,7 @@ import { emojiMenuPlugin } from './emoji-menu.ts'
 import { pasteUrlPlugin } from './paste-url.ts'
 import type { EditorDoc } from './document.ts'
 import { presencePlugin } from './presence-plugin.ts'
+import { SUGGEST_BLOCK_MESSAGE, suggestionModePlugin, suggestTransaction } from './suggestion-mode.ts'
 import type { LocalPresence } from '../collab/presence.ts'
 
 export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
@@ -68,6 +69,10 @@ export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
   readonly breadcrumbTrail?: () => BreadcrumbTrail | null
   /** 접속자 표시(AW-1) — 내 자리(캐럿의 블록 · 고른 블록 · 모드)가 바뀔 때. 없으면(검사 · 미리보기) 알리지 않는다. */
   readonly onLocalPresence?: (local: LocalPresence) => void
+  /** 오류가 아닌 짧은 안내 — 제안 모드(SG-1)가 막은 편집의 까닭. 없으면 조용히 막는다. */
+  readonly onNotice?: (message: string) => void
+  /** 다른 참여자 · 되돌리기가 Y.Doc 에서 가져온 트랜잭션인가 — 제안 모드가 다시 쓰지 않는다(협업 편집기가 준다). */
+  readonly isRemoteChange?: (tr: Transaction) => boolean
 }
 
 export type CreateEditorOptions = {
@@ -120,6 +125,8 @@ function clipboardHtml(blocks: readonly EditorBlock[]): string {
  */
 export function editingPlugins(deps: EditorDeps): Plugin[] {
   return [
+    // 제안 모드(SG-1) — 입력 규칙보다 앞이다: 켜진 동안 친 글은 `# ` · `**` 까지 글로 제안한다(`suggestion-mode.ts`).
+    suggestionModePlugin(),
     // 순서: 입력 규칙이 슬래시 메뉴보다 앞이어야 `# ` 같은 접두사가 먼저 잡힌다.
     inputRulesPlugin(),
     slashMenuPlugin(),
@@ -198,8 +205,14 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     nodeViews: createNodeViews(options.deps),
     dispatchTransaction(tr) {
       const self = view ?? (this as unknown as EditorView)
-      self.updateState(self.state.apply(tr))
-      options.onTransaction(self, tr)
+      // 제안 모드(SG-1) — 켜져 있으면 편집을 제안으로 다시 쓰거나 막는다(입력의 길이 많아 결과를 여기 한 곳에서 본다). 꺼졌으면 그대로.
+      const outcome = suggestTransaction(self.state, tr, options.deps.isRemoteChange)
+      if ('blocked' in outcome) {
+        options.deps.onNotice?.(SUGGEST_BLOCK_MESSAGE[outcome.blocked])
+        return
+      }
+      self.updateState(self.state.apply(outcome.tr))
+      options.onTransaction(self, outcome.tr)
     },
     attributes: {
       class: 'blk-editor',

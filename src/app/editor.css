@@ -1971,6 +1971,26 @@ span.blk-equation {
 }
 
 /*
+  제안 편집 — SG-1 (F-05-12 · 판결 U-2 · 정본 [보강 SG-1] ③).
+
+  마크가 그린다(`schema.ts` 의 `suggestion_*` · 본문에 있으므로 모드가 꺼진 사람에게도 보인다). insert 는 초록 밑줄 · delete 는 빨간
+  취소선. 색은 블록 글자색 토큰이다 — 어두운 테마 · 고대비가 값을 바꿔 끼운다. 둘이 겹치면(남이 넣자고 한 글을 지우자고 한다) 바깥의
+  밑줄과 안의 취소선이 함께 그어진다.
+*/
+.blk-suggest-insert {
+  color: var(--block-text-green);
+  text-decoration-line: underline;
+  text-decoration-color: var(--block-text-green);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+.blk-suggest-delete {
+  color: var(--block-text-red);
+  text-decoration-line: line-through;
+  text-decoration-color: var(--block-text-red);
+}
+
+/*
   멘션 칩 — F-07-08 (코멘트 5b조각).
   노드에는 id 뿐이고 이름은 노드 뷰가 권한으로 거른 맵에서 그린다(`node-views.ts`). 볼 수 없는 페이지는 자리만.
 */

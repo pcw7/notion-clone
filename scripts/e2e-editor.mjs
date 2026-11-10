@@ -717,6 +717,8 @@ async function main() {
       h: [72, 'KeyH'],
       // 페이지 안 찾기(10b) — `Mod+F`.
       f: [70, 'KeyF'],
+      // 제안 모드(SG-1) — `Mod+Shift+Alt+S`.
+      s: [83, 'KeyS'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -7447,6 +7449,146 @@ async function main() {
       check('★ 멘션된 페이지에 백링크가 뜬다',
         await waitFor(`(document.querySelector('details[aria-label="백링크"]')?.textContent ?? '').includes('멘션하는문서')`, 8000),
         await evaluate(`document.querySelector('details[aria-label="백링크"]')?.textContent ?? '(없음)'`))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('제안 모드 — 편집기 (SG-1 · F-05-12)')) { try {
+      // 페이지 메뉴로 켜면 머리에 표시가 서고, 친 글은 초록 밑줄(insert) · 원래 글의 Backspace 는 지우지 않고 빨간 취소선(delete) · 내가 넣은
+      // 글 안의 Backspace 는 진짜 지운다 · Enter(블록 나누기)는 막고 알린다 · 새로 고쳐도 마크가 남는다(서버의 Y.Doc 에서 왔다) · 끄고 치면
+      // 그냥 글 · 보기만 하는 게스트에게는 항목이 없다(마크는 그에게도 보인다 — 브라우저 세션을 게스트로 바꾸고 끝에 되돌린다).
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const sgBlock = randomUUID()
+      const sgPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `제안 대상 ${stamp}` }),
+      })).json()).page.id
+      await saveBody(sgPage, {
+        blocks: [{ id: sgBlock, type: 'paragraph', title: [textRun('원래글')], properties: {}, format: {}, children: [] }],
+      })
+      const { loadDocState } = await import(new URL('../src/lib/collab/doc-store.ts', import.meta.url).href)
+      const { readBodyPm } = await import(new URL('../src/lib/collab/ydoc.ts', import.meta.url).href)
+
+      const sel = `[data-block-id="${sgBlock}"] > *:first-child`
+      const blockText = () => evaluate(`document.querySelector('${sel}')?.textContent ?? '(없음)'`)
+      const blockHtml = () => evaluate(`document.querySelector('${sel}')?.innerHTML ?? '(없음)'`)
+      /** 블록의 insert · delete 마크 글이 이것이 될 때까지 — 동기화 · 다시 그리기를 기다린다. */
+      const marksAre = (inserted, deleted) => waitFor(`(() => {
+        const of = (kind) => [...document.querySelectorAll('${sel} [data-suggestion="' + kind + '"]')].map((e) => e.textContent).join('|')
+        return of('insert') === ${JSON.stringify(inserted)} && of('delete') === ${JSON.stringify(deleted)}
+      })()`, 5000)
+      const pillShown = () => evaluate(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`)
+      /** 서버의 본문(Y.Doc · 로그)에 있는 제안 마크 — `종류:글`. */
+      const serverMarks = async () => {
+        const state = await loadDocState(ctx, sgPage)
+        if (!state.ok) return '(없음)'
+        const parts = []
+        readBodyPm(state.value.ydoc).descendants((node) => {
+          for (const m of node.marks) if (m.type.name.startsWith('suggestion_')) parts.push(`${m.type.name.slice('suggestion_'.length)}:${node.text}`)
+          return true
+        })
+        return parts.join('|')
+      }
+      const caretToEnd = async () => {
+        const box = await line(sgBlock)
+        await click(box.x + 4, box.y + box.h / 2)
+        await afterFocusTimer()
+        await key('End')
+        await sleep(80)
+      }
+      const online = () => waitFor(`!!document.querySelector('${sel}') && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sgPage}` })
+      await online()
+
+      // ① 페이지 메뉴로 켠다 — 서버가 그린 단추는 하이드레이션 전이면 눌러도 그대로다(켜질 때까지 다시 누른다)
+      let turnedOn = false
+      for (let i = 0; i < 4 && !turnedOn; i += 1) {
+        await clickSelector('[data-testid="suggestion-mode-toggle"]')
+        turnedOn = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 2000)
+      }
+      check('★ 페이지 메뉴의 "제안 모드" 를 켜면 머리에 표시가 서고 편집기 뿌리가 data-suggesting 이다',
+        turnedOn && (await waitFor(`document.querySelector('.blk-editor')?.dataset.suggesting === 'true'`, 3000)),
+        await evaluate(`String(document.querySelector('[data-testid="suggestion-mode-toggle"]')?.getAttribute('aria-checked')) + ' / ' + String(document.querySelector('.blk-editor')?.dataset.suggesting)`))
+      await key('Escape')
+
+      // ② 친 글 — insert 마크(sid 와 함께)
+      await caretToEnd()
+      await typeText('새 글')
+      check('★ 친 "새 글" 은 data-suggestion="insert" 로 들어간다',
+        (await marksAre('새 글', '')) && (await evaluate(`!!document.querySelector('${sel} [data-suggestion="insert"][data-sid]')`)),
+        await blockHtml())
+
+      // ③ 내가 넣은 글 안의 Backspace — 진짜 지운다(내 제안 고치기)
+      await key('Backspace')
+      check('★ 내가 넣은 글 안의 Backspace 는 그 글을 지운다', (await marksAre('새 ', '')) && (await blockText()) === '원래글새 ', await blockHtml())
+
+      // ④ 원래 글의 Backspace — 지우지 않고 줄을 긋는다 · 이어 지운 것은 한 제안(한 span)이다
+      await key('ArrowLeft')
+      await key('ArrowLeft')
+      await sleep(80)
+      await key('Backspace')
+      await key('Backspace')
+      check('★ 원래 글의 Backspace 는 지우지 않고 data-suggestion="delete" 로 긋는다 — 글은 DOM 에 그대로다',
+        (await marksAre('새 ', '래글')) && (await blockText()) === '원래글새 ',
+        await blockHtml())
+
+      // ⑤ Enter(블록 나누기) — 막고 알린다(S10)
+      const blockCount = () => evaluate(`document.querySelectorAll('.blk-editor [data-block-id]').length`)
+      const countBefore = await blockCount()
+      await key('Enter')
+      check('★ Enter(블록 나누기)는 막고 알린다 — 블록 수 그대로',
+        (await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('제안 모드에서는'))`, 3000))
+          && (await blockCount()) === countBefore && (await blockText()) === '원래글새 ',
+        await evaluate(`[...document.querySelectorAll('[role="status"]')].map((e) => e.textContent).join(' / ')`))
+
+      // ⑥ 새로 고쳐도 남는다 — 서버의 Y.Doc 에 쌓인 것을 받는다
+      let onServer = ''
+      for (let i = 0; i < 40 && onServer !== 'delete:래글|insert:새 '; i += 1) {
+        onServer = await serverMarks()
+        if (onServer !== 'delete:래글|insert:새 ') await sleep(250)
+      }
+      check('서버의 본문(Y.Doc)에 마크가 쌓였다', onServer === 'delete:래글|insert:새 ', onServer)
+      await send('Page.reload')
+      await online()
+      check('★ 새로 고친 뒤에도 마크가 남는다 — 서버에서 받은 본문이다', await marksAre('새 ', '래글'), await blockHtml())
+      check('새로 고치면 제안 모드는 꺼져 있다 — 저장하지 않는 화면 상태다', !(await pillShown()))
+
+      // ⑦ 단축키로 켜고 머리의 "끄기" 로 끈 뒤 치면 그냥 글
+      let byShortcut = false
+      for (let i = 0; i < 4 && !byShortcut; i += 1) {
+        await key('s', MOD | SHIFT | 1) // Alt = 1
+        byShortcut = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 2000)
+      }
+      check('Ctrl/Cmd+Shift+Alt+S 로도 켠다', byShortcut)
+      check('머리의 "끄기" 로 끈다',
+        (await clickSelector('[data-testid="suggestion-mode-pill"] button'))
+          && (await waitFor(`!document.querySelector('[data-testid="suggestion-mode-pill"]') && document.querySelector('.blk-editor')?.dataset.suggesting !== 'true'`, 3000)))
+      await caretToEnd()
+      await typeText('끝')
+      check('★ 끄고 친 글은 마크 없이 들어간다',
+        (await waitFor(`(document.querySelector('${sel}')?.textContent ?? '') === '원래글새 끝'`, 3000)) && (await marksAre('새 ', '래글')),
+        await blockHtml())
+
+      // ⑧ 보기만 하는 게스트 — 항목이 없다 · 마크는 보인다
+      const viewer = await joinAs(workspaceId, await createUser(`제안 손님 ${stamp}`), 'guest')
+      const granted = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/access`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' }),
+      })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        check('전제 — 게스트는 이 페이지를 읽기로 받았다', granted.ok, String(granted.status))
+        await browseAs(viewer.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sgPage}` })
+        await waitFor(`!!document.querySelector('${sel}') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'`, 15000)
+        check('★ 보기만 하는 게스트에게는 "제안 모드" 항목이 없다',
+          await evaluate(`!!document.querySelector('[data-testid="page-menu"]') && !document.querySelector('[data-testid="suggestion-mode-toggle"]')`))
+        check('제안 마크는 모드가 없는 사람에게도 보인다', await marksAre('새 ', '래글'), await blockHtml())
+      } finally {
+        await browseAs(session)
+      }
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {

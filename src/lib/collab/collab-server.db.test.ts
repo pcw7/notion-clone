@@ -26,6 +26,7 @@
  *   ⑮ **행 투영은 창에서 한 번이다**(5d) — 편집은 곧바로 퍼지고 행 · version 은 창이 열린 동안 그대로다. 창이 지나거나 서버를
  *      내리면 밀린 편집 전부를 한 번에 투영한다(version 한 번)
  *   ⑯ **편집 확인 요청에는 앞선 update 가 쌓인 뒤에 답하고, 읽기 전용 연결에는 확인하지 않는다고 답한다**(6c · `collab-protocol.ts`)
+ *   ⑰ **제안 마크(SG-1)는 쌓이고 퍼지고 다시 읽어도 sid · author 그대로다** — 정규화가 떨구지 않고 행 투영은 글을 싣는다
  *
  * ⑩ 은 커밋 신호를 붙잡아 두었다가 놓아 "신호가 늦게 온다"를 만든다(`holdableFeed`). ④ 도 신호를 붙잡는다 — 권한 신호가 먼저
  * 닫으면 "쓰기마다 다시 묻는다"를 가려낼 수 없다.
@@ -80,7 +81,7 @@ import { collabDocumentName } from './collab-server.ts'
 import { confirmationRequest, parseConfirmationReply, type ConfirmationReply } from './collab-protocol.ts'
 import { loadDocState } from './doc-store.ts'
 import { createProjectionScheduler } from './projection-scheduler.ts'
-import { readBodyYDoc, type BodyRead } from './ydoc.ts'
+import { readBodyPm, readBodyYDoc, type BodyRead } from './ydoc.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
@@ -956,5 +957,58 @@ describe('⑮ 등록할 때의 awareness 도 첫 판정 뒤로 (10n-56)', () => 
     assert.equal(last()?.pageId, pageId)
     hider.provider.destroy()
     await waitFor('나간 사람은 빠진다', () => last()?.viewers.has(member.userId) === false && last()?.viewers.get(owner.userId) === true)
+  })
+})
+
+// ── ⑰ 제안 마크 (SG-1) ───────────────────────────────────────────────
+
+describe('⑰ 제안 마크 (SG-1 · 판결 U-2)', () => {
+  /** 본문의 제안 마크 — `글:종류:sid:author` (서버 · 참여자의 Y.Doc 을 같은 읽기로 본다). */
+  const suggestionsOf = (ydoc: Y.Doc): string[] => {
+    const out: string[] = []
+    readBodyPm(ydoc).descendants((node) => {
+      for (const mark of node.marks) {
+        if (mark.type.name.startsWith('suggestion_')) out.push(`${node.text ?? node.type.name}:${mark.type.name}:${mark.attrs.sid}:${mark.attrs.author_id}`)
+      }
+      return true
+    })
+    return out
+  }
+
+  test('★ 제안 마크를 단 편집이 로그에 쌓이고 다른 참여자에게 가고 · 서버를 다시 띄워 로그에서 읽어도 sid · author 가 그대로다 · 행 투영은 글을 싣는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const server = await startServer(t)
+    const [a, b] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(member))]
+    await ready(a, b)
+    const [ins, del] = [randomUUID(), randomUUID()]
+
+    // "원" 에 줄을 긋자고 하고 끝에 "새" 를 넣자고 한다 — 편집기가 Y.Doc 에 쓰는 것과 같은 쓰기
+    edit(a.doc, (tr, doc) => {
+      const at = findBlock(doc, ids[0]).pos + 2
+      tr.addMark(at, at + 1, blockSchema.marks.suggestion_delete!.create({ sid: del, author_id: owner.userId }))
+      tr.insert(at + 2, blockSchema.text('새', [blockSchema.marks.suggestion_insert!.create({ sid: ins, author_id: owner.userId })]))
+    })
+    const expected = [`원:suggestion_delete:${del}:${owner.userId}`, `새:suggestion_insert:${ins}:${owner.userId}`]
+    await waitFor('다른 참여자가 마크까지 받는다', () => suggestionsOf(b.doc).length === 2)
+    assert.deepEqual(suggestionsOf(b.doc), expected)
+
+    // 로그 · 투영 — 정규화가 고칠 것이 없고(마크를 떨구지 않는다) 행은 글을 싣는다(원문 보이기는 SG-2)
+    const stored = await loadDocState(owner.ctx, pageId)
+    assert.ok(stored.ok)
+    assert.deepEqual(suggestionsOf(stored.value.ydoc), expected)
+    assert.deepEqual((await storedBody(owner, pageId)).fixes, [])
+    await server.projector.flush()
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : textsOf(rows.doc), ['원문새'])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+
+    a.provider.destroy()
+    b.provider.destroy()
+    await server.stop()
+    const again = await startServer(t)
+    const c = join(t, again.url, name, cookieOf(member))
+    await ready(c)
+    assert.deepEqual(suggestionsOf(c.doc), expected, '다시 띄운 서버가 로그에서 마크를 잃었다')
   })
 })
