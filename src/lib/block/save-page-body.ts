@@ -319,6 +319,8 @@ export async function savePageBody(
     // 건너뛰므로 바뀐 블록만 쓴다 — 그 결과를 투영하고, 받아들여지면 로그에 쌓는다(`body-write.ts`).
     const body = await openPageBody(tx, ctx, pageId, 'editor')
     // 모르는 타입은 옮기기 전에 감싼다 — ProseMirror 노드에는 원래 타입 이름을 담을 곳이 없다(`wrapUnknownTypes`).
+    // 받은 문서(계약 런)에는 제안 마크가 없다 — 통째로 쓰면 걸린 제안이 모두 **거절한 것과 같아진다**(insert 글은 지워지고 delete 마크는 떨어진다).
+    // 행에서 읽은 문서를 되쓰면 그대로 원문이다(SG-2 · 행은 수락 전 원문). 그래서 이 길은 검사 · e2e 준비에만 남긴다(머리말).
     const next = docToPm(wrapUnknownTypes(doc))
     body.change((tr) => {
       tr.replaceWith(0, tr.doc.content.size, next.content)

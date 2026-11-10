@@ -99,7 +99,7 @@ describe('① 왕복', () => {
     const root = ydoc.getXmlFragment(BODY_FRAGMENT).get(0) as Y.XmlElement
     assert.equal(root.nodeName, 'blockGroup')
     assert.equal(root.length, 1)
-    assert.deepEqual(readBodyYDoc(ydoc, PAGE), { doc: { blocks: [] }, fixes: [] })
+    assert.deepEqual(readBodyYDoc(ydoc, PAGE), { doc: { blocks: [] }, fixes: [], suggestions: [] })
   })
 })
 

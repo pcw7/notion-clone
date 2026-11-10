@@ -975,7 +975,7 @@ describe('⑰ 제안 마크 (SG-1 · 판결 U-2)', () => {
     return out
   }
 
-  test('★ 제안 마크를 단 편집이 로그에 쌓이고 다른 참여자에게 가고 · 서버를 다시 띄워 로그에서 읽어도 sid · author 가 그대로다 · 행 투영은 글을 싣는다', async (t) => {
+  test('★ 제안 마크를 단 편집이 로그에 쌓이고 다른 참여자에게 가고 · 서버를 다시 띄워 로그에서 읽어도 sid · author 가 그대로다 · 행 투영은 수락 전 원문이고 메타 표에 open 이 선다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
     const server = await startServer(t)
@@ -993,15 +993,24 @@ describe('⑰ 제안 마크 (SG-1 · 판결 U-2)', () => {
     await waitFor('다른 참여자가 마크까지 받는다', () => suggestionsOf(b.doc).length === 2)
     assert.deepEqual(suggestionsOf(b.doc), expected)
 
-    // 로그 · 투영 — 정규화가 고칠 것이 없고(마크를 떨구지 않는다) 행은 글을 싣는다(원문 보이기는 SG-2)
+    // 로그 · 투영 — 정규화가 고칠 것이 없고(마크를 떨구지 않는다) 행은 수락 전 원문이다(SG-2 — 넣자는 "새" 는 없고 긋자는 "원" 은 있다)
     const stored = await loadDocState(owner.ctx, pageId)
     assert.ok(stored.ok)
     assert.deepEqual(suggestionsOf(stored.value.ydoc), expected)
     assert.deepEqual((await storedBody(owner, pageId)).fixes, [])
     await server.projector.flush()
     const rows = await loadPageBody(owner.ctx, pageId as never)
-    assert.deepEqual(rows === null ? null : textsOf(rows.doc), ['원문새'])
+    assert.deepEqual(rows === null ? null : textsOf(rows.doc), ['원문'])
     await assertBodyMatchesYDoc(owner.ctx, pageId)
+    // 메타 표(SG-2) — 협업 서버의 투영 창이 같은 트랜잭션에서 sid 마다 open 을 세운다
+    const metas = await query<{ id: string; kind: string; author_id: string; preview: string; state: string }>(
+      `SELECT id, kind, author_id, preview, state FROM suggestion WHERE page_id = $1 ORDER BY kind`,
+      [pageId],
+    )
+    assert.deepEqual(
+      metas.map((m) => [m.id, m.kind, m.author_id, m.preview, m.state]),
+      [[del, 'delete', owner.userId, '원', 'open'], [ins, 'insert', owner.userId, '새', 'open']],
+    )
 
     a.provider.destroy()
     b.provider.destroy()

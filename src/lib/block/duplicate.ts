@@ -271,6 +271,7 @@ export async function duplicateSubtree(
   ])
   const bodies = new Map<string, EditorDoc>()
   for (const row of ordered) {
+    // 읽기는 수락 전 원문이다(SG-2) — 사본에는 걸린 제안이 따라가지 않는다(제안은 원본 페이지의 것 · 행 · 공개 화면과 같은 글)
     bodies.set(row.id, (await openPageBody(tx, ctx, row.id)).read())
   }
 

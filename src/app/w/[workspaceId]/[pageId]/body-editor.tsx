@@ -68,7 +68,7 @@ import { createCollabEditorState } from '@/lib/collab/collab-editor'
 import { openCollabConnection, type CollabConnection, type CollabSnapshot, type DiscardedDoc } from '@/lib/collab/collab-connection'
 import { decodeBodyState } from '@/lib/collab/collab-protocol'
 import { openPendingEditStore, pendingEditKey } from '@/lib/collab/pending-store'
-import { BODY_FRAGMENT, readBodyYDoc } from '@/lib/collab/ydoc'
+import { BODY_FRAGMENT, readBodyYDocWithSuggestions } from '@/lib/collab/ydoc'
 import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
 import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
 import { uploadFileOf, uploadImageFile } from '@/lib/file/upload-client'
@@ -1720,7 +1720,7 @@ export function BodyEditor({
         onPresence: (states, selfClientId) => setPeers(presencePeers(states, selfClientId, userId)),
         onDiscarded: (discarded: DiscardedDoc) => {
           if (!discarded.unconfirmed) return
-          const text = plainTextForBlocks(readBodyYDoc(discarded.doc, pageId).doc.blocks)
+          const text = plainTextForBlocks(readBodyYDocWithSuggestions(discarded.doc, pageId).blocks)
           setStatus({
             kind: 'error',
             message: '서버가 받지 못한 편집이 있어 본문을 다시 불러왔습니다. 아래에서 내용을 확인해 복사해 주세요.',

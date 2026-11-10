@@ -83,6 +83,8 @@ const EXPECTED_TABLES = [
   'form_view', 'form_question', 'form_submission_meta',
   // 커스텀 이모지 7c-1조각 (0096)
   'custom_emoji',
+  // 제안 메타 SG-2조각 (0140)
+  'suggestion',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -5616,6 +5618,38 @@ try {
     const { rows } = await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = 'files' ORDER BY order_idx`)
     if (rows.map((r) => `${r.operator}:${r.arity}`).join(',') === 'is_empty:0,is_not_empty:0') ok('★ 파일 연산자 — 비어 있음 · 비어 있지 않음')
     else fail(`파일 연산자가 어긋났다: ${JSON.stringify(rows)}`)
+  }
+
+  console.log('\n[98] 제안 메타 — 종류 · 상태 · 정한 사람은 수락 · 거절만 · 미리보기 80자 · 페이지와 함께 지워진다 (0140 / §3.7 U-2 · [보강 SG-1] ④ · SG-2조각)')
+  {
+    const sgWs = randomUUID()
+    const sgPage = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '제안 검증', 'local', now())`, [sgWs])
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [sgPage, sgWs],
+    )
+    const put = `INSERT INTO suggestion (id, page_id, author_id, kind, preview, state, resolved_by, resolved_at, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())`
+    await client.query(put, [randomUUID(), sgPage, userId, 'insert', '넣자는 글', 'open', null, null])
+    await client.query(put, [randomUUID(), sgPage, userId, 'delete', 'x'.repeat(80), 'stale', null, null])
+    await client.query(put, [randomUUID(), sgPage, userId, 'format', null, 'accepted', userId, new Date()])
+    ok('open · stale(정한 사람 없음) · accepted(정한 사람 · 시각) · 미리보기 80자 — 정상 경로가 통과한다')
+    await mustReject('★ 모르는 종류(move — 구조 제안은 S10 밖)', put, [randomUUID(), sgPage, userId, 'move', null, 'open', null, null])
+    await mustReject('★ 모르는 상태(pending)', put, [randomUUID(), sgPage, userId, 'insert', null, 'pending', null, null])
+    await mustReject('★ open 인데 정한 사람이 있다', put, [randomUUID(), sgPage, userId, 'insert', null, 'open', userId, new Date()])
+    await mustReject('★ stale 인데 정한 시각이 있다', put, [randomUUID(), sgPage, userId, 'insert', null, 'stale', null, new Date()])
+    await mustReject('★ rejected 인데 정한 사람이 없다', put, [randomUUID(), sgPage, userId, 'insert', null, 'rejected', null, new Date()])
+    await mustReject('★ accepted 인데 정한 시각이 없다', put, [randomUUID(), sgPage, userId, 'insert', null, 'accepted', userId, null])
+    await mustReject('★ 미리보기 81자', put, [randomUUID(), sgPage, userId, 'insert', 'x'.repeat(81), 'open', null, null])
+    await mustReject('★ 없는 페이지', put, [randomUUID(), randomUUID(), userId, 'insert', null, 'open', null, null])
+    await mustReject('★ 없는 사람', put, [randomUUID(), sgPage, randomUUID(), 'insert', null, 'open', null, null])
+    await client.query(`DELETE FROM block WHERE id = $1`, [sgPage])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM suggestion WHERE page_id = $1`, [sgPage])).rows[0].n
+    if (left === 0) ok('★ 페이지 행을 물리 삭제하면 그 제안 메타도 지워진다(CASCADE)')
+    else fail(`페이지를 지웠는데 제안 메타가 ${left}개 남았다`)
   }
 
   await client.query('ROLLBACK')

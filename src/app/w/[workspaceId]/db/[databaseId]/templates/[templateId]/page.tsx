@@ -52,7 +52,7 @@ import { loadPageRefLabels } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
-import { readBodyYDoc } from '@/lib/collab/ydoc'
+import { readBodyYDocWithSuggestions } from '@/lib/collab/ydoc'
 import { templateTrail } from '@/lib/block/breadcrumb'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
@@ -119,7 +119,7 @@ export default async function TemplatePage({
     relationPropertyIds.length === 0
       ? Promise.resolve({ labels: {}, icons: {} })
       : loadRelationLabels(ctx, relationIdsIn([template], relationPropertyIds)),
-    loadMentionLabels(ctx, mentionIdsOf(readBodyYDoc(state.value.ydoc, template.id).doc)),
+    loadMentionLabels(ctx, mentionIdsOf(readBodyYDocWithSuggestions(state.value.ydoc, template.id))),
   ])
 
   const titlePropertyId = recordColumns.find((c) => c.type === 'title')?.propertyId ?? null
