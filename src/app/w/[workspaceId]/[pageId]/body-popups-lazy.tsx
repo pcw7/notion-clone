@@ -14,3 +14,6 @@ export const EmojiPickerLazy = dynamic(() => import('./emoji-picker').then((m) =
 export const CodeLanguageMenuLazy = dynamic(() => import('./code-language-menu').then((m) => m.CodeLanguageMenu))
 export const CodeCaptionEditorLazy = dynamic(() => import('./code-caption-editor').then((m) => m.CodeCaptionEditor))
 export const ImageAltDialogLazy = dynamic(() => import('./image-alt-dialog').then((m) => m.ImageAltDialog))
+// 제안의 카드 · 목록(SG-3) — 마크에 올리거나 "제안 n개" 를 누른 뒤에야 선다
+export const SuggestionCardLazy = dynamic(() => import('./suggestion-card').then((m) => m.SuggestionCard))
+export const SuggestionPanelLazy = dynamic(() => import('./suggestion-panel').then((m) => m.SuggestionPanel))

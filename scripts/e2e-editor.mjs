@@ -7562,7 +7562,7 @@ async function main() {
       }
       check('Ctrl/Cmd+Shift+Alt+S 로도 켠다', byShortcut)
       check('머리의 "끄기" 로 끈다',
-        (await clickSelector('[data-testid="suggestion-mode-pill"] button'))
+        (await clickSelector('[data-testid="suggestion-mode-pill"] button[aria-label="제안 모드 끄기"]'))
           && (await waitFor(`!document.querySelector('[data-testid="suggestion-mode-pill"]') && document.querySelector('.blk-editor')?.dataset.suggesting !== 'true'`, 3000)))
       await caretToEnd()
       await typeText('끝')
@@ -7714,6 +7714,236 @@ async function main() {
       check('★ 내가 넣은 글을 지우면 그 제안은 stale — 목록에는 delete 하나만 남는다',
         remaining.map((s) => s.line).join('|') === onlyDelete && insertState === 'stale',
         `${JSON.stringify(remaining.map((s) => s.line))} · insert ${insertState}`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('제안 — 수락 · 거절 (SG-3 · F-05-12)')) { try {
+      // 제안 모드로 한 낱말을 넣고 두 낱말에 줄을 긋는다 → 넣자는 마크에 마우스를 올리면 카드(내 이름 · 수락 · 거절) → 수락하면 글은 남고 마크가
+      // 없다 · 메타 표는 accepted · 공개 화면(원문)에 그 낱말이 들어간다 · Mod+Z 한 번이면 마크가 돌아온다 → 긋자는 낱말 하나는 거절(글이 남는다 ·
+      // rejected) · 하나는 수락(글이 사라진다 · accepted) → 둘째 블록에 둘을 더 제안하고 페이지 메뉴의 "제안 n개" 목록에서 모두 수락(행이
+      // accepted · 마크가 없다) → 보기만 하는 게스트에게는 카드가 단추 없이 선다(브라우저 세션을 게스트로 바꾸고 끝에 되돌린다).
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const tag = stamp.toString(36)
+      const addWord = `넣음${tag}`
+      const keepWord = `거절${tag}`
+      const dropWord = `수락${tag}`
+      const secondWord = `둘째${tag}`
+      const addSecond = `더함${tag}`
+      const addGuest = `손님용${tag}`
+      const sgBlock = randomUUID()
+      const sgBlock2 = randomUUID()
+      const sgPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `제안 수락 ${stamp}` }),
+      })).json()).page.id
+      await saveBody(sgPage, {
+        blocks: [
+          { id: sgBlock, type: 'paragraph', title: [textRun(`원문 ${keepWord} ${dropWord}`)], properties: {}, format: {}, children: [] },
+          { id: sgBlock2, type: 'paragraph', title: [textRun(`다음 ${secondWord}`)], properties: {}, format: {}, children: [] },
+        ],
+      })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const myName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name
+
+      const selOf = (id) => `[data-block-id="${id}"] > *:first-child`
+      const sel = selOf(sgBlock)
+      const textOf = (id) => evaluate(`document.querySelector('${selOf(id)}')?.textContent ?? '(없음)'`)
+      const blockHtml = () => evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id] > *:first-child')].map((e) => e.innerHTML).join(' ‖ ')`)
+      /** 블록의 insert · delete 마크 글이 이것이 될 때까지. */
+      const marksAre = (id, inserted, deleted) => waitFor(`(() => {
+        const of = (kind) => [...document.querySelectorAll('${selOf(id)} [data-suggestion="' + kind + '"]')].map((e) => e.textContent).join('|')
+        return of('insert') === ${JSON.stringify(inserted)} && of('delete') === ${JSON.stringify(deleted)}
+      })()`, 5000)
+      const caretToEndOf = async (id) => {
+        const box = await line(id)
+        await click(box.x + 4, box.y + box.h / 2)
+        await afterFocusTimer()
+        await key('End')
+        await sleep(80)
+      }
+      /** 편집기의 그 종류 마크 중 글에 `word` 가 든 것의 sid. */
+      const sidOf = (kind, word) => evaluate(`[...document.querySelectorAll('.blk-editor [data-suggestion="${kind}"]')].find((e) => e.textContent.includes(${JSON.stringify(word)}))?.dataset.sid ?? null`)
+      const stateOf = async (id) => (id ? (await dbQuery(`SELECT state FROM suggestion WHERE id = $1`, [id]))[0]?.state : undefined) ?? '(없음)'
+      const pollState = async (id, want) => {
+        let got = ''
+        for (let i = 0; i < 60; i += 1) {
+          got = await stateOf(id)
+          if (got === want) break
+          await sleep(250)
+        }
+        return got
+      }
+      /** 이 sid 들의 행이 모두 open 이 될 때까지(투영) — 카드의 이름은 그 행에서 온다. */
+      const pollOpen = async (ids) => {
+        let got = []
+        for (let i = 0; i < 60; i += 1) {
+          got = await Promise.all(ids.map(stateOf))
+          if (got.every((s) => s === 'open')) break
+          await sleep(250)
+        }
+        return got
+      }
+      /** 비켜 섰다가 그 마크에 마우스를 올린다 — 그 sid 의 카드가 서기를 기다린다(카드는 지연 로드). */
+      const hoverMark = async (kind, word, sid) => {
+        await move(2, 2)
+        await sleep(300)
+        const box = await evaluate(`(() => {
+          const e = [...document.querySelectorAll('.blk-editor [data-suggestion="${kind}"]')].find((x) => x.textContent.includes(${JSON.stringify(word)}))
+          if (!e) return null
+          const r = e.getClientRects()[0]
+          return { x: r.x + Math.min(r.width / 2, 12), y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await move(box.x, box.y)
+        return waitFor(`!!document.querySelector('[data-testid="suggestion-card"] [data-card-sid="${sid}"]')`, 8000)
+      }
+      const cardText = () => evaluate(`document.querySelector('[data-testid="suggestion-card"]')?.textContent ?? '(카드 없음)'`)
+      /** 카드의 단추를 그 자리에서 누른다 — 굴리지 않는다(굴리면 마우스 아래가 바뀌어 카드가 접힌다). */
+      const clickCard = async (testid) => {
+        const box = await evaluate(`(() => { const e = document.querySelector('[data-testid="suggestion-card"] [data-testid="${testid}"]'); if (!e) return null
+          const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        return true
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sgPage}` })
+      await waitFor(`!!document.querySelector('${sel}') && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+      // 서버가 그린 단추는 하이드레이션 전이면 눌러도 그대로다 — 켜질 때까지 다시 누른다
+      let turnedOn = false
+      for (let i = 0; i < 4 && !turnedOn; i += 1) {
+        await clickSelector('[data-testid="suggestion-mode-toggle"]')
+        turnedOn = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 2000)
+      }
+      check('전제 — 제안 모드를 켰다', turnedOn)
+      await key('Escape')
+
+      // 끝에 " 넣음…" 을 넣고 · 그 앞 낱말 둘에 따로 줄을 긋는다(사이의 빈칸이 둘을 다른 sid 로 가른다)
+      await caretToEndOf(sgBlock)
+      await typeText(` ${addWord}`)
+      for (let i = 0; i < [...addWord].length + 1; i += 1) await key('ArrowLeft')
+      await sleep(80)
+      for (let i = 0; i < [...dropWord].length; i += 1) await key('Backspace')
+      await key('ArrowLeft')
+      await sleep(80)
+      for (let i = 0; i < [...keepWord].length; i += 1) await key('Backspace')
+      check('전제 — 넣자는 낱말 하나 · 긋자는 낱말 둘이 섰다', await marksAre(sgBlock, ` ${addWord}`, `${keepWord}|${dropWord}`), await blockHtml())
+      const insSid = await sidOf('insert', addWord)
+      const keepSid = await sidOf('delete', keepWord)
+      const dropSid = await sidOf('delete', dropWord)
+      const opened = await pollOpen([insSid, keepSid, dropSid])
+      check('전제 — 투영이 세 제안을 open 으로 세웠다', new Set([insSid, keepSid, dropSid]).size === 3 && opened.every((s) => s === 'open'), JSON.stringify(opened))
+
+      // ① 카드 — 넣자는 마크에 마우스를 올린다
+      const hovered = await hoverMark('insert', addWord, insSid)
+      const named = hovered && (await waitFor(`(document.querySelector('[data-testid="suggestion-card"]')?.textContent ?? '').includes(${JSON.stringify(myName)})`, 5000))
+      check('★ 넣자는 마크에 마우스를 올리면 카드 — 내 이름 · "넣기 제안" · 수락 · 거절',
+        named && (await cardText()).includes('넣기 제안')
+          && (await evaluate(`!!document.querySelector('[data-testid="suggestion-card"] [data-testid="suggestion-accept"]') && !!document.querySelector('[data-testid="suggestion-card"] [data-testid="suggestion-reject"]')`)),
+        await cardText())
+
+      // ② 수락 — 글은 남고 마크가 없다 · 메타 표는 accepted
+      await clickCard('suggestion-accept')
+      const accepted = await marksAre(sgBlock, '', `${keepWord}|${dropWord}`)
+      const insState = await pollState(insSid, 'accepted')
+      check('★ 수락하면 넣은 글은 마크 없이 남고 메타 표의 행은 accepted',
+        accepted && (await textOf(sgBlock)).endsWith(` ${addWord}`) && insState === 'accepted',
+        `${await blockHtml()} · ${insState}`)
+
+      // ③ 공개 화면 — 수락 전 원문이 이제 그 낱말을 담는다(투영 뒤)
+      const token = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      let publicHtml = '(게시 실패)'
+      for (let i = 0; token && i < 40; i += 1) {
+        publicHtml = await (await fetch(`${BASE}/p/${token}`)).text()
+        if (publicHtml.includes(addWord)) break
+        await sleep(250)
+      }
+      check('★ 공개 화면(원문)에 수락한 낱말이 들어간다 — 긋자는 낱말도 아직 있다',
+        publicHtml.includes(addWord) && publicHtml.includes(keepWord) && publicHtml.includes(dropWord),
+        `넣은 낱말 ${publicHtml.includes(addWord)} · 긋자는 낱말 ${publicHtml.includes(keepWord)}/${publicHtml.includes(dropWord)}`)
+
+      // ④ 되돌리기 한 번 — 수락이 한 트랜잭션이라 마크가 함께 돌아온다
+      await key('z', MOD)
+      check('★ 수락 뒤 Mod+Z 한 번이면 넣자는 마크가 돌아온다',
+        await marksAre(sgBlock, ` ${addWord}`, `${keepWord}|${dropWord}`), await blockHtml())
+
+      // ⑤ 긋자는 낱말 거절 — 글은 남고 마크가 없다 · rejected
+      const keepCard = await hoverMark('delete', keepWord, keepSid)
+      check('전제 — 긋자는 마크의 카드가 섰다("지우기 제안")', keepCard && (await cardText()).includes('지우기 제안'), await cardText())
+      await clickCard('suggestion-reject')
+      const kept = await marksAre(sgBlock, ` ${addWord}`, dropWord)
+      const keepState = await pollState(keepSid, 'rejected')
+      check('★ 지우자는 제안을 거절하면 원래 글이 마크 없이 남고 행은 rejected',
+        kept && (await textOf(sgBlock)).includes(`원문 ${keepWord} `) && keepState === 'rejected',
+        `${await blockHtml()} · ${keepState}`)
+
+      // ⑥ 긋자는 낱말 수락 — 글이 사라진다 · accepted
+      await hoverMark('delete', dropWord, dropSid)
+      await clickCard('suggestion-accept')
+      const dropped = await marksAre(sgBlock, ` ${addWord}`, '')
+      const dropState = await pollState(dropSid, 'accepted')
+      check('★ 지우자는 제안을 수락하면 그 글이 사라지고 행은 accepted',
+        dropped && !(await textOf(sgBlock)).includes(dropWord) && dropState === 'accepted',
+        `${await blockHtml()} · ${dropState}`)
+
+      // ⑦ 목록 — 둘째 블록에 둘을 더 제안한다 · 페이지 메뉴의 "제안 n개" 로 연다 · 모두 수락
+      await caretToEndOf(sgBlock2)
+      await typeText(addSecond)
+      for (let i = 0; i < [...addSecond].length; i += 1) await key('ArrowLeft')
+      await sleep(80)
+      for (let i = 0; i < [...secondWord].length; i += 1) await key('Backspace')
+      check('전제 — 둘째 블록에 넣자는 것 · 긋자는 것', await marksAre(sgBlock2, addSecond, secondWord), await blockHtml())
+      const add2Sid = await sidOf('insert', addSecond)
+      const del2Sid = await sidOf('delete', secondWord)
+      await pollOpen([add2Sid, del2Sid])
+      let listOpened = false
+      for (let i = 0; i < 4 && !listOpened; i += 1) {
+        await clickSelector('[data-testid="suggestion-list-open"]')
+        listOpened = await waitFor(`!!document.querySelector('[data-testid="suggestion-panel"]')`, 4000)
+      }
+      const panelLines = () => evaluate(`[...document.querySelectorAll('[data-testid="suggestion-item"]')].map((e) => e.dataset.kind + ':' + (e.querySelector('[data-testid="suggestion-item-preview"]')?.textContent ?? '')).join('|')`)
+      // 문서 차례 — 둘째 블록은 긋자는 낱말 뒤에 넣자는 낱말이 있다
+      const wantLines = [`insert: ${addWord}`, `delete:${secondWord}`, `insert:${addSecond}`].join('|')
+      const listedOk = listOpened && (await waitFor(`[...document.querySelectorAll('[data-testid="suggestion-item"]')].length === 3`, 5000))
+      check('★ 페이지 메뉴의 "제안 3개" 가 목록을 연다 — 본문의 걸린 제안 셋(되돌린 수락 · 둘째 블록의 둘)',
+        listedOk && (await panelLines()) === wantLines
+          && (await evaluate(`(document.querySelector('[data-testid="suggestion-panel"] h2')?.textContent ?? '') === '제안 3개'`)),
+        `${await panelLines()} · ${await evaluate(`document.querySelector('[data-testid="suggestion-panel"]')?.textContent?.slice(0, 160) ?? '(목록 없음)'`)}`)
+      await clickSelector('[data-testid="suggestion-accept-all"]')
+      const noneLeft = await waitFor(`!document.querySelector('.blk-editor [data-suggestion]') && [...document.querySelectorAll('[data-testid="suggestion-item"]')].length === 0`, 5000)
+      const bulkStates = [await pollState(add2Sid, 'accepted'), await pollState(del2Sid, 'accepted'), await stateOf(insSid)]
+      check('★ 모두 수락 — 마크가 하나도 남지 않고 행은 모두 accepted',
+        noneLeft && bulkStates.every((s) => s === 'accepted') && (await textOf(sgBlock2)) === `다음 ${addSecond}` && (await textOf(sgBlock)).endsWith(` ${addWord}`),
+        `${await blockHtml()} · ${JSON.stringify(bulkStates)}`)
+      await key('Escape')
+
+      // ⑧ 보기만 하는 게스트 — 카드는 서지만 수락 · 거절 단추가 없다
+      await caretToEndOf(sgBlock2)
+      await typeText(addGuest)
+      check('전제 — 게스트가 볼 제안을 하나 더 넣었다', await marksAre(sgBlock2, addGuest, ''), await blockHtml())
+      const guestSid = await sidOf('insert', addGuest)
+      await pollOpen([guestSid])
+      const viewer = await joinAs(workspaceId, await createUser(`수락 손님 ${stamp}`), 'guest')
+      const granted = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/access`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' }),
+      })
+      const browseAs = (value) => send('Network.setCookie', { name: 'nc_session', value, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        check('전제 — 게스트는 이 페이지를 읽기로 받았다', granted.ok, String(granted.status))
+        await browseAs(viewer.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sgPage}` })
+        await waitFor(`!!document.querySelector('${selOf(sgBlock2)} [data-suggestion="insert"]') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'`, 15000)
+        const guestCard = await hoverMark('insert', addGuest, guestSid)
+        const guestNamed = guestCard && (await waitFor(`(document.querySelector('[data-testid="suggestion-card"]')?.textContent ?? '').includes('멤버')`, 5000))
+        check('★ 보기만 하는 게스트에게는 카드가 단추 없이 선다 — 이름은 "멤버"',
+          guestNamed && !(await evaluate(`!!document.querySelector('[data-testid="suggestion-card"] button')`)),
+          await cardText())
+      } finally {
+        await browseAs(session)
+      }
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {

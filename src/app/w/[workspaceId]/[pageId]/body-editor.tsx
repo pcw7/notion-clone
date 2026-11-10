@@ -92,7 +92,10 @@ import {
   EquationEditorLazy,
   ImageAltDialogLazy,
   LinkedDatabasePickerLazy,
+  SuggestionCardLazy,
+  SuggestionPanelLazy,
 } from './body-popups-lazy'
+import { countSuggestions, suggestionsAtCaret, suggestionSpansAt, type CardSuggestion, type SuggestionCardAt } from './suggestion-trigger'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 import { randomEmoji } from '@/lib/emoji/catalog'
 import { calloutIconAt, setCalloutIconCommand } from '@/lib/editor/callout-block'
@@ -126,7 +129,14 @@ import { MENU_IDS, comboboxKey, comboboxStateOf, comboboxTarget, sameTarget, set
 import { pasteUrlKey, pasteUrlState, type PasteUrlRange } from '@/lib/editor/paste-url'
 import { MENTION_NODE } from '@/lib/editor/schema'
 import { setSuggestionMode, suggestingAuthor } from '@/lib/editor/suggestion-mode'
-import { isSuggesting, notSuggesting, subscribeSuggestionMode } from './suggestion-mode-store'
+import {
+  isSuggesting,
+  isSuggestionPanelOpen,
+  notSuggesting,
+  setSuggestionCount,
+  setSuggestionPanelOpen,
+  subscribeSuggestionMode,
+} from './suggestion-mode-store'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
 const SYNCING_AFTER_MS = 3000
@@ -134,6 +144,16 @@ const SYNCING_AFTER_MS = 3000
 const CONFIRM_TIMEOUT_MS = 10_000
 /** 서버가 넣은 참조가 동기화로 도착하기를 기다리는 한도 — 도착하면 그 블록을 고른다. */
 const REF_ARRIVAL_TIMEOUT_MS = 5000
+/** 제안 마크에서 마우스가 떠난 뒤 카드를 접기까지(SG-3) — 카드로 옮겨 가는 길. */
+const SUGGESTION_CARD_CLOSE_MS = 250
+/** 문서가 바뀐 뒤 제안을 세기까지 — 치는 동안 글자마다 문서를 훑지 않는다. */
+const SUGGESTION_COUNT_MS = 200
+
+/** 같은 카드인가 — 같은 제안들 · 같은 자리 · 같은 길. 같으면 다시 그리지 않는다. */
+function sameCard(a: SuggestionCardAt | null, b: SuggestionCardAt): boolean {
+  const sids = (items: readonly CardSuggestion[]) => items.map((i) => `${i.kind}:${i.sid}`).join(',')
+  return a !== null && a.via === b.via && a.top === b.top && a.left === b.left && sids(a.items) === sids(b.items)
+}
 
 type Status =
   | { kind: 'idle' }
@@ -610,6 +630,106 @@ export function BodyEditor({
     if (!view || (suggestingAuthor(view.state) !== null) === suggesting) return
     view.dispatch(setSuggestionMode(view.state.tr, suggesting ? userId : null))
   }, [suggesting, userId])
+
+  // 제안의 카드 · 목록(SG-3) — 마크에 마우스를 올리거나 캐럿이 제안 안에 들어오면 카드 · 메뉴의 "제안 n개" 가 목록을 연다. 둘 다 지연
+  // 로드다(`suggestion-card.tsx` · `suggestion-panel.tsx`). 여기는 무엇을 어디에 띄울지와 본문의 제안 수만 쥔다.
+  const [suggestionCard, setSuggestionCard] = useState<SuggestionCardAt | null>(null)
+  const suggestionCardRef = useRef(suggestionCard)
+  suggestionCardRef.current = suggestionCard
+  /** 마우스가 카드 위에 있다 — 마크를 떠나도 접지 않는다. */
+  const cardHeldRef = useRef(false)
+  const cardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suggestionPanel = useSyncExternalStore(subscribeSuggestionMode, () => isSuggestionPanelOpen(pageId), notSuggesting)
+  const suggestionPanelRef = useRef(suggestionPanel)
+  suggestionPanelRef.current = suggestionPanel
+  /** 목록이 열려 있는 동안 문서가 바뀔 때마다 오른다 — 목록이 다시 센다. */
+  const [suggestionDocVersion, setSuggestionDocVersion] = useState(0)
+  const countTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 마지막으로 본 문서 — 트랜잭션이 문서를 바꿨는지(아니면 선택만) 가른다. */
+  const lastDocRef = useRef<EditorState['doc'] | null>(null)
+  useEffect(
+    () => () => {
+      // 떠나면 수 · 목록을 거둔다 — 메뉴의 "제안 n개" 가 다음 페이지에 남지 않게
+      if (countTimerRef.current !== null) clearTimeout(countTimerRef.current)
+      if (cardTimerRef.current !== null) clearTimeout(cardTimerRef.current)
+      setSuggestionCount(pageId, 0)
+      setSuggestionPanelOpen(pageId, false)
+    },
+    [pageId],
+  )
+
+  /** 마우스 카드를 잠깐 뒤 접는다 — 그사이 카드에 올라가면(붙잡음) · 다른 마크에 올라가면 두지 않는다. */
+  const scheduleCardClose = useCallback(() => {
+    if (cardTimerRef.current !== null) clearTimeout(cardTimerRef.current)
+    cardTimerRef.current = setTimeout(() => {
+      cardTimerRef.current = null
+      if (!cardHeldRef.current) setSuggestionCard((prev) => (prev?.via === 'hover' ? null : prev))
+    }, SUGGESTION_CARD_CLOSE_MS)
+  }, [])
+  const holdSuggestionCard = useCallback(
+    (held: boolean) => {
+      cardHeldRef.current = held
+      if (!held) scheduleCardClose()
+    },
+    [scheduleCardClose],
+  )
+  const closeSuggestionCard = useCallback(() => setSuggestionCard(null), [])
+  const showSuggestionError = useCallback((message: string) => setStatus({ kind: 'error', message }), [])
+  const closeSuggestionPanel = useCallback(() => {
+    setSuggestionPanelOpen(pageId, false)
+    viewRef.current?.focus()
+  }, [pageId])
+
+  /** 마우스가 올라간 제안 span 의 카드 — 그 줄의 아래(프레임 좌표). */
+  const hoverSuggestion = useCallback((view: EditorView, event: MouseEvent) => {
+    const frame = frameRef.current
+    const found = frame === null ? null : suggestionSpansAt(view.dom, event.target)
+    if (found === null || frame === null) return
+    if (cardTimerRef.current !== null) clearTimeout(cardTimerRef.current)
+    cardTimerRef.current = null
+    const fr = frame.getBoundingClientRect()
+    // 여러 줄에 걸친 span 이면 마우스가 있는 줄
+    const box = [...found.outer.getClientRects()].find((r) => event.clientY >= r.top && event.clientY <= r.bottom) ?? found.outer.getBoundingClientRect()
+    const next: SuggestionCardAt = { items: found.items, top: box.bottom - fr.top + 4, left: box.left - fr.left, via: 'hover' }
+    setSuggestionCard((prev) => (sameCard(prev, next) ? prev : next))
+  }, [])
+
+  /**
+   * 트랜잭션마다 — 문서가 바뀌었으면 제안 수를 (잠깐 모아) 세고 캐럿 카드를 접는다(치는 중) · 마우스 카드는 그 제안이 사라졌으면 접는다
+   * (수락 · 거절 · 남의 편집). 선택만 바뀌었으면 캐럿이 제안 안인지 본다(키보드로 카드를 연다).
+   */
+  const syncSuggestionUi = useCallback(
+    (view: EditorView) => {
+      const doc = view.state.doc
+      const card = suggestionCardRef.current
+      if (doc !== lastDocRef.current) {
+        lastDocRef.current = doc
+        if (countTimerRef.current !== null) clearTimeout(countTimerRef.current)
+        countTimerRef.current = setTimeout(() => {
+          countTimerRef.current = null
+          const current = viewRef.current
+          if (current === null) return
+          setSuggestionCount(pageId, countSuggestions(current.state.doc))
+          if (suggestionPanelRef.current) setSuggestionDocVersion((v) => v + 1)
+        }, SUGGESTION_COUNT_MS)
+        const alive = card?.via === 'hover' && card.items.some((i) => view.dom.querySelector(`[data-sid="${CSS.escape(i.sid)}"]`) !== null)
+        if (card !== null && !alive) setSuggestionCard(null)
+        return
+      }
+      if (card?.via === 'hover') return
+      const items = view.hasFocus() ? suggestionsAtCaret(view.state) : []
+      const frame = frameRef.current
+      if (items.length === 0 || frame === null) {
+        if (card !== null) setSuggestionCard(null)
+        return
+      }
+      const coords = view.coordsAtPos(view.state.selection.from)
+      const fr = frame.getBoundingClientRect()
+      const next: SuggestionCardAt = { items, top: coords.bottom - fr.top + 4, left: coords.left - fr.left, via: 'caret' }
+      if (!sameCard(card, next)) setSuggestionCard(next)
+    },
+    [pageId],
+  )
 
   // ── 제목 맵 ─────────────────────────────────────────────────────────
 
@@ -1620,6 +1740,9 @@ export function BodyEditor({
       setCodeUi(null)
       equationUiRef.current = null
       setEquationUi(null)
+      // 제안 카드도 옛 편집기의 것이다 — 접는다(목록은 새 편집기로 다시 그린다)
+      setSuggestionCard(null)
+      lastDocRef.current = null
       // 하이라이트 플러그인은 **이 Y.Doc** 으로 앵커를 푼다 — 연결이 문서를 버리고 다시 열면 여기서 새 문서로 다시 붙는다.
       const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps, [
         commentHighlightPlugin({ ydoc, onOpen: openCommentThread }),
@@ -1638,6 +1761,7 @@ export function BodyEditor({
           setPasteRange(pasteUrlState(v.state))
           syncEmojiMenu(v)
           syncCommentTarget(v)
+          syncSuggestionUi(v)
           remeasureCodeUi(v)
           remeasureEquationUi(v)
           syncFormatToolbar(v)
@@ -1670,6 +1794,11 @@ export function BodyEditor({
         setFormatBar(null)
       })
       view.dom.addEventListener('focusin', () => syncFormatToolbar(view))
+      // 제안 카드(SG-3) — 마크에 올리면 서고 · 마크를 떠나면 잠깐 뒤 접는다(카드로 옮겨 가는 길 · 다른 마크면 그 카드)
+      view.dom.addEventListener('mouseover', (event) => hoverSuggestion(view, event))
+      view.dom.addEventListener('mouseout', (event) => {
+        if (suggestionSpansAt(view.dom, event.relatedTarget) === null) scheduleCardClose()
+      })
       // 주소를 붙여넣었다 — 넣는 쪽(링크 걸기 · 메뉴 열기)은 지연 로드한다.
       view.dom.addEventListener('compositionstart', () => {
         composingIme.current = true
@@ -2165,7 +2294,33 @@ export function BodyEditor({
             isTrigger={(target) => isEquationTrigger(target, viewRef.current, equationUi)}
           />
         )}
+        {/* 제안 마크의 카드(SG-3) — 편집기 밖 · 프레임 좌표. 보는 사람에게도 선다 · 수락 · 거절은 고칠 수 있을 때만 */}
+        {suggestionCard !== null && viewRef.current !== null && (
+          <SuggestionCardLazy
+            key={suggestionCard.items.map((i) => i.sid).join(',')}
+            view={viewRef.current}
+            workspaceId={workspaceId}
+            pageId={pageId}
+            at={suggestionCard}
+            canResolve={editable}
+            onHold={holdSuggestionCard}
+            onClose={closeSuggestionCard}
+            onError={showSuggestionError}
+          />
+        )}
       </div>
+      {/* 페이지의 "제안" 목록(SG-3) — 메뉴의 "제안 n개" · 제안 모드 표시가 연다 */}
+      {suggestionPanel && viewRef.current !== null && (
+        <SuggestionPanelLazy
+          view={viewRef.current}
+          workspaceId={workspaceId}
+          pageId={pageId}
+          docVersion={suggestionDocVersion}
+          canResolve={editable}
+          onClose={closeSuggestionPanel}
+          onError={showSuggestionError}
+        />
+      )}
 
       {/*
         고른 글자에 코멘트 — F-05-07. 캐럿 위치 기준은 슬래시 메뉴와 같은 셈이다(`view.dom` 기준 좌표).

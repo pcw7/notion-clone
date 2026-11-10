@@ -51,7 +51,7 @@ import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageMenu, PageMenuDivider } from './page-menu'
 import { PageAppearanceControl } from './page-appearance-control'
-import { SuggestionModePill, SuggestionModeToggle } from './suggestion-mode-control'
+import { SuggestionListButton, SuggestionModePill, SuggestionModeToggle } from './suggestion-mode-control'
 import { NotifyMeControl } from './notify-me-control'
 import { DEFAULT_LEVEL, readSubscription } from '@/lib/notification/subscription'
 import { PageHistoryButton } from './page-history'
@@ -305,9 +305,12 @@ export async function PageContentBase({
             {access === 'edit' && (
               <>
                 <SuggestionModeToggle pageId={page.id} />
+                <SuggestionListButton pageId={page.id} />
                 <PageMenuDivider />
               </>
             )}
+            {/* "제안 n개"(SG-3) — 본문에 제안이 있을 때만 · 볼 수 있는 사람도 목록을 본다(수락 · 거절 단추 없이) */}
+            {access !== 'edit' && <SuggestionListButton pageId={page.id} divider />}
             {/* 알림 받기(NM-1 · F-05-17) — 볼 수 있는 사람 모두(게스트도) · 행도 */}
             <NotifyMeControl workspaceId={workspaceId} pageId={page.id} initial={subscription.ok ? subscription.level : DEFAULT_LEVEL} />
             <PageMenuDivider />

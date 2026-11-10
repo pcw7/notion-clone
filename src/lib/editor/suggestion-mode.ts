@@ -44,6 +44,9 @@ const OFF: ModeState = { authorId: null }
 
 export const suggestionModeKey = new PluginKey<ModeState>('suggestion-mode')
 
+/** 수락 · 거절의 트랜잭션 표지(SG-3 · `suggestion-resolve.ts`) — 마크를 떼고 글을 지우지만 제안으로 다시 쓰지 않는다. */
+export const SUGGESTION_RESOLVE_META = 'suggestion-resolve'
+
 /** 제안의 id — 서버 `suggestion.id`(uuid)가 된다(SG-2). */
 const randomSid = (): string => globalThis.crypto.randomUUID()
 
@@ -277,8 +280,8 @@ export function rewriteAsSuggestion(
 export type SuggestOutcome = { readonly tr: Transaction } | { readonly blocked: SuggestBlock }
 
 /**
- * dispatch 가 부른다 — 꺼졌거나 · 문서를 바꾸지 않거나 · Y.Doc 에서 온 것이면 받은 그대로. 켜졌으면 제안으로 다시 쓴 것(이미 제안
- * 모양이면 받은 그대로) 또는 막는 까닭.
+ * dispatch 가 부른다 — 꺼졌거나 · 문서를 바꾸지 않거나 · Y.Doc 에서 온 것이거나 · 수락 · 거절(SG-3)이면 받은 그대로. 켜졌으면 제안으로
+ * 다시 쓴 것(이미 제안 모양이면 받은 그대로) 또는 막는 까닭.
  */
 export function suggestTransaction(
   state: EditorState,
@@ -288,6 +291,7 @@ export function suggestTransaction(
 ): SuggestOutcome {
   const authorId = suggestingAuthor(state)
   if (authorId === null || !tr.docChanged || tr.before !== state.doc || isRemote?.(tr) === true) return { tr }
+  if (tr.getMeta(SUGGESTION_RESOLVE_META) !== undefined) return { tr }
   const shape = textChangeOf(state, tr)
   if (shape.kind === 'none') return { tr }
   if (shape.kind === 'blocked') return { blocked: shape.reason }

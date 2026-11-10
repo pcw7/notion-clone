@@ -33,6 +33,8 @@ type PageMenuApi = {
   register(key: string, close: () => void): () => void
   /** 패널을 닫은 뒤 포커스를 "···" 단추로 — 연 줄은 닫힌 카드 안이라 받을 수 없다. */
   focusTrigger(): void
+  /** 목록과 열린 패널을 닫는다 — 메뉴 밖에 무엇을 여는 줄이 누른 뒤 부른다(SG-3 "제안" 목록). */
+  close(): void
 }
 
 const PageMenuContext = createContext<PageMenuApi | null>(null)
@@ -77,8 +79,9 @@ export function PageMenu({ children }: { children: ReactNode }) {
       focusTrigger() {
         triggerRef.current?.focus()
       },
+      close: closeAll,
     }),
-    [],
+    [closeAll],
   )
 
   useEffect(() => {
