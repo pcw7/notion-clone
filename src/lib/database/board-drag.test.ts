@@ -16,7 +16,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { fillKeyOf, groupLabel, moveCard, moveChoices, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
+import { fillKeyOf, groupLabel, movedMultiSelect, moveCard, moveChoices, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
 import { textRun } from '../contracts/rich-text.ts'
 
 const card = (id: string, top: number) => ({ id, top, bottom: top + 40 })
@@ -288,5 +288,42 @@ describe('범주 열 (10n-27)', () => {
     assert.equal(fillKeyOf({ key: 'opt-1', statusGroup: null, fillOptionId: 'opt-1' }), 'opt-1')
     assert.equal(fillKeyOf({ key: '', statusGroup: null, fillOptionId: null }), '', '없음 열은 빈 값으로 만든다')
     assert.equal(fillKeyOf({ key: 'true' }), 'true', 'checkbox')
+  })
+})
+
+describe('다중 선택 끌기 (PT-1b · F-04-11)', () => {
+  const ids = (list: readonly { id: string }[]) => list.map((o) => o.id)
+
+  test('★ A→B: A 를 빼고 B 를 끝에 더한다 · 다른 값과 차례는 지킨다', () => {
+    assert.deepEqual(ids(movedMultiSelect([{ id: 'x' }, { id: 'y' }], 'x', 'z')), ['y', 'z'])
+    assert.deepEqual(ids(movedMultiSelect([{ id: 'x' }], 'x', 'z')), ['z'])
+  })
+
+  test('A→없음: A 만 뺀다 · 없음→B: B 를 더한다 · B 가 이미 있으면 A 만 뺀다', () => {
+    assert.deepEqual(ids(movedMultiSelect([{ id: 'x' }, { id: 'y' }], 'x', '')), ['y'])
+    assert.deepEqual(ids(movedMultiSelect([], '', 'z')), ['z'])
+    assert.deepEqual(ids(movedMultiSelect([{ id: 'x' }, { id: 'z' }], 'x', 'z')), ['z'])
+  })
+
+  const col = (key: string, rowIds: string[]) => ({ key, rows: rowIds.map((id) => ({ id })), count: rowIds.length })
+
+  test('화면: 끈 열에서만 빠지고 다른 열의 같은 카드는 남는다 · 이미 있는 열이면 더하지 않는다', () => {
+    const columns = [col('', []), col('x', ['r']), col('y', ['r']), col('z', [])]
+    const moved = moveCard(columns, 'r', { key: 'z', beforeRowId: null }, 'x')!
+    assert.deepEqual(moved.columns.map((c) => [c.key, c.rows.length, c.count]), [['', 0, 0], ['x', 0, 0], ['y', 1, 1], ['z', 1, 1]])
+    const dup = moveCard(columns, 'r', { key: 'y', beforeRowId: null }, 'x')!
+    assert.deepEqual(dup.columns.map((c) => [c.key, c.rows.length]), [['', 0], ['x', 0], ['y', 1], ['z', 0]])
+  })
+
+  test('화면: 값이 남는 카드는 없음 열로 가지 않는다 · 하나뿐이면 간다', () => {
+    const two = moveCard([col('', []), col('x', ['r']), col('y', ['r'])], 'r', { key: '', beforeRowId: null }, 'x')!
+    assert.deepEqual(two.columns.map((c) => c.rows.length), [0, 0, 1])
+    const one = moveCard([col('', []), col('x', ['r'])], 'r', { key: '', beforeRowId: null }, 'x')!
+    assert.deepEqual(one.columns.map((c) => c.rows.length), [1, 0])
+  })
+
+  test('새 카드는 그 옵션이 미리 채워진다', () => {
+    assert.deepEqual(prefillCells('multi_select', 'p', 'x'), [{ propertyId: 'p', value: { type: 'multi_select', multi_select: [{ id: 'x' }] } }])
+    assert.deepEqual(prefillCells('multi_select', 'p', ''), [])
   })
 })

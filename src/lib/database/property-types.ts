@@ -266,7 +266,8 @@ export function readRelationValue(raw: unknown): RelationValue {
  */
 // 날짜(B-1 · 정본 §3.6 [보강 B-1]) — 일 · 주 · 월 · 년 단위의 버킷(`date-group.ts`). 숫자(B-2 · [보강 B-2]) — 구간(`number-group.ts`).
 // 글(B-2b · [보강 B-2b]) — 글 그대로 · 첫 글자(`text-group.ts`). 제목은 묶지 않는다(덩이 사이로 옮기면 페이지 이름이 바뀐다)
-export const GROUPABLE_TYPES = ['select', 'status', 'checkbox', 'date', 'number', 'rich_text'] as const
+// 다중 선택(PT-1b)은 행이 값마다 여러 그룹에 선다(F-04-11 "중복 등장") — 열 축에서만(하위 그룹은 안 받는다)
+export const GROUPABLE_TYPES = ['select', 'multi_select', 'status', 'checkbox', 'date', 'number', 'rich_text'] as const
 export type GroupableType = (typeof GROUPABLE_TYPES)[number]
 
 export function isGroupableType(t: unknown): t is GroupableType {

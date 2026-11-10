@@ -33068,6 +33068,158 @@ async function main() {
       await send('Network.setBlockedURLs', { urls: [] })
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('다중 선택으로 묶기 · 바꾸기 (PT-1b · F-04-11)')) { try {
+      // 다중 선택으로 묶은 보드 · 표(행이 값마다 여러 그룹에 선다) → 카드를 끌면 끈 열의 값을 빼고 놓은 열의 값을 더한다(없음으로는 뺄 뿐) ·
+      // 선택 ↔ 다중 선택 바꾸기(첫 값만 남는 쪽은 개수를 묻는다). 정본 §3.5 [보강 PT-1] ⑤. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const until = async (fn, ms = 10000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+      const db = (await api('POST', '/databases', { name: `다중 묶기 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const addProp = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      const addOpt = async (prop, name) => (await api('POST', `/data-sources/${ds}/properties/${prop}/options`, { name })).body.option.id
+      const tag = await addProp('태그', 'multi_select')
+      const [X, Y, Z] = [await addOpt(tag, '가'), await addOpt(tag, '나'), await addOpt(tag, '다')]
+      const kind = await addProp('구분', 'select')
+      const [P, Q] = [await addOpt(kind, '갑'), await addOpt(kind, '을')]
+      const multi = await addProp('여럿', 'multi_select')
+      const [M1, M2] = [await addOpt(multi, '하나'), await addOpt(multi, '둘')]
+      const mk = async (title, ids, k, m) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        ...(ids.length > 0 ? [{ propertyId: tag, value: { type: 'multi_select', multi_select: ids.map((id) => ({ id })) } }] : []),
+        ...(k ? [{ propertyId: kind, value: { type: 'select', select: { id: k } } }] : []),
+        ...(m.length > 0 ? [{ propertyId: multi, value: { type: 'multi_select', multi_select: m.map((id) => ({ id })) } }] : []),
+      ] })).body.row.id
+      const r1 = await mk('첫 일', [X, Y], P, [M1, M2])
+      const r2 = await mk('둘째 일', [Y], Q, [M2])
+      const r3 = await mk('셋째 일', [], null, [])
+      const serverRow = async (id) => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === id)
+      const tagsOf = async (id) => ((await serverRow(id))?.properties?.[tag]?.multi_select ?? []).map((o) => o.id)
+
+      // ── 보드 ──
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: tag } })).body.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-board"]')`, 15000)
+      const columnsOf = () => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"]')]
+        .map((c) => c.getAttribute('aria-label') + ':' + c.querySelector('[data-testid="db-board-count"]').textContent)`)
+      const cardsIn = (key) => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"][data-group-key="${key}"] [data-row-id]')].map((c) => c.dataset.rowId)`)
+      check('★ 다중 선택으로 묶은 보드 — 값이 둘인 행은 두 열에 서고 값이 없으면 없음 열에 선다(열은 없음 · 옵션 순서)',
+        (await waitFor(`document.querySelectorAll('[data-testid="db-board-column"]').length === 4`, 10000))
+          && same(await columnsOf(), ['태그 없음:1', '가:1', '나:2', '다:0'])
+          && same(await cardsIn(X), [r1]) && same(await cardsIn(Y), [r1, r2]) && same(await cardsIn(''), [r3]),
+        JSON.stringify({ columns: await columnsOf(), x: await cardsIn(X), y: await cardsIn(Y) }))
+
+      const dragFrom = async (rowId, fromKey, toKey, atTop = false) => {
+        const c = await rect(`[data-testid="db-board-column"][data-group-key="${fromKey}"] [data-row-id="${rowId}"]`)
+        const t = await rect(`[data-testid="db-board-column"][data-group-key="${toKey}"]`)
+        const sx = c.x + c.w / 2
+        const sy = c.y + c.h / 2
+        const tx = t.x + t.w / 2
+        const ty = atTop ? t.y + 4 : t.y + t.h - 10
+        await move(sx, sy)
+        await press(sx, sy)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(sx + ((tx - sx) * i) / 10, sy + ((ty - sy) * i) / 10, true)
+          await sleep(16)
+        }
+        await release(tx, ty)
+        await sleep(80)
+      }
+      // 하이드레이션 전의 끌기는 버려진다 — 서버에 닿을 때까지 다시 끈다
+      for (let i = 0; i < 4 && !same(await tagsOf(r1), [Y, Z]); i += 1) {
+        await dragFrom(r1, X, Z)
+        await until(async () => same(await tagsOf(r1), [Y, Z]), 3000)
+      }
+      check('★ 카드를 가 열에서 다 열로 끌면 서버에서 가가 빠지고 다가 더해진다 — 나는 지킨다',
+        same(await tagsOf(r1), [Y, Z]), JSON.stringify(await tagsOf(r1)))
+      check('★ 보드가 따라간다 — 첫 일은 나 · 다 열에 서고 가 열에서는 빠진다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-board-column"]').length === 4`, 5000)
+          && (await until(async () => same(await cardsIn(X), []) && same(await cardsIn(Y), [r1, r2]) && same(await cardsIn(Z), [r1]), 6000)),
+        JSON.stringify(await columnsOf()))
+
+      // 값이 하나뿐인 카드를 없음으로 — 그 값이 빠지고 없음 열에 선다
+      for (let i = 0; i < 4 && !same(await tagsOf(r2), []); i += 1) {
+        await dragFrom(r2, Y, '', true)
+        await until(async () => same(await tagsOf(r2), []), 3000)
+      }
+      check('★ 카드를 없음 열로 끌면 끈 열의 값만 빠진다 — 서버에 값이 없고 보드의 없음 열에 선다',
+        same(await tagsOf(r2), []) && (await until(async () => (await cardsIn('')).includes(r2) && !(await cardsIn(Y)).includes(r2), 6000)),
+        JSON.stringify({ server: await tagsOf(r2), none: await cardsIn(''), y: await cardsIn(Y) }))
+      // 다음 단계를 위해 첫 일의 값을 처음으로
+      await api('PATCH', `/rows/${r1}`, { cells: [{ propertyId: tag, value: { type: 'multi_select', multi_select: [{ id: X }, { id: Y }] } }] })
+      await api('PATCH', `/rows/${r2}`, { cells: [{ propertyId: tag, value: { type: 'multi_select', multi_select: [{ id: Y }] } }] })
+
+      // ── 표의 그룹 ──
+      const table = (await api('POST', `/databases/${db.id}/views`, { type: 'table', groupBy: { property_id: tag } })).body.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${table.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-group"]').length === 4`, 15000)
+      const sections = () => evaluate(`[...document.querySelectorAll('[data-testid="db-group"]')].map((g) => ({
+        key: g.dataset.groupKey, count: g.querySelector('[data-testid="db-group-count"]')?.textContent ?? null,
+        rows: [...g.querySelectorAll('tr[data-row-id]')].map((tr) => tr.dataset.rowId) }))`)
+      const look = (list) => JSON.stringify(list.map((s) => [s.key, s.count, s.rows.length]))
+      const r1Fresh = await tagsOf(r1)
+      check('전제 — 첫 일의 값이 가 · 나로 돌아왔다', same(r1Fresh, [X, Y]), JSON.stringify(r1Fresh))
+      check('★ 다중 선택으로 묶은 표 — 첫 일은 가 · 나 두 덩이에 서고 개수는 덩이마다 센다',
+        await until(async () => {
+          const s = await sections()
+          const by = (k) => s.find((g) => g.key === k)
+          return s.length === 4 && by(X)?.rows.includes(r1) && by(Y)?.rows.includes(r1) && by(Y)?.rows.includes(r2) && by('')?.rows.includes(r3)
+            && by(X)?.count === '1' && by(Y)?.count === '2' && by(Z)?.count === '0'
+        }, 12000),
+        look(await sections()))
+
+      // ── 선택 ↔ 다중 선택 바꾸기 ──
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+      const openConvert = async (prop, to) => {
+        for (let i = 0; i < 4; i += 1) {
+          await waitHydrated(`th[data-property-id="${prop}"] [data-testid="db-column-menu"]`)
+          await clickSelector(`th[data-property-id="${prop}"] [data-testid="db-column-menu"]`)
+          if (!(await waitFor(`!!document.querySelector('[data-testid="db-column-convert"]')`, 2500))) continue
+          await clickSelector('[data-testid="db-column-convert"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="db-column-convert-${to}"]')`, 2500)) return true
+          await key('Escape')
+        }
+        return false
+      }
+      check('전제 — 선택 칸의 "유형 바꾸기"에 다중 선택이 있다', await openConvert(kind, 'multi_select'))
+      await clickSelector('[data-testid="db-column-convert-multi_select"]')
+      const kindIds = async (id) => {
+        const v = (await serverRow(id))?.properties?.[kind]
+        return v?.multi_select ? v.multi_select.map((o) => o.id) : v?.select ? ['select:' + v.select.id] : []
+      }
+      check('★ 선택 → 다중 선택은 묻지 않고 바뀐다 — 값이 한 원소 배열로 감싸지고 옵션은 그대로',
+        (await until(async () => same(await kindIds(r1), [P]) && same(await kindIds(r2), [Q]) && same(await kindIds(r3), []))) &&
+          !(await evaluate(`!!document.querySelector('[data-testid="db-column-convert-confirm"]')`)),
+        JSON.stringify({ r1: await kindIds(r1), r2: await kindIds(r2) }))
+
+      check('전제 — 다중 선택 칸의 "유형 바꾸기"에 선택이 있다', await openConvert(multi, 'select'))
+      await clickSelector('[data-testid="db-column-convert-select"]')
+      check('★ 다중 선택 → 선택은 값이 둘 이상이던 칸의 수를 알리고 묻는다 — 아직 바뀌지 않았다',
+        (await waitFor(`(document.querySelector('[data-testid="db-column-convert-confirm"]')?.textContent ?? '').includes('1개 칸의 값이 사라집니다')`, 6000))
+          && ((await serverRow(r1))?.properties?.[multi]?.multi_select ?? []).length === 2,
+        await evaluate(`document.querySelector('[data-testid="db-column-convert-confirm"]')?.textContent ?? '(없음)'`))
+      await clickSelector('[data-testid="db-column-convert-confirm-button"]')
+      check('★ 확인하면 바뀌고 첫 값만 남는다 — 첫 일은 하나 · 둘째 일은 둘',
+        await until(async () => {
+          const a = (await serverRow(r1))?.properties?.[multi]?.select?.id
+          const b = (await serverRow(r2))?.properties?.[multi]?.select?.id
+          return a === M1 && b === M2
+        }),
+        JSON.stringify({ a: (await serverRow(r1))?.properties?.[multi], b: (await serverRow(r2))?.properties?.[multi] }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('URL · 이메일 · 전화 속성 (PT-2 · F-03-04)')) { try {
       // 속성 추가에서 URL · 이메일 · 전화 → 칸에 글을 쳐 저장(너그럽게 받는다: javascript: 도) → 그릴 때만 거른 링크(http(s) 만 href · 새 탭 ·
       // noopener noreferrer / mailto: / tel: 은 숫자와 + 만) → 필터(포함) → 공개 표(nofollow ugc · javascript: 는 글로). 정본 §3.5 [보강 PT-1] ⑥.

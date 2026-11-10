@@ -136,8 +136,10 @@ export function moveCard<Row extends { readonly id: string }, Column extends Boa
   columns: readonly Column[],
   rowId: string,
   target: DropTarget,
+  fromKey?: string,
 ): MoveResult<Column> | null {
-  const from = columns.find((column) => column.rows.some((row) => row.id === rowId))
+  // 다중 선택(PT-1b)은 한 카드가 여러 열에 서므로 끈 열을 알려 준다 — 없으면 처음 만나는 열
+  const from = columns.find((column) => (fromKey === undefined || column.key === fromKey) && column.rows.some((row) => row.id === rowId))
   const to = columns.find((column) => column.key === target.key)
   if (from === undefined || to === undefined) return null
 
@@ -146,6 +148,13 @@ export function moveCard<Row extends { readonly id: string }, Column extends Boa
   const undo: DropTarget = { key: from.key, beforeRowId: from.rows[at + 1]?.id ?? null }
 
   const removed = from.rows.filter((r) => r.id !== rowId)
+  // 다중 선택: 놓을 열에 이미 서 있으면 끈 열에서 빠지기만 한다 · 값 없음 열은 남는 값이 있으면(다른 열에 서 있으면) 받지 않는다
+  const alreadyThere = to.key !== from.key && to.rows.some((r) => r.id === rowId)
+  const keepsValue = to.key === '' && columns.some((c) => c.key !== from.key && c.key !== '' && c.rows.some((r) => r.id === rowId))
+  if (alreadyThere || keepsValue) {
+    const next = columns.map((column): Column => (column.key === from.key ? { ...column, rows: removed, count: column.count - 1 } : column))
+    return { columns: next, undo }
+  }
   const base = to.key === from.key ? removed : to.rows
   const insertAt = target.beforeRowId === null ? -1 : base.findIndex((r) => r.id === target.beforeRowId)
   const inserted = insertAt < 0 ? [...base, row] : [...base.slice(0, insertAt), row, ...base.slice(insertAt)]
@@ -157,6 +166,16 @@ export function moveCard<Row extends { readonly id: string }, Column extends Boa
     return column
   })
   return { columns: next, undo }
+}
+
+/**
+ * 다중 선택 카드를 `from` 열에서 `to` 열로 끈 새 값(PT-1b · F-04-11) — 끈 열의 옵션을 빼고 놓은 열의 옵션을 끝에 더한다. 다른 값과 그 차례는
+ * 지킨다 · 놓은 열이 이미 있으면 빼기만 · `''`(값 없음)에서 끌면 빼지 않고 `''` 으로 끌면 더하지 않는다.
+ */
+export function movedMultiSelect(current: readonly { readonly id: string }[], from: string, to: string): { id: string }[] {
+  const kept = current.filter((o) => o.id !== from || from === '')
+  const has = kept.some((o) => o.id === to)
+  return to === '' || has ? kept.map((o) => ({ id: o.id })) : [...kept.map((o) => ({ id: o.id })), { id: to }]
 }
 
 // ── 끌지 않고 옮기기 ──────────────────────────────────────────────────
@@ -184,8 +203,9 @@ export function moveChoices<Row extends { readonly id: string }, Column extends 
   columns: readonly Column[],
   rowId: string,
   manualOrder: boolean,
+  fromKey?: string,
 ): MoveChoices | null {
-  const from = columns.find((column) => column.rows.some((row) => row.id === rowId))
+  const from = columns.find((column) => (fromKey === undefined || column.key === fromKey) && column.rows.some((row) => row.id === rowId))
   if (from === undefined) return null
   const others = columns.filter((c) => c.key !== from.key).map((c) => ({ key: c.key, target: { key: c.key, beforeRowId: null } }))
   if (!manualOrder) return { others, up: null, down: null }
@@ -219,6 +239,8 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
   // status 는 새 행이 기본 옵션을 받는다(`row.ts` `defaultCells`). "상태 없음" 열의 `+` 는 빈 값을 **명시해** 보내야
   // 카드가 그 열에 남는다. select 는 기본값이 없어 안 보내는 것이 곧 빈 값이다.
   if (key === '') return propertyType === 'status' ? [{ propertyId, value: optionValue('status', null) }] : []
+  // 다중 선택(PT-1b) — 그 옵션 하나가 미리 채워진다
+  if (propertyType === 'multi_select') return [{ propertyId, value: { type: 'multi_select', multi_select: [{ id: key }] } }]
   return [{ propertyId, value: optionValue(propertyType, key) }]
 }
 

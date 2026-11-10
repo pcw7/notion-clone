@@ -72,11 +72,12 @@ import {
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
+import { movedMultiSelect } from './board-drag.ts'
 import { refreshDerivedForView } from './derived-values.ts'
 import {
   STATUS_GROUP_KINDS,
+  hasOptionRegistry,
   isGroupableType,
-  isOptionType,
   optionValue,
   readStatusDefault,
   type CellValue,
@@ -420,6 +421,8 @@ export type MoveRowInput = {
   readonly today?: string | null
   /** 놓을 가로줄(B-4a · 하위 그룹이 있는 보드). 주지 않으면 그 행의 지금 가로줄에 남는다. */
   readonly subGroupKey?: string
+  /** 끈 열(PT-1b · 다중 선택) — 행이 여러 열에 서므로 어느 열에서 끌었는지 알려야 그 값만 빼고 놓은 열의 값을 더한다. 열이 하나뿐이면 생략할 수 있다. */
+  readonly fromGroupKey?: string
 }
 
 export type MoveOutcome = {
@@ -584,10 +587,12 @@ async function openBoard(
   if (axis === null) return fail('not_grouped')
   // 하위 그룹(B-4a) — 보드에서만 · 살아 있는 · 그룹 기준과 다른 속성일 때만(아니면 저장값은 두고 읽지 않는다)
   const rawSub = view.sub_group_by as GroupBy | null
-  const sub =
+  let sub =
     (view.type === 'board' || view.type === 'chart') && rawSub !== null && typeof rawSub === 'object' && typeof rawSub.property_id === 'string' && rawSub.property_id !== groupBy.property_id
       ? await readAxis(tx, rawSub, types, todayKey)
       : null
+  // 다중 선택은 가로줄이 되지 못한다(PT-1b) — 한 행이 여러 가로줄에 서면 칸의 곱이 된다. 저장값은 두고 읽지 않는다
+  if (sub !== null && sub.propertyType === 'multi_select') sub = null
 
   return {
     viewId,
@@ -625,7 +630,7 @@ async function readAxis(tx: Tx, groupBy: GroupBy, types: PropertyTypes, today: s
   return {
     groupBy,
     propertyType,
-    options: isOptionType(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
+    options: hasOptionRegistry(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     statusByGroup,
     defaultOptionId,
     dateUnit: propertyType === 'date' ? (isDateUnit(groupBy.date_unit) ? groupBy.date_unit : DEFAULT_DATE_UNIT) : null,
@@ -754,6 +759,8 @@ function keyExprOf(board: GroupAxis, params: ParamBag, alias = 'gv'): string {
   if (board.propertyType === 'checkbox') {
     return `(CASE WHEN ${alias}.bool_value THEN 'true' ELSE 'false' END)`
   }
+  // 다중 선택(PT-1b) — 값마다 한 줄로 펼친 키(`multiJoin` 의 `gk.k`) · 행은 값의 수만큼 서고 값이 없으면 '' 에 한 번
+  if (board.propertyType === 'multi_select') return `${alias}k.k`
   const ids = params.bind(board.options.map((o) => o.id))
   // 범주 단위(10n-27) — 셀의 옵션을 그 옵션의 그룹으로. 옵션 id ↔ kind 표를 묶는다(옵션은 이미 읽었다 · 지워진 옵션 · 빈 셀은 '')
   if (board.statusByGroup) {
@@ -785,13 +792,30 @@ function splitCell(board: Board, cell: string): readonly [string, string | null]
 }
 
 /**
+ * 다중 선택 축의 펼침(PT-1b · F-04-11 "중복 등장") — 살아 있는 옵션의 값마다 한 줄(`k`) · 하나도 없으면 `''` 한 줄. 행이 FROM 에서 값의 수만큼
+ * 늘어나므로 카운트 · 윈도 · 커서가 모두 "그룹 안의 행" 하나의 규칙을 본다. 다른 축은 빈 문자열.
+ */
+function multiJoin(board: GroupAxis, params: ParamBag, alias: string): string {
+  if (board.propertyType !== 'multi_select') return ''
+  const ids = params.bind(board.options.map((o) => o.id))
+  return `
+       CROSS JOIN LATERAL (
+         SELECT unnest(CASE WHEN cardinality(l.a) = 0 THEN ARRAY['']::text[] ELSE l.a END) AS k
+           FROM (SELECT ARRAY(
+                   SELECT e.x ->> 'id'
+                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${alias}.value -> 'multi_select') = 'array' THEN ${alias}.value -> 'multi_select' ELSE '[]'::jsonb END) e(x)
+                    WHERE e.x ->> 'id' = ANY(${ids}::text[])) AS a) l
+       ) ${alias}k`
+}
+
+/**
  * 열 · 가로줄의 셀을 잇는 JOIN 과 키 식(B-4a) — 열은 `gv` · 가로줄은 `sv`. 칸 키 식(`cellExpr`)이 자리(`row_position.group_key`) · 칸 소속에
  * 쓰인다 — 하위 그룹이 없으면 열 키 식 그대로.
  */
 function cellSql(board: Board, params: ParamBag): { joins: string; keyExpr: string; subKeyExpr: string | null; cellExpr: string } {
   const gp = params.bind(board.groupBy.property_id)
   const keyExpr = keyExprOf(board, params)
-  const gvJoin = `LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}`
+  const gvJoin = `LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}${multiJoin(board, params, 'gv')}`
   if (board.sub === null) return { joins: gvJoin, keyExpr, subKeyExpr: null, cellExpr: keyExpr }
   const sp = params.bind(board.sub.groupBy.property_id)
   const subKeyExpr = keyExprOf(board.sub, params, 'sv')
@@ -1375,6 +1399,7 @@ function cellValueFor(board: GroupAxis, groupKey: string): CellValue | null {
     return { type: 'rich_text', rich_text: groupKey === NO_VALUE_KEY ? [] : [textRun(groupKey)] }
   }
   if (board.propertyType === 'checkbox') return { type: 'checkbox', checkbox: groupKey === 'true' }
+  if (board.propertyType === 'multi_select') return { type: 'multi_select', multi_select: groupKey === NO_VALUE_KEY ? [] : [{ id: groupKey }] }
   if (groupKey === NO_VALUE_KEY) return optionValue(board.propertyType, null)
   if (board.statusByGroup) {
     const fill = fillOptionOf(board, groupKey as StatusGroupKind)
@@ -1412,7 +1437,16 @@ export async function moveRow(
     if (row === null) return fail('not_found')
 
     // 지금 칸 · 놓을 칸(B-4a — 하위 그룹이면 열 + 가로줄 · 가로줄 키를 주지 않으면 지금 가로줄에 남는다)
-    const currentCell = await currentCellOf(tx, board, input.rowId)
+    const cells0 = await cellsOf(tx, board, input.rowId)
+    const multi = board.propertyType === 'multi_select'
+    let currentCell = cells0[0]
+    if (multi) {
+      // 다중 선택(PT-1b) — 행이 여러 열에 선다: 끈 열(`fromGroupKey`)이 "지금 칸" · 덩이 안 옮기기는 놓을 열이 곧 그 열 · 열이 하나뿐이면 생략할 수 있다
+      const from = input.within === true ? input.groupKey : (input.fromGroupKey ?? (cells0.length === 1 ? cells0[0] : null))
+      if (from === null) return fail('invalid_value')
+      if (!cells0.includes(from)) return fail('not_found')
+      currentCell = from
+    }
     const [current, currentSub] = splitCell(board, currentCell)
     const subTarget = sub === null ? null : (input.subGroupKey ?? currentSub ?? NO_VALUE_KEY)
     const targetCell = cellKeyOf(board, input.groupKey, subTarget)
@@ -1423,7 +1457,7 @@ export async function moveRow(
     if (manual && !(await isInCell(tx, board, input.beforeRowId ?? null, targetCell))) return fail('not_found')
 
     // ── ① 셀 값. 이미 그 그룹(가로줄)이면 건드리지 않는다 · 두 축을 한 번에 쓴다(B-4a) ──
-    if (input.within === true && currentCell !== targetCell) return fail('not_found')
+    if (input.within === true && !(multi ? cells0.includes(targetCell) : currentCell === targetCell)) return fail('not_found')
     const cells: { propertyId: string; value: CellValue }[] = []
     if (current !== input.groupKey) {
       const value = await movedValueOf(tx, board, input.rowId, current, input.groupKey)
@@ -1443,7 +1477,12 @@ export async function moveRow(
 
     // ── ② 자리. 옛 그룹의 자리는 지운다 — PK 가 (뷰, 그룹, 행)이라 두 열에 남을 수 있다. 평평한 표의 자리(`'*'` · 10n-59)는 남긴다 —
     //    그룹을 풀면 그 차례가 돌아와야 한다(정본 [보강 G-1] ⑦) ──
-    await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2 AND group_key <> $3`, [viewId, input.rowId, UNGROUPED_ORDER_KEY])
+    // 다중 선택(PT-1b)은 남는 열에 자리를 둔다 — 끈 열과 놓을 열의 자리만 지운다(놓을 열에 이미 서 있었으면 PK 가 겹친다)
+    if (multi) {
+      await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2 AND group_key IN ($3, $4)`, [viewId, input.rowId, currentCell, targetCell])
+    } else {
+      await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2 AND group_key <> $3`, [viewId, input.rowId, UNGROUPED_ORDER_KEY])
+    }
 
     if (manual) {
       const orderIdx = await placeIn(tx, board, targetCell, input.rowId, input.beforeRowId ?? null)
@@ -1470,7 +1509,7 @@ async function standsInBoard(tx: Tx, board: Board, rowId: string): Promise<boole
   const q = compileBoard(board, params, false)
   const rowParam = params.bind(rowId)
   const hit = await tx.queryMaybe<{ one: number }>(
-    `SELECT 1 AS one ${q.from} WHERE ${q.where} AND p.id = ${rowParam}`,
+    `SELECT 1 AS one ${q.from} WHERE ${q.where} AND p.id = ${rowParam} LIMIT 1`,
     [board.dataSourceId, ...params.values],
   )
   return hit !== null
@@ -1478,6 +1517,13 @@ async function standsInBoard(tx: Tx, board: Board, rowId: string): Promise<boole
 
 /** 옮긴 행이 받을 한 축의 값 — 날짜 · 숫자는 민다(B-1 · B-2) · 그 밖은 그 그룹의 값. 받을 값이 없으면 null(범주 · 첫 글자 · 상대 날짜의 범위). */
 async function movedValueOf(tx: Tx, axis: GroupAxis, rowId: string, from: string, to: string): Promise<CellValue | null> {
+  if (axis.propertyType === 'multi_select') {
+    const cell = await tx.queryMaybe<{ value: { multi_select?: { id: string }[] } }>(
+      `SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`,
+      [rowId, axis.groupBy.property_id],
+    )
+    return { type: 'multi_select', multi_select: movedMultiSelect(cell?.value.multi_select ?? [], from, to) }
+  }
   const shifts = from !== NO_VALUE_KEY && to !== NO_VALUE_KEY
   if (shifts && axis.dateUnit !== null) return shiftedDateOf(tx, axis, rowId, from, to)
   if (shifts && axis.numberSize !== null) return shiftedNumberOf(tx, axis, rowId, from, to)
@@ -1486,16 +1532,21 @@ async function movedValueOf(tx: Tx, axis: GroupAxis, rowId: string, from: string
 
 /** 그 행의 지금 칸 키(하위 그룹이 없으면 열 키). */
 async function currentCellOf(tx: Tx, board: Board, rowId: string): Promise<string> {
+  return (await cellsOf(tx, board, rowId))[0]
+}
+
+/** 그 행이 선 칸 키들 — 다중 선택(PT-1b)이면 값마다 하나(값이 없으면 `''` 하나) · 그 밖은 하나. */
+async function cellsOf(tx: Tx, board: Board, rowId: string): Promise<string[]> {
   const params = new ParamBag(3)
   const cell = cellSql(board, params)
-  const row = await tx.queryOne<{ key: string }>(
+  const rows = await tx.query<{ key: string }>(
     `SELECT ${cell.cellExpr} AS key
        FROM page p
        ${cell.joins}
       WHERE p.id = $1 AND p.data_source_id = $2`,
     [rowId, board.dataSourceId, ...params.values],
   )
-  return row.key
+  return rows.map((r) => r.key)
 }
 
 /**
@@ -1513,7 +1564,7 @@ async function isInCell(tx: Tx, board: Board, before: string | null, cell: strin
       WHERE p.id = $1 AND p.data_source_id = $2 AND p.is_template = false AND b.lifecycle = 'live'`,
     [before, board.dataSourceId],
   )
-  return target !== null && (await currentCellOf(tx, board, before)) === cell
+  return target !== null && (await cellsOf(tx, board, before)).includes(cell)
 }
 
 /** 그 칸(하위 그룹이 없으면 열)에서의 새 자리 키. `before` 는 `moveRow` 가 이미 검사했다(`isInCell`). */
