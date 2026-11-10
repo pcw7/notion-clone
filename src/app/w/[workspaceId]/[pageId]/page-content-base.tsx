@@ -51,6 +51,7 @@ import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageMenu, PageMenuDivider } from './page-menu'
 import { PageAppearanceControl } from './page-appearance-control'
+import { SuggestionModePill, SuggestionModeToggle } from './suggestion-mode-control'
 import { NotifyMeControl } from './notify-me-control'
 import { DEFAULT_LEVEL, readSubscription } from '@/lib/notification/subscription'
 import { PageHistoryButton } from './page-history'
@@ -275,6 +276,8 @@ export async function PageContentBase({
             hint="잠긴 페이지 — 본문과 제목을 고칠 수 없습니다"
             part="badge"
           />
+          {/* 제안 모드(SG-1)가 켜진 동안의 표시 — 끄기 단추. 켜는 것은 페이지 메뉴 · 단축키(고칠 수 있는 사람만) */}
+          {access === 'edit' && <SuggestionModePill pageId={page.id} />}
           {/* 접속자 줄(AW-1)의 자리 — 본문 편집기가 이 자리에 그린다(포털) */}
           <div id="page-presence-slot" data-testid="presence-slot" className="flex items-center" />
           <CommentPanel
@@ -295,6 +298,13 @@ export async function PageContentBase({
             {rowPage === null && access === 'edit' && (
               <>
                 <PageAppearanceControl workspaceId={workspaceId} pageId={page.id} initial={page.appearance} />
+                <PageMenuDivider />
+              </>
+            )}
+            {/* 제안 모드(SG-1 · F-05-12) — 고칠 수 있는 사람만(정본 [보강 SG-1] ① · 행도 본문이 있다) · 보는 사람의 화면 상태 */}
+            {access === 'edit' && (
+              <>
+                <SuggestionModeToggle pageId={page.id} />
                 <PageMenuDivider />
               </>
             )}

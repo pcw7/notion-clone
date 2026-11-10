@@ -19,7 +19,7 @@
  */
 
 import type * as Y from 'yjs'
-import { redoCommand, undoCommand, ySyncPlugin, yUndoPlugin } from 'y-prosemirror'
+import { redoCommand, undoCommand, ySyncPlugin, ySyncPluginKey, yUndoPlugin } from 'y-prosemirror'
 import { EditorState, type Plugin } from '@tiptap/pm/state'
 
 import { cursorPlugins, editingPlugins, type EditorDeps } from '../editor/create-editor.ts'
@@ -46,6 +46,8 @@ export function createCollabEditorState(
     ...deps,
     history: { undo: undoCommand, redo: redoCommand },
     swallowCommandErrors: true,
+    // 다른 참여자 · 되돌리기가 Y.Doc 에서 가져온 것 — 바인딩이 표지를 단다. 제안 모드(SG-1)가 다시 쓰지 않는다
+    isRemoteChange: (tr) => tr.getMeta(ySyncPluginKey) !== undefined,
   }
   const state = EditorState.create({
     schema: collabSchema,

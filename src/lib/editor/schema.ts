@@ -394,7 +394,7 @@ nodes[UNSUPPORTED_TYPE] = {
 
 // ── 마크 ──────────────────────────────────────────────────────────────
 //
-// F-01-03 의 annotation 5개 + 링크 + 색.
+// F-01-03 의 annotation 5개 + 링크 + 색 + 제안 셋(SG-1 · 맨 아래).
 //
 // `color` 를 마크 **하나**로 둔 것이 계약이다. RichText 의 `annotations.color` 는
 // 필드 하나이고 텍스트색·배경색을 동시에 가질 수 없다 — 두 마크로 쪼개면
@@ -435,6 +435,43 @@ for (const name of BOOLEAN_MARKS) {
   marks[name] = {
     parseDOM: [{ tag: MARK_TAG[name] }],
     toDOM: () => [MARK_TAG[name], 0],
+  }
+}
+
+// ── 제안 마크(판결 U-2 · 정본 [보강 SG-1]) ─────────────────────────────
+//
+// 제안의 진실은 본문 안의 이 마크다(서버 `suggestion` 표는 메타데이터 — SG-2). Y.XmlText 의 attr 키가 마크 이름이고 값이 attr 이다
+// (`collab/ydoc.ts` 머리말) — **이름 · attr 이 저장 포맷이다.** 셋 다 자기만 배제한다(같은 글자에 insert 와 delete 가 함께 설 수 있다
+// — 남이 넣자고 한 글을 지우자고 한다). `inclusive: false` — 끝에 붙여 친 글이 마크를 물려받지 않는다(모드가 꺼진 편집은 그냥 글).
+// parseDOM 이 없다 — 붙여넣은 HTML 이 남의 이름으로 제안을 만들 수 없다(글자만 들어온다). 맨 뒤에 둔다 — 마크 순서(겹칠 때의 안팎)는
+// 앞의 마크들 그대로다. 그리기는 `editor.css` 의 `.blk-suggest-*`.
+
+export const SUGGESTION_INSERT_MARK = 'suggestion_insert'
+export const SUGGESTION_DELETE_MARK = 'suggestion_delete'
+/** 서식 제안(SG-5) — 지금은 선언만 한다(이 마크가 든 문서도 읽힌다). */
+export const SUGGESTION_FORMAT_MARK = 'suggestion_format'
+
+const SUGGESTION_KINDS = [
+  [SUGGESTION_INSERT_MARK, 'insert'],
+  [SUGGESTION_DELETE_MARK, 'delete'],
+  [SUGGESTION_FORMAT_MARK, 'format'],
+] as const
+
+for (const [name, kind] of SUGGESTION_KINDS) {
+  marks[name] = {
+    // 협업 참여자는 Y.Doc 에 무엇이든 쓸 수 있다 — 문자열이 아니면 마크를 만들지 않는다(읽기는 서식만 뺀다 · `ydoc.ts`)
+    attrs: { sid: { validate: 'string' }, author_id: { validate: 'string' } },
+    inclusive: false,
+    toDOM: (mark) => [
+      'span',
+      {
+        class: `blk-suggest blk-suggest-${kind}`,
+        'data-suggestion': kind,
+        'data-sid': String(mark.attrs.sid),
+        'data-author': String(mark.attrs.author_id),
+      },
+      0,
+    ],
   }
 }
 

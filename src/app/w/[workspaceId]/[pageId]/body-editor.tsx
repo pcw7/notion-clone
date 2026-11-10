@@ -125,6 +125,8 @@ import { collapsedAncestorsAt, findCounter, findStateOf, setFindQuery, stepFind 
 import { MENU_IDS, comboboxKey, comboboxStateOf, comboboxTarget, sameTarget, setComboboxTarget } from '@/lib/editor/combobox-a11y'
 import { pasteUrlKey, pasteUrlState, type PasteUrlRange } from '@/lib/editor/paste-url'
 import { MENTION_NODE } from '@/lib/editor/schema'
+import { setSuggestionMode, suggestingAuthor } from '@/lib/editor/suggestion-mode'
+import { isSuggesting, notSuggesting, subscribeSuggestionMode } from './suggestion-mode-store'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
 const SYNCING_AFTER_MS = 3000
@@ -597,6 +599,17 @@ export function BodyEditor({
     // 않는다(8a-2 · 8b-1).
     syncReadOnlyTabStops(view)
   }, [editable])
+
+  // 제안 모드(SG-1) — 보는 사람의 화면 상태(페이지 메뉴 · 단축키 · `suggestion-mode-store.ts`). 고칠 수 있을 때만 편집기에 켠다 —
+  // 켠 사람이 제안의 author 다. 편집기를 다시 만들면(`bind`) 그 상태에 다시 싣는다.
+  const suggesting = useSyncExternalStore(subscribeSuggestionMode, () => isSuggesting(pageId), notSuggesting) && editable
+  const suggestingRef = useRef(suggesting)
+  suggestingRef.current = suggesting
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || (suggestingAuthor(view.state) !== null) === suggesting) return
+    view.dispatch(setSuggestionMode(view.state.tr, suggesting ? userId : null))
+  }, [suggesting, userId])
 
   // ── 제목 맵 ─────────────────────────────────────────────────────────
 
@@ -1512,6 +1525,8 @@ export function BodyEditor({
       emojiLabel: (id) => mentionLabelsRef.current.emoji.get(id),
       onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
       onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
+      // 제안 모드(SG-1)가 막은 편집(블록 나누기 · 서식 …)의 까닭 — 오류가 아니라 안내다
+      onNotice: (message) => setStatus({ kind: 'notice', message }),
       openBlockMenu: () => openMenuRef.current?.(),
       // 코드 블록의 크롬 버튼(8a-2) — 목록 · 입력칸은 편집기 밖의 오버레이다.
       openCodeLanguageMenu: (id) => openCodeUi('language', id),
@@ -1639,6 +1654,8 @@ export function BodyEditor({
         },
       })
       viewRef.current = view
+      // 제안 모드(SG-1)는 편집기 상태에 산다 — 새 편집기에 다시 싣는다
+      if (suggestingRef.current) view.dispatch(setSuggestionMode(view.state.tr, userId))
       // 성능 계측(10e-1b) — 쓸 수 있게 됐다(첫 편집기만 뜻이 있다 — 수집기가 거른다)
       perfEditorReady()
       // 한글 IME — 조합 중에는 후보를 묻지 않고, 조합이 끝나면 그때의 쿼리로 묻는다.
