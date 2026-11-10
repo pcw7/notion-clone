@@ -33,6 +33,13 @@ export function automationInboxLine(automation: { readonly message: string; read
   return automation.senderName ? `${automation.senderName}: ${text}` : text
 }
 
+/** 제안 알림의 한 줄(SG-4) — 새 제안이면 "제안했습니다: 미리보기", 수락이면 "제안을 수락했습니다". 제안 알림이 아니면 null. */
+export function suggestionInboxLine(suggestion: { readonly accepted: boolean } | null, preview: string | null): string | null {
+  if (suggestion === null) return null
+  if (suggestion.accepted) return '제안을 수락했습니다.'
+  return preview === null || preview === '' ? '제안했습니다.' : `제안했습니다: ${preview}`
+}
+
 /** 검증 만료 알림의 글(VF-3) — 행 제목은 줄 머리의 링크가 보인다. */
 export function verificationInboxLine(kind: string): string | null {
   return kind === 'verification_expired' ? '검증이 만료되었습니다.' : null

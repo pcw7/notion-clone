@@ -19,6 +19,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction } from '../db/tx.ts'
 import type { ResolveAction } from '../editor/suggestion-resolve.ts'
 import { isUuid } from '../ids.ts'
+import { notifySuggestionsAccepted } from '../notification/fanout.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { isLocked } from '../permissions/lock.ts'
@@ -61,12 +62,16 @@ export async function resolveSuggestions(
     if (!can(caps, 'edit_content') || (await isLocked(tx, pageId))) return { ok: false, reason: 'forbidden' } as const
     if (wanted.length === 0) return { ok: true, resolved: [] } as const
 
-    const rows = await tx.query<{ id: string }>(
+    const rows = await tx.query<{ id: string; author_id: string }>(
       `UPDATE suggestion SET state = $3, resolved_by = $4, resolved_at = now()
         WHERE page_id = $1 AND id = ANY($2::uuid[]) AND state IN ('open', 'stale')
-        RETURNING id`,
+        RETURNING id, author_id`,
       [pageId, wanted, STATE_OF[action], ctx.userId],
     )
+    // 수락만 제안한 사람에게 알린다(SG-4 · 거절은 알리지 않는다)
+    if (action === 'accept') {
+      await notifySuggestionsAccepted(tx, ctx, { pageId, suggestions: rows.map((r) => ({ id: r.id, authorId: r.author_id })) })
+    }
     return { ok: true, resolved: rows.map((r) => r.id) } as const
   })
 }

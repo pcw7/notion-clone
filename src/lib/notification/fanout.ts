@@ -263,6 +263,111 @@ export async function notifyAssigned(tx: Tx, ctx: ActivityActor, event: AssignEv
   return recipients.length
 }
 
+// ── 제안 (SG-4 · F-11-16) ───────────────────────────────────────────────
+
+/** 한 사람이 한 페이지에 낸 제안들의 알림을 조회 시점에 접는 열쇠. */
+export const suggestionGroupKey = (pageId: string, authorId: string): string => `suggestion:${pageId}:${authorId}`
+/** 한 페이지에서 수락된 제안들의 열쇠 — 만든 쪽(created)과 섞이지 않게 따로. */
+export const suggestionAcceptedGroupKey = (pageId: string): string => `suggestion_accepted:${pageId}`
+
+export type SuggestionCreatedEvent = {
+  readonly pageId: string
+  /** 이 투영에서 처음 본 제안들 — 제안한 사람마다 묶어 알린다. */
+  readonly suggestions: readonly { readonly id: string; readonly authorId: string }[]
+}
+
+/**
+ * 새 제안이 생겼다 — 페이지를 `all_comments` 로 따르는 멤버에게(코멘트와 같은 수준). 투영과 같은 트랜잭션에서.
+ * 이벤트는 sid 마다 하나, 알림은 (제안한 사람 · 받는 사람)마다 하나다 — 한 번에 여러 sid 가 생겨도 한 줄이다.
+ * 제안한 사람 자신은 받지 않고, 나간 사람도 받지 않는다. 뮤트(`none`) · `replies_and_mentions` 는 받지 않는다.
+ *
+ * @returns 만든 알림 수.
+ */
+export async function notifySuggestionsCreated(tx: Tx, ctx: SessionContext, event: SuggestionCreatedEvent): Promise<number> {
+  if (event.suggestions.length === 0) return 0
+  const levels = await subscribersOf(tx, event.pageId)
+  const subscribers = [...levels].filter(([, level]) => level === 'all_comments').map(([userId]) => userId)
+  const members =
+    subscribers.length === 0
+      ? []
+      : (
+          await tx.query<{ user_id: string }>(
+            `SELECT user_id FROM workspace_member WHERE workspace_id = $1 AND status = 'active' AND user_id = ANY($2::uuid[])`,
+            [ctx.workspaceId, subscribers],
+          )
+        ).map((m) => m.user_id)
+
+  const byAuthor = new Map<string, string[]>()
+  for (const s of event.suggestions) byAuthor.set(s.authorId, [...(byAuthor.get(s.authorId) ?? []), s.id])
+
+  let made = 0
+  for (const [authorId, ids] of byAuthor) {
+    const eventIds: string[] = []
+    for (const id of ids) {
+      const activity = await recordActivity(tx, { workspaceId: ctx.workspaceId, userId: authorId }, {
+        pageId: event.pageId,
+        type: 'suggestion.created',
+        payload: { suggestion_id: id },
+      })
+      eventIds.push(activity.id)
+    }
+    const recipients = members.filter((id) => id !== authorId)
+    if (recipients.length === 0) continue
+    const viewing = await activeViewersOf(event.pageId, recipients)
+    for (const userId of recipients) {
+      await tx.query(
+        `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at, read_at)
+         VALUES ($1, $2, $3, $4, $5::uuid[], 'suggestion', $6, now(), CASE WHEN $7::boolean THEN now() END)`,
+        [randomUUID(), userId, ctx.workspaceId, event.pageId, eventIds, suggestionGroupKey(event.pageId, authorId), viewing.has(userId)],
+      )
+      made++
+    }
+  }
+  return made
+}
+
+export type SuggestionAcceptedEvent = {
+  readonly pageId: string
+  /** 이번 수락 호출이 `accepted` 로 적은 제안들. */
+  readonly suggestions: readonly { readonly id: string; readonly authorId: string }[]
+}
+
+/**
+ * 제안이 수락됐다 — 제안한 사람에게(수락한 사람 자신은 빼고 · 나간 사람도 뺀다). 수락 명령과 같은 트랜잭션에서.
+ * 제안한 사람마다 알림 하나 · 이벤트 하나(그 사람의 첫 제안을 가리킨다). 구독 수준과 무관하다 — 내 제안의 결과다.
+ *
+ * @returns 만든 알림 수.
+ */
+export async function notifySuggestionsAccepted(tx: Tx, ctx: SessionContext, event: SuggestionAcceptedEvent): Promise<number> {
+  const byAuthor = new Map<string, string[]>()
+  for (const s of event.suggestions) {
+    if (s.authorId === ctx.userId) continue
+    byAuthor.set(s.authorId, [...(byAuthor.get(s.authorId) ?? []), s.id])
+  }
+  if (byAuthor.size === 0) return 0
+  const members = new Set(
+    (
+      await tx.query<{ user_id: string }>(
+        `SELECT user_id FROM workspace_member WHERE workspace_id = $1 AND status = 'active' AND user_id = ANY($2::uuid[])`,
+        [ctx.workspaceId, [...byAuthor.keys()]],
+      )
+    ).map((m) => m.user_id),
+  )
+  const viewing = await activeViewersOf(event.pageId, [...members])
+  let made = 0
+  for (const [authorId, ids] of byAuthor) {
+    if (!members.has(authorId)) continue
+    const activity = await recordActivity(tx, ctx, {
+      pageId: event.pageId,
+      type: 'suggestion.accepted',
+      payload: { suggestion_id: ids[0] as string },
+    })
+    await insertNotifications(tx, ctx, event.pageId, activity.id, 'suggestion', suggestionAcceptedGroupKey(event.pageId), [authorId], viewing)
+    made++
+  }
+  return made
+}
+
 async function insertNotifications(
   tx: Tx,
   ctx: ActivityActor,

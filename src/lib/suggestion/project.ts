@@ -19,6 +19,7 @@ import { withoutNul } from '../contracts/json-safe.ts'
 import type { Tx } from '../db/tx.ts'
 import type { SuggestionMark } from '../editor/suggestion-original.ts'
 import { isUuid } from '../ids.ts'
+import { notifySuggestionsCreated } from '../notification/fanout.ts'
 
 /** 미리보기 길이 — 0140 `ck_suggestion_preview` 와 같다. */
 export const SUGGESTION_PREVIEW_CHARS = 80
@@ -53,14 +54,16 @@ export async function projectSuggestions(
   if (sids.length === 0) return
 
   const rows = [...bySid].map(([sid, m]) => ({ sid, authorId: m.authorId.toLowerCase(), kind: m.kind, preview: suggestionPreview(m.text) }))
-  await tx.query(
+  // xmax = 0 이면 새로 넣은 행이다(stale → open 되살림은 xmax 가 남는다) — 처음 본 sid 만 알린다(SG-4)
+  const written = await tx.query<{ id: string; author_id: string; inserted: boolean }>(
     `INSERT INTO suggestion (id, page_id, author_id, kind, preview, state, created_at)
      SELECT m.id, $1, m.author_id, m.kind, m.preview, 'open', now()
        FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[]) AS m(id, author_id, kind, preview)
       WHERE EXISTS (SELECT 1 FROM workspace_member w
                      WHERE w.workspace_id = $6 AND w.user_id = m.author_id AND w.status = 'active')
      ON CONFLICT (id) DO UPDATE SET state = 'open'
-      WHERE suggestion.state = 'stale' AND suggestion.page_id = EXCLUDED.page_id`,
+      WHERE suggestion.state = 'stale' AND suggestion.page_id = EXCLUDED.page_id
+     RETURNING id, author_id, (xmax = 0) AS inserted`,
     [
       pageId,
       rows.map((r) => r.sid),
@@ -70,4 +73,6 @@ export async function projectSuggestions(
       ctx.workspaceId,
     ],
   )
+  const fresh = written.filter((r) => r.inserted).map((r) => ({ id: r.id, authorId: r.author_id }))
+  await notifySuggestionsCreated(tx, ctx, { pageId, suggestions: fresh })
 }
