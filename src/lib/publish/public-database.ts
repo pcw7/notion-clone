@@ -44,6 +44,7 @@ import { isCalculation, type Calculation, type CalculationResult } from '../data
 import { readChartLayout, type ChartKind } from '../database/chart.ts'
 import type { PublicTarget } from './public-access.ts'
 import { boardKeyOf, isBoardGroupType, type BoardSpec } from './public-board.ts'
+import { publicFilesValue } from './public-files.ts'
 import { buildChartGroups, chartCalculationSupported, chartResultOf, type ChartStatRow, type PublicChartGroup } from './public-chart.ts'
 import {
   calendarMonth,
@@ -568,11 +569,7 @@ function pick(cache: Record<string, unknown> | null, columns: readonly PublicCol
     }
     // 파일과 미디어(PT-4) — 이름만. 파일 id 는 싣지 않는다(공개 파일 길은 블록 단위라 칸의 파일은 열 수 없다)
     if (column.type === 'files') {
-      const files = (value as { files?: unknown } | null)?.files
-      out[column.id] = {
-        type: 'files',
-        files: (Array.isArray(files) ? files : []).flatMap((f) => (typeof (f as { name?: unknown } | null)?.name === 'string' ? [{ name: (f as { name: string }).name }] : [])),
-      }
+      out[column.id] = publicFilesValue(value)
       continue
     }
     out[column.id] = value
