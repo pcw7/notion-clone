@@ -136,9 +136,9 @@ import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/da
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
-import { SelectEditor, type OptionEditActions } from './select-editor'
+import type { OptionEditActions } from './select-editor'
+import { ButtonEditFormLazy, FormulaEditFormLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
 import { containsAcrossLayers } from '../../anchored-layer'
-import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
 import { useTableChanges } from './use-table-changes'
 import { mergeReloaded } from '@/lib/database/live-rows'
@@ -154,12 +154,9 @@ import {
 } from '@/lib/database/row-drag'
 import { GroupLanesContext, type GroupLane } from './group-lanes'
 import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
-import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
 import { ButtonCell } from './button-cell'
 import { VerificationPickerLazy } from './verification-lazy'
-import { ButtonEditForm } from './button-editor'
-import { RollupSourceEditor } from './rollup-source-editor'
 import { ReminderBell } from './reminder-bell'
 import { useRowReminders } from './use-row-reminders'
 import type { DateReminderJson } from '@/lib/database/reminder'
@@ -1169,7 +1166,7 @@ export function DatabaseTable(props: {
     ...(column.type === 'rollup'
       ? {
           rollupSourceEdit: (close: () => void) => (
-            <RollupSourceEditor
+            <RollupSourceEditorLazy
               workspaceId={workspaceId}
               relations={relationChoices}
               current={column.rollup}
@@ -1189,7 +1186,7 @@ export function DatabaseTable(props: {
     ...(column.type === 'formula' && formulaPlan !== null
       ? {
           formulaEdit: (close: () => void) => (
-            <FormulaEditForm
+            <FormulaEditFormLazy
               plan={formulaPlan}
               selfId={column.propertyId}
               initial={column.formula.expression}
@@ -1204,7 +1201,7 @@ export function DatabaseTable(props: {
     ...(column.type === 'button'
       ? {
           buttonEdit: (close: () => void) => (
-            <ButtonEditForm
+            <ButtonEditFormLazy
               workspaceId={workspaceId}
               dataSourceId={dataSourceId}
               propertyId={column.propertyId}
@@ -1982,7 +1979,7 @@ export function DatabaseTable(props: {
                       {isEditing && cell.kind === 'cell' && hasOptionRegistry(cell.column.type) ? (
                         <>
                           {display}
-                          <SelectEditor
+                          <SelectEditorLazy
                             options={column.options}
                             currentId={optionIdOf(cell.value)}
                             // 다중 선택(PT-1) — 고른 옵션 전부 · 고르개는 여러 개를 고르며 열린 채다
@@ -2027,7 +2024,7 @@ export function DatabaseTable(props: {
                       ) : isEditing && cell.kind === 'relation' ? (
                         <>
                           {isList ? <div className="min-w-0 flex-1">{display}</div> : display}
-                          <RelationEditor
+                          <RelationEditorLazy
                             // 칸이 바뀌면 새로 마운트한다 — 편집기는 열 때 한 번 읽는다.
                             key={`${row.id}:${column.propertyId}`}
                             workspaceId={workspaceId}

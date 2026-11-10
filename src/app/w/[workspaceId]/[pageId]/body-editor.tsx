@@ -83,17 +83,19 @@ import { closeEmojiMenu, emojiMenuState, insertCustomEmoji, replaceColonEmoji } 
 import { BlockGutter } from './block-gutter'
 import { TableControls } from './table-controls'
 import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
-import { CodeCaptionEditor } from './code-caption-editor'
-import { CodeLanguageMenu } from './code-language-menu'
-import { LinkedDatabasePicker } from './linked-database-picker'
 import type { DatabaseListItem } from '@/lib/database/database'
-import { EquationEditor } from './equation-editor'
-import { ButtonBlockSettings } from './button-block-settings'
-import { EmojiPicker } from './emoji-picker'
+import {
+  ButtonBlockSettingsLazy,
+  CodeCaptionEditorLazy,
+  CodeLanguageMenuLazy,
+  EmojiPickerLazy,
+  EquationEditorLazy,
+  ImageAltDialogLazy,
+  LinkedDatabasePickerLazy,
+} from './body-popups-lazy'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 import { randomEmoji } from '@/lib/emoji/catalog'
 import { calloutIconAt, setCalloutIconCommand } from '@/lib/editor/callout-block'
-import { ImageAltDialog } from './image-alt-dialog'
 import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from '@/lib/editor/image-block'
 import {
   bookmarkCaptionInfo,
@@ -2009,7 +2011,7 @@ export function BodyEditor({
 
         {/* 연결된 데이터베이스의 원본 고르개(27번 트랙 L-2) — 편집기 밖 · 프레임 좌표. 고르면 서버가 원본을 다시 묻고 그 자리에 넣는다 */}
         {editable && linkUi !== null && (
-          <LinkedDatabasePicker
+          <LinkedDatabasePickerLazy
             top={linkUi.top}
             left={linkUi.left}
             load={loadLinkCandidates}
@@ -2024,7 +2026,7 @@ export function BodyEditor({
 
         {/* 코드 블록의 오버레이(8a-2) — 편집기 밖 · 프레임 좌표. 읽기 전용이 되면 그리지 않는다(다시 열면 새로 연다). */}
         {editable && codeUi?.kind === 'language' && (
-          <CodeLanguageMenu
+          <CodeLanguageMenuLazy
             current={codeUi.language}
             top={codeUi.top}
             left={codeUi.left}
@@ -2039,7 +2041,7 @@ export function BodyEditor({
           />
         )}
         {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption' || codeUi?.kind === 'file_caption' || codeUi?.kind === 'video_caption' || codeUi?.kind === 'bookmark_caption' || codeUi?.kind === 'embed_caption') && (
-          <CodeCaptionEditor
+          <CodeCaptionEditorLazy
             key={`${codeUi.kind}:${codeUi.blockId}`}
             label={codeUi.kind === 'image_caption' ? '이미지 캡션' : codeUi.kind === 'file_caption' ? '파일 캡션' : codeUi.kind === 'video_caption' ? '비디오 캡션' : codeUi.kind === 'bookmark_caption' ? '북마크 캡션' : codeUi.kind === 'embed_caption' ? '임베드 캡션' : '코드 캡션'}
             initial={codeUi.caption}
@@ -2070,7 +2072,7 @@ export function BodyEditor({
         )}
         {/* 이미지의 대체 텍스트(10d-1b · F-12-13) — 편집기 밖. 저장할 때 편집기 명령으로 본문(형식)에 쓴다 · 닫으면 편집기로. */}
         {editable && imageAltUi !== null && (
-          <ImageAltDialog
+          <ImageAltDialogLazy
             key={imageAltUi.blockId}
             initial={imageAltUi.alt}
             onSave={(alt) => {
@@ -2088,7 +2090,7 @@ export function BodyEditor({
         {/* 콜아웃 아이콘의 고르개(디자인-4c) — 편집기 밖 · 아이콘 칸(24px) 자리의 상자 아래에 선다(고르개는 `top-full`). */}
         {editable && calloutIconUi !== null && (
           <div className="absolute z-30 h-6 w-6" style={{ top: calloutIconUi.top, left: calloutIconUi.left }}>
-            <EmojiPicker
+            <EmojiPickerLazy
               key={calloutIconUi.blockId}
               current={calloutIconUi.current}
               removable={calloutIconUi.current !== null}
@@ -2110,7 +2112,7 @@ export function BodyEditor({
         )}
         {/* 버튼 블록의 설정 창(자동화 5e-1) — 편집기 밖. 라벨은 저장할 때 편집기 명령으로 본문에 쓴다. */}
         {editable && buttonUi !== null && (
-          <ButtonBlockSettings
+          <ButtonBlockSettingsLazy
             key={buttonUi.blockId}
             workspaceId={workspaceId}
             pageId={pageId}
@@ -2125,7 +2127,7 @@ export function BodyEditor({
         )}
         {/* 블록 수식의 입력창(Phase 2 1a) — 편집기 밖 · 프레임 좌표. 같은 블록을 다시 열면 새로 연다(key). */}
         {editable && equationUi !== null && (
-          <EquationEditor
+          <EquationEditorLazy
             key={`${equationUi.blockId}:${equationUi.index ?? 'block'}`}
             inline={equationUi.index !== null}
             initial={equationUi.initial}
