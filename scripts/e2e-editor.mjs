@@ -7946,6 +7946,151 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('제안 — 알림 (SG-4 · F-11-16)')) { try {
+      // 내가 제안 모드로 한 낱말을 넣는다 → "모든 코멘트"로 따르는 동료의 인박스에 "제안"과 그 글이 온다 · "답글과 멘션"인 동료에게는 오지 않는다 →
+      // 동료가 브라우저 세션을 바꿔 제안하고 내가 카드에서 수락 → 동료의 인박스에 "수락" · 거절하면 더 오지 않는다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const tag = stamp.toString(36)
+      const myWord = `내제안${tag}`
+      const mateWord = `동료제안${tag}`
+      const rejectWord = `거절감${tag}`
+      const nBlock = randomUUID()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const nPage = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `제안 알림 ${stamp}` }) })).json()).page.id
+      await saveBody(nPage, { blocks: [{ id: nBlock, type: 'paragraph', title: [textRun('원문')], properties: {}, format: {}, children: [] }] })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const mate = await joinAs(workspaceId, await createUser(`제안 동료 ${stamp}`), 'member')
+      const quiet = await joinAs(workspaceId, await createUser(`제안 조용한 동료 ${stamp}`), 'member')
+      const asUser = (u) => ({ ...json, cookie: `nc_session=${u.token}` })
+      const grant = await fetch(`${pagesUrl}/${nPage}/access`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: mate.userId }, level: 'edit' }),
+      })
+      const subscribe = async (u, level) => (await fetch(`${pagesUrl}/${nPage}/subscription`, { method: 'PUT', headers: asUser(u), body: JSON.stringify({ level }) })).ok
+      const subscribed = (await subscribe(mate, 'all_comments')) && (await subscribe(quiet, 'replies_and_mentions'))
+      check('전제 — 동료는 편집 · 모든 코멘트로 · 조용한 동료는 답글과 멘션으로 따른다', grant.ok && subscribed, JSON.stringify({ grant: grant.status, subscribed }))
+
+      const inboxOf = async (u) =>
+        ((await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: asUser(u) })).json()).items ?? []).filter((i) => i.pageId === nPage && i.kind === 'suggestion')
+      /** 이 사람의 인박스에서 조건에 맞는 제안 줄이 설 때까지. */
+      const pollInbox = async (u, pred) => {
+        let items = []
+        for (let i = 0; i < 60; i += 1) {
+          items = await inboxOf(u)
+          if (items.some(pred)) break
+          await sleep(250)
+        }
+        return items
+      }
+      const browseAs = (value) => send('Network.setCookie', { name: 'nc_session', value, domain: 'localhost', path: '/', httpOnly: true })
+      const selOf = (id) => `[data-block-id="${id}"] > *:first-child`
+      const caretToEndOf = async (id) => {
+        const box = await line(id)
+        await click(box.x + 4, box.y + box.h / 2)
+        await afterFocusTimer()
+        await key('End')
+        await sleep(80)
+      }
+      const sidOf = (word) => evaluate(`[...document.querySelectorAll('.blk-editor [data-suggestion="insert"]')].find((e) => e.textContent.includes(${JSON.stringify(word)}))?.dataset.sid ?? null`)
+      const pollState = async (id, want) => {
+        let got = ''
+        for (let i = 0; i < 60; i += 1) {
+          got = (id ? (await dbQuery(`SELECT state FROM suggestion WHERE id = $1`, [id]))[0]?.state : undefined) ?? '(없음)'
+          if (got === want) break
+          await sleep(250)
+        }
+        return got
+      }
+      /** 이 페이지를 이 사람으로 열고 제안 모드를 켠 채 끝에 낱말을 넣는다 — 그 sid 를 돌려준다. */
+      const suggestAs = async (u, word) => {
+        await browseAs(u.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${nPage}` })
+        await waitFor(`!!document.querySelector('${selOf(nBlock)}') && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+        // 서버가 그린 단추는 하이드레이션 전이면 눌러도 그대로다 — 켜질 때까지 다시 누른다(이미 켜져 있으면 누르지 않는다)
+        let on = await evaluate(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`)
+        for (let i = 0; i < 4 && !on; i += 1) {
+          await clickSelector('[data-testid="suggestion-mode-toggle"]')
+          on = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 2000)
+        }
+        await key('Escape')
+        await caretToEndOf(nBlock)
+        await typeText(` ${word}`)
+        await waitFor(`!!document.querySelector('${selOf(nBlock)} [data-suggestion="insert"]')`, 5000)
+        const sid = await sidOf(word)
+        return on ? sid : null
+      }
+      /** 내가 그 sid 의 마크에 마우스를 올려 카드의 단추를 누른다. */
+      const resolveByCard = async (word, sid, testid) => {
+        await move(2, 2)
+        await sleep(300)
+        const box = await evaluate(`(() => {
+          const e = [...document.querySelectorAll('.blk-editor [data-suggestion="insert"]')].find((x) => x.textContent.includes(${JSON.stringify(word)}))
+          if (!e) return null
+          const r = e.getClientRects()[0]
+          return { x: r.x + Math.min(r.width / 2, 12), y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await move(box.x, box.y)
+        if (!(await waitFor(`!!document.querySelector('[data-testid="suggestion-card"] [data-card-sid="${sid}"]')`, 8000))) return false
+        const btn = await evaluate(`(() => { const e = document.querySelector('[data-testid="suggestion-card"] [data-testid="${testid}"]'); if (!e) return null
+          const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+        if (!btn) return false
+        await click(btn.x, btn.y)
+        return true
+      }
+
+      try {
+        // ① 내 제안 → 동료(모든 코멘트)의 인박스
+        const mySid = await suggestAs({ token: session }, myWord)
+        check('전제 — 내 제안이 섰고 투영이 open 으로 세웠다', mySid !== null && (await pollState(mySid, 'open')) === 'open', String(mySid))
+        const created = await pollInbox(mate, (i) => i.suggestion?.accepted === false && (i.preview ?? '').includes(myWord))
+        check('★ 모든 코멘트로 따르는 동료의 인박스에 "제안"과 그 글이 온다',
+          created.some((i) => i.suggestion?.accepted === false && (i.preview ?? '').includes(myWord)), JSON.stringify(created))
+        await sleep(500)
+        check('★ 답글과 멘션으로 따르는 동료에게는 제안 알림이 오지 않는다', (await inboxOf(quiet)).length === 0, JSON.stringify(await inboxOf(quiet)))
+
+        // ② 동료의 제안을 내가 수락 → 동료의 인박스에 "수락"
+        const mateSid = await suggestAs(mate, mateWord)
+        check('전제 — 동료의 제안이 섰고 투영이 open 으로 세웠다', mateSid !== null && (await pollState(mateSid, 'open')) === 'open', String(mateSid))
+        await browseAs(session)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${nPage}` })
+        await waitFor(`!!document.querySelector('${selOf(nBlock)} [data-suggestion="insert"]')`, 15000)
+        let accepted = false
+        for (let i = 0; i < 3 && !accepted; i += 1) {
+          await resolveByCard(mateWord, mateSid, 'suggestion-accept')
+          accepted = (await pollState(mateSid, 'accepted')) === 'accepted'
+        }
+        const got = await pollInbox(mate, (i) => i.suggestion?.accepted === true)
+        check('★ 내가 수락하면 제안한 동료의 인박스에 "수락"이 온다', accepted && got.some((i) => i.suggestion?.accepted === true), JSON.stringify(got))
+
+        // ③ 거절 — 아무것도 가지 않는다
+        const countAccepted = async () =>
+          Number((await dbQuery(
+            `SELECT count(*)::int AS n FROM notification n JOIN activity_event e ON e.id = n.event_ids[1]
+              WHERE n.recipient_id = $1 AND n.page_id = $2 AND e.type = 'suggestion.accepted'`,
+            [mate.userId, nPage],
+          ))[0].n)
+        const beforeReject = await countAccepted()
+        const rejectSid = await suggestAs(mate, rejectWord)
+        check('전제 — 거절할 동료의 제안이 섰다', rejectSid !== null && (await pollState(rejectSid, 'open')) === 'open', String(rejectSid))
+        await browseAs(session)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${nPage}` })
+        await waitFor(`!!document.querySelector('${selOf(nBlock)} [data-suggestion="insert"]')`, 15000)
+        let rejected = false
+        for (let i = 0; i < 3 && !rejected; i += 1) {
+          await resolveByCard(rejectWord, rejectSid, 'suggestion-reject')
+          rejected = (await pollState(rejectSid, 'rejected')) === 'rejected'
+        }
+        await sleep(800)
+        const afterReject = await countAccepted()
+        check('★ 거절하면 제안한 사람에게 알림이 가지 않는다', rejected && afterReject === beforeReject, JSON.stringify({ rejected, beforeReject, afterReject }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })

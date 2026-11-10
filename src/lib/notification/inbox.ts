@@ -100,6 +100,8 @@ export type InboxItem = {
    * `actorId`(DB 자동화는 만든 사람). 다른 알림은 null. 모양을 꾸미는 것은 AN-2.
    */
   readonly automation: { readonly via: 'automation' | 'button'; readonly message: string; readonly senderName: string | null } | null
+  /** 제안(SG-4 · `suggestion`) — 수락됐다는 알림이면 `accepted`. 글(`preview`)은 제안 행의 지금 미리보기다. 다른 알림은 null. */
+  readonly suggestion: { readonly accepted: boolean } | null
   /**
    * 내가 이 페이지의 알림을 껐는가(NM-2 · 정본 §3.8 [보강 NM-2] ①) — 내 `subscription` 이 `none` 이면 참, 행이 없거나 다른 수준이면 거짓.
    * 같은 질의에서 함께 읽는다(항목마다 따로 묻지 않는다).
@@ -226,6 +228,14 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
         .map((g) => events.get(g.latest_event as string)?.actorId)
         .filter((id): id is string => typeof id === 'string'),
     )
+    // 제안 알림의 미리보기 — 제안 행의 지금 글(N3 — 활동은 id 만 든다)
+    const suggestionPreviews = await readSuggestionPreviews(
+      tx,
+      groups
+        .filter((g) => g.kind === 'suggestion' && g.latest_event !== null)
+        .map((g) => events.get(g.latest_event as string)?.payload.suggestion_id)
+        .filter((id): id is string => typeof id === 'string'),
+    )
     const requests = await readAccessRequests(
       tx,
       ctx,
@@ -255,7 +265,11 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
         actorId: event?.actorId ?? null,
         discussionId: typeof event?.payload.discussion_id === 'string' ? event.payload.discussion_id : null,
         preview:
-          comment !== undefined
+          g.kind === 'suggestion'
+            ? typeof event?.payload.suggestion_id === 'string'
+              ? (suggestionPreviews.get(event.payload.suggestion_id) ?? null)
+              : null
+            : comment !== undefined
             ? comment.deleted
               ? null
               : comment.text.slice(0, MAX_PREVIEW)
@@ -286,6 +300,7 @@ export async function listInboxPage(ctx: SessionContext, options: ListInboxOptio
                 senderName: event?.actorId != null && canListMembers(ctx.role) ? (senderNames.get(event.actorId) ?? null) : null,
               }
             : null,
+        suggestion: g.kind === 'suggestion' ? { accepted: event?.type === 'suggestion.accepted' } : null,
         muted: g.muted,
       }
     })
@@ -309,6 +324,16 @@ async function readAccessRequests(
   )
   const named = canListMembers(ctx.role)
   return new Map(rows.map((r) => [r.id, { requesterName: named ? r.name : null, status: r.status, kind: r.kind }]))
+}
+
+/** 제안 행의 미리보기(앞 80자) — 페이지는 이미 권한으로 걸렀다. */
+async function readSuggestionPreviews(tx: Tx, ids: readonly string[]): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map()
+  const rows = await tx.query<{ id: string; preview: string | null }>(
+    `SELECT id, preview FROM suggestion WHERE id = ANY($1::uuid[])`,
+    [[...new Set(ids)]],
+  )
+  return new Map(rows.flatMap((r) => (r.preview === null ? [] : [[r.id, r.preview.slice(0, MAX_PREVIEW)] as const])))
 }
 
 /** 리마인더가 울린 날짜 속성의 지금 이름 — 페이지는 이미 권한으로 걸렀고, 속성은 그 행의 표의 것이다. */

@@ -53,6 +53,7 @@ function toRow(item: Awaited<ReturnType<typeof listInboxPage>>['items'][number])
     reminder: item.reminder,
     assignment: item.assignment,
     automation: item.automation,
+    suggestion: item.suggestion,
     muted: item.muted,
   }
 }

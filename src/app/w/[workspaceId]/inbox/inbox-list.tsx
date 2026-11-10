@@ -41,7 +41,7 @@ import Link from '@/app/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
-import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine, verificationInboxLine } from './inbox-messages'
+import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine, suggestionInboxLine, verificationInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -65,6 +65,8 @@ export type InboxRow = {
   assignment: { propertyName: string | null } | null
   /** 알림 보내기(AN-1) — 보낸 방식과 메시지. 다른 알림은 null. */
   automation?: { via: 'automation' | 'button'; message: string; senderName: string | null } | null
+  /** 제안(SG-4) — 수락됐다는 알림이면 accepted. 다른 알림은 null. */
+  suggestion?: { accepted: boolean } | null
   /** 내가 이 페이지의 알림을 껐는가(NM-2) — 서버가 내 구독 행에서 읽어 준다. */
   muted: boolean
 }
@@ -87,6 +89,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   person_property_assigned: '담당',
   automation: '자동화',
   verification_expired: '검증 만료',
+  suggestion: '제안',
 }
 
 const UNTITLED = '제목 없음'
@@ -327,6 +330,7 @@ export function InboxList({
                   assignmentInboxLine(item.assignment) ??
                   (item.automation ? automationInboxLine(item.automation) : null) ??
                   verificationInboxLine(item.kind) ??
+                  suggestionInboxLine(item.suggestion ?? null, item.preview) ??
                   (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 

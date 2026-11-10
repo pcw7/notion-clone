@@ -8,7 +8,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine } from './inbox-messages.ts'
+import { assignmentInboxLine, automationInboxLabel, automationInboxLine, reminderInboxLine, suggestionInboxLine } from './inbox-messages.ts'
+
+test('④ 제안(SG-4) — 아니면 null · 새 제안은 미리보기와 함께 · 수락은 수락했다고', () => {
+  assert.equal(suggestionInboxLine(null, '글'), null)
+  assert.equal(suggestionInboxLine({ accepted: false }, '새 글'), '제안했습니다: 새 글')
+  assert.equal(suggestionInboxLine({ accepted: false }, null), '제안했습니다.')
+  assert.equal(suggestionInboxLine({ accepted: true }, '새 글'), '제안을 수락했습니다.')
+})
 
 test('① 리마인더가 아니면 null · 속성 이름 · 이름이 없으면 리마인더만', () => {
   assert.equal(reminderInboxLine(null), null)
