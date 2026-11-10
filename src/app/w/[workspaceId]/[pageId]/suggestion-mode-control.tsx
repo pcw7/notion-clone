@@ -10,15 +10,53 @@
 
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 
-import { MENU_ROW } from './page-menu'
+import { MENU_ROW, PageMenuDivider, usePageMenu } from './page-menu'
 import { usePageCommand } from '../page-commands'
-import { isSuggesting, notSuggesting, setSuggesting, subscribeSuggestionMode } from './suggestion-mode-store'
+import {
+  isSuggesting,
+  noSuggestionCount,
+  notSuggesting,
+  setSuggesting,
+  setSuggestionPanelOpen,
+  subscribeSuggestionMode,
+  suggestionCount,
+} from './suggestion-mode-store'
 
 /** 커맨드 팔레트에서 찾는 낱말. */
 const SUGGEST_WORDS = ['제안 모드', '제안', 'suggest', 'suggesting'] as const
 
 function useSuggesting(pageId: string): boolean {
   return useSyncExternalStore(subscribeSuggestionMode, () => isSuggesting(pageId), notSuggesting)
+}
+
+function useSuggestionCount(pageId: string): number {
+  return useSyncExternalStore(subscribeSuggestionMode, () => suggestionCount(pageId), noSuggestionCount)
+}
+
+/**
+ * 페이지 메뉴의 "제안 n개" 줄(SG-3) — 본문에 제안이 있을 때만 선다(볼 수 있는 사람 모두 · 수락 · 거절 단추는 고칠 수 있는 사람에게만 —
+ * 목록이 정한다). 누르면 메뉴를 닫고 편집기가 "제안" 목록을 연다. `divider` 면 줄 아래에 구분선(줄이 없으면 구분선도 없다).
+ */
+export function SuggestionListButton({ pageId, divider = false }: { pageId: string; divider?: boolean }) {
+  const count = useSuggestionCount(pageId)
+  const menu = usePageMenu()
+  if (count === 0) return null
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="suggestion-list-open"
+        onClick={() => {
+          menu?.close()
+          setSuggestionPanelOpen(pageId, true)
+        }}
+        className={MENU_ROW}
+      >
+        제안 {count}개
+      </button>
+      {divider && <PageMenuDivider />}
+    </>
+  )
 }
 
 /** 페이지 메뉴의 "제안 모드" 줄 — 스위치 · 단축키 · 팔레트 작업. 떠나면 끈다(저장하지 않는다). */
@@ -57,9 +95,10 @@ export function SuggestionModeToggle({ pageId }: { pageId: string }) {
   )
 }
 
-/** 머리의 표시 — 켜진 동안만 선다(끄기 단추). */
+/** 머리의 표시 — 켜진 동안만 선다(제안이 있으면 "제안 n개" 목록 열기 · 끄기 단추). */
 export function SuggestionModePill({ pageId }: { pageId: string }) {
   const on = useSuggesting(pageId)
+  const count = useSuggestionCount(pageId)
   if (!on) return null
   return (
     <span
@@ -68,6 +107,16 @@ export function SuggestionModePill({ pageId }: { pageId: string }) {
       className="flex items-center gap-1 rounded-full border border-green-600/40 bg-green-50 py-0.5 pl-2.5 pr-1 text-xs text-green-800 dark:border-green-400/40 dark:bg-green-950 dark:text-green-200"
     >
       제안 모드
+      {count > 0 && (
+        <button
+          type="button"
+          data-testid="suggestion-pill-list"
+          onClick={() => setSuggestionPanelOpen(pageId, true)}
+          className="rounded-full px-1.5 hover:bg-green-600/10 dark:hover:bg-green-400/10"
+        >
+          제안 {count}개
+        </button>
+      )}
       <button
         type="button"
         aria-label="제안 모드 끄기"

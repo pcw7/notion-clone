@@ -26,27 +26,38 @@ export type OpenSuggestion = {
 }
 
 export type ListSuggestionsResult =
-  | { readonly ok: true; readonly suggestions: readonly OpenSuggestion[] }
+  | {
+      readonly ok: true
+      readonly suggestions: readonly OpenSuggestion[]
+      /**
+       * 이 페이지에 제안을 단 적이 있는 사람의 이름표(행의 상태와 무관 — SG-3). 카드는 본문의 마크로 서므로 걸린 행이 없는 제안도 그린다
+       * (수락을 되돌려 마크가 돌아왔다). 투영이 활성 멤버만 넣으므로 이 페이지를 보는 사람에게 새로 알려 주는 것이 없다.
+       */
+      readonly authors: ReadonlyMap<string, string>
+    }
   | { readonly ok: false; readonly reason: 'not_found' }
 
 /** 이 페이지의 걸린(`open`) 제안 — 처음 본 차례. */
 export async function listOpenSuggestions(ctx: SessionContext, pageId: string): Promise<ListSuggestionsResult> {
   if (!isUuid(pageId)) return { ok: false, reason: 'not_found' }
-  const rows = await withReadTransaction(async (tx) => {
+  const read = await withReadTransaction(async (tx) => {
     const page = await tx.queryMaybe<{ id: string }>(
       `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
       [pageId, ctx.workspaceId],
     )
     if (page === null || !can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
-    return tx.query<{ id: string; kind: SuggestionKind; author_id: string; preview: string | null; created_at: Date }>(
+    const rows = await tx.query<{ id: string; kind: SuggestionKind; author_id: string; preview: string | null; created_at: Date }>(
       `SELECT id, kind, author_id, preview, created_at FROM suggestion
         WHERE page_id = $1 AND state = 'open'
         ORDER BY created_at, id`,
       [pageId],
     )
+    const authors = await tx.query<{ author_id: string }>(`SELECT DISTINCT author_id FROM suggestion WHERE page_id = $1`, [pageId])
+    return { rows, authors: authors.map((a) => a.author_id) }
   })
-  if (rows === null) return { ok: false, reason: 'not_found' }
-  const names = await editorNames(ctx, rows.map((r) => r.author_id))
+  if (read === null) return { ok: false, reason: 'not_found' }
+  const { rows, authors } = read
+  const names = await editorNames(ctx, authors)
   const canSeeNames = canListMembers(ctx.role)
   return {
     ok: true,
@@ -58,5 +69,6 @@ export async function listOpenSuggestions(ctx: SessionContext, pageId: string): 
       preview: r.preview,
       createdAt: r.created_at,
     })),
+    authors: new Map(authors.map((id) => [id, editorLabel(id, names, canSeeNames)])),
   }
 }

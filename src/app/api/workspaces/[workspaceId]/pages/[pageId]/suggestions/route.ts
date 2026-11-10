@@ -27,5 +27,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
       preview: s.preview,
       createdAt: s.createdAt.toISOString(),
     })),
+    // 이 페이지에 제안을 단 사람의 이름표 — 걸린 행이 없는 마크(되돌린 수락)의 카드도 이름을 그린다(SG-3)
+    authors: Object.fromEntries(read.authors),
   })
 }
