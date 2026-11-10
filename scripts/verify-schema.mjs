@@ -5526,6 +5526,98 @@ try {
     )
   }
 
+  console.log('\n[97] 파일과 미디어 속성 — 칸 모양 · 같은 워크스페이스의 파일 · 중복 · 상한 · 참조 장부 · 연산자 (0139 / §3.5 [보강 PT-1] ⑧ · PT-4조각)')
+  {
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '파일', 1)`, [dsId, dbBlock])
+    const fileProp = `fil${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const textProp = `txt${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const putProp = `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4::property_type, '{}'::jsonb, $5, now(), now())`
+    await client.query(putProp, [fileProp, dsId, '첨부', 'files', 'a0'])
+    await client.query(putProp, [textProp, dsId, '메모', 'rich_text', 'a1'])
+    const rowPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowPage, wsId, dsId, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowPage, dsId])
+
+    // 파일 — 이 워크스페이스의 둘 · 다른 워크스페이스의 하나
+    const putFile = `INSERT INTO file (id, workspace_id, region_id, storage_key, mime, size_bytes, original_name, ref_count, created_at)
+                     VALUES ($1, $2, 'local', $3, 'text/plain', 10, 'a.txt', 0, now())`
+    const fileA = randomUUID()
+    const fileB = randomUUID()
+    const fileForeign = randomUUID()
+    const otherWs = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '남의 워크스페이스', 'local', now())`, [otherWs])
+    await client.query(putFile, [fileA, wsId, `probe/${fileA}`])
+    await client.query(putFile, [fileB, wsId, `probe/${fileB}`])
+    await client.query(putFile, [fileForeign, otherWs, `probe/${fileForeign}`])
+    const refs = async (id) => (await client.query(`SELECT ref_count FROM file WHERE id = $1`, [id])).rows[0].ref_count
+
+    const put = `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, $3::jsonb)
+                 ON CONFLICT (page_id, property_id) DO UPDATE SET value = EXCLUDED.value`
+    const cell = (...refs_) => JSON.stringify({ type: 'files', files: refs_.map(([id, name]) => ({ id, name })) })
+    await client.query(put, [rowPage, fileProp, cell([fileB, 'b.txt'], [fileA, 'a.txt'])])
+    ok('파일 칸(넣은 차례 B, A) — 정상 경로가 통과한다')
+    if ((await refs(fileA)) === 1 && (await refs(fileB)) === 1) ok('★ 참조 장부 — 넣으면 두 파일이 +1')
+    else fail(`참조 수가 어긋났다: A=${await refs(fileA)} B=${await refs(fileB)}`)
+    await client.query(put, [rowPage, fileProp, cell([fileA, '이름만 바꿈'])])
+    if ((await refs(fileA)) === 1 && (await refs(fileB)) === 0) ok('★ 참조 장부 — 하나를 빼면 그 파일만 −1 · 남긴 파일은 그대로')
+    else fail(`참조 수가 어긋났다: A=${await refs(fileA)} B=${await refs(fileB)}`)
+    await client.query(`DELETE FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [rowPage, fileProp])
+    if ((await refs(fileA)) === 0) ok('★ 참조 장부 — 칸이 사라지면 −1')
+    else fail(`칸을 지웠는데 참조 수가 ${await refs(fileA)}`)
+    await client.query(put, [rowPage, fileProp, cell()])
+    ok('빈 배열 — 통과한다')
+
+    const tryReject = async (label, value, property = fileProp) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, [rowPage, property, value])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === 'tg_ppv_files_shape') ok(`${label} — tg_ppv_files_shape 가 거부함 (${e.code})`)
+        else fail(`${label} — tg_ppv_files_shape 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await tryReject('★ 다른 워크스페이스의 파일', cell([fileForeign, 'x.txt']))
+    await tryReject('★ 없는 파일 id', cell([randomUUID(), 'x.txt']))
+    await tryReject('★ 같은 파일 두 번', cell([fileA, 'x'], [fileA, 'y']))
+    await tryReject('★ 배열이 아닌 값', JSON.stringify({ type: 'files', files: { id: fileA } }))
+    await tryReject('★ 원소에 모르는 키', JSON.stringify({ type: 'files', files: [{ id: fileA, name: 'x', size: 1 }] }))
+    await tryReject('★ 이름이 비었다', cell([fileA, '']))
+    await tryReject('★ 이름 256자', cell([fileA, 'n'.repeat(256)]))
+    await tryReject('★ 봉투에 모르는 키', JSON.stringify({ type: 'files', files: [], extra: 1 }))
+    await tryReject('★ 다른 타입의 칸에 파일 값', cell([fileA, 'x']), textProp)
+    const many = []
+    for (let i = 0; i < 21; i++) {
+      const id = randomUUID()
+      many.push([id, `f${i}`])
+      await client.query(putFile, [id, wsId, `probe/${id}`])
+    }
+    await client.query(put, [rowPage, fileProp, cell(...many.slice(0, 20))])
+    ok('★ 파일 20개 — 통과한다')
+    await tryReject('★ 파일 21개 — 상한', cell(...many))
+
+    const { rows } = await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = 'files' ORDER BY order_idx`)
+    if (rows.map((r) => `${r.operator}:${r.arity}`).join(',') === 'is_empty:0,is_not_empty:0') ok('★ 파일 연산자 — 비어 있음 · 비어 있지 않음')
+    else fail(`파일 연산자가 어긋났다: ${JSON.stringify(rows)}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

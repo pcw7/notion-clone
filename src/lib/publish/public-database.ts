@@ -58,7 +58,7 @@ import {
 /** 공개 화면이 그리는 열의 타입 — 값이 행(`properties_cache`)에 있는 것. */
 // 만든 · 마지막 편집 **시각**(PT-3)도 그린다 — 값은 행 페이지 블록의 열이라 읽을 때 끼운다(`pick`). **사람 둘(created_by · last_edited_by)은 넣지
 // 않는다** — 회원의 신원이다(사람 속성을 그리지 않는 것과 같은 까닭 · [보강 PT-1] ⑦ ⑩)
-export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'url', 'email', 'phone_number', 'created_time', 'last_edited_time', 'checkbox', 'date', 'unique_id', 'verification'] as const
+export const PUBLIC_CELL_TYPES = ['title', 'rich_text', 'number', 'select', 'status', 'multi_select', 'url', 'email', 'phone_number', 'files', 'created_time', 'last_edited_time', 'checkbox', 'date', 'unique_id', 'verification'] as const
 export type PublicCellType = (typeof PUBLIC_CELL_TYPES)[number]
 
 /** 공개 표의 줄 상한 — 넘으면 `truncated`(공개 화면은 페이지를 넘기지 않는다 · v1). */
@@ -564,6 +564,15 @@ function pick(cache: Record<string, unknown> | null, columns: readonly PublicCol
     if (column.type === 'verification') {
       const cell = toVerificationCell(value, new Date())
       if (cell !== null) out[column.id] = { type: 'verification', state: cell.state, expires_at: cell.expires_at, expired: cell.expired }
+      continue
+    }
+    // 파일과 미디어(PT-4) — 이름만. 파일 id 는 싣지 않는다(공개 파일 길은 블록 단위라 칸의 파일은 열 수 없다)
+    if (column.type === 'files') {
+      const files = (value as { files?: unknown } | null)?.files
+      out[column.id] = {
+        type: 'files',
+        files: (Array.isArray(files) ? files : []).flatMap((f) => (typeof (f as { name?: unknown } | null)?.name === 'string' ? [{ name: (f as { name: string }).name }] : [])),
+      }
       continue
     }
     out[column.id] = value

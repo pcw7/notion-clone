@@ -157,6 +157,8 @@ export function cellToFormulaValue(type: MvpPropertyType, raw: unknown, optionNa
     case 'url':
     case 'email':
     case 'phone_number':
+    // 파일과 미디어도(PT-4)
+    case 'files':
       return null
   }
 }

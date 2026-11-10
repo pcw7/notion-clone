@@ -99,6 +99,8 @@ export function calculationsFor(type: MvpPropertyType | AutoMetaType): readonly 
     case 'people':
     // 다중 선택(PT-1) — 같다. 고유 값 세기는 옵션 조합을 세게 되어 뜻이 없다. 값 세기는 칩 수의 합이다(`ColumnStats.values`)
     case 'multi_select':
+    // 파일과 미디어(PT-4) — 같다(값 있는 칸 수)
+    case 'files':
       return ['count_all', 'count_values', 'count_empty', 'percent_empty', 'percent_not_empty']
     default:
       return COMMON

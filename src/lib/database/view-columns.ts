@@ -285,5 +285,5 @@ export function isSortable(column: ViewColumn): boolean {
   // 저장 경로(`validateSorts`)가 거부하는 둘을 같이 뺀다 — relation(10n-44 부터 거를 수 있지만 값이 집합이다) · 사람(사이드카가 사람 id 라
   // 순서에 뜻이 없다 · 정본 [보강] 사람 속성 ⑤). 사람은 10n-46 에서 더했다 — 그 전에는 사람 머리에 정렬이 서고 누르면 서버가 거부했다.
   const f = filterColumnOf(column)
-  return f !== null && f.type !== 'relation' && f.type !== 'people' && f.type !== 'created_by' && f.type !== 'last_edited_by'
+  return f !== null && f.type !== 'relation' && f.type !== 'files' && f.type !== 'people' && f.type !== 'created_by' && f.type !== 'last_edited_by'
 }

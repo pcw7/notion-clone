@@ -255,6 +255,8 @@ const AXIS: Readonly<Record<MvpPropertyType, Axis>> = Object.freeze({
   url: 'text',
   email: 'text',
   phone_number: 'text',
+  // 파일과 미디어(PT-4) — 사이드카는 파일 id 를 공백으로 이은 것. 비었는지만 묻는다
+  files: 'text',
 })
 
 const COLUMN: Readonly<Record<Axis, string>> = Object.freeze({
@@ -476,6 +478,12 @@ const MULTI_SELECT_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.fr
   is_not_empty: TEXT_OPERATORS.is_not_empty,
 })
 
+/** 파일과 미디어(PT-4 · 정본 [보강 PT-1] ⑧) — 비었음 · 비지 않음뿐이다(글과 같은 SQL 조각). */
+const FILES_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  is_empty: TEXT_OPERATORS.is_empty,
+  is_not_empty: TEXT_OPERATORS.is_not_empty,
+})
+
 /**
  * relation(10n-44) — 이어진 행이 있는가. 칸이 아니라 엣지를 본다(`compileFilter` 의 따로 된 길 — 여기 `predicate` 는 쓰지 않는다). 살아 있는 ·
  * 템플릿이 아닌 대상 행만 센다 — 칸이 보여 주는 것(칩 · "볼 수 없는 연결 N개")과 같다. 휴지통의 행만 이어진 칸은 비어 있다.
@@ -517,6 +525,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     unique_id: UNIQUE_ID_OPERATORS,
     people: PEOPLE_OPERATORS,
     multi_select: MULTI_SELECT_OPERATORS,
+    files: FILES_OPERATORS,
     url: TEXT_OPERATORS,
     email: TEXT_OPERATORS,
     phone_number: TEXT_OPERATORS,
@@ -659,6 +668,10 @@ export function validateSorts(sorts: unknown, types: PropertyTypes): ValidationI
     // relation(10n-44)도 — 거를 수는 있지만 값이 집합이라 순서가 없다
     if (types.get(key.property_id) === 'relation') {
       issues.push({ path: `sorts[${i}].property_id`, message: '관계형 속성으로는 정렬할 수 없습니다' })
+    }
+    // 파일과 미디어(PT-4)도 — 파일 id 의 순서는 뜻이 없다
+    if (types.get(key.property_id) === 'files') {
+      issues.push({ path: `sorts[${i}].property_id`, message: '파일과 미디어로는 정렬할 수 없습니다' })
     }
     // 다중 선택(PT-1)은 정렬한다 — 칸의 값 가운데 옵션 순서가 가장 앞인 것으로(compileSorts)
     // 같은 프로퍼티로 두 번 정렬하면 두 번째 키가 아무 일도 하지 않는다.
@@ -878,7 +891,7 @@ export function compileSorts(
     if (resolved === null) continue // 지워진 프로퍼티 · 거를 수 없는 타입
     const rawType = resolved.type
     // relation(10n-44)은 거를 수만 있다 — 정렬 키는 건너뛴다(저장 경로는 `validateSorts` 가 막는다)
-    if (rawType === 'relation') continue
+    if (rawType === 'relation' || rawType === 'files') continue // 파일과 미디어(PT-4)도 거를 수만 있다
     // 고유 ID — 행의 열을 그대로 정렬한다(서브쿼리가 없다).
     if (rawType === 'unique_id') {
       keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })

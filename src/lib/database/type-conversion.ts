@@ -63,6 +63,8 @@ export function cellToText(value: CellValue, optionName: (id: string) => string 
     case 'url':
     case 'email':
     case 'phone_number':
+    // 파일과 미디어도(PT-4) — 바꾸면 참조를 내려야 해서 열지 않는다
+    case 'files':
       return ''
   }
 }
@@ -177,6 +179,8 @@ export function isBlank(value: CellValue): boolean {
       return value.email.length === 0
     case 'phone_number':
       return value.phone_number.length === 0
+    case 'files':
+      return value.files.length === 0
   }
 }
 

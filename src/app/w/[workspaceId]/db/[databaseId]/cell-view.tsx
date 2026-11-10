@@ -20,7 +20,8 @@ import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functio
 import type { FormulaValue } from '@/lib/formula/formula'
 import { formulaCell } from '@/lib/database/formula-plan'
 import { Highlighted } from './search-term'
-import type { AppPropertyType, CellValue, ContactType, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
+import { fileContentHref, isImageName } from '@/lib/database/file-chip'
+import type { AppPropertyType, CellValue, ContactType, FileRef, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
 
 export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   title: '제목',
@@ -35,6 +36,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   url: 'URL',
   email: '이메일',
   phone_number: '전화',
+  files: '파일과 미디어',
   created_time: '만든 시각',
   created_by: '만든 사람',
   last_edited_time: '마지막 편집 시각',
@@ -61,6 +63,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   url: '⌁',
   email: '@',
   phone_number: '✆',
+  files: '⎘',
   created_time: '◷',
   created_by: '◉',
   last_edited_time: '◷',
@@ -182,6 +185,58 @@ function ContactCell({ type, text }: { type: ContactType; text: string }) {
   )
 }
 
+/**
+ * 파일 칸의 칩들(PT-4) — 이름 · 그림이면 작은 미리보기. 누르면 그 파일의 주소로(새 탭 · 파일 블록과 같은 `/content` 길 — 세션이 판정한다).
+ * 칩을 누르는 것은 고치는 동작이 아니다 — 칸의 누름 · 키 처리로 번지지 않게 한다. 워크스페이스를 모르면(카드 배지) 이름만 그린다.
+ */
+export function FileChips({ files, workspaceId }: { files: readonly FileRef[]; workspaceId?: string }) {
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
+  return (
+    <span className="flex min-w-0 flex-wrap gap-1" data-testid="db-files">
+      {files.map((file) => {
+        const label = <span className="min-w-0 truncate">{file.name}</span>
+        if (workspaceId === undefined) {
+          return (
+            <span key={file.id} data-testid="db-file-chip" className="inline-flex max-w-full items-center rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-800">
+              {label}
+            </span>
+          )
+        }
+        const href = fileContentHref(workspaceId, file.id)
+        return (
+          <a
+            key={file.id}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="db-file-chip"
+            data-file-id={file.id}
+            aria-label={`파일 열기: ${file.name}`}
+            className="inline-flex max-w-full items-center gap-1 rounded bg-neutral-100 px-1.5 py-0.5 text-xs hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+            onClick={stop}
+            onMouseDown={stop}
+            onDoubleClick={stop}
+            onKeyDown={stop}
+          >
+            {isImageName(file.name) && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={href}
+                alt=""
+                loading="lazy"
+                data-testid="db-file-thumb"
+                className="size-4 flex-none rounded-sm object-cover"
+                onError={(e) => e.currentTarget.remove()}
+              />
+            )}
+            {label}
+          </a>
+        )
+      })}
+    </span>
+  )
+}
+
 const subscribeNothing = () => () => {}
 const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 const serverTimeZone = () => null
@@ -210,8 +265,21 @@ export function AutoMetaDisplay({ type, row, labels }: { type: AutoMetaType; row
   )
 }
 
-export function CellDisplay({ value, options, names = {} }: { value: CellValue; options: readonly SelectOption[]; names?: PeopleNames }) {
+export function CellDisplay({
+  value,
+  options,
+  names = {},
+  workspaceId,
+}: {
+  value: CellValue
+  options: readonly SelectOption[]
+  names?: PeopleNames
+  /** 파일 칸이 파일의 주소를 만들 때 쓴다(PT-4) — 없으면 이름만 그린다. */
+  workspaceId?: string
+}) {
   switch (value.type) {
+    case 'files':
+      return value.files.length === 0 ? null : <FileChips files={value.files} {...(workspaceId === undefined ? {} : { workspaceId })} />
     case 'people':
       return <PeopleChips ids={value.people.map((p) => p.id)} names={names} />
     case 'checkbox':

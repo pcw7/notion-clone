@@ -103,6 +103,7 @@ import {
   readRelationValue,
   type AutoMetaType,
   type CellValue,
+  type FileRef,
   type MvpPropertyType,
   type OptionColor,
   type OptionType,
@@ -137,7 +138,7 @@ import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
 import type { OptionEditActions } from './select-editor'
-import { ButtonEditFormLazy, FormulaEditFormLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
+import { ButtonEditFormLazy, FilesEditorLazy, FormulaEditFormLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
 import { containsAcrossLayers } from '../../anchored-layer'
 import { AddColumn } from './add-column'
 import { useTableChanges } from './use-table-changes'
@@ -473,7 +474,8 @@ export function DatabaseTable(props: {
     }
 
     // 사람 칸(6g-2)은 초안이 없다 — 고르는 순간마다 저장된다(`people-editor.tsx`). 여는 것이 전부다. 다중 선택(PT-1)도 같다.
-    if (column.type === 'people' || column.type === 'multi_select') {
+    // 파일 칸(PT-4)도 같다 — 올리기 · 빼기마다 저장된다(`files-editor.tsx`)
+    if (column.type === 'people' || column.type === 'multi_select' || column.type === 'files') {
       setMode({ kind: 'editing', at })
       return
     }
@@ -494,7 +496,7 @@ export function DatabaseTable(props: {
     const column = columns[at.col]
     if (row === undefined || column === undefined || !isCellColumn(column)) return true
     // select · status · 사람은 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
-    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people' || column.type === 'multi_select') return true
+    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people' || column.type === 'multi_select' || column.type === 'files') return true
 
     const previous = valueAt(row, column)
     const parsed = parseDraft(column.type, draft, previous)
@@ -629,6 +631,8 @@ export function DatabaseTable(props: {
     if (current.kind !== 'editing' || !samePos(current.at, at)) return
     // 칸의 편집기가 몸으로 내보낸 층(10j-3a)에 있어도 칸 안이다 — DOM 의 contains 는 포털을 모른다
     if (containsAcrossLayers(event.currentTarget, event.relatedTarget as Node | null)) return
+    // 파일 고르기 창이 열리면 창이 포커스를 잃는다 — 그것은 바깥을 누른 것이 아니다(편집기가 닫히면 고른 파일을 받을 입력이 사라진다)
+    if (columns[at.col]?.type === 'files' && !document.hasFocus()) return
     if (!commitEdit(at)) {
       // 틀린 값을 들고 떠났다. 붙잡아 둘 수 없으므로 버리고, 버렸다고 말한다.
       setError((message) => `${message ?? '값을 확인하세요.'} — 저장하지 않았습니다.`)
@@ -677,6 +681,14 @@ export function DatabaseTable(props: {
     void saveCell(row.id, column, { type: 'people', people: ids.map((id) => ({ id })) }, previous, () =>
       api.changePeople(workspaceId, row.id, column.propertyId, change),
     )
+  }
+
+  /** 파일 칸을 고친다(PT-4) — 올리기 · 빼기마다 통째 값으로 저장한다. 편집은 열린 채다. */
+  const setFiles = (at: CellPos, next: readonly FileRef[]) => {
+    const row = rows[at.row]
+    const column = columns[at.col]
+    if (row === undefined || column === undefined || !isCellColumn(column) || column.type !== 'files') return
+    void saveCell(row.id, column, { type: 'files', files: next }, valueAt(row, column))
   }
 
   const createOption = async (at: CellPos, name: string, group?: StatusGroupKind) => {
@@ -1785,7 +1797,7 @@ export function DatabaseTable(props: {
                         {column.type === 'title' ? '제목 없음' : column.name}
                       </span>
                     ) : cell.kind === 'cell' ? (
-                      <CellDisplay value={cell.value} options={column.options} names={peopleNames} />
+                      <CellDisplay value={cell.value} options={column.options} names={peopleNames} workspaceId={workspaceId} />
                     ) : cell.kind === 'relation' ? (
                       <RelationChips value={cell.value} labels={labels} icons={relationIcons} />
                     ) : cell.kind === 'unique_id' ? (
@@ -1994,6 +2006,16 @@ export function DatabaseTable(props: {
                               cell.value.type === 'multi_select' && optionId !== null ? pickMulti(at, optionId) : pickOption(at, optionId)
                             }
                             onCreate={(name, group) => void createOption(at, name, group)}
+                          />
+                        </>
+                      ) : isEditing && cell.kind === 'cell' && cell.value.type === 'files' ? (
+                        <>
+                          {isList ? <div className="min-w-0 flex-1">{display}</div> : display}
+                          <FilesEditorLazy
+                            workspaceId={workspaceId}
+                            current={cell.value.files}
+                            align={isList ? 'right' : 'left'}
+                            onChange={(next) => setFiles(at, next)}
                           />
                         </>
                       ) : isEditing && cell.kind === 'cell' && cell.value.type === 'people' ? (
