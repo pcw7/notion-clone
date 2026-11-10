@@ -128,3 +128,35 @@ describe('⑥ 필터에서 그 속성의 규칙 빼기', () => {
     assert.deepEqual(withoutProperty(null, 'p'), { filter: null, removed: 0 })
   })
 })
+
+describe('⑦ 선택 ↔ 다중 선택 (PT-1b)', () => {
+  const opts = { optionName: (id: string) => (id === 'a' ? 'A' : id === 'b' ? 'B' : null), optionIdFor: (n: string) => n }
+
+  test('★ 선택 → 다중 선택: id 를 한 원소 배열로 감싼다 · 빈 칸은 빈 칸 · 손실 없음', () => {
+    assert.deepEqual(convertCell({ type: 'select', select: { id: 'a' } }, 'multi_select', opts), {
+      value: { type: 'multi_select', multi_select: [{ id: 'a' }] },
+      lost: false,
+    })
+    assert.deepEqual(convertCell({ type: 'select', select: null }, 'multi_select', opts), { value: null, lost: false })
+  })
+
+  test('★ 다중 선택 → 선택: 저장된 첫 값을 남기고 둘 이상이던 칸은 손실로 센다', () => {
+    assert.deepEqual(convertCell({ type: 'multi_select', multi_select: [{ id: 'b' }, { id: 'a' }] }, 'select', opts), {
+      value: { type: 'select', select: { id: 'b' } },
+      lost: true,
+    })
+    assert.deepEqual(convertCell({ type: 'multi_select', multi_select: [{ id: 'a' }] }, 'select', opts), {
+      value: { type: 'select', select: { id: 'a' } },
+      lost: false,
+    })
+    assert.deepEqual(convertCell({ type: 'multi_select', multi_select: [] }, 'select', opts), { value: null, lost: false })
+  })
+
+  test('다중 선택은 선택과만 바꾼다', () => {
+    assert.equal(canConvert('select', 'multi_select'), true)
+    assert.equal(canConvert('multi_select', 'select'), true)
+    assert.equal(canConvert('multi_select', 'rich_text'), false)
+    assert.equal(canConvert('number', 'multi_select'), false)
+    assert.equal(canConvert('status', 'multi_select'), false)
+  })
+})

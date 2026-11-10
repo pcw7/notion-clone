@@ -524,7 +524,7 @@ export function DatabaseBoard(props: {
   }
 
   const commitMove = async (rowId: string, fromKey: string, target: DropTarget) => {
-    const moved = moveCard(groupsRef.current, rowId, target)
+    const moved = moveCard(groupsRef.current, rowId, target, fromKey)
     if (moved === null) return
     setError(null)
     setNotice(null)
@@ -533,6 +533,7 @@ export function DatabaseBoard(props: {
     const result = await api.moveCard(workspaceId, viewId, {
       rowId,
       groupKey: target.key,
+      fromGroupKey: fromKey,
       beforeRowId: target.beforeRowId,
       // 서버가 "아직 이 보드에 서는가" 를 내가 보는 검색어까지 넣어 판정한다(10n-15)
       search: props.search ?? null,
@@ -541,7 +542,7 @@ export function DatabaseBoard(props: {
     })
     if (!result.ok) {
       // 롤백 단위 = 서버 API 단위(머리말). 그사이 다른 갱신이 있었어도 이 카드만 제자리로.
-      update((current) => moveCard(current, rowId, moved.undo)?.columns ?? current)
+      update((current) => moveCard(current, rowId, moved.undo, target.key)?.columns ?? current)
       setError(result.message)
       return
     }
@@ -779,12 +780,12 @@ export function DatabaseBoard(props: {
     })
   })
   /** 카드의 "옮기기"가 고를 자리(10m-2) — 화면에 선 열만(숨긴 그룹으로는 옮기지 않는다 — 끌기와 같다). */
-  const cardMove = (rowId: string): CardMove | null => {
-    const choices = moveChoices(visible, rowId, manualOrder)
+  const cardMove = (rowId: string, fromKey: string): CardMove | null => {
+    const choices = moveChoices(visible, rowId, manualOrder, fromKey)
     if (choices === null) return null
     const labelByKey = new Map(visible.map((g) => [g.key, labelOf(g)]))
     const self = props.lane
-    const column = visible.find((g) => g.rows.some((r) => r.id === rowId))
+    const column = visible.find((g) => g.key === fromKey && g.rows.some((r) => r.id === rowId))
     return {
       ...choices,
       // 다른 가로줄의 같은 열 맨 뒤(B-4e) — 열 때 센다(그때의 접힘 · 받는 열)
@@ -913,7 +914,7 @@ export function DatabaseBoard(props: {
                       endDrag()
                     }}
                     onContextMenu={onCardContextMenu}
-                    move={canMoveCards ? cardMove(row.id) : null}
+                    move={canMoveCards ? cardMove(row.id, group.key) : null}
                     onMove={(target) => moveByMenu(row.id, group.key, target)}
                   />
                 ))}

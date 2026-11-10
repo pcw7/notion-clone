@@ -444,6 +444,8 @@ export function moveCard(
     readonly within?: boolean
     /** 하위 그룹(B-4b)의 가로줄 — 그 칸으로. 주지 않으면 그 행의 지금 가로줄. */
     readonly subGroupKey?: string
+    /** 끈 열(다중 선택 PT-1b) — 행이 여러 열에 서므로 어느 열의 값을 뺄지. */
+    readonly fromGroupKey?: string
   },
 ): Promise<ApiResult<MoveResult>> {
   return call(

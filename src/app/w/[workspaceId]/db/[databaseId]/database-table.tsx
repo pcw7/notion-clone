@@ -85,7 +85,7 @@ import type { TreeMatch } from '@/lib/database/query'
 import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, isSortable, relationOf, rollupOf, type AutoMetaColumn, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
-import { CONVERTIBLE_TYPES, isConvertibleType } from '@/lib/database/type-conversion'
+import { convertTargets, isConvertibleType } from '@/lib/database/type-conversion'
 import type { Calculations } from '@/lib/database/calculate'
 import { CalculationCell } from './calculation-cell'
 import { SearchEmpty } from './view-search'
@@ -1127,7 +1127,7 @@ export function DatabaseTable(props: {
     // 유형 바꾸기(2c-2) — 바꿀 수 있는 타입의 컬럼에만. 바뀌면 서버 렌더를 다시 받는다(컬럼의 타입이 다시 마운트 기준에 있다).
     ...(isConvertibleType(column.type)
       ? {
-          convertTo: CONVERTIBLE_TYPES.filter((t) => t !== column.type).map((t) => ({ type: t, label: TYPE_LABEL[t] })),
+          convertTo: convertTargets(column.type).map((t) => ({ type: t, label: TYPE_LABEL[t] })),
           onConvert: async (type: string, confirmLoss: boolean) => {
             const result = await api.convertColumn(workspaceId, dataSourceId, column.propertyId, type, confirmLoss)
             if (result.ok) {
@@ -1504,7 +1504,13 @@ export function DatabaseTable(props: {
     }
     setPendingMoves((n) => n + 1)
     moveChain.current = moveChain.current.then(async () => {
-      const result = await api.moveCard(workspaceId, viewId, { rowId, groupKey: key, beforeRowId: before, search: props.search ?? null })
+      const result = await api.moveCard(workspaceId, viewId, {
+        rowId,
+        groupKey: key,
+        beforeRowId: before,
+        search: props.search ?? null,
+        ...(props.group ? { fromGroupKey: props.group.key } : {}),
+      })
       setPendingMoves((n) => n - 1)
       if (!result.ok) {
         setError(result.message)

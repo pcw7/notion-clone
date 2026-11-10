@@ -116,6 +116,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     search?: unknown
     within?: unknown
     subGroupKey?: unknown
+    fromGroupKey?: unknown
   }
   if (body.action !== 'move') return invalid()
   if (typeof body.rowId !== 'string' || !isUuid(body.rowId)) return invalid()
@@ -135,6 +136,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     within: body.within === true,
     // 하위 그룹(B-4a) — 놓을 가로줄. 주지 않으면 그 행의 지금 가로줄에 남는다
     ...(typeof body.subGroupKey === 'string' ? { subGroupKey: body.subGroupKey } : {}),
+    ...(typeof body.fromGroupKey === 'string' ? { fromGroupKey: body.fromGroupKey } : {}),
     // 상대 날짜 그룹(B-3)의 오늘 — 보는 사람의 시간대(쿠키)
     today: await readViewerToday(),
   })

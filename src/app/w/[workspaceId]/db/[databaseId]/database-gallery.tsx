@@ -324,7 +324,13 @@ export function DatabaseGallery(props: {
     setRows((current) => current.filter((r) => r.id !== rowId))
     setPendingMoves((n) => n + 1)
     moveChain.current = moveChain.current.then(async () => {
-      const result = await api.moveCard(workspaceId, viewId, { rowId, groupKey: key, beforeRowId: before, search: props.search ?? null })
+      const result = await api.moveCard(workspaceId, viewId, {
+        rowId,
+        groupKey: key,
+        beforeRowId: before,
+        search: props.search ?? null,
+        ...(props.group ? { fromGroupKey: props.group.key } : {}),
+      })
       setPendingMoves((n) => n - 1)
       if (!result.ok) {
         setError(result.message)

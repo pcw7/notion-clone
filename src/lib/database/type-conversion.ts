@@ -28,7 +28,7 @@ import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import type { CellValue, DateValue, MvpPropertyType } from './property-types.ts'
 
 /** 서로 바꿀 수 있는 타입(정본 ② · 상태는 ⑧ — 10n-24). 제목은 바꿀 수도 바꿔 올 수도 없다 · relation · rollup · 고유 ID 는 아직. */
-export const CONVERTIBLE_TYPES = ['rich_text', 'number', 'select', 'status', 'checkbox', 'date'] as const
+export const CONVERTIBLE_TYPES = ['rich_text', 'number', 'select', 'multi_select', 'status', 'checkbox', 'date'] as const
 export type ConvertibleType = (typeof CONVERTIBLE_TYPES)[number]
 
 export function isConvertibleType(t: unknown): t is ConvertibleType {
@@ -56,9 +56,9 @@ export function cellToText(value: CellValue, optionName: (id: string) => string 
     // 사람(6g-1)은 바꿀 수 있는 타입이 아니다(`CONVERTIBLE_TYPES` 밖 · 정본 [보강] 사람 속성 ⑤) — 이 길로 오지 않는다
     case 'people':
       return ''
-    // 다중 선택도 바꿀 수 있는 타입이 아니다(PT-1b 에서 연다)
+    // 다중 선택은 선택과만 바꾼다(`canConvert` · `convertCell` 이 옵션 id 로 곧장 간다) — 글로는 이름을 쉼표로 이은 것
     case 'multi_select':
-      return ''
+      return value.multi_select.flatMap((ref) => optionName(ref.id) ?? []).join(', ')
     // URL · 이메일 · 전화도 아직 바꿀 수 있는 타입이 아니다(PT-2)
     case 'url':
     case 'email':
@@ -98,6 +98,10 @@ export function textToCell(raw: string, to: ConvertibleType, optionIdFor: (name:
       // 옵션 이름은 프로퍼티 이름과 같은 상한(200자) — 넘으면 잘라 이름으로 쓴다(값이 사라지지 않는다).
       return { value: { type: 'select', select: { id: optionIdFor(text.slice(0, 200)) } }, lost: false }
     }
+    case 'multi_select': {
+      if (empty) return { value: null, lost: false }
+      return { value: { type: 'multi_select', multi_select: [{ id: optionIdFor(text.slice(0, 200)) }] }, lost: false }
+    }
     case 'status': {
       if (empty) return { value: null, lost: false }
       // 상태도 이름이 곧 옵션 — 새 옵션의 그룹(할 일)은 명령이 정한다(정본 ⑧ · 10n-24)
@@ -123,6 +127,14 @@ export function convertCell(
   to: ConvertibleType,
   options: { readonly optionName: (id: string) => string | null; readonly optionIdFor: (name: string) => string },
 ): Converted {
+  // 선택 ↔ 다중 선택(PT-1b) — 옵션은 그대로(같은 표) 두고 id 를 감싸거나 첫 값만 남긴다. 둘 이상이던 칸은 손실로 센다
+  if (value.type === 'select' && to === 'multi_select') {
+    return { value: value.select === null ? null : { type: 'multi_select', multi_select: [{ id: value.select.id }] }, lost: false }
+  }
+  if (value.type === 'multi_select' && to === 'select') {
+    const first = value.multi_select[0]
+    return { value: first === undefined ? null : { type: 'select', select: { id: first.id } }, lost: value.multi_select.length > 1 }
+  }
   return textToCell(cellToText(value, options.optionName), to, options.optionIdFor)
 }
 
@@ -186,5 +198,14 @@ export function isBlank(value: CellValue): boolean {
 
 /** 이 타입에서 저 타입으로 바꿀 수 있는가(같은 타입은 바꾸는 것이 아니다). */
 export function canConvert(from: MvpPropertyType | string, to: unknown): to is ConvertibleType {
-  return isConvertibleType(from) && isConvertibleType(to) && from !== to
+  if (!isConvertibleType(from) || !isConvertibleType(to) || from === to) return false
+  // 다중 선택은 선택과만(PT-1b) — 글·숫자와의 변환은 값의 뜻이 달라 열지 않는다
+  if (from === 'multi_select') return to === 'select'
+  if (to === 'multi_select') return from === 'select'
+  return true
+}
+
+/** 이 타입에서 바꿀 수 있는 타입들(`CONVERTIBLE_TYPES` 의 차례). 칸 메뉴가 그린다. */
+export function convertTargets(from: string): ConvertibleType[] {
+  return CONVERTIBLE_TYPES.filter((t) => canConvert(from, t))
 }
