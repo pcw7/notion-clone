@@ -102,7 +102,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation', 'url', 'email', 'phone_number', 'created_by', 'last_edited_by'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'multi_select', 'people', 'relation', 'url', 'email', 'phone_number', 'files', 'created_by', 'last_edited_by'])
 
 /**
  * 내보내기의 relation 칸(10n-36) — 스냅숏이 엣지에서 읽어 끼운다. 캐시의 relation 봉투(`type: 'relation'`)와 태그가 다르다 — 캐시는
@@ -290,6 +290,9 @@ export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string 
       return value.email
     case 'phone_number':
       return value.phone_number
+    // 파일과 미디어(PT-4) — 파일 이름을 `, ` 로(링크는 내보내지 않는다)
+    case 'files':
+      return value.files.map((f) => f.name).join(', ')
   }
 }
 

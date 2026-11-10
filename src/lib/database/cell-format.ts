@@ -97,6 +97,9 @@ export function cellText(
       return value.email
     case 'phone_number':
       return value.phone_number
+    case 'files':
+      // 파일 이름을 쉼표로(PT-4)
+      return value.files.map((f) => f.name).join(', ')
   }
 }
 
@@ -158,6 +161,7 @@ export function draftOf(value: CellValue): string {
     case 'checkbox':
     case 'people':
     case 'multi_select':
+    case 'files':
       return ''
     case 'url':
       return value.url
@@ -237,6 +241,7 @@ export function parseDraft(type: MvpPropertyType, draft: string, previous: CellV
     case 'checkbox':
     case 'people':
     case 'multi_select':
+    case 'files':
       return { ok: false, message: '입력칸으로 고치는 타입이 아닙니다' }
   }
 }
@@ -305,8 +310,9 @@ export function defaultColumnWidth(type: AppPropertyType): number {
       return 170
     // 사람 이름 두셋(6g-1)
     case 'people':
-    // 칩이 여럿 서고 넘치면 줄바꿈한다(PT-1)
+    // 칩이 여럿 서고 넘치면 줄바꿈한다(PT-1) — 파일 칩도(PT-4)
     case 'multi_select':
+    case 'files':
     // 만든 · 고친 시각은 날짜와 시각 · 사람은 이름 하나다(PT-3)
     case 'created_time':
     case 'last_edited_time':

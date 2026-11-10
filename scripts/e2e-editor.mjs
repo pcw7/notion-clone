@@ -33376,6 +33376,180 @@ async function main() {
           && !(await evaluate(`document.querySelector('[data-testid="public-table"]').textContent.includes(${JSON.stringify(myName)}) || document.querySelector('[data-testid="public-table"]').textContent.includes(${JSON.stringify(mateName)})`)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('파일과 미디어 속성 (PT-4 · F-03-04)')) { try {
+      // 속성 추가에서 "파일과 미디어" → 칸 편집기에서 올리기(파일 입력) → 칩(이름 · 그림이면 썸네일) · 서버에 {id, name} → 칩의 주소는 파일 블록과 같은
+      // 앱의 파일 경로(열면 200) → 빼면 칸이 비고 참조 수가 내려간다 → 필터(비어 있음 · 비어 있지 않음) → CSV("가, 나") → 공개 표는 이름만(링크 없이).
+      // 정본 §3.5 [보강 PT-1] ⑧.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const until = async (fn, ms = 10000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const refCount = async (id) => Number((await dbQuery(`SELECT ref_count FROM file WHERE id = $1`, [id]))[0]?.ref_count ?? -1)
+
+      const db = (await api('POST', '/databases', { name: `파일 속성 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const mk = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const r1 = await mk('첫 일')
+      const r2 = await mk('둘째 일')
+      const r3 = await mk('셋째 일')
+
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-files-'))
+      const pngName = `사진-${stamp}.png`
+      const txtName = `메모-${stamp}.txt`
+      const txt2Name = `임시-${stamp}.txt`
+      const pngPath = join(dir, pngName)
+      const txtPath = join(dir, txtName)
+      const txt2Path = join(dir, txt2Name)
+      writeFileSync(pngPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+      writeFileSync(txtPath, `메모 ${stamp}\n`)
+      writeFileSync(txt2Path, `임시 ${stamp}\n`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+
+      // ── 속성 추가 ──
+      let formOpened = false
+      for (let i = 0; i < 5 && !formOpened; i += 1) {
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다
+        await clickSelector('[data-testid="db-add-column"]')
+        formOpened = await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 2000)
+      }
+      check('★ 속성 추가의 유형 목록에 파일과 미디어가 선다',
+        formOpened && (await evaluate(`[...document.querySelectorAll('select[aria-label="속성 유형"] option')].some((o) => o.value === 'files' && o.textContent.includes('파일과 미디어'))`)))
+      await typeText('첨부')
+      await setSelect('select[aria-label="속성 유형"]', 'files')
+      await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+      const serverColumns = async () => (await api('GET', `/views/${view}`)).body?.view?.columns ?? []
+      check('★ 만들면 파일 열이 선다 — 서버의 속성 타입도',
+        (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) &&
+          (await until(async () => (await serverColumns()).some((c) => c.name === '첨부' && c.type === 'files'))),
+        JSON.stringify((await serverColumns()).map((c) => `${c.name}:${c.type}`)))
+      const cols = await serverColumns()
+      const prop = cols.find((c) => c.name === '첨부').propertyId
+      const colAt = cols.findIndex((c) => c.propertyId === prop)
+      const CELL = (rowAt) => `td[data-cell="${rowAt}:${colAt}"]`
+      const serverFiles = async (row) => (((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === row)?.properties?.[prop]?.files ?? [])
+      const chipNames = (rowAt) => evaluate(`JSON.stringify([...document.querySelectorAll('${CELL(rowAt)} [data-testid="db-file-chip"]')].map((c) => c.textContent))`)
+
+      // ── 칸 편집기 열기 · 올리기 ──
+      const openEditor = async (rowAt) => {
+        for (let i = 0; i < 6; i += 1) {
+          await waitHydrated(CELL(rowAt))
+          await clickSelector(CELL(rowAt))
+          await key('Enter')
+          if (await waitFor(`!!document.querySelector('[data-testid="db-files-editor"]')`, 2000)) return true
+        }
+        return false
+      }
+      const pickFiles = async (paths) => {
+        await send('DOM.enable')
+        const root = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+        const node = (await send('DOM.querySelector', { nodeId: root, selector: '[data-testid="db-files-input"]' })).nodeId
+        await send('DOM.setFileInputFiles', { files: paths, nodeId: node })
+      }
+
+      check('전제 — 파일 칸을 누르고 Enter 를 치면 칸 편집기가 열린다', await openEditor(0))
+      await pickFiles([pngPath])
+      check('★ 편집기에서 그림을 올리면 칸에 칩이 서고 서버에 {id, name} 이 저장된다',
+        await waitFor(`${JSON.stringify(JSON.stringify([pngName]))} === JSON.stringify([...document.querySelectorAll('${CELL(0)} [data-testid="db-file-chip"]')].map((c) => c.textContent))`, 15000)
+          && (await until(async () => { const f = await serverFiles(r1); return f.length === 1 && f[0].name === pngName && /^[0-9a-f-]{36}$/.test(f[0].id) })),
+        JSON.stringify({ chips: await chipNames(0), server: await serverFiles(r1) }))
+      const pngId = (await serverFiles(r1))[0]?.id
+      check('★ 그림 칩에는 작은 미리보기가 선다 — 파일 경로에서 실제로 디코드된다',
+        await waitFor(`(() => { const i = document.querySelector('${CELL(0)} [data-testid="db-file-thumb"]'); return !!i && i.complete && i.naturalWidth > 0 })()`, 10000),
+        String(await evaluate(`document.querySelector('${CELL(0)} [data-testid="db-file-thumb"]')?.src ?? '(썸네일 없음)'`)))
+      check('★ 칸에 든 파일은 참조 수가 1 이다(파일 블록 · 아이콘과 같은 장부)', (await refCount(pngId)) === 1, String(await refCount(pngId)))
+
+      await pickFiles([txtPath])
+      check('★ 같은 편집기에서 하나 더 올리면 넣은 차례로 칩이 둘이다',
+        await until(async () => { const f = await serverFiles(r1); return f.length === 2 && f[0].name === pngName && f[1].name === txtName })
+          && (await waitFor(`${JSON.stringify(JSON.stringify([pngName, txtName]))} === JSON.stringify([...document.querySelectorAll('${CELL(0)} [data-testid="db-file-chip"]')].map((c) => c.textContent))`, 8000)),
+        JSON.stringify({ chips: await chipNames(0), server: await serverFiles(r1) }))
+      await key('Escape')
+
+      // ── 칩의 주소 — 파일 블록과 같은 앱의 파일 경로 · 열면 200 ──
+      const href = await evaluate(`document.querySelector('${CELL(0)} [data-testid="db-file-chip"]')?.getAttribute('href') ?? null`)
+      const opened = href === null ? null : await fetch(`${BASE}${href}`, { headers: authed })
+      check('★ 칩을 누르면 가는 주소는 그 파일의 앱 경로이고 열면 200 이다',
+        href === `/api/workspaces/${workspaceId}/files/${pngId}/content` && opened?.status === 200 && (opened.headers.get('content-type') ?? '').startsWith('image/png'),
+        JSON.stringify({ href, status: opened?.status, type: opened?.headers.get('content-type') }))
+
+      // ── 빼기 — 칸이 비고 참조 수가 내려간다 ──
+      check('전제 — 셋째 행의 편집기를 연다', await openEditor(2))
+      await pickFiles([txt2Path])
+      await until(async () => (await serverFiles(r3)).length === 1)
+      const tmpId = (await serverFiles(r3))[0]?.id
+      check('전제 — 올린 임시 파일의 참조 수는 1', (await refCount(tmpId)) === 1, String(await refCount(tmpId)))
+      await waitFor(`!!document.querySelector('[data-testid="db-files-remove"]')`, 5000)
+      await clickSelector('[data-testid="db-files-remove"]')
+      check('★ × 로 빼면 칸이 비고(서버에 빈 배열) 그 파일의 참조 수가 0 으로 내려간다',
+        await until(async () => (await serverFiles(r3)).length === 0 && (await refCount(tmpId)) === 0)
+          && (await waitFor(`document.querySelectorAll('${CELL(2)} [data-testid="db-file-chip"]').length === 0`, 5000)),
+        JSON.stringify({ server: await serverFiles(r3), ref: await refCount(tmpId), chips: await chipNames(2) }))
+      await key('Escape')
+
+      // ── 필터 ──
+      const showsRows = async (patch, expected) => {
+        await api('PATCH', `/views/${view}`, patch)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        const shown = await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+        return { ok: shown, got: shown ? expected : await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`) }
+      }
+      const empty = await showsRows({ filter: { property_id: prop, operator: 'is_empty' }, sorts: [] }, [r2, r3])
+      check('★ 필터 "비어 있음" — 파일이 없는 행(칸이 없는 행 · 비운 행)만 보인다', empty.ok, JSON.stringify(empty.got))
+      const filled = await showsRows({ filter: { property_id: prop, operator: 'is_not_empty' } }, [r1])
+      check('★ 필터 "비어 있지 않음" — 파일이 든 행만 보인다', filled.ok, JSON.stringify(filled.got))
+      await api('PATCH', `/views/${view}`, { filter: null, sorts: [] })
+
+      // ── CSV ──
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${db.id}`, { headers: authed })
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { texts: {} }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith('.csv')}}))",
+            ].join('\n'), [file])
+        const csv = (Object.entries(zip.texts ?? {}).find(([n]) => n.endsWith('.csv'))?.[1] ?? '').replace('﻿', '')
+        const line = csv.split('\r\n').find((l) => l.startsWith('첫 일'))
+        check('★ CSV 에 파일 이름이 ", " 로 이어진다', line === `첫 일,"${pngName}, ${txtName}"`, JSON.stringify(csv.slice(0, 240)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+
+      // ── 공개 표 — 이름만(링크 없이) ──
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      const publicRow = `[...document.querySelectorAll('[data-testid="public-db-row"]')].find((tr) => tr.textContent.includes('첫 일'))`
+      const publicNames = `JSON.stringify([...(${publicRow}?.querySelectorAll('[data-testid="public-db-file"]') ?? [])].map((e) => e.textContent))`
+      check('★ 공개 표 — 파일 칸은 이름만 그리고 링크도 파일 id 도 없다',
+        await waitFor(`${publicNames} === ${JSON.stringify(JSON.stringify([pngName, txtName]))}`, 15000)
+          && (await evaluate(`${publicRow}.querySelector('[data-testid="public-db-files"]').closest('td').querySelectorAll('a, img').length === 0`))
+          && !(await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(pngId)})`)),
+        String(await evaluate(publicNames)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) { try {
       // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
       // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).

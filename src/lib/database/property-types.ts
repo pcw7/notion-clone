@@ -77,6 +77,8 @@ export const MVP_PROPERTY_TYPES = [
   'url',
   'email',
   'phone_number',
+  // 파일과 미디어(PT-4 · 정본 [보강 PT-1] ⑧) — 값은 올린 파일 {id, name} 의 배열. 파일 블록 · 아이콘 · 커버와 같은 장부(`file.ref_count`)
+  'files',
 ] as const
 export type MvpPropertyType = (typeof MVP_PROPERTY_TYPES)[number]
 
@@ -301,6 +303,15 @@ export function isContactType(t: unknown): t is ContactType {
   return t === 'url' || t === 'email' || t === 'phone_number'
 }
 
+/** 파일 칸 하나의 최대 파일 수 · 보일 이름의 최대 길이(정본 [보강 PT-1] ⑧). 마이그레이션 0139 의 수와 같다. */
+export const MAX_FILES_PER_CELL = 20
+export const MAX_FILE_NAME_LENGTH = 255
+
+/** 파일 칸이 가리키는 파일 id — 칸의 장부(`file.ref_count`)가 센다. */
+export function fileIdsOf(value: CellValue): string[] {
+  return value.type === 'files' ? value.files.map((f) => f.id) : []
+}
+
 /**
  * status 의 세 범주. **고정이다** — F-03-05: *"You can't change the three main categories."*
  *
@@ -354,6 +365,8 @@ export const DEFAULT_PROPERTY_TYPE: MvpPropertyType = 'rich_text'
 
 /** 옵션 참조. 셀은 **옵션 id** 를 가리킨다(이름 문자열이 아니다). */
 export type OptionRef = { readonly id: string }
+/** 파일 칸의 한 칸 — 올린 파일의 id · 보일 이름(PT-4). */
+export type FileRef = { readonly id: string; readonly name: string }
 
 /**
  * 옵션 색. 마이그레이션 0013 의 `option_color` ENUM 과 **같은 순서**다.
@@ -424,6 +437,8 @@ export type CellValue =
   | { readonly type: 'url'; readonly url: string }
   | { readonly type: 'email'; readonly email: string }
   | { readonly type: 'phone_number'; readonly phone_number: string }
+  /** 올린 파일의 id · 보일 이름 — 넣은 차례 · 같은 파일은 한 번 · 20개 이하(PT-4). */
+  | { readonly type: 'files'; readonly files: readonly FileRef[] }
 
 /** `page_property_value` 의 사이드카 컬럼. 한 셀은 보통 하나만 채운다. */
 export type Sidecars = {
@@ -470,6 +485,8 @@ export function emptyValue(type: MvpPropertyType): CellValue {
       return { type: 'email', email: '' }
     case 'phone_number':
       return { type: 'phone_number', phone_number: '' }
+    case 'files':
+      return { type: 'files', files: [] }
   }
 }
 
@@ -502,6 +519,8 @@ export function isEmptyValue(value: CellValue): boolean {
       return value.email.length === 0
     case 'phone_number':
       return value.phone_number.length === 0
+    case 'files':
+      return value.files.length === 0
   }
 }
 
@@ -690,6 +709,24 @@ export function validateCellValue(
       if (text.length > CONTACT_MAX_LENGTH[type]) return [{ path: `${path}.${type}`, message: `${CONTACT_MAX_LENGTH[type]}자까지입니다` }]
       return []
     }
+
+    case 'files': {
+      // 모양만 본다 — 이 워크스페이스의 파일인가는 칸 가드(0139)가 마지막으로 본다
+      const list = v.files
+      if (!Array.isArray(list)) return [{ path: `${path}.files`, message: '배열이어야 합니다' }]
+      if (list.length > MAX_FILES_PER_CELL) return [{ path: `${path}.files`, message: `파일은 ${MAX_FILES_PER_CELL}개까지입니다` }]
+      const seen = new Set<string>()
+      for (const [i, item] of list.entries()) {
+        const f = typeof item === 'object' && item !== null && !Array.isArray(item) ? (item as Record<string, unknown>) : null
+        if (f === null || typeof f.id !== 'string' || !UUID.test(f.id)) return [{ path: `${path}.files[${i}].id`, message: '파일 id(uuid)가 필요합니다' }]
+        if (typeof f.name !== 'string' || f.name.length === 0 || f.name.length > MAX_FILE_NAME_LENGTH) {
+          return [{ path: `${path}.files[${i}].name`, message: `이름은 1~${MAX_FILE_NAME_LENGTH}자입니다` }]
+        }
+        if (seen.has(f.id.toLowerCase())) return [{ path: `${path}.files[${i}].id`, message: '같은 파일이 두 번 있습니다' }]
+        seen.add(f.id.toLowerCase())
+      }
+      return []
+    }
   }
 }
 
@@ -742,6 +779,10 @@ export function deriveSidecars(value: CellValue): Sidecars {
       return { ...NO_SIDECARS, text: nullIfEmpty(value.email) }
     case 'phone_number':
       return { ...NO_SIDECARS, text: nullIfEmpty(value.phone_number) }
+
+    case 'files':
+      // 파일 id 를 공백으로 — multi_select 와 같은 축(비었는지 · 찬 칸 수)
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.files.map((f) => f.id).join(' ')) }
   }
 }
 

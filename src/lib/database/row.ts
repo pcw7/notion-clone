@@ -76,6 +76,7 @@ import { issueUniqueSeq } from './unique-id.ts'
 import { withVerificationExpiry } from './verification-cell.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
 import { applyPeopleChanges, checkPeopleChanges, peopleIdsOf, peopleIssuesIn, withoutLeftPeople } from './people.ts'
+import { fileIssuesIn } from './file-cells.ts'
 import { optionIssuesIn, withoutMissingOptions } from './options.ts'
 import { filterPrefill } from './filter-prefill.ts'
 import type { FilterNode } from './filter.ts'
@@ -525,7 +526,12 @@ export async function createRowIn(
     if (isRowFailure(prepared)) return prepared
     // 사람 칸(6g-1) — 이 워크스페이스의 활동 중인 사람만(정본 §3.5 [보강] 사람 속성 ②)
     // 옵션 칸 — 그 속성의 옵션만(`optionIssuesIn` · HANDOFF §7 의 구멍)
-    const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared)), ...(await optionIssuesIn(tx, prepared))]
+    // 파일 칸(PT-4) — 이 워크스페이스의 파일만
+    const strangers = [
+      ...(await peopleIssuesIn(tx, ctx.workspaceId, prepared)),
+      ...(await optionIssuesIn(tx, prepared)),
+      ...(await fileIssuesIn(tx, ctx.workspaceId, prepared)),
+    ]
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     return insertRowIn(tx, ctx, gate, dataSourceId, prepared, { isTemplate, origin: input.origin ?? 'user', filledBy: input.filledBy })
@@ -548,7 +554,7 @@ export async function createAnonymousRowIn(
   const gate = await readSchemaGate(tx, dataSourceId, ds)
   const prepared = prepareCells(gate, [...cells, ...defaultCells(gate, cells)])
   if (isRowFailure(prepared)) return prepared
-  const badOptions = await optionIssuesIn(tx, prepared)
+  const badOptions = [...(await optionIssuesIn(tx, prepared)), ...(await fileIssuesIn(tx, workspaceId, prepared))]
   if (badOptions.length > 0) return { ok: false, reason: 'invalid_value', issues: badOptions } as const
   return insertRowIn(tx, { workspaceId, userId: null }, gate, dataSourceId, prepared, { isTemplate: false, origin: 'user' })
 }
@@ -568,7 +574,7 @@ export async function createRespondentRowIn(
   const gate = await readSchemaGate(tx, dataSourceId, ds)
   const prepared = prepareCells(gate, [...cells, ...defaultCells(gate, cells)])
   if (isRowFailure(prepared)) return prepared
-  const badOptions = await optionIssuesIn(tx, prepared)
+  const badOptions = [...(await optionIssuesIn(tx, prepared)), ...(await fileIssuesIn(tx, respondent.workspaceId, prepared))]
   if (badOptions.length > 0) return { ok: false, reason: 'invalid_value', issues: badOptions } as const
   return insertRowIn(tx, { workspaceId: respondent.workspaceId, userId: respondent.userId }, gate, dataSourceId, prepared, {
     isTemplate: false,
@@ -741,7 +747,11 @@ export async function updateCellsIn(
     const peopleCells = prepared.filter((cell) => cell.value.type === 'people')
     const before = await readCellValues(tx, rowId, peopleCells.map((cell) => cell.propertyId))
     // 옵션 칸 — 그 속성의 옵션만(`optionIssuesIn` · HANDOFF §7 의 구멍)
-    const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared, before)), ...(await optionIssuesIn(tx, prepared))]
+    const strangers = [
+      ...(await peopleIssuesIn(tx, ctx.workspaceId, prepared, before)),
+      ...(await optionIssuesIn(tx, prepared)),
+      ...(await fileIssuesIn(tx, ctx.workspaceId, prepared)),
+    ]
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     // 종속 관계의 날짜 자동 이동(TL-5) — **쓰기 전에** 계획하고 권한을 본다(하나라도 못 옮기면 원래 쓰기까지 거부)

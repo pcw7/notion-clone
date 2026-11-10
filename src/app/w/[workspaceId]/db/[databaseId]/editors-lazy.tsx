@@ -8,6 +8,7 @@
 import dynamic from 'next/dynamic'
 
 export const SelectEditorLazy = dynamic(() => import('./select-editor').then((m) => m.SelectEditor))
+export const FilesEditorLazy = dynamic(() => import('./files-editor').then((m) => m.FilesEditor))
 export const RelationEditorLazy = dynamic(() => import('./relation-editor').then((m) => m.RelationEditor))
 export const FormulaEditFormLazy = dynamic(() => import('./formula-editor').then((m) => m.FormulaEditForm))
 export const ButtonEditFormLazy = dynamic(() => import('./button-editor').then((m) => m.ButtonEditForm))

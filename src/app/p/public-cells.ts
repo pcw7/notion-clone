@@ -23,6 +23,8 @@ export type PublicCell =
   | { readonly kind: 'text'; readonly text: string }
   /** URL · 이메일 · 전화(PT-2) — `href` 는 걸 수 있는 글일 때만(아니면 글로 그린다). */
   | { readonly kind: 'contact'; readonly type: ContactType; readonly text: string; readonly href: string | null }
+  /** 파일과 미디어(PT-4) — 이름만. 공개 파일 길은 블록 단위라 칸의 파일은 아직 열 수 없다(링크 없이 글로). */
+  | { readonly kind: 'files'; readonly names: readonly string[] }
   | { readonly kind: 'empty' }
 
 const EMPTY: PublicCell = { kind: 'empty' }
@@ -66,6 +68,13 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
     case 'phone_number': {
       const text = typeof cell[column.type] === 'string' ? (cell[column.type] as string) : ''
       return text === '' ? EMPTY : { kind: 'contact', type: column.type, text, href: contactHref(column.type, text) }
+    }
+    case 'files': {
+      const names = (Array.isArray(cell.files) ? cell.files : []).flatMap((f) => {
+        const name = record(f)?.name
+        return typeof name === 'string' && name !== '' ? [name] : []
+      })
+      return names.length === 0 ? EMPTY : { kind: 'files', names }
     }
     // 만든 · 마지막 편집 시각(PT-3) — 값은 행 페이지 블록의 열이다(읽을 때 끼운 `{type, <type>: ISO}`). 공개 화면은 보는 사람의 시간대를
     // 모르므로(쿠키를 읽으면 같은 게시 페이지가 보는 사람마다 달라진다) UTC 로 적고 그렇다고 밝힌다. 사람 둘은 공개 열이 아니다

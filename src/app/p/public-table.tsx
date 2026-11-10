@@ -45,6 +45,16 @@ function CellView({ column, value, uniqueSeq, view }: { column: PublicColumn; va
           ))}
         </span>
       )
+    case 'files':
+      return (
+        <span data-testid="public-db-files" style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px' }}>
+          {cell.names.map((name, i) => (
+            <span key={i} className="pub-option" data-testid="public-db-file">
+              {name}
+            </span>
+          ))}
+        </span>
+      )
     case 'checkbox':
       return (
         <span className="pub-checkbox" role="img" aria-label={checkboxLabel(cell.checked)}>
