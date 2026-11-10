@@ -6,7 +6,9 @@
  * 켜면(보는 사람의 화면 상태 · 저장하지 않는다 — 켜는 것은 화면이 `setSuggestionMode` 로):
  *   - 넣은 글은 `suggestion_insert{sid, author_id}` 를 단다. 같은 블록에서 내 insert 범위에 붙여 치면 그 sid 를 잇는다
  *   - 지우면 글을 지우지 않고 `suggestion_delete{sid, author_id}` 를 단다(캐럿은 그 너머로). 내 insert 글은 그냥 지운다 — 내 제안 고치기
- *   - 블록 나누기 · 합치기 · 옮기기 · 바꾸기 · 지우기 · 속성 · 서식은 제안이 아니라 막는다(S10 — 까닭을 알린다)
+ *   - 글자 서식(굵게 · 기울임 · 밑줄 · 취소선 · 코드 · 색)은 바로 걸고 바뀐 범위에 `suggestion_format{…, added, removed}` 를 단다(SG-5a ·
+ *     `rewriteFormat`)
+ *   - 블록 나누기 · 합치기 · 옮기기 · 바꾸기 · 지우기 · 속성 · 링크는 제안이 아니라 막는다(S10 — 까닭을 알린다)
  *
  * ──────────────────────────────────────────────────────────────────────
  * 어디서 바꾸는가 — 결과 트랜잭션 한 곳
@@ -27,11 +29,12 @@
  * 글자는 글자로 제안된다(`handleTextInput` 이 먼저 받는다).
  */
 
-import { Fragment, type Mark, type MarkType, type Node as PmNode, type Slice } from '@tiptap/pm/model'
+import { Fragment, Mark, type MarkType, type Node as PmNode, type Slice } from '@tiptap/pm/model'
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from '@tiptap/pm/state'
 import { AddMarkStep, AddNodeMarkStep, RemoveMarkStep, RemoveNodeMarkStep, ReplaceStep } from '@tiptap/pm/transform'
 
 import { blockSchema, SUGGESTION_DELETE_MARK, SUGGESTION_FORMAT_MARK, SUGGESTION_INSERT_MARK } from './schema.ts'
+import { formatChangeOf, formatEntry, isFormatMark, undoFormat } from './suggestion-format.ts'
 
 const INSERT: MarkType = blockSchema.marks[SUGGESTION_INSERT_MARK]!
 const DELETE: MarkType = blockSchema.marks[SUGGESTION_DELETE_MARK]!
@@ -117,18 +120,21 @@ export function deletionPieces(doc: PmNode, from: number, to: number, authorId: 
 /** 바꿀 글 — 원래 문서의 [from, to) 를 지우고 그 자리에 인라인 `inserted` 를 넣은 것과 같다. */
 export type TextChange = { readonly from: number; readonly to: number; readonly inserted: Fragment }
 
-/** 막는 까닭. */
-export type SuggestBlock = 'structure' | 'format' | 'plain_text'
+/** 막는 까닭 — `format_taken` 은 남의 서식 제안이 걸린 글의 서식을 바꾸려 했다(남의 제안을 덮지 않는다). */
+export type SuggestBlock = 'structure' | 'format' | 'link' | 'format_taken' | 'plain_text'
 
 export const SUGGEST_BLOCK_MESSAGE: Readonly<Record<SuggestBlock, string>> = {
   structure: '제안 모드에서는 블록을 나누거나 합치거나 옮기거나 바꿀 수 없습니다 — 글자만 제안할 수 있습니다.',
-  format: '제안 모드에서는 서식을 바꿀 수 없습니다 — 글자만 제안할 수 있습니다.',
+  format: '제안 모드에서는 이 서식을 바꿀 수 없습니다 — 글자와 글자 서식만 제안할 수 있습니다.',
+  link: '제안 모드에서는 링크를 걸거나 뗄 수 없습니다 — 글자와 글자 서식만 제안할 수 있습니다.',
+  format_taken: '다른 사람의 서식 제안이 걸린 글입니다 — 그 제안을 수락하거나 거절한 뒤에 서식을 바꿀 수 있습니다.',
   plain_text: '코드 블록에는 제안을 달 수 없습니다.',
 }
 
 export type ChangeShape =
   | { readonly kind: 'none' }
   | { readonly kind: 'text'; readonly change: TextChange }
+  | { readonly kind: 'format' }
   | { readonly kind: 'blocked'; readonly reason: SuggestBlock }
 
 const blocked = (reason: SuggestBlock): ChangeShape => ({ kind: 'blocked', reason })
@@ -174,10 +180,15 @@ function hasInline(doc: PmNode, from: number, to: number): boolean {
  * ("aa" → "aaa") 끝 비교가 시작을 지나친다 — ProseMirror 의 DOM 읽기(`findDiff`)처럼 바뀐 자리(캐럿) 쪽으로 맞춘다.
  */
 export function textChangeOf(state: EditorState, tr: Transaction): ChangeShape {
+  // 글자 서식만 바꾼 것(SG-5a) — 링크는 v1 밖 · 제안 마크 · 블록 마크 · 글 바꾸기와 섞인 것은 막는다
+  const markSteps = tr.steps.filter((s): s is AddMarkStep | RemoveMarkStep => s instanceof AddMarkStep || s instanceof RemoveMarkStep)
+  if (markSteps.length > 0) {
+    if (markSteps.length !== tr.steps.length) return blocked('format')
+    if (markSteps.some((s) => s.mark.type === blockSchema.marks.link)) return blocked('link')
+    return markSteps.every((s) => isFormatMark(s.mark)) ? { kind: 'format' } : blocked('format')
+  }
   for (const step of tr.steps) {
-    if (step instanceof AddMarkStep || step instanceof RemoveMarkStep || step instanceof AddNodeMarkStep || step instanceof RemoveNodeMarkStep) {
-      return blocked('format')
-    }
+    if (step instanceof AddNodeMarkStep || step instanceof RemoveNodeMarkStep) return blocked('format')
     if (!(step instanceof ReplaceStep)) return blocked('structure')
   }
   const before = tr.before
@@ -277,6 +288,77 @@ export function rewriteAsSuggestion(
   return out
 }
 
+/** 서식이 바뀐 조각 하나 — 그 조각에 있던 내 서식 제안 · 제안 전 서식과의 차이. */
+type FormatPiece = {
+  readonly from: number
+  readonly to: number
+  readonly own: Mark | null
+  readonly added: readonly Mark[]
+  readonly removed: readonly Mark[]
+}
+
+/**
+ * 서식 바꾸기를 제안으로(SG-5a) — 받은 서식은 그대로 걸고 바뀐 조각마다 내 `suggestion_format` 을 단다.
+ *
+ *   ① 조각마다 제안 전 서식(내 서식 제안이 이미 있으면 그것을 되돌린 모양)과 바꾼 뒤 서식의 차이가 added · removed. 차이가 없으면
+ *      (되돌렸다) 마크를 뗀다
+ *   ② 내 insert 글은 원문에 없다 — 서식만 바꾼다(제안이 아니다) · 남의 서식 제안이 걸린 조각은 막는다(남의 제안을 덮지 않는다)
+ *   ③ sid 는 범위 안 · 바로 앞뒤의 내 서식 제안의 것(같은 글을 이어 바꾼 것은 한 제안) · 없으면 새 sid
+ *
+ * 마크 단계는 자리를 옮기지 않는다 — 원래 문서와 바뀐 문서의 같은 자리를 견주고, 받은 트랜잭션에 단계를 더한다(메타 · 선택이 그대로 간다).
+ */
+export function rewriteFormat(tr: Transaction, authorId: string, newId: () => string = randomSid): SuggestOutcome {
+  let from = tr.doc.content.size
+  let to = 0
+  for (const step of tr.steps) {
+    if (!(step instanceof AddMarkStep || step instanceof RemoveMarkStep)) continue
+    from = Math.min(from, step.from)
+    to = Math.max(to, step.to)
+  }
+  const pieces: FormatPiece[] = []
+  // 콜백 안에서 바뀐다 — 선언 타입이 null 로 좁혀지지 않게
+  let refused = null as SuggestBlock | null
+  tr.before.nodesBetween(from, to, (before, pos, parent) => {
+    if (!before.isInline || parent === null) return refused === null
+    const start = Math.max(from, pos)
+    const end = Math.min(to, pos + before.nodeSize)
+    const was = before.marks.filter(isFormatMark)
+    tr.doc.nodesBetween(start, end, (after, at) => {
+      if (!after.isInline) return true
+      const now = after.marks.filter(isFormatMark)
+      if (refused !== null || Mark.sameSet(was, now) || ownSuggestion(before.marks, INSERT, authorId) !== null) return false
+      const own = FORMAT.isInSet(before.marks) ?? null
+      if (own !== null && own.attrs.author_id !== authorId) refused = 'format_taken'
+      else if (!parent.type.allowsMarkType(FORMAT)) refused = 'plain_text'
+      else {
+        const original = own === null ? was : undoFormat(was, formatChangeOf(own))
+        pieces.push({
+          from: Math.max(start, at),
+          to: Math.min(end, at + after.nodeSize),
+          own,
+          added: now.filter((m) => !m.isInSet(original)),
+          removed: original.filter((m) => !m.isInSet(now)),
+        })
+      }
+      return false
+    })
+    return false
+  })
+  if (refused !== null) return { blocked: refused }
+
+  let sid: string | null = null
+  for (const piece of pieces) {
+    if (piece.added.length === 0 && piece.removed.length === 0) {
+      if (piece.own !== null) tr.removeMark(piece.from, piece.to, FORMAT)
+      continue
+    }
+    sid ??= ownSidIn(tr.before, from, to, FORMAT, authorId) ?? adjacentSid(tr.before, from, to, FORMAT, authorId) ?? newId()
+    const attrs = { sid, author_id: authorId, added: piece.added.map(formatEntry), removed: piece.removed.map(formatEntry) }
+    tr.addMark(piece.from, piece.to, FORMAT.create(attrs))
+  }
+  return { tr }
+}
+
 export type SuggestOutcome = { readonly tr: Transaction } | { readonly blocked: SuggestBlock }
 
 /**
@@ -295,6 +377,7 @@ export function suggestTransaction(
   const shape = textChangeOf(state, tr)
   if (shape.kind === 'none') return { tr }
   if (shape.kind === 'blocked') return { blocked: shape.reason }
+  if (shape.kind === 'format') return rewriteFormat(tr, authorId, newId)
   const out = rewriteAsSuggestion(state, tr, shape.change, authorId, newId)
   return { tr: out.doc.eq(tr.doc) ? tr : out }
 }

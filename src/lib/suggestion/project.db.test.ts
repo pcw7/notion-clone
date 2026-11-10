@@ -3,7 +3,8 @@
  *
  * 이 파일이 지키는 것.
  *
- *   ① 본문 투영이 같은 트랜잭션에서 sid 마다 `open` 행을 세운다 — 종류 · 사람 · 앞 80자. 행 · 검색 색인은 수락 전 원문이다
+ *   ① 본문 투영이 같은 트랜잭션에서 sid 마다 `open` 행을 세운다 — 종류 · 사람 · 앞 80자. 행 · 검색 색인은 수락 전 원문이다(서식 제안은
+ *      제안 전 서식 — SG-5a)
  *   ② 문서에서 sid 마크가 사라지면 `stale`(S8) — 밀린 투영(5d)도 같다 · 다시 나타나면 `open`
  *   ③ `accepted` · `rejected` 는 건드리지 않는다 — 마크가 사라져도 · 남아 있어도
  *   ④ 모양이 틀린 sid · 사람 · 멤버가 아닌 사람 · 다른 페이지의 sid 는 표에 넣지 않는다 — 투영은 던지지 않는다
@@ -23,9 +24,10 @@ import { createPage, titleFromPlainText } from '../block/page.ts'
 import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
 import { loadDocState } from '../collab/doc-store.ts'
 import type { EditorChange } from '../collab/body-edit.ts'
+import { readBodyPm } from '../collab/ydoc.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { query, queryOne } from '../db/pool.ts'
-import { blockSchema, SUGGESTION_DELETE_MARK, SUGGESTION_INSERT_MARK } from '../editor/schema.ts'
+import { blockSchema, SUGGESTION_DELETE_MARK, SUGGESTION_FORMAT_MARK, SUGGESTION_INSERT_MARK } from '../editor/schema.ts'
 import { grantAccess } from '../permissions/acl.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 import { changesSince, edit, findBlock, peer } from '../testing/collab-peers.ts'
@@ -128,6 +130,32 @@ describe('① 투영이 open 행을 세우고 행은 원문이다', () => {
     await assertBodyMatchesYDoc(owner.ctx, pageId)
     const indexed = await queryOne<{ body_text: string | null }>(`SELECT body_text FROM search_document WHERE doc_id = $1`, [pageId])
     assert.ok(indexed.body_text?.includes(ORIGINAL) && !indexed.body_text.includes('새 글'), JSON.stringify(indexed))
+  })
+
+  test('★ 서식 제안도 open — 종류 format · 미리보기는 그 글 · 행은 제안 전 서식이다(굵게를 더한 글이 행에서는 굵지 않다 · SG-5a)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, pageId, blockId } = await setup()
+    const sid = randomUUID()
+    const bold = blockSchema.marks.bold!.create()
+    await send(owner, pageId, (tr, doc) => {
+      const at = textStart(doc, blockId)
+      tr.addMark(at, at + 2, bold)
+      tr.addMark(at, at + 2, blockSchema.marks[SUGGESTION_FORMAT_MARK]!.create({ sid, author_id: owner.userId, added: [{ type: 'bold', attrs: {} }] }))
+    })
+
+    const metas = await metasOf(pageId)
+    assert.deepEqual([...metas.values()].map((m) => [m.id, m.kind, m.author_id, m.preview, m.state]), [[sid, 'format', owner.userId, '원래', 'open']])
+    const body = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(body?.doc.blocks[0]?.title.map((r) => [r.plain_text, r.annotations.bold]), [[ORIGINAL, false]])
+    // 편집기 쪽 Y.Doc 에는 서식 제안이 그대로 있다 — 굵게와 added
+    const marked: string[] = []
+    readBodyPm(await ydocOf(owner, pageId)).descendants((node) => {
+      const format = node.marks.find((m) => m.type.name === SUGGESTION_FORMAT_MARK)
+      if (format !== undefined) marked.push(`${node.text}:${node.marks.some((m) => m.eq(bold))}:${JSON.stringify(format.attrs.added)}`)
+      return true
+    })
+    assert.deepEqual(marked, ['원래:true:[{"type":"bold","attrs":{}}]'])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 
   test('미리보기는 앞 80자다', async (t) => {

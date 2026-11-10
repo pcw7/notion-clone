@@ -4,6 +4,7 @@
  * 이 파일이 지키는 것.
  *
  *   ① insert 마크 글(원자 포함)은 빠지고 delete 마크 글은 그냥 글로 남는다 · format 은 마크만 떨어진다 · 다른 서식은 그대로
+ *      · format 의 added · removed 가 있으면 제안 전 서식으로 되돌린다(SG-5a)
  *   ② insert 와 delete 가 함께 선 글(남이 넣자는 글을 지우자고 한 것)은 원문에 없다
  *   ③ 뗀 마크는 sid 마다 처음 본 종류 · 사람과 그 sid 의 글(문서 차례로 이은 것)로 돌려준다
  *   ④ Y.Doc 읽기(`readBodyYDoc`)가 원문을 읽는다 — 행 투영 · 복제 · 색인이 받는 문서다
@@ -69,6 +70,35 @@ describe('수락 전 원문 (SG-2)', () => {
     )
     const { suggestions } = originalOf(doc)
     assert.deepEqual(suggestions.map((s) => [s.sid, s.kind, s.authorId, s.text]), [['s', 'delete', ME, '가나다']])
+  })
+
+  test('★ 서식 제안의 원문은 제안 전 서식 — 더한 것은 떼고 뺀 것은 다시 건다 · 색은 갈아 끼운다 · 모양이 틀린 칸은 건너뛴다 (SG-5a)', () => {
+    const F = blockSchema.marks[SUGGESTION_FORMAT_MARK]!
+    const italic = blockSchema.marks.italic!.create()
+    const color = (c: string): Mark => blockSchema.marks.color!.create({ color: c })
+    const change = (sid: string, added: unknown[], removed: unknown[]): Mark => F.create({ sid, author_id: ME, added, removed })
+    const entry = (m: Mark) => ({ type: m.type.name, attrs: { ...m.attrs } })
+    const doc = docOf(
+      para([
+        // 굵게를 더했다 → 원문은 굵지 않다
+        text('가', bold(), change('s1', [entry(bold())], [])),
+        // 기울임을 뺐다(남은 굵게는 원래 것) → 원문은 굵고 기울었다 — 마크 수가 같아져도 바뀐 것이다
+        text('나', bold(), change('s2', [], [entry(italic)])),
+        // 빨강을 파랑으로 → 원문은 빨강
+        text('다', color('blue'), change('s3', [entry(color('blue'))], [entry(color('red'))])),
+        // 협업 참여자가 쓴 틀린 칸 — 링크 · 제안 마크 · 모양이 틀린 것은 되살리지 않는다
+        text('라', change('s4', [], [{ type: 'link', attrs: { href: 'https://x.y' } }, { type: 'suggestion_insert', attrs: { sid: 'z', author_id: ME } }, '굵게'])),
+      ]),
+    )
+    const { doc: original, suggestions } = originalOf(doc)
+    const marksOf = (node: PmNode) => node.marks.map((m) => (m.type.name === 'color' ? `color=${String(m.attrs.color)}` : m.type.name)).join('+')
+    const runs: string[] = []
+    original.descendants((node) => {
+      if (node.isText) runs.push(`${node.text}:${marksOf(node)}`)
+      return true
+    })
+    assert.deepEqual(runs, ['가:', '나:bold+italic', '다:color=red', '라:'])
+    assert.deepEqual(suggestions.map((s) => [s.sid, s.kind, s.text]), [['s1', 'format', '가'], ['s2', 'format', '나'], ['s3', 'format', '다'], ['s4', 'format', '라']])
   })
 
   test('제안이 없으면 받은 문서를 그대로 돌려준다', () => {

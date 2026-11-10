@@ -6,6 +6,8 @@
  * 지연 로드다(`body-popups-lazy.tsx`). 편집기가 띄운다 — 마크에 마우스를 올리거나(떠나면 잠깐 뒤 접는다 · 카드 위에 있으면 둔다) 캐럿이
  * 제안 안에 들어오면(`suggestion-trigger.ts`). 글자 하나에 두 제안이 서면(남이 넣자는 글을 지우자고 했다) 둘 다 보인다.
  *
+ * 서식 제안은 바꾼 것을 한 줄로 더 보인다("굵게 · 기울임 더함" — SG-5a · `formatChangeLabel`).
+ *
  * 수락 · 거절 단추는 본문을 고칠 수 있는 사람에게만(`canResolve` — 편집기가 고칠 수 있을 때). 보기 · 코멘트만이면 카드만 선다.
  * 키보드 — 캐럿으로 카드를 띄운 채 `Alt+Enter` 면 카드의 첫 단추로 · 카드에서 `Escape` 면 편집기로.
  */
@@ -13,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EditorView } from '@tiptap/pm/view'
 
-import type { ResolveAction } from '@/lib/editor/suggestion-resolve'
+import { formatChangeLabel, type ResolveAction } from '@/lib/editor/suggestion-resolve'
 import { KIND_LABEL, resolveInEditor, useSuggestionMeta } from './suggestion-actions'
 import type { SuggestionCardAt } from './suggestion-trigger'
 
@@ -101,6 +103,11 @@ export function SuggestionCard({
             </span>
             <span className={`flex-none text-xs ${KIND_TONE[item.kind]}`}>{KIND_LABEL[item.kind]} 제안</span>
           </p>
+          {item.kind === 'format' && (
+            <p data-testid="suggestion-card-change" className="text-xs text-neutral-500">
+              {formatChangeLabel(view.state.doc, item.sid) ?? ''}
+            </p>
+          )}
           {canResolve && (
             <div className="flex gap-1">
               <button

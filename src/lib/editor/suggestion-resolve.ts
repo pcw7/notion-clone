@@ -3,8 +3,8 @@
  *
  * 정본: 00-canonical-data-model.md [보강 SG-1] ⑤ · 제안 편집 (U-2)
  *
- *   - 수락: insert 마크를 뗀다(글은 남는다) · delete 마크 글을 지운다 · format 은 마크만 뗀다(서식 제안은 SG-5)
- *   - 거절: insert 마크 글을 지운다 · delete 마크를 뗀다 · format 은 마크만 뗀다
+ *   - 수락: insert 마크를 뗀다(글은 남는다) · delete 마크 글을 지운다 · format 은 마크만 뗀다(바뀐 서식이 남는다)
+ *   - 거절: insert 마크 글을 지운다 · delete 마크를 뗀다 · format 은 더한 서식을 떼고 뺀 서식을 다시 건 뒤 마크를 뗀다(SG-5a)
  *
  * **한 번의 트랜잭션**이다(S9) — 편집기가 보내면 y-prosemirror 가 Y.transact 한 번 · update 하나로 옮긴다. 되돌리기 한 번에 함께 돌아오고,
  * 다른 참여자도 한꺼번에 본다. 커밋 주체는 누른 사람의 연결이다(수락자). 모두 수락 · 모두 거절도 sid 여럿을 한 트랜잭션에.
@@ -15,6 +15,7 @@ import type { Mark, Node as PmNode } from '@tiptap/pm/model'
 import type { EditorState, Transaction } from '@tiptap/pm/state'
 
 import { SUGGESTION_DELETE_MARK, SUGGESTION_FORMAT_MARK, SUGGESTION_INSERT_MARK } from './schema.ts'
+import { formatChangeOf, type FormatChange } from './suggestion-format.ts'
 import type { SuggestionKind } from './suggestion-original.ts'
 import { SUGGESTION_RESOLVE_META } from './suggestion-mode.ts'
 
@@ -61,6 +62,39 @@ export function docSuggestions(doc: PmNode): DocSuggestion[] {
   return [...found].map(([sid, s]) => ({ sid, ...s }))
 }
 
+const FORMAT_NAME: Readonly<Record<string, string>> = { bold: '굵게', italic: '기울임', underline: '밑줄', strikethrough: '취소선', code: '코드' }
+
+const formatName = (mark: Mark): string =>
+  mark.type.name === 'color' ? (String(mark.attrs.color).endsWith('_background') ? '배경색' : '글자색') : (FORMAT_NAME[mark.type.name] ?? mark.type.name)
+
+/**
+ * 서식 제안이 바꾼 것을 한 줄로 — "굵게 · 기울임 더함" · "밑줄 뺌" · "글자색 바꿈"(더하고 뺀 것). 그 sid 의 조각을 모두 모은다. 그 sid 의
+ * 서식 제안이 없으면 null(SG-5a — 카드 · 목록).
+ */
+export function formatChangeLabel(doc: PmNode, sid: string): string | null {
+  const added = new Set<string>()
+  const removed = new Set<string>()
+  let found = false
+  doc.descendants((node) => {
+    if (!node.isInline) return true
+    const mark = node.marks.find((m) => m.type.name === SUGGESTION_FORMAT_MARK && String(m.attrs.sid) === sid)
+    if (mark !== undefined) {
+      found = true
+      const change = formatChangeOf(mark)
+      for (const m of change.added) added.add(formatName(m))
+      for (const m of change.removed) removed.add(formatName(m))
+    }
+    return false
+  })
+  if (!found) return null
+  const groups: [string[], string][] = [
+    [[...added].filter((n) => !removed.has(n)), '더함'],
+    [[...removed].filter((n) => !added.has(n)), '뺌'],
+    [[...added].filter((n) => removed.has(n)), '바꿈'],
+  ]
+  return groups.filter(([names]) => names.length > 0).map(([names, verb]) => `${names.join(' · ')} ${verb}`).join(', ') || '서식 바꿈'
+}
+
 /**
  * 이 sid 들을 수락 · 거절하는 단계를 `tr` 에 쌓는다 — `doc` 은 `tr` 이 시작한 문서다. 바꾼 것이 있으면 true.
  *
@@ -69,6 +103,7 @@ export function docSuggestions(doc: PmNode): DocSuggestion[] {
  */
 export function resolveSuggestionsIn(tr: Transaction, doc: PmNode, sids: ReadonlySet<string>, action: ResolveAction): boolean {
   const unmark: { from: number; to: number; mark: Mark }[] = []
+  const restore: { from: number; to: number; change: FormatChange }[] = []
   const remove: { from: number; to: number }[] = []
   doc.descendants((node, pos) => {
     if (!node.isInline) return true
@@ -76,10 +111,19 @@ export function resolveSuggestionsIn(tr: Transaction, doc: PmNode, sids: Readonl
     if (ours.length === 0) return false
     const range = { from: pos, to: pos + node.nodeSize }
     if (ours.some((m) => drops(KIND_OF[m.type.name]!, action))) remove.push(range)
-    else for (const mark of ours) unmark.push({ ...range, mark })
+    else
+      for (const mark of ours) {
+        unmark.push({ ...range, mark })
+        if (action === 'reject' && mark.type.name === SUGGESTION_FORMAT_MARK) restore.push({ ...range, change: formatChangeOf(mark) })
+      }
     return false
   })
   for (const { from, to, mark } of unmark) tr.removeMark(from, to, mark)
+  // 거절한 서식 제안 — 제안 전 서식으로(더한 것을 떼고 뺀 것을 다시 건다 · 색은 addMark 가 갈아 끼운다)
+  for (const { from, to, change } of restore) {
+    for (const mark of change.added) tr.removeMark(from, to, mark)
+    for (const mark of change.removed) tr.addMark(from, to, mark)
+  }
   // 붙은 범위는 하나로 — 글 조각마다 지우면 단계만 는다
   const merged: { from: number; to: number }[] = []
   for (const range of remove) {

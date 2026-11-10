@@ -719,6 +719,9 @@ async function main() {
       f: [70, 'KeyF'],
       // 제안 모드(SG-1) — `Mod+Shift+Alt+S`.
       s: [83, 'KeyS'],
+      // 서식 제안(SG-5a) — `Mod+B` · `Mod+I`.
+      b: [66, 'KeyB'],
+      i: [73, 'KeyI'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -8089,6 +8092,219 @@ async function main() {
       } finally {
         await browseAs(session)
       }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('제안 — 서식 (SG-5a · F-05-12)')) { try {
+      // 제안 모드에서 낱말을 골라 Mod+B → 바로 굵고 data-suggestion="format" · 목록 API 에 format 행 · 공개 화면은 원문(굵지 않다) → 다른 낱말에
+      // Mod+I · Mod+B 는 한 제안(카드 "굵게 · 기울임 더함") → 셋째 낱말에 Mod+B 두 번이면 제안이 사라진다 → 첫 제안 거절(굵게도 마크도 없다) ·
+      // 둘째 수락(굵게 · 기울임이 마크 없이 남는다 · 공개 화면이 굵다) → 링크 걸기는 막고 알린다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const tag = stamp.toString(36)
+      const boldWord = `굵게${tag}`
+      const bothWord = `둘다${tag}`
+      const backWord = `되돌림${tag}`
+      const original = `원문 ${boldWord} ${bothWord} ${backWord}`
+      const sgBlock = randomUUID()
+      const sgPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `제안 서식 ${stamp}` }),
+      })).json()).page.id
+      await saveBody(sgPage, { blocks: [{ id: sgBlock, type: 'paragraph', title: [textRun(original)], properties: {}, format: {}, children: [] }] })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const myName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name
+
+      const sel = `[data-block-id="${sgBlock}"] > *:first-child`
+      const TOOLBAR = '[role="toolbar"][aria-label="서식"]'
+      const blockHtml = () => evaluate(`document.querySelector('${sel}')?.innerHTML ?? '(없음)'`)
+      /** 낱말을 고른다 — 브라우저의 선택을 바꾸면 편집기가 selectionchange 로 읽는다(툴바가 선다). */
+      const selectWord = async (word) => {
+        const from = original.indexOf(word)
+        const to = from + word.length
+        const ok = await evaluate(`(() => {
+          const walker = document.createTreeWalker(document.querySelector('${sel}'), NodeFilter.SHOW_TEXT)
+          let at = 0, start = null, end = null
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const len = n.textContent.length
+            if (start === null && ${from} < at + len) start = [n, ${from} - at]
+            if (end === null && ${to} <= at + len) end = [n, ${to} - at]
+            at += len
+          }
+          if (!start || !end) return false
+          window.getSelection().setBaseAndExtent(start[0], start[1], end[0], end[1])
+          return true
+        })()`)
+        await sleep(200)
+        return ok && (await waitFor(`!!document.querySelector('${TOOLBAR}')`, 3000))
+      }
+      /** 낱말의 모양 — 그 낱말 안의 서식 제안 글 · 그 sid 수 · 굵은 글 · 기운 글. */
+      const lookOf = (word) => evaluate(`(() => {
+        const w = ${JSON.stringify(word)}
+        const of = (q) => [...document.querySelectorAll('${sel} ' + q)].filter((e) => e.textContent !== '' && w.includes(e.textContent))
+        const format = of('[data-suggestion="format"]')
+        return { format: format.map((e) => e.textContent).join(''), sids: new Set(format.map((e) => e.dataset.sid)).size,
+          bold: of('strong').map((e) => e.textContent).join(''), italic: of('em').map((e) => e.textContent).join('') }
+      })()`)
+      const lookIs = async (word, want) => {
+        let got = null
+        for (let i = 0; i < 40; i += 1) {
+          got = await lookOf(word)
+          if (JSON.stringify(got) === JSON.stringify(want)) return [true, got]
+          await sleep(125)
+        }
+        return [false, got]
+      }
+      /** 목록 API 의 걸린 제안 — `종류:미리보기:이름` 을 미리보기 차례로. */
+      const listed = async () => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/suggestions`, { headers: authed })
+        const body = await r.json().catch(() => null)
+        return (body?.suggestions ?? []).map((s) => ({ ...s, line: `${s.kind}:${s.preview}:${s.authorName}` })).sort((a, b) => (a.line < b.line ? -1 : 1))
+      }
+      const pollListed = async (want) => {
+        let got = []
+        for (let i = 0; i < 60; i += 1) {
+          got = await listed()
+          if (got.map((s) => s.line).join('|') === want) break
+          await sleep(250)
+        }
+        return got
+      }
+      const stateOf = async (id) => (id ? (await dbQuery(`SELECT state FROM suggestion WHERE id = $1`, [id]))[0]?.state : undefined) ?? '(없음)'
+      const pollState = async (id, want) => {
+        let got = ''
+        for (let i = 0; i < 60; i += 1) {
+          got = await stateOf(id)
+          if (got === want) break
+          await sleep(250)
+        }
+        return got
+      }
+      const sidOf = (word) => evaluate(`[...document.querySelectorAll('${sel} [data-suggestion="format"]')].find((e) => ${JSON.stringify(word)}.includes(e.textContent))?.dataset.sid ?? null`)
+      /** 비켜 섰다가 그 낱말의 서식 제안에 마우스를 올린다 — 그 sid 의 카드가 서기를 기다린다(카드는 지연 로드). */
+      const hoverFormat = async (word, sid) => {
+        await move(2, 2)
+        await sleep(300)
+        const box = await evaluate(`(() => {
+          const e = [...document.querySelectorAll('${sel} [data-suggestion="format"]')].find((x) => ${JSON.stringify(word)}.includes(x.textContent))
+          if (!e) return null
+          const r = e.getClientRects()[0]
+          return { x: r.x + Math.min(r.width / 2, 12), y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await move(box.x, box.y)
+        hovered = box
+        return waitFor(`!!document.querySelector('[data-testid="suggestion-card"] [data-card-sid="${sid}"]')`, 8000)
+      }
+      let hovered = null
+      /** 마지막으로 올린 자리의 요소 — 실패했을 때 무엇이 가렸는지. */
+      const underMouse = () => (hovered === null ? '(올린 적 없음)' : evaluate(`(() => { const e = document.elementFromPoint(${hovered.x}, ${hovered.y})
+        return e ? e.tagName + ' ' + (e.getAttribute('data-testid') ?? e.getAttribute('data-suggestion') ?? e.className ?? '') : '(없음)' })()`))
+      const cardText = () => evaluate(`document.querySelector('[data-testid="suggestion-card"]')?.textContent ?? '(카드 없음)'`)
+      const clickCard = async (testid) => {
+        const box = await evaluate(`(() => { const e = document.querySelector('[data-testid="suggestion-card"] [data-testid="${testid}"]'); if (!e) return null
+          const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        return true
+      }
+      /** 공개 화면에서 그 낱말 — 있는가 · 굵은가(세션 없이 서버가 그린 HTML 을 이 탭에서 해석한다). */
+      const publicLook = async (token, word) => {
+        const html = await (await fetch(`${BASE}/p/${token}`)).text()
+        return evaluate(`(() => { const d = new DOMParser().parseFromString(${JSON.stringify(html)}, 'text/html'); const w = ${JSON.stringify(word)}
+          d.body.querySelectorAll('script').forEach((s) => s.remove())
+          return { has: d.body.textContent.includes(w), bold: [...d.body.querySelectorAll('strong')].some((e) => e.textContent.includes(w)) } })()`)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sgPage}` })
+      await waitFor(`!!document.querySelector('${sel}') && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+      // 서버가 그린 단추는 하이드레이션 전이면 눌러도 그대로다 — 켜질 때까지 다시 누른다
+      let turnedOn = false
+      for (let i = 0; i < 4 && !turnedOn; i += 1) {
+        await clickSelector('[data-testid="suggestion-mode-toggle"]')
+        turnedOn = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 2000)
+      }
+      check('전제 — 제안 모드를 켰다', turnedOn)
+      await key('Escape')
+      const lineBox = await line(sgBlock)
+      await click(lineBox.x + 4, lineBox.y + lineBox.h / 2)
+      await afterFocusTimer()
+
+      // ① 낱말을 골라 Mod+B — 바로 굵고 서식 제안 마크
+      check('전제 — 첫 낱말을 골랐다', await selectWord(boldWord))
+      await key('b', MOD)
+      const [boldNow, boldGot] = await lookIs(boldWord, { format: boldWord, sids: 1, bold: boldWord, italic: '' })
+      check('★ 제안 모드에서 고른 낱말에 Mod+B — 바로 굵고 data-suggestion="format" 이 달린다', boldNow, `${JSON.stringify(boldGot)} · ${await blockHtml()}`)
+      const boldSid = await sidOf(boldWord)
+
+      // ② 목록 API 에 format 행 · 공개 화면은 원문(굵지 않다)
+      const firstRow = await pollListed(`format:${boldWord}:${myName}`)
+      check('전제 — 투영이 format 행을 세웠다(미리보기는 그 낱말 · 내 이름)', firstRow.length === 1 && firstRow[0].id === boldSid, JSON.stringify(firstRow.map((s) => s.line)))
+      const token = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      const publicBefore = token ? await publicLook(token, boldWord) : { has: false, bold: null }
+      check('★ 공개 화면은 원문 — 굵게를 제안한 낱말이 굵지 않다', publicBefore.has && publicBefore.bold === false, JSON.stringify(publicBefore))
+
+      // ③ 다른 낱말에 Mod+I · Mod+B — 한 제안 · 카드가 바꾼 것을 말한다
+      check('전제 — 둘째 낱말을 골랐다', await selectWord(bothWord))
+      await key('i', MOD)
+      await key('b', MOD)
+      const [bothNow, bothGot] = await lookIs(bothWord, { format: bothWord, sids: 1, bold: bothWord, italic: bothWord })
+      const bothSid = await sidOf(bothWord)
+      const twoRows = await pollListed([`format:${boldWord}:${myName}`, `format:${bothWord}:${myName}`].join('|'))
+      check('★ 같은 낱말에 Mod+I · Mod+B 는 한 제안 — 굵고 기울었고 sid 하나 · 목록 API 에도 한 줄',
+        bothNow && twoRows.length === 2 && twoRows.some((s) => s.id === bothSid), `${JSON.stringify(bothGot)} · ${JSON.stringify(twoRows.map((s) => s.line))}`)
+      // 고른 글 옆에 뜨는 단추가 그 낱말을 가린다 — 선택을 접고(캐럿은 낱말 뒤 · 그 뒤 글자는 제안이 아니다) 올린다
+      await key('ArrowRight')
+      await sleep(150)
+      const bothCard = await hoverFormat(bothWord, bothSid)
+      check('★ 서식 제안의 카드 — "서식 제안" · "굵게 · 기울임 더함"',
+        bothCard && (await waitFor(`(document.querySelector('[data-testid="suggestion-card-change"]')?.textContent ?? '') === '굵게 · 기울임 더함'`, 3000))
+          && (await cardText()).includes('서식 제안'),
+        `${bothCard} · ${await cardText()} · 마우스 아래 ${await underMouse()}`)
+      await move(2, 2)
+
+      // ④ 셋째 낱말에 Mod+B 두 번 — 되돌리면 제안이 사라진다
+      check('전제 — 셋째 낱말을 골랐다', await selectWord(backWord))
+      await key('b', MOD)
+      const [backOn] = await lookIs(backWord, { format: backWord, sids: 1, bold: backWord, italic: '' })
+      check('전제 — 셋째 낱말이 굵고 서식 제안이 섰다', backOn, await blockHtml())
+      await key('b', MOD)
+      const [backOff, backGot] = await lookIs(backWord, { format: '', sids: 0, bold: '', italic: '' })
+      const afterBack = await pollListed([`format:${boldWord}:${myName}`, `format:${bothWord}:${myName}`].join('|'))
+      check('★ 굵게를 다시 누르면 제안이 사라진다 — 굵지 않고 마크 없음 · 목록 API 에도 없다',
+        backOff && afterBack.length === 2, `${JSON.stringify(backGot)} · ${JSON.stringify(afterBack.map((s) => s.line))}`)
+
+      // ⑤ 첫 제안 거절 — 굵게가 빠지고 마크가 없다 · rejected
+      const boldCard = await hoverFormat(boldWord, boldSid)
+      check('전제 — 첫 낱말의 카드가 섰다', boldCard, await cardText())
+      await clickCard('suggestion-reject')
+      const [rejectedNow, rejectedGot] = await lookIs(boldWord, { format: '', sids: 0, bold: '', italic: '' })
+      const rejectedState = await pollState(boldSid, 'rejected')
+      check('★ 서식 제안을 거절하면 굵게가 빠지고 마크가 없다 — 행은 rejected', rejectedNow && rejectedState === 'rejected', `${JSON.stringify(rejectedGot)} · ${rejectedState}`)
+
+      // ⑥ 둘째 제안 수락 — 굵게 · 기울임이 마크 없이 남는다 · accepted · 공개 화면이 굵다
+      check('전제 — 둘째 낱말의 카드가 섰다', await hoverFormat(bothWord, bothSid), await cardText())
+      await clickCard('suggestion-accept')
+      const [acceptedNow, acceptedGot] = await lookIs(bothWord, { format: '', sids: 0, bold: bothWord, italic: bothWord })
+      const acceptedState = await pollState(bothSid, 'accepted')
+      let publicAfter = { has: false, bold: false }
+      for (let i = 0; token && i < 40 && !publicAfter.bold; i += 1) {
+        publicAfter = await publicLook(token, bothWord)
+        if (!publicAfter.bold) await sleep(250)
+      }
+      check('★ 서식 제안을 수락하면 굵게 · 기울임이 마크 없이 남는다 — 행은 accepted · 공개 화면이 굵다',
+        acceptedNow && acceptedState === 'accepted' && publicAfter.bold, `${JSON.stringify(acceptedGot)} · ${acceptedState} · ${JSON.stringify(publicAfter)}`)
+
+      // ⑦ 링크 걸기 — 막고 알린다
+      check('전제 — 셋째 낱말을 다시 골랐다', await selectWord(backWord))
+      await key('k', MOD)
+      const linkInput = await waitFor(`document.activeElement?.getAttribute('aria-label') === '링크 주소'`, 3000)
+      await typeText('example.com/doc')
+      await key('Enter')
+      check('★ 제안 모드에서 링크 걸기는 막고 알린다 — 링크가 생기지 않는다',
+        linkInput && (await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('링크를 걸거나'))`, 3000))
+          && !(await evaluate(`!!document.querySelector('${sel} a')`)),
+        `${await evaluate(`[...document.querySelectorAll('[role="status"]')].map((e) => e.textContent).join(' / ')`)} · ${await blockHtml()}`)
+      await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {
