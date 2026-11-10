@@ -62,6 +62,7 @@ import type { EditorDoc } from '../editor/document.ts'
 import { ATOM_MARKS_ATTR, INLINE_ATOM_NODES, marksFromAttr } from '../editor/atom-marks.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
+import { originalOf, type SuggestionMark } from '../editor/suggestion-original.ts'
 import { normalizeBody, type NormalizeFix, type NormalizeOptions } from './normalize.ts'
 
 /** 본문이 사는 `Y.XmlFragment` 의 이름. 저장 포맷의 일부다 — 바꾸지 않는다. */
@@ -80,9 +81,12 @@ export function createBodyYDoc(doc: EditorDoc): Y.Doc {
 }
 
 export type BodyRead = {
+  /** 수락 전 원문이다 — insert 제안 글은 빠지고 delete 제안 글은 그냥 글이다(SG-2 · `editor/suggestion-original.ts`). */
   readonly doc: EditorDoc
   /** 정규화가 고친 것. 비었으면 Y.Doc 이 이미 스키마에 맞았다. */
   readonly fixes: readonly NormalizeFix[]
+  /** 원문으로 읽으며 뗀 제안 마크(sid 마다) — 투영이 메타 표를 맞춘다(`suggestion/project.ts`). */
+  readonly suggestions: readonly SuggestionMark[]
 }
 
 /** 읽기가 정규화에 더 넘기는 것 — 문서 밖의 사실(`NormalizeOptions`). */
@@ -96,7 +100,18 @@ export type BodyReadOptions = Pick<NormalizeOptions, 'pageRefDepth' | 'pageRefs'
  */
 export function readBodyYDoc(ydoc: Y.Doc, pageId: string, options: BodyReadOptions = {}): BodyRead {
   const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId, pageRefDepth: options.pageRefDepth, pageRefs: options.pageRefs })
-  return { doc: pmToDoc(normalized.doc), fixes: normalized.fixes }
+  // 이 읽기의 결과(행 · 색인 · 복제 · 버전)는 편집기 밖이다 — 수락 전 원문으로 읽는다(SG-2). 수선의 비교(`repair.ts`)는 원문이 아니라
+  // 마크를 뺀 글 전부로 한다 — 제안 글이 달라진 것도 수선이 바꾼 것으로 잡아야 한다.
+  const original = originalOf(normalized.doc)
+  return { doc: pmToDoc(original.doc), fixes: normalized.fixes, suggestions: original.suggestions }
+}
+
+/**
+ * Y.Doc → 문서, **제안 글까지** — 편집기 화면만 쓴다(멘션 이름 미리 읽기 · 받지 못한 편집 보여 주기). 편집기는 제안을 그리므로 넣자는 글
+ * 안의 멘션 · 글도 담아야 한다(마크 자체는 계약 런에 자리가 없어 떨어진다). 행 · 색인 · 복제 · 버전은 원문이다(`readBodyYDoc`).
+ */
+export function readBodyYDocWithSuggestions(ydoc: Y.Doc, pageId: string): EditorDoc {
+  return pmToDoc(normalizeBody(readBodyPm(ydoc), { seed: pageId }).doc)
 }
 
 /**

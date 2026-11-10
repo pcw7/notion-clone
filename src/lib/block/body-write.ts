@@ -55,6 +55,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { recordCoalescedActivity } from '../notification/activity.ts'
 import { can } from '../permissions/levels.ts'
+import { projectSuggestions } from '../suggestion/project.ts'
 import { isRefType, MAX_TREE_DEPTH } from './types.ts'
 import {
   projectBodyRows,
@@ -184,12 +185,15 @@ export async function openPageBody(
         } as const
       }
       const pageRefDepth = limits.size > 0 ? limits : undefined
-      const doc = pageRefDepth === undefined ? first.doc : session.read({ pageRefs, pageRefDepth }).doc
-      const result = await projectBodyRows(tx, ctx, page, doc, scope, {
+      // 읽은 문서는 수락 전 원문이다(SG-2 — `collab/ydoc.ts`). 행 · 검색 색인이 원문을 담는다.
+      const read = pageRefDepth === undefined ? first : session.read({ pageRefs, pageRefDepth })
+      const result = await projectBodyRows(tx, ctx, page, read.doc, scope, {
         missingPageRefs: options.missingPageRefs,
         quietMentions: options.quietMentions,
       })
       if (!result.ok) return result
+      // 제안 메타 표 — 같은 트랜잭션에서 문서의 sid 마크에 맞춘다(SG-2 · S8)
+      await projectSuggestions(tx, ctx, pageId, read.suggestions)
       // 수선은 투영이 읽은 것과 같은 것으로 고친다 — 그래야 올리거나 뺀 참조가 행과 Y.Doc 에서 같다. 이 단위가 바꾼 것이 없어도
       // (밀린 투영) 올리거나 뺀 것이 있으면 쓴다.
       const commit = await session.commit({

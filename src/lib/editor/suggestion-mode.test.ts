@@ -342,7 +342,7 @@ describe('⑥ 왕복 — Y.Doc · 정규화 · 계약 런', () => {
     assert.deepEqual(normalized.fixes, [])
     assert.ok(normalized.doc.eq(pm), '정규화가 마크를 떨궜다')
 
-    // 계약 런(행 투영 · 내보내기 · 검색)은 글만 싣는다 — 넣자는 글도 지우자는 글도 남는다(원문 보이기는 SG-2)
+    // 계약 런 변환 자체는 글만 싣는다 — 넣자는 글도 지우자는 글도 남는다. 원문(넣자는 글 빼기)은 Y.Doc 읽기가 한다(SG-2 · `readBodyYDoc`)
     const runs = pmToDoc(normalized.doc).blocks[0]!.title
     assert.deepEqual(runs.map((r) => [r.type, r.plain_text]), [['text', '가나다라'], ['mention', '']])
   })

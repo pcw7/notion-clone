@@ -27,7 +27,7 @@ import { listMovableTargets, listTeamspaceDestinations } from '@/lib/block/move-
 import { listDiscussions } from '@/lib/comment/discussion'
 import { listBacklinks } from '@/lib/block/link-edges'
 import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
-import { readBodyYDoc } from '@/lib/collab/ydoc'
+import { readBodyYDocWithSuggestions } from '@/lib/collab/ydoc'
 import { withReadTransaction } from '@/lib/db/tx'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { noAccessState } from '@/lib/permissions/access-request'
@@ -161,7 +161,7 @@ export async function PageContentBase({
   // **멤버에게만** 세운다 — 그 링크(teamspace 화면)는 멤버가 아니면 404 다(`getTeamspace`).
   const rootTeamspaceId = page.teamspaceId ?? ancestors[0]?.teamspaceId ?? null
   const [mentionLabels, backlinks, teamspace] = await Promise.all([
-    loadMentionLabels(ctx, mentionIdsOf(readBodyYDoc(state.value.ydoc, page.id).doc)),
+    loadMentionLabels(ctx, mentionIdsOf(readBodyYDocWithSuggestions(state.value.ydoc, page.id))),
     withReadTransaction((tx) => listBacklinks(tx, ctx, page.id)),
     rootTeamspaceId === null ? null : getTeamspace(ctx, rootTeamspaceId),
   ])

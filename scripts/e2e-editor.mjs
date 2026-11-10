@@ -7591,6 +7591,131 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('제안 — 투영 · 원문 (SG-2 · F-05-12)')) { try {
+      // 제안 모드로 한 낱말을 넣고 한 낱말에 줄을 긋는다 → 협업 서버의 투영이 메타 표에 open 둘을 세운다(목록 API) · 편집기 밖은 수락 전
+      // 원문이다(공개 화면 · Markdown 내보내기 · 검색 — 넣자는 낱말은 없고 긋자는 낱말은 있다) · 내가 넣은 글을 지우면 그 제안은 stale.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const tag = stamp.toString(36)
+      const keepWord = `지움${tag}`
+      const addWord = `삽입${tag}`
+      const sgBlock = randomUUID()
+      const sgPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `제안 투영 ${stamp}` }),
+      })).json()).page.id
+      await saveBody(sgPage, {
+        blocks: [{ id: sgBlock, type: 'paragraph', title: [textRun(`원문 ${keepWord}`)], properties: {}, format: {}, children: [] }],
+      })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const myName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name
+
+      const sel = `[data-block-id="${sgBlock}"] > *:first-child`
+      const blockHtml = () => evaluate(`document.querySelector('${sel}')?.innerHTML ?? '(없음)'`)
+      const marksAre = (inserted, deleted) => waitFor(`(() => {
+        const of = (kind) => [...document.querySelectorAll('${sel} [data-suggestion="' + kind + '"]')].map((e) => e.textContent).join('|')
+        return of('insert') === ${JSON.stringify(inserted)} && of('delete') === ${JSON.stringify(deleted)}
+      })()`, 5000)
+      const caretToEnd = async () => {
+        const box = await line(sgBlock)
+        await click(box.x + 4, box.y + box.h / 2)
+        await afterFocusTimer()
+        await key('End')
+        await sleep(80)
+      }
+      /** 목록 API 의 걸린 제안 — `종류:미리보기:이름` 을 종류 차례로. */
+      const listed = async () => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/suggestions`, { headers: authed })
+        const body = await r.json().catch(() => null)
+        return (body?.suggestions ?? []).map((s) => ({ ...s, line: `${s.kind}:${s.preview}:${s.authorName}` })).sort((a, b) => (a.kind < b.kind ? -1 : 1))
+      }
+      const pollListed = async (want) => {
+        let got = []
+        for (let i = 0; i < 60; i += 1) {
+          got = await listed()
+          if (got.map((s) => s.line).join('|') === want) break
+          await sleep(250)
+        }
+        return got
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sgPage}` })
+      await waitFor(`!!document.querySelector('${sel}') && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+      // 서버가 그린 단추는 하이드레이션 전이면 눌러도 그대로다 — 켜질 때까지 다시 누른다
+      let turnedOn = false
+      for (let i = 0; i < 4 && !turnedOn; i += 1) {
+        await clickSelector('[data-testid="suggestion-mode-toggle"]')
+        turnedOn = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 2000)
+      }
+      check('전제 — 제안 모드를 켰다', turnedOn)
+      await key('Escape')
+
+      // 끝에 한 낱말을 넣고 · 그 앞 낱말에 줄을 긋는다
+      await caretToEnd()
+      await typeText(addWord)
+      for (let i = 0; i < [...addWord].length; i += 1) await key('ArrowLeft')
+      await sleep(80)
+      for (let i = 0; i < [...keepWord].length; i += 1) await key('Backspace')
+      check('전제 — 편집기에 넣자는 낱말 · 긋자는 낱말이 섰다', await marksAre(addWord, keepWord), await blockHtml())
+
+      const want = `delete:${keepWord}:${myName}|insert:${addWord}:${myName}`
+      const both = await pollListed(want)
+      check('★ 목록 API 에 걸린 제안이 둘 — insert 하나 · delete 하나 · 내 이름 · 미리보기는 그 낱말',
+        both.map((s) => s.line).join('|') === want, JSON.stringify(both.map((s) => s.line)))
+      const insertId = both.find((s) => s.kind === 'insert')?.id
+
+      // 공개 화면 — 세션 없이 서버가 그린 HTML
+      const token = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${sgPage}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      const publicHtml = token ? await (await fetch(`${BASE}/p/${token}`)).text() : '(게시 실패)'
+      check('★ 공개 화면은 수락 전 원문 — 긋자는 낱말은 있고 넣자는 낱말은 없다',
+        publicHtml.includes(`원문 ${keepWord}`) && !publicHtml.includes(addWord),
+        `원문 ${publicHtml.includes(`원문 ${keepWord}`)} · 넣은 낱말 ${publicHtml.includes(addWord)}`)
+
+      // Markdown 내보내기
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${sgPage}`, { headers: authed })
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-suggestion-export-'))
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { texts: {}, error: 'python 을 찾지 못했다' }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith('.md')}}))",
+            ].join('\n'), [file])
+        const markdown = Object.values(zip.texts ?? {}).find((t) => t.includes('원문')) ?? ''
+        check('★ Markdown 내보내기도 원문 — 긋자는 낱말은 있고 넣자는 낱말은 없다',
+          zipRes.status === 200 && markdown.includes(`원문 ${keepWord}`) && !markdown.includes(addWord),
+          `${zipRes.status} ${zip.error ?? ''} ${JSON.stringify(markdown.slice(0, 200))}`)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+
+      // 검색 — 색인은 투영과 같은 트랜잭션에서 원문으로 쓰였다
+      const finds = async (word) => {
+        const found = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(word)}`, { headers: authed })).json()
+        return found.results?.some((r) => r.pageId === sgPage) ?? false
+      }
+      const [byKept, byAdded] = [await finds(keepWord), await finds(addWord)]
+      check('★ 검색 — 긋자는 원래 낱말로는 찾히고 넣자는 낱말로는 찾히지 않는다', byKept && !byAdded, `원래 낱말 ${byKept} · 넣은 낱말 ${byAdded}`)
+
+      // 내가 넣은 글을 지운다(자기 제안 고치기 — 진짜 지운다) → 그 sid 마크가 문서에서 사라진다 → stale(S8)
+      await caretToEnd()
+      for (let i = 0; i < [...addWord].length; i += 1) await key('Backspace')
+      check('전제 — 넣은 낱말이 편집기에서 사라졌다', await marksAre('', keepWord), await blockHtml())
+      const onlyDelete = `delete:${keepWord}:${myName}`
+      const remaining = await pollListed(onlyDelete)
+      const stateOf = async (id) => (id ? (await dbQuery(`SELECT state FROM suggestion WHERE id = $1`, [id]))[0]?.state : undefined) ?? '(없음)'
+      const insertState = await stateOf(insertId)
+      check('★ 내가 넣은 글을 지우면 그 제안은 stale — 목록에는 delete 하나만 남는다',
+        remaining.map((s) => s.line).join('|') === onlyDelete && insertState === 'stale',
+        `${JSON.stringify(remaining.map((s) => s.line))} · insert ${insertState}`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })

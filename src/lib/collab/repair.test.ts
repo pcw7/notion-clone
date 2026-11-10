@@ -189,7 +189,7 @@ describe('⑤ 받은 깊이보다 깊은 하위 페이지 참조를 올린다', 
 
     const result = repairBodyYDoc(server, PAGE, { pageRefDepth: topLevel })
     assert.ok(result.kind === 'repaired', `올리지 않았다: ${result.kind}`)
-    assert.deepEqual(readBodyYDoc(server, PAGE), { doc: expected.doc, fixes: [] }, '깊이 없이 읽은 문서가 투영이 읽은 것과 다르다')
+    assert.deepEqual(readBodyYDoc(server, PAGE), { doc: expected.doc, fixes: [], suggestions: [] }, '깊이 없이 읽은 문서가 투영이 읽은 것과 다르다')
     assert.deepEqual(idsOf(server), [[holder, [elder, younger]], [ref, []], [neighbor, []]])
 
     Y.applyUpdate(other, result.update)
@@ -241,7 +241,7 @@ describe('⑥ 본문에 둘 수 없는 하위 페이지 참조를 뺀다', () =>
 
     const result = repairBodyYDoc(server, PAGE, { pageRefs })
     assert.ok(result.kind === 'repaired', `빼지 않았다: ${result.kind}`)
-    assert.deepEqual(readBodyYDoc(server, PAGE), { doc: expected.doc, fixes: [] }, '집합 없이 읽은 문서가 투영이 읽은 것과 다르다')
+    assert.deepEqual(readBodyYDoc(server, PAGE), { doc: expected.doc, fixes: [], suggestions: [] }, '집합 없이 읽은 문서가 투영이 읽은 것과 다르다')
     assert.equal(pageRefCount(server), 1)
 
     Y.applyUpdate(other, result.update)
