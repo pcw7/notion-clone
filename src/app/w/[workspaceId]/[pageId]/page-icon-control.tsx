@@ -23,7 +23,7 @@ import { useRouter } from 'next/navigation'
 
 import { DATABASE_GLYPH, PAGE_GLYPH, pageIconLabel, samePageIcon, type PageIcon } from '@/lib/block/page-icon'
 import { randomEmoji } from '@/lib/emoji/catalog'
-import { EmojiPicker } from './emoji-picker'
+import { EmojiPickerLazy } from './body-popups-lazy'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 import { PageIconView } from '../page-icon-view'
 import { useHasPageCover } from './page-cover'
@@ -200,7 +200,7 @@ export function PageIconControl({
         <div className={`${header ? 'absolute bottom-full left-0 mb-2 ' : ''}flex items-center gap-1 whitespace-nowrap`}>{actions}</div>
       )}
       {open && icon !== null && (
-        <EmojiPicker
+        <EmojiPickerLazy
           current={icon.type === 'emoji' ? icon.emoji : null}
           currentCustomId={icon.type === 'custom_emoji' ? icon.custom_emoji.id : null}
           removable
