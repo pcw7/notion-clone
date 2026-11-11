@@ -132,6 +132,7 @@ import { setSuggestionMode, suggestingAuthor } from '@/lib/editor/suggestion-mod
 import {
   isSuggesting,
   isSuggestionPanelOpen,
+  setSuggestOnly,
   notSuggesting,
   setSuggestionCount,
   setSuggestionPanelOpen,
@@ -538,11 +539,12 @@ export function BodyEditor({
   const [emojiList, setEmojiList] = useState<readonly ListedEmoji[] | null>(null)
   /** 같은 목록 — 트랜잭션마다 불리는 동기화(편집기를 만들 때 한 번 붙는다)가 읽는다. */
   const emojiListRef = useRef<readonly ListedEmoji[] | null>(null)
-  /** 연결이 알려주는 것 — 온라인 · 첫 연결을 기다림 · 읽기 전용 · 미확인 편집 · 다시 여는 중 · 닫힘. */
-  const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'connecting' | 'readOnly' | 'unconfirmed' | 'reopening' | 'closed'>>({
+  /** 연결이 알려주는 것 — 온라인 · 첫 연결을 기다림 · 읽기 전용 · 연결 모드 · 미확인 편집 · 다시 여는 중 · 닫힘. */
+  const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'connecting' | 'readOnly' | 'mode' | 'unconfirmed' | 'reopening' | 'closed'>>({
     online: false,
     connecting: true,
     readOnly: null,
+    mode: null,
     unconfirmed: false,
     reopening: false,
     closed: null,
@@ -620,9 +622,17 @@ export function BodyEditor({
     syncReadOnlyTabStops(view)
   }, [editable])
 
+  // 제안만 쓸 수 있다(SG-5b · 정본 [보강 SG-1] ⑨) — 서버가 알린 연결 모드가 `suggest` 이거나, 모르는 동안 고칠 권한이 없다(안전한 쪽).
+  // 코멘트 권한자의 연결은 읽기 전용이 아니라 `editable` 이 서고, 편집기는 제안 모드로만 고친다(서버가 update 마다 제안인지 본다).
+  const suggestOnly = editable && (link.mode === 'suggest' || (link.mode === null && !canEdit))
+  useEffect(() => {
+    setSuggestOnly(pageId, suggestOnly)
+    return () => setSuggestOnly(pageId, false)
+  }, [pageId, suggestOnly])
+
   // 제안 모드(SG-1) — 보는 사람의 화면 상태(페이지 메뉴 · 단축키 · `suggestion-mode-store.ts`). 고칠 수 있을 때만 편집기에 켠다 —
   // 켠 사람이 제안의 author 다. 편집기를 다시 만들면(`bind`) 그 상태에 다시 싣는다.
-  const suggesting = useSyncExternalStore(subscribeSuggestionMode, () => isSuggesting(pageId), notSuggesting) && editable
+  const suggesting = (useSyncExternalStore(subscribeSuggestionMode, () => isSuggesting(pageId), notSuggesting) || suggestOnly) && editable
   const suggestingRef = useRef(suggesting)
   suggestingRef.current = suggesting
   useEffect(() => {
@@ -1838,6 +1848,7 @@ export function BodyEditor({
             online: snapshot.online,
             connecting: snapshot.connecting,
             readOnly: snapshot.readOnly,
+            mode: snapshot.mode,
             unconfirmed: snapshot.unconfirmed,
             reopening: snapshot.reopening,
             closed: snapshot.closed,
@@ -2046,6 +2057,7 @@ export function BodyEditor({
     if (locked) return '잠긴 페이지입니다 — 잠금을 풀어야 고칠 수 있습니다.'
     // 열어 둔 사이에 권한이 줄었거나 누가 잠갔다 — 서버가 연결을 읽기 전용으로 다시 열었다. 풀리거나 권한이 돌아와도 연결은
     // 올라가지 않는다(다시 열면 지금 상태로 연다).
+    if (suggestOnly) return '코멘트 권한이라 제안만 할 수 있습니다 — 고친 내용은 제안으로 남고, 편집할 수 있는 사람이 수락합니다.'
     if (canEdit && link.readOnly === true) return '이 페이지를 고칠 수 없게 되어 읽기 전용입니다 — 권한이 바뀌었거나 페이지가 잠겼습니다.'
     if (!canEdit) return '읽기 전용입니다 — 이 페이지를 고칠 권한이 없습니다.'
     // 첫 연결을 기다리는 동안은 끊긴 것이 아니다 — 열 때마다 배너가 섰다 사라지며 본문이 뛰지 않게(`collab-connection.ts` 머리말).
@@ -2302,7 +2314,7 @@ export function BodyEditor({
             workspaceId={workspaceId}
             pageId={pageId}
             at={suggestionCard}
-            canResolve={editable}
+            canResolve={editable && !suggestOnly}
             onHold={holdSuggestionCard}
             onClose={closeSuggestionCard}
             onError={showSuggestionError}
@@ -2316,7 +2328,7 @@ export function BodyEditor({
           workspaceId={workspaceId}
           pageId={pageId}
           docVersion={suggestionDocVersion}
-          canResolve={editable}
+          canResolve={editable && !suggestOnly}
           onClose={closeSuggestionPanel}
           onError={showSuggestionError}
         />

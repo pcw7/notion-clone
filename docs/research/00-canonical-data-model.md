@@ -5109,6 +5109,11 @@ CREATE INDEX ON suggestion (thread_id);
 > 사람의 업데이트를 **적용해 본 뒤** 받는다: ① 적용 전후의 원문(`originalOf`)이 같다 — 원문을 바꾸지 않았다 ② 새로 생긴 제안 마크의 `author_id` 가 그
 > 사람이다 ③ 남의 제안 마크를 지우거나 바꾸지 않았다(자기 insert 글만 지울 수 있다). 어기면 그 업데이트를 거부하고 연결에 알린다(그 사람의 화면은 서버
 > 상태로 다시 맞춘다). 수락 · 거절은 여전히 편집할 수 있는 사람만.
+> **연결 모드** — 협업 서버의 페이지 접근은 `edit` · `suggest`(comment 는 있고 edit_content 는 없다) · `view` 셋이다. 잠긴 페이지는 제안도
+> 막는다(`suggest` 도 `view` 가 된다). `suggest` 연결은 읽기 전용이 아니다 — 서버는 첫 동기화 때 그 연결의 모드를 stateless 로 알리고
+> (`collab:mode:edit|suggest`), 편집기는 모드를 모르는 동안 고칠 권한이 없으면 제안 모드로 연다(안전한 쪽). 모드가 바뀌면 연결을 닫는다
+> (`edit`→`suggest`·`view` 는 `forbidden` · `view`→`suggest`·`edit` 와 `suggest`→`edit` 는 `upgraded`). 검사는 쓰기 경로 ①
+> (`appendDocUpdate`)에 있다 — 어기면 `suggest_only` 로 거부한다.
 
 ---
 

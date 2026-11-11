@@ -48,6 +48,7 @@ import {
   type DocOrigin,
 } from '../collab/doc-store.ts'
 import { hasUnknownBodyContent } from '../collab/repair.ts'
+import { readBodyPm } from '../collab/ydoc.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
@@ -56,6 +57,7 @@ import { isLocked } from '../permissions/lock.ts'
 import { recordCoalescedActivity } from '../notification/activity.ts'
 import { can } from '../permissions/levels.ts'
 import { projectSuggestions } from '../suggestion/project.ts'
+import { suggestOnlyViolation } from '../suggestion/suggest-only.ts'
 import { isRefType, MAX_TREE_DEPTH } from './types.ts'
 import {
   projectBodyRows,
@@ -360,6 +362,8 @@ export type AppendFailure =
   | 'missing_dependencies'
   /** 투영이 받지 않는다 — 참조를 지운 살아 있는 하위 페이지를 버릴 권한이 없다(§3.2-18). */
   | 'page_ref_forbidden'
+  /** 코멘트만 가진 사람의 update 가 제안이 아니다 — 원문을 바꿨거나 남의 제안을 건드렸다(SG-5b · `suggestion/suggest-only.ts`). */
+  | 'suggest_only'
   /**
    * 하위 페이지 참조를 깊이 상한을 넘는 자리로 옮겼는데 본문에 모르는 노드가 있어 올린 것을 Y.Doc 에 쓸 수 없다. 모르는 노드가
    * 없으면 거부하지 않고 올린다(`FinishOptions.deepPageRefs`).
@@ -403,6 +407,8 @@ export type AppendOptions = {
  * Y.Doc 의 투영이므로 투영 없이 쌓는 길을 두지 않는다 — 5a 에서 `collab/doc-store.ts` 에서 투영과 함께 옮겨 왔다.
  *
  *   - 권한을 쓰기마다 본다(F-05-19 "매 mutation 서버 재검사")
+ *   - `comment` 만 가진 사람의 update 는 **적용해 본 뒤** 제안인지 본다(SG-5b · 정본 [보강 SG-1] ⑨) — 원문이 같고 남의 제안을
+ *     건드리지 않았어야 쌓는다(`suggestion/suggest-only.ts`). 아니면 `suggest_only` 로 거부한다
  *   - 바뀐 것이 없으면(이미 받은 것의 재전송) 투영을 건너뛴다 — 빠른 길일 뿐이다. 빼도 투영은 아무것도 쓰지 않고 쌓기는
  *     쌓지 않아 결과가 같다(반사실에서 검사가 전부 통과했다)
  *   - 살아 있는 하위 페이지의 참조가 빠진 update 는 **그 페이지를 휴지통으로 보낸다**(정본 프로젝터 · 5b · §3.2-19) — 휴지통
@@ -434,15 +440,21 @@ export async function appendDocUpdate(
     if (page === null) return { ok: false, reason: 'not_found' } as const
     const caps = await effectiveCaps(tx, ctx, pageId)
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
-    if (!can(caps, 'edit_content')) return { ok: false, reason: 'forbidden' } as const
+    // 코멘트만 가졌으면 제안만 받는다(SG-5b) — 적용 전후를 아래에서 견준다
+    const suggestOnly = !can(caps, 'edit_content')
+    if (suggestOnly && !can(caps, 'comment')) return { ok: false, reason: 'forbidden' } as const
     // 잠금은 capability 뒤의 게이트다(`permissions/lock.ts`) — 접속 판정이 이미 읽기 전용으로 받지만, 잠기기 전에 붙은 연결이
     // 신호가 닿기 전에 보낸 update 는 여기서 거부된다(페이지 행을 잠갔으므로 잠그는 명령과 줄을 선다).
     if (await isLocked(tx, pageId)) return { ok: false, reason: 'locked' } as const
 
     const body = await openPageBody(tx, ctx, pageId, options.origin)
+    const before = suggestOnly ? readBodyPm(body.ydoc) : null
     const applied = body.applyUpdate(update)
     if (applied !== 'applied') return { ok: false, reason: applied } as const
     if (!body.changed) return { ok: true, seq: body.seq, appended: false, repair: null } as const
+    if (before !== null && suggestOnlyViolation(before, readBodyPm(body.ydoc), ctx.userId) !== null) {
+      return { ok: false, reason: 'suggest_only' } as const
+    }
 
     // 멘션을 넣은 update 도 미루지 않는다 — 밀린 투영은 창의 **마지막** 참여자 세션으로 돌아(`projection-scheduler.ts`)
     // 멘션 알림의 행위자가 엉뚱한 사람이 된다. 곧바로 투영하면 이 참여자가 행위자다(§3.3-141).

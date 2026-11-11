@@ -139,7 +139,8 @@ export type LoadDocResult =
  * 살아 있는 페이지에 대한 이 세션의 권한. 볼 수 없으면 없는 것과 같다(`none`). **잠긴 페이지는 `view`** 다(7f-1) — 고칠 수 있는
  * 사람도 잠금을 풀기 전에는 본문을 고치지 못한다. 잠금은 capability 가 아니라 이 판정의 뒤에 붙는 게이트다(`permissions/lock.ts`).
  */
-export type PageAccess = 'none' | 'view' | 'edit'
+/** `suggest` — 코멘트는 있고 고칠 수는 없다: 제안만 쓰는 연결이다(SG-5b · 정본 [보강 SG-1] ⑨ · 잠기면 `view`). */
+export type PageAccess = 'none' | 'view' | 'suggest' | 'edit'
 
 export type CommitOptions = BodyReadOptions & {
   /** 쌓는 사람. 시스템이면 null. */
@@ -196,7 +197,7 @@ export async function loadDocState(ctx: SessionContext, pageId: string): Promise
   })
 }
 
-/** 이 세션이 이 페이지를 볼 수 있는가 · 고칠 수 있는가 — 협업 서버가 연결을 받을 때 묻는다. */
+/** 이 세션이 이 페이지를 볼 수 있는가 · 제안할 수 있는가 · 고칠 수 있는가 — 협업 서버가 연결을 받을 때 묻는다. */
 export async function pageAccess(ctx: SessionContext, pageId: string): Promise<PageAccess> {
   return withReadTransaction((tx) => accessOf(tx, ctx, pageId))
 }
@@ -397,7 +398,9 @@ async function accessOf(tx: Tx, ctx: SessionContext, pageId: string): Promise<Pa
   if (page === null) return 'none'
   const caps = await effectiveCaps(tx, ctx, pageId)
   if (!can(caps, 'view')) return 'none'
-  return can(caps, 'edit_content') && !(await isLocked(tx, pageId)) ? 'edit' : 'view'
+  if (!can(caps, 'edit_content') && !can(caps, 'comment')) return 'view'
+  if (await isLocked(tx, pageId)) return 'view'
+  return can(caps, 'edit_content') ? 'edit' : 'suggest'
 }
 
 /**

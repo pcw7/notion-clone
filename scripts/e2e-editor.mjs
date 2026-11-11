@@ -8307,6 +8307,109 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('제안 — 코멘트 권한자 (SG-5b · F-05-12)')) { try {
+      // 코멘트 권한만 준 동료가 페이지를 연다 → 편집기는 제안 모드로만 연다(머리의 표시에 끄기가 없다 · 안내 문구) → 끝에 낱말을 치면 초록
+      // insert 마크가 서고 메타 표에 동료의 open 이 선다 · 행(원문)은 그대로 · 카드에 수락 단추가 없다 → 내가 카드에서 수락하면 원문이 된다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const word = `코멘트제안${stamp.toString(36)}`
+      const cBlock = randomUUID()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const cPage = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `코멘트 제안 ${stamp}` }) })).json()).page.id
+      await saveBody(cPage, { blocks: [{ id: cBlock, type: 'paragraph', title: [textRun('원문')], properties: {}, format: {}, children: [] }] })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const mate = await joinAs(workspaceId, await createUser(`코멘트 동료 ${stamp}`), 'member')
+      const share = (body) => fetch(`${pagesUrl}/${cPage}/access`, { method: 'POST', headers: authed, body: JSON.stringify(body) })
+      const shared = [
+        await share({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' }),
+        await share({ action: 'revoke', principal: { type: 'workspace_everyone' } }),
+        await share({ action: 'grant', principal: { type: 'user', id: mate.userId }, level: 'comment' }),
+      ]
+      check('전제 — 동료에게 코멘트 권한만 준다', shared.every((r) => r.ok), shared.map((r) => r.status).join(','))
+
+      const browseAs = (value) => send('Network.setCookie', { name: 'nc_session', value, domain: 'localhost', path: '/', httpOnly: true })
+      const sel = `[data-block-id="${cBlock}"] > *:first-child`
+      const rowTitle = async () =>
+        (await dbQuery(`SELECT coalesce(string_agg(r->>'plain_text', ''), '') AS t FROM block, jsonb_array_elements(properties->'title') r WHERE id = $1`, [cBlock]))[0]?.t ?? ''
+      const metaOf = async (sid) => (sid ? (await dbQuery(`SELECT author_id, state FROM suggestion WHERE id = $1`, [sid]))[0] ?? null : null)
+      const pollMeta = async (sid, want) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = await metaOf(sid)
+          if (got?.state === want) break
+          await sleep(250)
+        }
+        return got
+      }
+      const cardAt = async (sid) => {
+        await move(2, 2)
+        await sleep(300)
+        const box = await evaluate(`(() => {
+          const e = document.querySelector('.blk-editor [data-suggestion="insert"][data-sid="${sid}"]')
+          if (!e) return null
+          const r = e.getClientRects()[0]
+          return { x: r.x + Math.min(r.width / 2, 12), y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await move(box.x, box.y)
+        return waitFor(`!!document.querySelector('[data-testid="suggestion-card"] [data-card-sid="${sid}"]')`, 8000)
+      }
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${cPage}` })
+        await waitFor(`!!document.querySelector('${sel}') && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+        const pill = await waitFor(`!!document.querySelector('[data-testid="suggestion-mode-pill"]')`, 8000)
+        check('★ 코멘트 권한자의 편집기는 제안 모드로만 연다 — 머리의 표시가 서고 끄기 단추가 없다 · 안내 문구',
+          pill && !(await evaluate(`!!document.querySelector('[data-testid="suggestion-mode-pill"] [aria-label="제안 모드 끄기"]')`))
+            && (await waitFor(`document.body.innerText.includes('제안만 할 수 있습니다')`, 5000)),
+          await evaluate(`document.querySelector('[data-testid="suggestion-mode-pill"]')?.outerHTML ?? '(표시 없음)'`))
+
+        const box = await line(cBlock)
+        await click(box.x + 4, box.y + box.h / 2)
+        await afterFocusTimer()
+        await key('End')
+        await sleep(80)
+        await typeText(` ${word}`)
+        await waitFor(`!!document.querySelector('${sel} [data-suggestion="insert"]')`, 5000)
+        const sid = await evaluate(`[...document.querySelectorAll('.blk-editor [data-suggestion="insert"]')].find((e) => e.textContent.includes(${JSON.stringify(word)}))?.dataset.sid ?? null`)
+        const meta = await pollMeta(sid, 'open')
+        check('★ 친 글은 제안이 된다 — 서버가 받아 메타 표에 동료의 open 이 서고 행(원문)은 그대로다',
+          meta?.author_id === mate.userId && meta?.state === 'open' && (await rowTitle()) === '원문',
+          JSON.stringify({ sid, meta, row: await rowTitle() }))
+        await sleep(800)
+        check('★ 서버가 그 편집을 거부하지 않는다 — 다시 열지 않고 낱말이 그대로 있다',
+          (await evaluate(`document.querySelector('${sel}')?.textContent ?? ''`)).includes(word)
+            && !(await evaluate(`document.body.innerText.includes('다른 곳의 변경과 맞추는 중')`)),
+          await evaluate(`document.querySelector('${sel}')?.textContent ?? ''`))
+        check('★ 코멘트 권한자의 카드에는 수락 · 거절 단추가 없다',
+          (await cardAt(sid)) && !(await evaluate(`!!document.querySelector('[data-testid="suggestion-card"] [data-testid="suggestion-accept"]')`)),
+          await evaluate(`document.querySelector('[data-testid="suggestion-card"]')?.outerHTML?.slice(0, 300) ?? '(카드 없음)'`))
+
+        await browseAs(session)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${cPage}` })
+        await waitFor(`!!document.querySelector('${sel} [data-suggestion="insert"]')`, 15000)
+        let accepted = false
+        for (let i = 0; i < 3 && !accepted; i += 1) {
+          if (await cardAt(sid)) {
+            const btn = await evaluate(`(() => { const e = document.querySelector('[data-testid="suggestion-card"] [data-testid="suggestion-accept"]'); if (!e) return null
+              const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+            if (btn) await click(btn.x, btn.y)
+          }
+          accepted = (await pollMeta(sid, 'accepted'))?.state === 'accepted'
+        }
+        let row = ''
+        for (let i = 0; i < 40 && accepted; i += 1) {
+          row = await rowTitle()
+          if (row === `원문 ${word}`) break
+          await sleep(250)
+        }
+        check('★ 편집할 수 있는 사람이 수락하면 원문이 된다', accepted && row === `원문 ${word}`, JSON.stringify({ accepted, row }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
