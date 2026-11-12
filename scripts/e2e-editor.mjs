@@ -33053,6 +33053,94 @@ async function main() {
       await api('DELETE', `/pages/${db.id}/publish`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 화면의 지도 (MP-3 · F-06-08)')) { try {
+      // 첫 뷰가 지도인 게시 데이터베이스는 공개 화면도 핀으로 — 장소가 있는 행마다 핀 하나(장소 없는 행 · 필터 밖의 행은 없다) · 핀을 누르면 말풍선에
+      // 이름 · 행 링크 → 링크가 공개 행 페이지로 간다 · 101개 → 핀 100 + "100개까지 보입니다". 타일은 끈 판(MAP_TILE_URL=off)이라 출처 표시가 없다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 정본 §3.5 [보강 MP-1] ⑦.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const placeCell = (propertyId, name, lat, lng) => ({ propertyId, value: { type: 'place', place: { name, address: '', lat, lng } } })
+      const db = (await api('POST', '/databases', { name: `공개 지도 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const loc = (await api('POST', `/data-sources/${ds}/properties`, { name: '위치', type: 'place' })).body.property.id
+      const score = (await api('POST', `/data-sources/${ds}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const mk = async (title, n, where) =>
+        (await api('POST', `/views/${view}/rows`, {
+          cells: [
+            { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+            { propertyId: score, value: { type: 'number', number: n } },
+            ...(where === null ? [] : [placeCell(loc, where[0], where[1], where[2])]),
+          ],
+        })).body.row.id
+      const seoul = await mk('서울 지점', 10, ['서울 본점', 37.5665, 126.978])
+      const busan = await mk('부산 지점', 20, ['부산 지점터', 35.1796, 129.0756])
+      const bare = await mk('장소 없는 행', 30, null)
+      const hidden = await mk('필터 밖 행', 100, ['제주 별관', 33.4996, 126.5312])
+      await api('PATCH', `/views/${view}`, { filter: { property_id: score, operator: 'less_than', value: 60 } })
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('MP-3 · 데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+      const patched = await api('PATCH', `/views/${view}`, { type: 'map' })
+      check('MP-3 · 첫 뷰를 지도로 바꾼다', patched.status === 200, JSON.stringify(patched.body).slice(0, 200))
+
+      const pinRows = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="public-map-pin"]')].map((p) => p.dataset.rowId).sort())`).then((s) => JSON.parse(s))
+      const openPublic = async () => {
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        return waitFor(`document.readyState === 'complete'`, 15000)
+      }
+      const until = async (fn, ms = 15000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      await openPublic()
+      const want = JSON.stringify([seoul, busan].sort())
+      check('★ 공개 지도 — 장소가 있는 행마다 핀 하나(2개) · 장소 없는 행과 필터 밖의 행은 핀이 없다',
+        await until(async () => JSON.stringify(await pinRows()) === want), JSON.stringify(await pinRows()))
+      check('타일을 끈 판은 출처 표시가 없고 표는 없다',
+        await evaluate(`document.querySelector('[data-testid="public-map"]')?.getAttribute('data-tiles') === 'off' && !document.querySelector('.leaflet-control-attribution') && !document.querySelector('.pub-db-table')`))
+      check('필터 밖 행 · 장소 없는 행의 핀이 없다', !(await pinRows()).includes(hidden) && !(await pinRows()).includes(bare))
+      check('주소 · 필터 밖 행의 이름이 문서에 새지 않는다', await evaluate(`!document.body.innerHTML.includes('제주 별관')`))
+
+      // 핀을 누르면 말풍선 — 이름 · 행 링크
+      const pinPoint = (rowId) => evaluate(`(() => {
+        const e = document.querySelector('[data-testid="public-map-pin"][data-row-id="${rowId}"]')
+        if (!e) return null
+        const r = e.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      const p = await pinPoint(seoul)
+      if (p) await click(p.x, p.y)
+      check('★ 핀을 누르면 말풍선에 장소 이름과 행 제목 링크가 선다',
+        await until(async () => await evaluate(`(document.querySelector('.leaflet-popup-content')?.textContent ?? '').includes('서울 본점') && document.querySelector('[data-testid="public-map-popup-open"]')?.textContent === '서울 지점'`)),
+        await evaluate(`document.querySelector('.leaflet-popup-content')?.textContent ?? '(말풍선 없음)'`))
+      const link = await evaluate(`document.querySelector('[data-testid="public-map-popup-open"]')?.getAttribute('href') ?? ''`)
+      check('말풍선 링크는 그 행의 공개 주소', link.endsWith(`/${seoul}`), link)
+      const lp = await evaluate(`(() => {
+        const e = document.querySelector('[data-testid="public-map-popup-open"]')
+        if (!e) return null
+        const r = e.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (lp) await click(lp.x, lp.y)
+      check('★ 링크를 누르면 행 페이지가 열린다',
+        await until(async () => await evaluate(`location.pathname.endsWith('/${seoul}')`)), await evaluate(`location.pathname`))
+
+      // 101개 → 핀 100 + 안내
+      for (let i = 0; i < 99; i += 1) await mk(`지점 ${i}`, 1, [`곳 ${i}`, 36 + i * 0.01, 127 + i * 0.01])
+      await openPublic()
+      check('★ 101개 → 핀 100개 + "100개까지 보입니다"',
+        await until(async () => (await pinRows()).length === 100 && (await evaluate(`document.querySelector('[data-testid="public-table-truncated"]')?.textContent ?? ''`)).includes('100개까지 보입니다')),
+        String((await pinRows()).length))
+
+      await api('DELETE', `/pages/${db.id}/publish`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('사람 속성 — 칸 · 고르개 (6g-2a · F-03-07)')) { try {
       // 속성 추가의 "사람" → 칸에서 Enter 로 고르개 → 이름으로 찾아 고르면 칩 · 서버 값 → × 로 빼면 빈 칸 → 행 화면에도 칩.
       const stamp = Date.now()

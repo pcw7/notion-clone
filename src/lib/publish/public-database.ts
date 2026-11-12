@@ -42,6 +42,7 @@ import { readTimelineLayout, type TimelineZoom } from '../database/timeline.ts'
 import { shiftWindow, type TimelineWindow } from '../database/timeline-geometry.ts'
 import { isCalculation, type Calculation, type CalculationResult } from '../database/calculations.ts'
 import { readChartLayout, type ChartKind } from '../database/chart.ts'
+import { MAX_MAP_PINS, readMapLayout, resolveMapBy, selectPins } from '../database/map.ts'
 import type { PublicTarget } from './public-access.ts'
 import { boardKeyOf, isBoardGroupType, type BoardSpec } from './public-board.ts'
 import { publicFilesValue } from './public-files.ts'
@@ -94,7 +95,13 @@ export type PublicRow = {
 }
 
 /** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(폼 · 못 그리는 보드 · 차트 · 날짜 속성 없는 캘린더)는 표. */
-export type PublicLayout = 'table' | 'list' | 'gallery' | 'board' | 'calendar' | 'timeline' | 'chart'
+export type PublicLayout = 'table' | 'list' | 'gallery' | 'board' | 'calendar' | 'timeline' | 'chart' | 'map'
+
+/** 지도의 핀(MP-3) — 이름 · 좌표만. 주소는 싣지 않는다(공개 칸은 이름만 · MP-1 ⑤). 행은 모두 공개로 열리는 행이라 말풍선이 늘 행으로 간다. */
+export type PublicMapPin = { readonly rowId: string; readonly title: string; readonly name: string; readonly lat: number; readonly lng: number }
+
+/** 지도의 재료(MP-3) — 이때 `rows` 는 비어 있다(그림은 핀에서 나온다). */
+export type PublicMap = { readonly pins: readonly PublicMapPin[]; readonly height: number }
 
 /** 차트의 재료(PV-3) — 공개 경로의 자기 집계 결과. 숫자 종류(`number`)는 `groups` 가 비고 `total` 이 값이다. */
 export type PublicChart = {
@@ -137,6 +144,8 @@ export type PublicTable = {
   readonly board: PublicBoard | null
   /** 차트일 때만(PV-3) — 이때 `rows` 는 비어 있다(그림은 집계에서 나온다). */
   readonly chart: PublicChart | null
+  /** 지도일 때만(MP-3) — 이때 `rows` 는 비어 있다. */
+  readonly map: PublicMap | null
   /** 갤러리 카드 크기(뷰의 설정 · 갤러리가 아니면 기본값). */
   readonly cardSize: GallerySize
   /** 캘린더 · 타임라인일 때만. */
@@ -170,7 +179,7 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: Windo
   // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
   return (
     (await publicTableOf(tx, target.pageId, win)) ?? {
-      layout: 'table', viewType: 'table', board: null, chart: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
+      layout: 'table', viewType: 'table', board: null, chart: null, map: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
     }
   )
 }
@@ -223,8 +232,16 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   const chart = await readChart(tx, view, types)
   if (chart !== null) {
     return {
-      layout: 'chart', viewType: view.type, board: null, chart, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      layout: 'chart', viewType: view.type, board: null, chart, map: null, cardSize: 'medium', window: null, viewName: view.name ?? '',
       columns: [], rows: [], truncated: false,
+    }
+  }
+  // 지도(MP-3) — 장소 속성이 있으면 자기 질의의 핀. 없으면(null) 아래의 표로
+  const mapped = await readMap(tx, view, types, columns)
+  if (mapped !== null) {
+    return {
+      layout: 'map', viewType: view.type, board: null, chart: null, map: mapped.map, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      columns: [], rows: [], truncated: mapped.truncated,
     }
   }
   // `$1` 은 data source — 2번부터 발급한다
@@ -292,6 +309,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     viewType: view.type,
     board,
     chart: null,
+    map: null,
     cardSize: readGalleryLayout(view.configuration).cover_size,
     window: dated === null ? null : dated.window,
     viewName: view.name ?? '',
@@ -362,6 +380,53 @@ async function readDatedWindow(
       prev: shiftWindow(range, layout.zoom, -1).from, next: shiftWindow(range, layout.zoom, 1).from, nav,
     },
     colorBy,
+  }
+}
+
+/**
+ * 지도(MP-3) — 첫 뷰가 지도일 때 **자기 질의**로 핀을 만든다. 행 집합은 표와 같다(공유 필터 · 공개로 열리는 행 · 수동 순서) + "장소 칸이 비지 않음".
+ * 장소 칸은 저장된 `map_by` 가 이 뷰의 보이는 장소 열이면 그것, 아니면 첫 장소 열(앱의 `resolveMapBy` 와 같다). 보이는 장소 열이 하나도 없으면
+ * null(표 — viewType 은 `map` 그대로). 100개 상한 · 모양이 틀린 값은 건너뛴다(`selectPins`). 주소는 싣지 않는다.
+ */
+async function readMap(
+  tx: Tx,
+  view: { id: string; type: string; data_source_id: string; filter: unknown; sorts: unknown; configuration: unknown },
+  types: ReadonlyMap<string, string>,
+  columns: readonly PublicColumn[],
+): Promise<{ map: PublicMap; truncated: boolean } | null> {
+  if (view.type !== 'map') return null
+  const layout = readMapLayout(view.configuration)
+  const mapBy = resolveMapBy(layout.map_by, columns.filter((c) => c.type === 'place').map((c) => c.id))
+  if (mapBy === null) return null
+
+  const params = new ParamBag(2)
+  const hasValue: FilterNode = { property_id: mapBy, operator: 'is_not_empty' }
+  const stored = (view.filter as FilterNode | null) ?? null
+  const filterSql = compileFilter(stored === null ? hasValue : { op: 'and', children: [stored, hasValue] }, types, params, noViewer())
+  // 처음 100개는 표와 같은 차례로 고른다 — 뷰의 정렬, 없으면 그 뷰의 수동 순서(앱의 지도와 같은 100개)
+  const byKeys = compileSorts(Array.isArray(view.sorts) ? (view.sorts as SortKey[]) : [], types, params)
+  const sorted = byKeys.keys.length === 0 ? compileManualOrder(params.bind(view.id)) : byKeys
+  const limit = params.bind(MAX_MAP_PINS + 1)
+  const rows = await tx.query<{ id: string; properties: Record<string, unknown> | null; properties_cache: Record<string, unknown> | null }>(
+    `SELECT b.id, b.properties, p.properties_cache
+       FROM page p
+       JOIN block b ON b.id = p.id
+      WHERE p.data_source_id = $1 AND ${OPENABLE_ROW}${filterSql === null ? '' : ` AND ${filterSql}`}
+      ORDER BY ${sorted.orderBy}
+      LIMIT ${limit}`,
+    [view.data_source_id, ...params.values],
+  )
+  const picked = selectPins(
+    rows.map((r) => ({
+      id: r.id,
+      title: readTitle(r.properties).map((run) => run.plain_text).join(''),
+      properties: r.properties_cache ?? {},
+    })),
+    mapBy,
+  )
+  return {
+    map: { pins: picked.pins.map(({ rowId, title, name, lat, lng }) => ({ rowId, title, name, lat, lng })), height: layout.height },
+    truncated: picked.truncated,
   }
 }
 
