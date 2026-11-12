@@ -32825,7 +32825,7 @@ async function main() {
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('공개 화면의 뷰 — 목록 · 갤러리 · 보드 (PV-1 · F-06-08)')) { try {
-      // 첫 뷰의 레이아웃대로 — 보드(선택으로 묶음: 옵션 순서의 열 · 없음 열) · 갤러리 · 목록. 날짜로 묶은 보드는 표. 고르는 행은 어느 모양이든 같다
+      // 첫 뷰의 레이아웃대로 — 보드(선택으로 묶음: 옵션 순서의 열 · 없음 열) · 갤러리 · 목록. 다중 선택으로 묶은 보드는 표(날짜 · 숫자 · 글은 PV-6). 고르는 행은 어느 모양이든 같다
       // (필터 밖의 행 · 템플릿은 어디에도 없다). 카드 · 줄은 그 행의 공개 주소로 간다. 공개 화면은 세션을 읽지 않는다.
       const stamp = Date.now()
       const api = async (method, path, body, headers = authed) => {
@@ -32838,7 +32838,7 @@ async function main() {
       const view = db.defaultViewId
       const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
       const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
-      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '기한', type: 'date' })).body.property.id
+      const tags = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '태그', type: 'multi_select' })).body.property.id
       const doing = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '진행 중' })).body.option.id
       const done = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '끝' })).body.option.id
       const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
@@ -32893,11 +32893,11 @@ async function main() {
         await waitFor(`${linesJs} === '라,다,나' && !document.querySelector('[data-testid="public-db-gallery"]')`, 15000), await evaluate(linesJs))
       check('목록 줄은 그 행의 공개 주소로 간다', await evaluate(`document.querySelector('[data-testid="public-db-list"] a')?.getAttribute('href')`) === `/p/${token}/${ids['라']}`)
 
-      // 날짜로 묶은 보드 → 표
-      await api('PATCH', `/views/${view}`, { type: 'board', groupBy: { property_id: due } })
+      // 다중 선택으로 묶은 보드 → 표(날짜 · 숫자 · 글로 묶은 보드는 PV-6 이 그린다)
+      await api('PATCH', `/views/${view}`, { type: 'board', groupBy: { property_id: tags } })
       await openPublic()
       const rowsJs = `[...document.querySelectorAll('.pub-db-table [data-testid="public-db-row-link"]')].map((a) => a.textContent.trim()).join(',')`
-      check('★ 날짜로 묶은 보드는 표로 그린다(보드 상자 없음 · 행은 같다)',
+      check('★ 다중 선택으로 묶은 보드는 표로 그린다(보드 상자 없음 · 행은 같다)',
         await waitFor(`${rowsJs} === '라,다,나' && !document.querySelector('[data-testid="public-db-board"]')`, 15000),
         `${await evaluate(rowsJs)} · 보드 ${await evaluate(`!!document.querySelector('[data-testid="public-db-board"]')`)}`)
 
@@ -32982,7 +32982,7 @@ async function main() {
 
     if (sectionIf('공개 화면의 뷰 — 차트 (PV-3 · F-06-08)')) { try {
       // 첫 뷰가 차트면 공개 경로의 자기 집계(공유 필터를 지난 공개 행)를 서버가 SVG 로 그린다. 세로 막대는 옵션 순서(없음 · 진행 중 · 끝)로 개수 ·
-      // 합계로 바꾸면 값이 바뀐다 · 도넛은 조각 · 숫자는 합 하나 · 날짜로 묶으면 표. 공개 화면은 세션을 읽지 않는다.
+      // 합계로 바꾸면 값이 바뀐다 · 도넛은 조각 · 숫자는 합 하나 · 다중 선택으로 묶으면 표(날짜 · 숫자 · 글은 PV-6). 공개 화면은 세션을 읽지 않는다.
       const stamp = Date.now()
       const api = async (method, path, body, headers = authed) => {
         const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -32994,7 +32994,7 @@ async function main() {
       const view = db.defaultViewId
       const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
       const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
-      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '기한', type: 'date' })).body.property.id
+      const tags = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '태그', type: 'multi_select' })).body.property.id
       const doing = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '진행 중' })).body.option.id
       const done = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '끝' })).body.option.id
       const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
@@ -33043,11 +33043,11 @@ async function main() {
         await waitFor(`document.querySelector('[data-testid="public-chart-number"]')?.getAttribute('data-value') === '115'`, 15000),
         await evaluate(`document.querySelector('[data-testid="public-chart-number"]')?.textContent ?? '(없음)'`))
 
-      // 날짜로 묶으면 표 — 행은 그대로
-      await api('PATCH', `/views/${view}`, { groupBy: { property_id: due }, chart: { kind: 'column' } })
+      // 다중 선택으로 묶으면 표 — 행은 그대로(날짜 · 숫자 · 글로 묶은 차트는 PV-6 이 그린다)
+      await api('PATCH', `/views/${view}`, { groupBy: { property_id: tags }, chart: { kind: 'column' } })
       await openPublic()
       const tableJs = `[...document.querySelectorAll('.pub-db-table [data-testid="public-db-row-link"]')].map((a) => a.textContent.trim()).sort().join(',')`
-      check('★ 날짜로 묶은 차트는 표로 그린다(차트 상자 없음 · 행은 나 · 다 · 라 · 마)',
+      check('★ 다중 선택으로 묶은 차트는 표로 그린다(차트 상자 없음 · 행은 나 · 다 · 라 · 마)',
         await waitFor(`${tableJs} === '나,다,라,마' && !document.querySelector('[data-testid="public-db-chart"]')`, 15000), await evaluate(tableJs))
 
       await api('DELETE', `/pages/${db.id}/publish`)
@@ -33297,6 +33297,82 @@ async function main() {
       check('★ 101개 → 핀 100개 + "100개까지 보입니다"',
         await until(async () => (await pinRows()).length === 100 && (await evaluate(`document.querySelector('[data-testid="public-table-truncated"]')?.textContent ?? ''`)).includes('100개까지 보입니다')),
         String((await pinRows()).length))
+
+      await api('DELETE', `/pages/${db.id}/publish`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('공개 보드 · 차트의 날짜 · 숫자 · 글 묶기 (PV-6 · F-06-08)')) { try {
+      // 날짜(월) · 숫자(구간) · 글(첫 글자)로 묶은 보드 · 차트를 공개 화면도 앱과 같은 버킷으로 그린다 — 열의 키 · 이름 · 차례가 앱의 보드와
+      // 같다(값 없음 열이 맨 앞 · 숨긴 그룹은 없다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 정본 [보강 PV-1] ⑦.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `공개 버킷 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '기한', type: 'date' })).body.property.id
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const memo = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, date, n, text) => api('POST', `/views/${view}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(date === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start: date } } }]),
+          ...(n === null ? [] : [{ propertyId: score, value: { type: 'number', number: n } }]),
+          ...(text === null ? [] : [{ propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(text)] } }]),
+        ],
+      })
+      // 가 2031-03-10 · 5 · 가방 / 나 2031-03-25 · 12 · 고양이 / 다 2031-05-01 · 17 · 까치(ㄲ → ㄱ) / 라 기한 없음 · 25 · apple / 마 2030-12-31 · 값 없음
+      for (const [t, d, n, m] of [['가', '2031-03-10', 5, '가방'], ['나', '2031-03-25', 12, '고양이'], ['다', '2031-05-01', 17, '까치'], ['라', null, 25, 'apple'], ['마', '2030-12-31', null, null]]) {
+        await row(t, d, n, m)
+      }
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('PV-6 · 데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+      const patched = await api('PATCH', `/views/${view}`, { type: 'board', groupBy: { property_id: due } })
+      check('PV-6 · 첫 뷰를 기한(월)으로 묶은 보드로 바꾼다', patched.status === 200, JSON.stringify(patched.body).slice(0, 200))
+
+      // 앱의 보드 열 머리(키 · 이름) — 공개 화면과 견줄 기준
+      const appHeadsJs = `[...document.querySelectorAll('[data-testid="db-board-column"]')].map((c) => (c.getAttribute('data-group-key') || '(없음)') + ':' + c.getAttribute('aria-label')).join('|')`
+      const appHeads = async (want) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`${appHeadsJs} === ${JSON.stringify(want)}`, 15000)
+        return evaluate(appHeadsJs)
+      }
+      const pubHeadsJs = `[...document.querySelectorAll('[data-testid="public-board-column"]')].map((c) => (c.getAttribute('data-group') || '(없음)') + ':' + c.getAttribute('aria-label')).join('|')`
+      const pubCardsJs = `[...document.querySelectorAll('[data-testid="public-board-column"]')].map((c) => (c.getAttribute('data-group') || '(없음)') + ':' + [...c.querySelectorAll('[data-testid="public-card"] a')].map((a) => a.textContent.trim()).join('/')).join('|')`
+      const openPublic = async () => send('Page.navigate', { url: `${BASE}/p/${token}` })
+
+      const wantMonth = '(없음):기한 없음|2030-12-01:2030년 12월|2031-03-01:2031년 3월|2031-05-01:2031년 5월'
+      const appMonth = await appHeads(wantMonth)
+      check('앱 보드 — 기한(월)의 열(값 없음 · 2030년 12월 · 2031년 3월 · 5월)', appMonth === wantMonth, appMonth)
+      await openPublic()
+      check('★ 공개 보드(기한 · 월) — 열 머리가 앱의 보드와 같다(키 · 이름 · 차례 · "기한 없음"이 맨 앞)',
+        await waitFor(`${pubHeadsJs} === ${JSON.stringify(appMonth)}`, 15000), await evaluate(pubHeadsJs))
+      check('★ 카드는 그 달의 열에 선다(3월에 가 · 나)', (await evaluate(pubCardsJs)) === '(없음):라|2030-12-01:마|2031-03-01:가/나|2031-05-01:다', await evaluate(pubCardsJs))
+      check('보드는 보드 상자 안에 서고 표는 없다', await evaluate(`!!document.querySelector('[data-testid="public-db-board"]') && !document.querySelector('.pub-db-table')`))
+
+      // 숫자(크기 10) — 10 ~ 20 은 숨긴다
+      const byNumber = await api('PATCH', `/views/${view}`, { groupBy: { property_id: score, number_size: 10, hidden: ['10'] } })
+      check('PV-6 · 점수(크기 10 · 10 ~ 20 숨김)로 바꾼다', byNumber.status === 200, JSON.stringify(byNumber.body).slice(0, 200))
+      const wantNumber = '(없음):점수 없음|0:0 ~ 10|20:20 ~ 30'
+      const appNumber = await appHeads(wantNumber)
+      check('앱 보드 — 점수 구간의 열(숨긴 10 ~ 20 은 없다)', appNumber === wantNumber, appNumber)
+      await openPublic()
+      check('★ 공개 보드(점수 · 구간) — 열 머리가 앱의 보드와 같다 · 숨긴 구간은 없다',
+        await waitFor(`${pubHeadsJs} === ${JSON.stringify(appNumber)}`, 15000), await evaluate(pubHeadsJs))
+      check('카드는 그 구간의 열에 선다', (await evaluate(pubCardsJs)) === '(없음):마|0:가|20:라', await evaluate(pubCardsJs))
+
+      // 차트 — 메모의 첫 글자(가방 · 고양이 · 까치 → ㄱ)
+      const byFirst = await api('PATCH', `/views/${view}`, { type: 'chart', groupBy: { property_id: memo, text_by: 'first' }, chart: { kind: 'column' } })
+      check('PV-6 · 메모의 첫 글자로 묶은 세로 막대 차트로 바꾼다', byFirst.status === 200, JSON.stringify(byFirst.body).slice(0, 200))
+      const barsJs = `[...document.querySelectorAll('[data-testid="public-chart-bar"]')].map((b) => (b.getAttribute('data-group') || '(없음)') + '=' + b.getAttribute('data-value') + ':' + (b.querySelector('title')?.textContent ?? '')).join('|')`
+      await openPublic()
+      check('★ 공개 차트(메모 · 첫 글자) — 막대는 값 없음 · ㄱ · A 차례 · 된소리도 ㄱ 에(3) · 이름은 앱의 머리',
+        await waitFor(`${barsJs} === ${JSON.stringify('(없음)=1:메모 없음 · 1|ㄱ=3:ㄱ · 3|A=1:A · 1')}`, 15000), await evaluate(barsJs))
+      check('차트는 차트 상자 안에 서고 표는 없다', await evaluate(`!!document.querySelector('[data-testid="public-db-chart"] svg') && !document.querySelector('.pub-db-table')`))
 
       await api('DELETE', `/pages/${db.id}/publish`)
     } catch (thrown) { await sectionThrew(thrown) } }

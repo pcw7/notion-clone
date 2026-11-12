@@ -45,8 +45,9 @@ import { shiftWindow, type TimelineWindow } from '../database/timeline-geometry.
 import { isCalculation, type Calculation, type CalculationResult } from '../database/calculations.ts'
 import { readChartLayout, type ChartKind } from '../database/chart.ts'
 import { MAX_MAP_PINS, readMapLayout, resolveMapBy, selectPins } from '../database/map.ts'
+import { bucketKeySql, readDataBucket, type DataBucket, type StoredBucketKeys } from '../database/group-bucket.ts'
 import type { PublicTarget } from './public-access.ts'
-import { boardKeyOf, isBoardGroupType, type BoardSpec } from './public-board.ts'
+import { boardKeyOf, bucketHeadsOf, isBoardGroupType, isBucketGroupType, type BoardSpec } from './public-board.ts'
 import { publicFilesValue } from './public-files.ts'
 import { publicPlaceValue } from './public-places.ts'
 import { buildChartGroups, chartCalculationSupported, chartResultOf, type ChartStatRow, type PublicChartGroup } from './public-chart.ts'
@@ -99,7 +100,10 @@ export type PublicRow = {
   /** 셀 값 — 속성 id → 값(`properties_cache` 그대로 · 보이는 공개 열의 것만). */
   readonly cells: Readonly<Record<string, unknown>>
   readonly uniqueSeq: number | null
-  /** 보드의 열 키(`public-board.ts`) — 보드가 아니면 null. 그룹 기준 속성이 안 보이는 열이어도 서버가 정한다. */
+  /**
+   * 보드의 열 키(`public-board.ts`) — 보드가 아니면 null. 그룹 기준 속성이 안 보이는 열이어도 서버가 정한다. 날짜 · 숫자 · 글로 묶으면(PV-6)
+   * 앱과 같은 키 식(`bucketKeySql`)의 버킷 키.
+   */
   readonly groupKey: string | null
   /** 캘린더 · 타임라인의 날짜(날짜 글자 · 양끝 포함) — 그 모양이 아니면 null. */
   readonly span: { readonly start: string; readonly end: string } | null
@@ -147,7 +151,7 @@ export type PublicWindow = {
   readonly nav: boolean
 }
 
-/** 보드의 재료 — 그룹 기준의 이름 · 열을 짓는 명세(옵션은 스키마 순서). */
+/** 보드의 재료 — 그룹 기준의 이름 · 열을 짓는 명세(옵션은 스키마 순서 · 날짜 · 숫자 · 글은 앱과 같은 차례 · 이름의 버킷 머리 — PV-6). */
 export type PublicBoard = { readonly propertyName: string; readonly spec: BoardSpec }
 
 /** 뷰 탭(PV-4) — 폼 뷰를 뺀 뷰의 탭 차례. `name` 이 비면 화면이 레이아웃 이름으로 채운다. */
@@ -285,6 +289,14 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   const dated = await readDatedWindow(tx, view, types, win)
   const cap = dated === null ? PUBLIC_TABLE_MAX_ROWS : PUBLIC_WINDOW_MAX_ROWS
   const limit = params.bind(cap + 1)
+  // 보드(PV-1) — 그룹 기준을 먼저 읽는다. 날짜 · 숫자 · 글로 묶으면(PV-6) 행의 열 키를 질의가 앱과 같은 식으로 낸다(그 속성의 셀 `gv`)
+  const board = view.type === 'board' ? await readBoard(tx, view.data_source_id, view.group_by) : null
+  let groupJoin = ''
+  let keySql = 'NULL::text'
+  if (board !== null && board.bucket !== null) {
+    groupJoin = `LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${params.bind(board.propertyId)}`
+    keySql = bucketKeySql(board.bucket, params, 'gv') ?? `''`
+  }
   // 창에 걸친 행만 — 앱(`queryWindow`)과 같은 규칙: 시작 < 끝날 + 1 이고 coalesce(끝, 시작) ≥ 첫날 − 1(양끝을 하루씩 넓힌다 ·
   // 시각이 있는 값은 시간대에 따라 UTC 날짜가 하루 어긋난다 — 칸에 놓는 것은 아래에서 칸 값의 날짜 글자로 다시 가른다)
   let joinSql = ''
@@ -307,11 +319,13 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     unique_seq: string | null
     created_at: Date
     last_edited_at: Date
+    group_key: string | null
   }>(
-    `SELECT b.id, b.properties, b.format, p.properties_cache, p.unique_seq, b.created_at, b.last_edited_at
+    `SELECT b.id, b.properties, b.format, p.properties_cache, p.unique_seq, b.created_at, b.last_edited_at, ${keySql} AS group_key
        FROM page p
        JOIN block b ON b.id = p.id
        ${joinSql}
+       ${groupJoin}
       WHERE p.data_source_id = $1 AND ${OPENABLE_ROW}${filterSql === null ? '' : ` AND ${filterSql}`}${windowSql}
       ORDER BY ${orderBy}
       LIMIT ${limit}`,
@@ -319,8 +333,6 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   )
 
   const shown = rows.slice(0, cap)
-  const board = view.type === 'board' ? await readBoard(tx, view.data_source_id, view.group_by) : null
-  const groupId = board === null ? null : (view.group_by as { property_id: string }).property_id
   const layout: PublicLayout = dated !== null ? dated.window.kind : board !== null ? 'board' : view.type === 'list' || view.type === 'gallery' ? view.type : 'table'
   const spanOf = (cache: Record<string, unknown> | null) => (dated === null ? null : cellDays(cache?.[dated.datePropertyId]))
   const colorOf = (cache: Record<string, unknown> | null): string => {
@@ -340,7 +352,8 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     ...head,
     layout,
     viewType: view.type,
-    board,
+    // 데이터 버킷(PV-6)의 열은 고른 행에 든 버킷 — 앱과 같은 차례 · 이름
+    board: board === null ? null : publicBoardOf(board, kept.map(({ row }) => row.group_key ?? '')),
     chart: null,
     map: null,
     cardSize: gallery.cover_size,
@@ -354,7 +367,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
       icon: pageIconOfFormat(row.format),
       cells: pick(row.properties_cache, columns, row),
       uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
-      groupKey: board === null || groupId === null ? null : boardKeyOf(board.spec, row.properties_cache?.[groupId]),
+      groupKey: board === null ? null : board.bucket !== null ? (row.group_key ?? '') : boardKeyOf(board.spec, row.properties_cache?.[board.propertyId]),
       span,
       barColor: colorOf(row.properties_cache),
       preview: previews.get(row.id) ?? null,
@@ -518,7 +531,8 @@ async function readMap(
 /**
  * 차트(PV-3) — 첫 뷰가 차트일 때 **자기 집계 질의**(그룹마다 행 수 · 숫자 속성의 통계)로 그린다. 행 집합은 표와 같다(공유 필터 · 공개로 열리는 행 ·
  * 줄 상한은 없다 — 합계는 처음 100줄의 합이 아니다). 그릴 수 없으면 null(표 — viewType 은 `chart` 그대로):
- *   · X축(`group_by`)이 선택 · 상태(옵션 단위) · 체크박스가 아니다 — 날짜 · 숫자 · 글 · 범주는 공개 경로에 버킷 계산을 두지 않는다(보드와 같다)
+ *   · X축(`group_by`)이 보드로 그릴 수 있는 기준이 아니다(`readBoard` — 범주 · 다중 선택 · 수식 …). 날짜 · 숫자 · 글(PV-6)은 앱과 같은
+ *     키 식(`bucketKeySql`)으로 묶고 같은 차례 · 이름의 막대(`bucketHeadsOf`)
  *   · Y 계산이 개수 · 숫자 속성의 통계가 아니다(수식 · 롤업 · 다른 타입의 칸 세기 — 값이 행에 없다)
  * 쌓기(`sub_group_by`)는 읽지 않는다 — 막대는 하위 그룹으로 나누지 않은 그룹 합계다. 숫자 종류는 X축을 읽지 않고 모든 행에 계산 한 번.
  */
@@ -544,14 +558,18 @@ async function readChart(
   const total = layout.kind === 'number'
   const board = total ? null : await readBoard(tx, view.data_source_id, view.group_by)
   if (!total && board === null) return null
-  const groupId = board === null ? null : (view.group_by as { property_id: string }).property_id
 
   // `$1` 은 data source — 2번부터 발급한다. 보는 사람이 없다(익명) — 표와 같은 필터 컴파일
   const params = new ParamBag(2)
   const filterSql = compileFilter((view.filter as FilterNode | null) ?? null, types, params, noViewer())
   let keySql = `''`
-  if (board !== null && groupId !== null) {
-    const prop = `${params.bind(groupId)}::text`
+  let groupJoin = ''
+  if (board !== null && board.bucket !== null) {
+    // 날짜 · 숫자 · 글(PV-6) — 그 속성의 셀(`gv`)에서 앱과 같은 키 식
+    groupJoin = `LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${params.bind(board.propertyId)}`
+    keySql = bucketKeySql(board.bucket, params, 'gv') ?? `''`
+  } else if (board !== null) {
+    const prop = `${params.bind(board.propertyId)}::text`
     if (board.spec.type === 'checkbox') {
       keySql = `CASE WHEN (p.properties_cache -> ${prop} ->> 'checkbox') = 'true' THEN 'true' ELSE 'false' END`
     } else {
@@ -577,6 +595,7 @@ async function readChart(
        FROM (SELECT ${keySql} AS k, ${numSql} AS num
                FROM page p
                JOIN block b ON b.id = p.id
+               ${groupJoin}
               WHERE p.data_source_id = $1 AND ${OPENABLE_ROW}${filterSql === null ? '' : ` AND ${filterSql}`}) x
       ${total ? '' : 'GROUP BY x.k'}`,
     [view.data_source_id, ...params.values],
@@ -591,32 +610,48 @@ async function readChart(
     cumulative: layout.cumulative,
     groupSort: typeof g?.sort === 'string' ? g.sort : null,
     calculation: fn === null ? null : { function: fn, propertyName: calcName },
-    groups: board === null ? [] : buildChartGroups(board.spec, rows, fn),
+    // 데이터 버킷(PV-6)의 막대는 집계에 나온 버킷(행이 든 것) — 앱과 같은 차례 · 이름
+    groups: board === null ? [] : buildChartGroups(publicBoardOf(board, rows.map((r) => r.key)).spec, rows, fn),
     total: total ? chartResultOf(fn ?? 'count_all', rows[0] ?? { n: 0, filled: 0, distinct: 0, sum: null, avg: null, median: null, min: null, max: null }) : null,
   }
 }
 
+/** 보드 · 차트의 그룹 기준 — 화면에 싣는 것(`PublicBoard`) + 행의 열 키를 정할 것. */
+type BoardAxis = PublicBoard & {
+  readonly propertyId: string
+  /** 날짜 · 숫자 · 글로 묶은 버킷 설정(PV-6) — 선택 · 상태 · 체크박스면 null(키는 `boardKeyOf`). */
+  readonly bucket: DataBucket | null
+}
+
 /**
- * 보드의 그룹 기준 — 살아 있는 선택 · 상태(옵션 단위) · 체크박스일 때만. 아니면 null(표로 그린다 — 날짜 · 숫자 · 글 · 범주로 묶은 상태는 공개 경로에
- * 버킷 계산을 두지 않는다 · 정본 [보강 PV-1] ②).
+ * 보드의 그룹 기준 — 살아 있는 선택 · 상태(옵션 단위) · 체크박스, 날짜 · 숫자 · 글(PV-6 — 앱과 같은 버킷 설정 · 상대 날짜의 오늘은 서버의
+ * UTC 오늘 `publicToday`)일 때. 아니면 null(표로 그린다 — 범주 단위 · 다중 선택 · 수식 …). 하위 그룹(`sub_group_by`)은 읽지 않는다(뒤로 ·
+ * 정본 [보강 PV-1] ② · ⑦).
  */
-async function readBoard(tx: Tx, dataSourceId: string, raw: unknown): Promise<PublicBoard | null> {
-  const g = typeof raw === 'object' && raw !== null ? (raw as { property_id?: unknown; hidden?: unknown; hide_empty?: unknown; status_by?: unknown }) : null
-  if (g === null || typeof g.property_id !== 'string' || g.status_by !== undefined) return null
+async function readBoard(tx: Tx, dataSourceId: string, raw: unknown): Promise<BoardAxis | null> {
+  const g =
+    typeof raw === 'object' && raw !== null
+      ? (raw as StoredBucketKeys & { property_id?: unknown; hidden?: unknown; hide_empty?: unknown; status_by?: unknown })
+      : null
+  if (g === null || typeof g.property_id !== 'string') return null
   const prop = await tx.queryMaybe<{ name: string; type: string }>(
     `SELECT name, type::text AS type FROM property WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
     [g.property_id, dataSourceId],
   )
   if (prop === null || !isBoardGroupType(prop.type)) return null
+  // 범주 단위(상태를 할 일 · 진행 중 · 완료로)는 그리지 않는다 — 앱처럼 상태에서만 산다(타입을 바꾼 뒤의 저장값은 읽지 않는다)
+  if (prop.type === 'status' && g.status_by === 'group') return null
   const options =
-    prop.type === 'checkbox'
-      ? []
-      : await tx.query<{ id: string; name: string; color: string }>(
+    prop.type === 'select' || prop.type === 'status'
+      ? await tx.query<{ id: string; name: string; color: string }>(
           `SELECT id, name, color::text AS color FROM select_option WHERE property_id = $1 ORDER BY order_idx, id`,
           [g.property_id],
         )
+      : []
   return {
+    propertyId: g.property_id,
     propertyName: prop.name,
+    bucket: isBucketGroupType(prop.type) ? readDataBucket(g, prop.type, publicToday()) : null,
     spec: {
       type: prop.type,
       options,
@@ -624,6 +659,13 @@ async function readBoard(tx: Tx, dataSourceId: string, raw: unknown): Promise<Pu
       hideEmpty: g.hide_empty === true,
     },
   }
+}
+
+/** 화면에 싣는 보드 — 데이터 버킷(PV-6)이면 `keys`(고른 행 · 집계에 든 버킷)로 앱과 같은 차례 · 이름의 머리를 짓는다. */
+function publicBoardOf(board: BoardAxis, keys: Iterable<string>): PublicBoard {
+  const { propertyName, spec, bucket } = board
+  if (bucket === null || !isBucketGroupType(spec.type)) return { propertyName, spec }
+  return { propertyName, spec: { ...spec, buckets: bucketHeadsOf(spec.type, propertyName, bucket, keys) } }
 }
 
 /**
