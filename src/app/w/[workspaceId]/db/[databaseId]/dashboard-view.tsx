@@ -10,53 +10,70 @@
  * 원본을 볼 수 없는 위젯은 "볼 수 없는 위젯" — 이름 · 타입 · 행 수를 그리지 않는다(서버가 주지도 않는다 · N-2). 소스가 휴지통에 있으면 "지워진
  * 소스". 위젯은 변경 알림을 구독하지 않는다(`WithoutTableChanges` — 위젯마다 연결을 열면 호스트당 연결 수를 다 쓴다). 이 파일 자체는 클라이언트
  * JS 가 없다 — 대시보드가 아닌 뷰의 첫 JS 에 들지 않는다.
+ *
+ * 편집 모드(DB-3 · 정본 ⑤) — 구조를 고칠 수 있는 사람(`edit`)에게만 격자를 편집 틀(`dashboard-edit-frame.tsx`)로 감싸고, 위젯 머리 · 줄 끝에
+ * 작은 자리를 둔다. 격자 · 위젯은 그대로 서버가 그린다 — 편집 화면(메뉴 · 넣기 · 끌기)은 "편집" 을 누를 때 받는다. 볼 수만 있는 사람의
+ * 문서에는 편집 단추도 자리도 없다.
  */
 
 import { Suspense, type ReactNode } from 'react'
 import Link from '@/app/link'
 import type { DashboardWidget } from '@/lib/database/dashboard'
+import { layoutOfGrid } from '@/lib/database/dashboard-edit'
 import type { DashboardGridRow } from '@/lib/database/dashboard-grid'
+import { DashboardEditFrame, LockedWidgetSlot, RowEndSlot, WidgetHeadSlot, type DashboardSourceOption } from './dashboard-edit-frame'
 import { WithoutTableChanges } from './use-table-changes'
 
 const FRAME =
-  'flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-neutral-200 md:w-auto md:flex-1 md:basis-0 dark:border-neutral-800'
+  'flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-neutral-200 md:w-auto md:flex-1 md:basis-0 data-[dragging=true]:opacity-50 dark:border-neutral-800'
+const NAME = 'truncate text-sm font-medium text-neutral-700 dark:text-neutral-200'
+
+/** 편집 틀에 줄 것 — 고칠 수 있는 사람에게만(아니면 null). 배치는 그린 줄에서 만든다. */
+export type DashboardEditProps = {
+  readonly workspaceId: string
+  readonly databaseId: string
+  readonly dashboardId: string
+  /** 읽은 판(`readDashboard` 의 `updatedAt`) — 배치를 고칠 때 함께 보낸다. */
+  readonly updatedAt: string
+  readonly sources: readonly DashboardSourceOption[]
+}
 const HEAD = 'flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2 dark:border-neutral-800'
 const NOTE = 'flex flex-1 flex-col items-center justify-center gap-1 px-4 text-center text-sm text-neutral-500'
 
 export function DashboardView({
   rows,
-  canEditStructure,
+  edit,
   openHref,
   renderWidget,
 }: {
   readonly rows: readonly DashboardGridRow<DashboardWidget>[]
-  readonly canEditStructure: boolean
+  /** 구조를 고칠 수 있는 사람(`edit_structure` · 잠기지 않음)에게만 — 편집 모드(DB-3) */
+  readonly edit: DashboardEditProps | null
   /** "전체로 열기" — 그 위젯 뷰를 데이터베이스 화면에서(`?view=<위젯 id>`) */
   readonly openHref: (widgetId: string) => string
   /** 위젯의 몸 — 그 위젯 뷰의 보통 읽기 · 보통 화면(서버 컴포넌트). `rowPx` 는 그 줄의 높이(칸에 맞춰 그리는 것이 쓴다) */
   readonly renderWidget: (widgetId: string, rowPx: number) => ReactNode
 }) {
-  if (rows.length === 0) {
-    return (
+  const editable = edit !== null
+  const grid =
+    rows.length === 0 ? (
       <div
         role="status"
         data-testid="db-dashboard-empty"
         className="flex flex-col gap-1 rounded-lg border border-dashed border-neutral-300 px-6 py-10 text-center text-sm text-neutral-500 dark:border-neutral-700"
       >
         <p className="font-medium text-neutral-700 dark:text-neutral-200">위젯이 없습니다</p>
-        {/* 위젯 넣기 · 옮기기는 편집 모드(DB-3)의 일이다 */}
-        {canEditStructure && <p>위젯을 넣는 &quot;편집&quot; 단추는 곧 생깁니다.</p>}
+        {editable && <p>&quot;편집&quot; 을 눌러 위젯을 넣습니다.</p>}
       </div>
-    )
-  }
-  return (
+    ) : (
     <WithoutTableChanges>
     <div data-testid="db-dashboard" className="flex flex-col gap-4">
-      {rows.map((row) => (
+      {rows.map((row, rowIndex) => (
         <div key={row.cells[0]?.id} data-testid="db-dashboard-row" data-height={row.height} className="flex flex-col gap-4 md:flex-row">
           {row.cells.map((widget) =>
             !widget.accessible ? (
               <section key={widget.id} data-testid="db-widget" data-widget-id={widget.id} data-locked="true" className={FRAME} style={{ height: row.heightPx }}>
+                {editable && <LockedWidgetSlot widgetId={widget.id} />}
                 <div role="status" data-testid="db-widget-locked" className={NOTE}>
                   <p className="font-medium text-neutral-700 dark:text-neutral-200">볼 수 없는 위젯</p>
                   <p>원본 데이터베이스를 볼 수 있는 사람만 봅니다.</p>
@@ -72,9 +89,17 @@ export function DashboardView({
                 style={{ height: row.heightPx }}
               >
                 <div className={HEAD}>
-                  <h3 data-testid="db-widget-name" className="truncate text-sm font-medium text-neutral-700 dark:text-neutral-200">
-                    {widget.name}
-                  </h3>
+                  {editable ? (
+                    <WidgetHeadSlot widgetId={widget.id} name={widget.name}>
+                      <h3 data-testid="db-widget-name" className={NAME}>
+                        {widget.name}
+                      </h3>
+                    </WidgetHeadSlot>
+                  ) : (
+                    <h3 data-testid="db-widget-name" className={NAME}>
+                      {widget.name}
+                    </h3>
+                  )}
                   {/* 휴지통의 소스는 열 뷰가 없다 */}
                   {!widget.sourceGone && (
                     <Link
@@ -107,10 +132,17 @@ export function DashboardView({
               </section>
             ),
           )}
+          {editable && <RowEndSlot row={rowIndex} />}
         </div>
       ))}
     </div>
     </WithoutTableChanges>
+    )
+  if (edit === null) return grid
+  return (
+    <DashboardEditFrame {...edit} layout={layoutOfGrid(rows)}>
+      {grid}
+    </DashboardEditFrame>
   )
 }
 

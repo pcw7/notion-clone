@@ -17899,9 +17899,252 @@ async function main() {
       // 빈 대시보드
       const empty = (await api('POST', `/databases/${db.id}/views`, { type: 'dashboard', name: `빈대시${stamp}` })).body?.view?.id
       const emptyHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${db.id}?v=${empty}`, { headers: { cookie: authed.cookie } })).text()
-      check('빈 대시보드 — "위젯이 없습니다"(고칠 수 있는 사람에게는 편집이 곧 생긴다는 말)',
-        emptyHtml.includes('data-testid="db-dashboard-empty"') && emptyHtml.includes('위젯이 없습니다') && emptyHtml.includes('곧 생깁니다'),
+      check('빈 대시보드 — "위젯이 없습니다"(고칠 수 있는 사람에게는 "편집" 단추와 그것으로 넣는다는 말 · DB-3)',
+        emptyHtml.includes('data-testid="db-dashboard-empty"') && emptyHtml.includes('위젯이 없습니다') && emptyHtml.includes('을 눌러 위젯을 넣습니다')
+          && emptyHtml.includes('data-testid="db-dashboard-edit"'),
         String(emptyHtml.includes('db-dashboard-empty')))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('대시보드 편집 (DB-3 · F-04-20)')) { try {
+      // 처음에는 보기다 — 구조를 고칠 수 있는 사람에게만 "편집"(볼 수만 있는 동료의 문서에는 편집 단추 · 틀이 없고 서버도 거부한다). 편집에서 위젯
+      // 넣기(소스 · 타입 → 새 줄 · 줄 끝의 "+" 는 그 줄) · 메뉴(왼쪽 · 오른쪽 · 위 줄 · 아래 줄)와 끌기로 옮기기 · 줄 높이 · 이름 · 지우기(메뉴 안에서
+      // 묻는다) · 남이 먼저 고쳤으면 "다시 불러왔습니다" · "완료" 뒤에는 고칠 것이 없다 · 다른 데이터베이스 연결 · 12개면 "위젯은 12개 · 줄은
+      // 3개까지입니다". 정본 §3.6 [보강 DB-1] ⑤. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 나만 보는 그릇(단계 가/나 · 4행)과 빈 대시보드
+      const db = (await api('POST', '/databases', { name: `대시편집${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const titleOf = async (viewId) => (await api('GET', `/views/${viewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleProp = await titleOf(db.defaultViewId)
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const ga = (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name: '가' })).body.option.id
+      const na = (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name: '나' })).body.option.id
+      for (let i = 1; i <= 4; i += 1) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(`편집행${i}`)] } },
+          { propertyId: stage, value: { type: 'select', select: { id: i % 2 === 0 ? ga : na } } },
+        ] })
+      }
+      const dash = (await api('POST', `/databases/${db.id}/views`, { type: 'dashboard', name: `편집대시${stamp}` })).body?.view?.id
+      const DASH_URL = `${BASE}/w/${workspaceId}/db/${db.id}?v=${dash}`
+      const readDash = async () => (await api('GET', `/views/${dash}/dashboard`)).body?.dashboard ?? null
+      const shapeOf = (d) => (d?.layout?.rows ?? []).map((r) => [r.height, ...r.cells.map((c) => c.view_id)])
+      const serverIs = async (expected) => {
+        for (let i = 0; i < 40; i += 1) {
+          if (JSON.stringify(shapeOf(await readDash())) === JSON.stringify(expected)) return true
+          await sleep(150)
+        }
+        return false
+      }
+      const W = (id) => `[data-testid="db-widget"][data-widget-id="${id}"]`
+      const domExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-dashboard-row"]')].map((row) => [row.dataset.height, ...[...row.querySelectorAll(':scope > [data-testid="db-widget"]')].map((c) => c.dataset.widgetId)]))`
+      const domShape = async () => JSON.parse(await evaluate(domExpr))
+      // 화면이 그 배치로 다시 그려졌고 저장 중이 아니다
+      const domIs = (expected, ms = 15000) =>
+        waitFor(`${domExpr} === ${JSON.stringify(JSON.stringify(expected))} && !document.querySelector('[data-testid="db-dashboard-saving"]')`, ms)
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const enabled = (sel) => waitFor(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && !e.disabled })()`, 10000)
+      const clickEnabled = async (sel) => (await enabled(sel)) && clickSelector(sel)
+      const openMenu = (id) => clickUntil(`${W(id)} [data-testid="db-widget-menu"]`, `!!document.querySelector(${JSON.stringify(`${W(id)} [data-testid="db-widget-menu-panel"]`)})`)
+      const openAdd = async (sel) => (await enabled(sel)) && clickUntil(sel, `!!document.querySelector('[data-testid="db-dashboard-add-panel"]')`)
+      const EDIT = '[data-testid="db-dashboard-edit"]'
+      const enterEdit = async () => (await waitHydrated(EDIT)) && clickUntil(EDIT, `!!document.querySelector('[data-testid="db-dashboard-done"]')`)
+
+      // 볼 수만 있는 동료 — 편집 단추 · 틀이 문서에 없다 · 서버도 거부한다
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const reader = await joinAs(workspaceId, await createUser(`대시 편집 독자 ${stamp}`), 'member')
+      const shared = await aclMod.grantAccess(ctx, db.id, { type: 'user', id: reader.userId }, 'view')
+      const asReader = { ...authed, cookie: `nc_session=${reader.token}` }
+      const readerHtml = await (await fetch(DASH_URL, { headers: { cookie: asReader.cookie } })).text()
+      const ownerHtml = await (await fetch(DASH_URL, { headers: { cookie: authed.cookie } })).text()
+      const readerAdd = await api('POST', `/views/${dash}/dashboard/widgets`, { dataSourceId: ds, type: 'table' }, asReader)
+      check('★ "편집" 은 구조를 고칠 수 있는 사람에게만 — 볼 수만 있는 동료의 문서에는 편집 단추 · 편집 틀이 없고 서버도 거부한다',
+        shared.ok && ownerHtml.includes('data-testid="db-dashboard-edit"') && readerHtml.includes('data-testid="db-dashboard-empty"')
+          && !readerHtml.includes('db-dashboard-edit') && !readerHtml.includes('db-dashboard-frame') && [403, 404].includes(readerAdd.status),
+        JSON.stringify({ shared: shared.ok, owner: ownerHtml.includes('db-dashboard-edit'), reader: readerHtml.includes('db-dashboard-edit'), readerAdd: readerAdd.status }))
+
+      // 보기 → 편집
+      await send('Page.navigate', { url: DASH_URL })
+      await waitHydrated(EDIT)
+      const viewQuiet = !(await has('[data-testid="db-dashboard-add"]')) && !(await has('[data-testid="db-dashboard-done"]'))
+      const entered = await enterEdit()
+      check('★ 처음에는 보기("편집" 만) — 누르면 편집 모드("위젯 넣기" · "완료")',
+        viewQuiet && entered && (await has('[data-testid="db-dashboard-add"]')), JSON.stringify({ viewQuiet, entered }))
+
+      // 위젯 넣기 — 위의 "위젯 넣기" 로 표(새 줄) · 그 줄 끝의 "+" 로 차트(그 줄)
+      await openAdd('[data-testid="db-dashboard-add"]')
+      const pickedSource = await evaluate(`document.querySelector('[data-testid="db-dashboard-add-source"]')?.value ?? null`)
+      const pickedRow = await evaluate(`document.querySelector('[data-testid="db-dashboard-add-row"]')?.value ?? null`)
+      await clickEnabled('[data-testid="db-dashboard-add-type-table"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-widget"]').length === 1 && !!document.querySelector('[data-testid="db-widget-handle"]')`, 15000)
+      const tableW = (await readDash())?.widgets?.find((w) => w.type === 'table')?.id
+      await openAdd('[data-testid="db-dashboard-row-add"]')
+      const plusRow = await evaluate(`document.querySelector('[data-testid="db-dashboard-add-row"]')?.value ?? null`)
+      await clickEnabled('[data-testid="db-dashboard-add-type-chart"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-widget"]').length === 2`, 15000)
+      const chartW = (await readDash())?.widgets?.find((w) => w.type === 'chart')?.id
+      const added = [['medium', tableW, chartW]]
+      check('★ 위젯 넣기 — 이 데이터베이스의 소스 · 표 → 새 줄 · 줄 끝의 "+" 로 차트를 그 줄에 · 화면 · 서버의 배치 · 편집 모드는 그대로',
+        pickedSource === ds && pickedRow === 'new' && plusRow === '0' && !!tableW && !!chartW
+          && (await domIs(added)) && (await serverIs(added)) && (await has(`${W(chartW)} [data-testid="db-widget-handle"]`)),
+        JSON.stringify({ pickedSource: pickedSource === ds, pickedRow, plusRow, dom: await domShape(), server: shapeOf(await readDash()) }))
+
+      // 메뉴로 옮기기 — "오른쪽으로"(맨 왼쪽에는 "왼쪽으로" 가 없다) · "아래 줄로"(마지막 줄이면 새 줄)
+      await openMenu(tableW)
+      const leftless = !(await has(`${W(tableW)} [data-testid="db-widget-move-left"]`)) && (await has(`${W(tableW)} [data-testid="db-widget-move-right"]`))
+      await clickEnabled(`${W(tableW)} [data-testid="db-widget-move-right"]`)
+      const swapped = [['medium', chartW, tableW]]
+      check('★ 메뉴로 옮기기 — "오른쪽으로"(맨 왼쪽에는 "왼쪽으로" 가 없다) · 화면 · 서버의 배치',
+        leftless && (await domIs(swapped)) && (await serverIs(swapped)),
+        JSON.stringify({ leftless, dom: await domShape(), server: shapeOf(await readDash()) }))
+      await openMenu(chartW)
+      await clickEnabled(`${W(chartW)} [data-testid="db-widget-move-down"]`)
+      const split = [['medium', tableW], ['medium', chartW]]
+      check('메뉴의 "아래 줄로" — 마지막 줄이면 새 줄(옮긴 위젯의 높이)',
+        (await domIs(split)) && (await serverIs(split)), JSON.stringify({ dom: await domShape(), server: shapeOf(await readDash()) }))
+
+      // 끌기 — 둘째 줄의 차트를 첫 줄의 표 왼쪽으로
+      const handle = `${W(chartW)} [data-testid="db-widget-handle"]`
+      await enabled(handle)
+      const from = await evaluate(`(() => { const e = document.querySelector(${JSON.stringify(handle)}); e.scrollIntoView({ block: 'center' })
+        const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+      const to = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(W(tableW))}).getBoundingClientRect()
+        return { x: r.x + 20, y: Math.max(r.top + 10, r.bottom - 40) } })()`)
+      await move(from.x, from.y)
+      await press(from.x, from.y)
+      for (let i = 1; i <= 12; i += 1) {
+        await move(from.x + ((to.x - from.x) * i) / 12, from.y + ((to.y - from.y) * i) / 12, true)
+        await sleep(16)
+      }
+      const line = await waitFor(`!!document.querySelector('[data-testid="db-dashboard-drop-line"]') && document.querySelector(${JSON.stringify(W(chartW))})?.dataset.dragging === 'true'`, 3000)
+      await release(to.x, to.y)
+      const joined = [['medium', chartW, tableW]]
+      check('★ 끌기 — 끄는 동안 놓일 자리에 줄 · 끌고 있는 위젯은 흐리다 · 다른 줄의 왼쪽에 놓으면 그 자리 · 빈 줄은 없어진다 · 서버의 배치',
+        line && (await domIs(joined)) && (await serverIs(joined)) && !(await has('[data-testid="db-dashboard-drop-line"]'))
+          && (await evaluate(`document.querySelector(${JSON.stringify(W(chartW))})?.dataset.dragging ?? null`)) === null,
+        JSON.stringify({ line, from, to, dom: await domShape(), server: shapeOf(await readDash()) }))
+
+      // 줄 높이 — 줄 끝에서 "크게"
+      await enabled('[data-testid="db-dashboard-row-height"]')
+      await setSelect('[data-testid="db-dashboard-row-height"]', 'large')
+      const tall = [['large', chartW, tableW]]
+      const tallOk = (await domIs(tall)) && (await serverIs(tall))
+      const tallPx = await evaluate(`Math.round(document.querySelector(${JSON.stringify(W(tableW))})?.getBoundingClientRect().height ?? 0)`)
+      check('★ 줄 높이 — 줄 끝에서 "크게" 를 고르면 그 줄이 640px · 서버의 배치', tallOk && tallPx === 640,
+        JSON.stringify({ tallPx, dom: await domShape(), server: shapeOf(await readDash()) }))
+
+      // 위젯 이름 — 머리의 칸에서 고치고 Enter
+      const newName = `새표이름${stamp}`
+      const renameSel = `${W(tableW)} [data-testid="db-widget-rename"]`
+      await enabled(renameSel)
+      await evaluate(`(() => { const i = document.querySelector(${JSON.stringify(renameSel)}); i.focus(); i.select() })()`)
+      await typeText(newName)
+      await key('Enter')
+      let renamed = null
+      for (let i = 0; i < 40; i += 1) {
+        renamed = (await api('GET', `/views/${tableW}`)).body?.view?.name ?? null
+        if (renamed === newName) break
+        await sleep(150)
+      }
+      check('★ 위젯 이름 — 머리의 칸에서 고치고 Enter · 서버의 위젯 뷰 이름(보통 뷰의 이름 바꾸기)',
+        renamed === newName && (await waitFor(`document.querySelector(${JSON.stringify(renameSel)})?.value === ${JSON.stringify(newName)}`, 5000)),
+        JSON.stringify({ renamed }))
+
+      // 남이 먼저 고친다 — 지금 판으로 API 가 배치를 바꾼다(작게 · 차례 반대). 화면은 옛 판으로 옮기려 한다 → 다시 읽는다
+      const fresh = await readDash()
+      const theirs = [['small', tableW, chartW]]
+      const patched = await api('PATCH', `/views/${dash}/dashboard`, {
+        layout: { rows: [{ height: 'small', cells: [{ view_id: tableW }, { view_id: chartW }] }] },
+        updatedAt: fresh?.updatedAt,
+      })
+      await openMenu(chartW)
+      await clickEnabled(`${W(chartW)} [data-testid="db-widget-move-right"]`)
+      const conflictSaid = await waitFor(`document.querySelector('[data-testid="db-dashboard-notice"]')?.textContent === '다른 사람이 대시보드를 고쳤습니다 — 다시 불러왔습니다'`, 10000)
+      check('★ 남이 먼저 고쳤으면 — "다른 사람이 대시보드를 고쳤습니다 — 다시 불러왔습니다" · 화면은 다시 읽은 배치 · 남의 배치를 덮지 않았다',
+        patched.status === 200 && conflictSaid && (await domIs(theirs)) && (await serverIs(theirs)),
+        JSON.stringify({ patched: patched.status, conflictSaid, notice: await evaluate(`document.querySelector('[data-testid="db-dashboard-notice"]')?.textContent ?? null`), dom: await domShape(), server: shapeOf(await readDash()) }))
+
+      // 지우기 — 메뉴 안에서 묻는다(취소하면 그대로)
+      await openMenu(chartW)
+      await clickEnabled(`${W(chartW)} [data-testid="db-widget-remove"]`)
+      const asked = await waitFor(`!!document.querySelector('[data-testid="db-widget-remove-ask"]')`, 3000)
+      await clickSelector('[data-testid="db-widget-remove-cancel"]')
+      const kept = !(await has('[data-testid="db-widget-remove-ask"]')) && (await evaluate(`document.querySelectorAll('[data-testid="db-widget"]').length`)) === 2
+      await clickEnabled(`${W(chartW)} [data-testid="db-widget-remove"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-widget-remove-ask"]')`, 3000)
+      await clickEnabled('[data-testid="db-widget-remove-confirm"]')
+      const removed = [['small', tableW]]
+      const removedOk = (await domIs(removed)) && (await serverIs(removed))
+      const chartGone = (await api('GET', `/views/${chartW}`)).status
+      check('★ 지우기 — 메뉴 안에서 한 번 더 묻고(취소하면 그대로) 지운다 · 위젯 뷰가 사라지고 배치에서 빠진다',
+        asked && kept && removedOk && chartGone === 404, JSON.stringify({ asked, kept, removedOk, chartGone, dom: await domShape() }))
+
+      // "완료" — 보기로 돌아오면 고칠 것이 없다
+      await clickSelector('[data-testid="db-dashboard-done"]')
+      const viewAgain = await waitFor(`!!document.querySelector('[data-testid="db-dashboard-edit"]') && !document.querySelector('[data-testid="db-dashboard-add"]')
+        && !document.querySelector('[data-testid="db-widget-handle"]') && !document.querySelector('[data-testid="db-widget-menu"]')
+        && !document.querySelector('[data-testid="db-dashboard-row-controls"]') && !document.querySelector('[data-testid="db-widget-rename"]')`, 5000)
+      const shownName = await evaluate(`document.querySelector('${W(tableW)} [data-testid="db-widget-name"]')?.textContent ?? null`)
+      check('★ "완료" — 보기로 돌아오면 손잡이 · 메뉴 · 줄 끝 · 넣기 · 이름 칸이 없다 · 이름은 고친 이름',
+        viewAgain && shownName === newName, JSON.stringify({ viewAgain, shownName }))
+
+      // 다른 데이터베이스 연결… — 2l-3 의 고르개로 붙이고 그 소스로 위젯을 넣는다
+      const original = (await api('POST', '/databases', { name: `편집원본${stamp}` })).body.database
+      const originRow = `원본행${stamp}`
+      await api('POST', `/views/${original.defaultViewId}/rows`, { cells: [{ propertyId: await titleOf(original.defaultViewId), value: { type: 'title', title: [textRun(originRow)] } }] })
+      await enterEdit()
+      await openAdd('[data-testid="db-dashboard-add"]')
+      await clickUntil('[data-testid="db-dashboard-link"]', `!!document.querySelector('[data-testid="db-source-link-search"]')`)
+      await evaluate(`document.querySelector('[data-testid="db-source-link-search"]')?.focus()`)
+      await typeText(`편집원본${stamp}`)
+      const found = await waitFor(`[...(document.querySelector('[data-testid="db-source-link-select"]')?.options ?? [])].some((o) => o.value === ${JSON.stringify(original.dataSourceId)})`, 10000)
+      await setSelect('[data-testid="db-source-link-select"]', original.dataSourceId)
+      await clickEnabled('[data-testid="db-source-link-confirm"]')
+      const linkedPicked = await waitFor(`document.querySelector('[data-testid="db-dashboard-add-source"]')?.value === ${JSON.stringify(original.dataSourceId)}
+        && !document.querySelector('[data-testid="db-source-link-picker"]')`, 15000)
+      await clickEnabled('[data-testid="db-dashboard-add-type-table"]')
+      const linkedShown = await waitFor(`document.querySelectorAll('[data-testid="db-widget"]').length === 2
+        && [...document.querySelectorAll('[data-testid="db-widget"]')].some((w) => w.textContent.includes(${JSON.stringify(originRow)}))`, 20000)
+      const sourcesNow = (await api('GET', `/databases/${db.id}/data-sources`)).body?.dataSources ?? []
+      check('다른 데이터베이스 연결… — 2l-3 의 고르개로 붙이면 그 소스가 골라지고, 그 소스로 넣은 위젯에 원본의 행이 선다',
+        found && linkedPicked && linkedShown && sourcesNow.some((s) => s.id === original.dataSourceId),
+        JSON.stringify({ found, linkedPicked, linkedShown, sources: sourcesNow.length }))
+
+      // 12개 — API 로 열하나까지 채우고 다시 연다 · 넣기 창을 연 채 열둘째가 API 로 들어오면 서버가 `full`
+      for (let n = (await readDash())?.widgets?.length ?? 0; n < 11; n += 1) {
+        await api('POST', `/views/${dash}/dashboard/widgets`, { dataSourceId: ds, type: 'list', name: `채움${n}` })
+      }
+      await send('Page.reload', {})
+      await enterEdit()
+      await openAdd('[data-testid="db-dashboard-add"]')
+      const roomBefore = !(await has('[data-testid="db-dashboard-add-full"]'))
+      const twelfth = await api('POST', `/views/${dash}/dashboard/widgets`, { dataSourceId: ds, type: 'list', name: '열둘째' })
+      await clickEnabled('[data-testid="db-dashboard-add-type-table"]')
+      const fullSaid = await waitFor(`document.querySelector('[data-testid="db-dashboard-add-error"]')?.textContent === '위젯은 12개 · 줄은 3개까지입니다'`, 10000)
+      const count = (await readDash())?.widgets?.length ?? 0
+      check('★ 12개면 — "위젯은 12개 · 줄은 3개까지입니다" · 아무것도 만들지 않는다',
+        roomBefore && twelfth.status === 201 && fullSaid && count === 12,
+        JSON.stringify({ roomBefore, twelfth: twelfth.status, fullSaid, count, error: await evaluate(`document.querySelector('[data-testid="db-dashboard-add-error"]')?.textContent ?? null`) }))
+      await send('Page.reload', {})
+      await enterEdit()
+      await openAdd('[data-testid="db-dashboard-add"]')
+      check('다시 열면 넣기 창이 먼저 말한다(12개) · 줄 끝의 "+" 도 없다',
+        (await evaluate(`document.querySelector('[data-testid="db-dashboard-add-full"]')?.textContent ?? null`)) === '위젯은 12개 · 줄은 3개까지입니다'
+          && !(await has('[data-testid="db-dashboard-row-add"]')),
+        await evaluate(`document.querySelector('[data-testid="db-dashboard-add-panel"]')?.textContent ?? '(창 없음)'`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('제목 아래 고정 — 서버 (3a-1 · F-16-02)')) { try {

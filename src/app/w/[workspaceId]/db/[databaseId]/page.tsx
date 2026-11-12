@@ -914,7 +914,20 @@ async function renderView({
         dashboard !== null && dashboard.ok && (
           <DashboardView
             rows={dashboardGrid(dashboard.value.layout, dashboard.value.widgets)}
-            canEditStructure={access.canEditStructure}
+            // 편집 모드(DB-3) — 구조를 고칠 수 있는 사람에게만. 넣기의 소스는 이 데이터베이스에 붙은 것 중 원본을 볼 수 있는 것
+            edit={
+              access.canEditStructure
+                ? {
+                    workspaceId,
+                    databaseId,
+                    dashboardId: view.value.id,
+                    updatedAt: dashboard.value.updatedAt,
+                    sources: sources
+                      .filter((source) => source.readable)
+                      .map((source) => ({ id: source.id, name: multiSource && source.name !== '' ? source.name : name, owned: source.owned })),
+                  }
+                : null
+            }
             openHref={(id) => databaseHref(workspaceId, databaseId, { view: id })}
             renderWidget={(id, rowPx) => (
               <WidgetContent

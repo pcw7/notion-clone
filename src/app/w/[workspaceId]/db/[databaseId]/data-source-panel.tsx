@@ -60,7 +60,7 @@ export type DataSourceEntry = {
 const NO_ACCESS_LABEL = '접근 권한 없음'
 
 /** 연결 고르개의 한 줄 — 데이터베이스 이름(소스가 여럿이면 " · 소스 이름"). */
-const candidateLabel = (item: DatabaseListItem) => `${item.name || UNTITLED}${item.sourceName === null ? '' : ` · ${item.sourceName}`}`
+export const candidateLabel =(item: DatabaseListItem) => `${item.name || UNTITLED}${item.sourceName === null ? '' : ` · ${item.sourceName}`}`
 
 export function DataSourcePanel(props: {
   workspaceId: string
@@ -543,8 +543,8 @@ function AskDetach({
   )
 }
 
-/** 붙일 소스를 고른다 — 볼 수 있는 데이터베이스의 소스(서버가 원본의 권한을 다시 본다). */
-function LinkPicker({
+/** 붙일 소스를 고른다 — 볼 수 있는 데이터베이스의 소스(서버가 원본의 권한을 다시 본다). 대시보드의 위젯 넣기(DB-3)도 이것을 쓴다. */
+export function LinkPicker({
   candidates,
   target,
   busy,
