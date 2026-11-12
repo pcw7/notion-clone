@@ -51,6 +51,8 @@ export function formulaTypeOfCell(type: string): FormulaType | null {
     case 'rich_text':
     case 'select':
     case 'status':
+    // 장소는 이름(MP-1 ⑤)
+    case 'place':
       return 'text'
     case 'number':
       return 'number'
@@ -160,6 +162,9 @@ export function cellToFormulaValue(type: MvpPropertyType, raw: unknown, optionNa
     // 파일과 미디어도(PT-4)
     case 'files':
       return null
+    // 장소는 이름(글)으로 읽힌다(MP-1 ⑤ — `formulaTypeOfCell` 이 text)
+    case 'place':
+      return { type: 'text', value: cell.place.name }
   }
 }
 

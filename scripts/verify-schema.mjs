@@ -5652,6 +5652,80 @@ try {
     else fail(`페이지를 지웠는데 제안 메타가 ${left}개 남았다`)
   }
 
+  console.log('\n[99] 장소 속성 — 칸 모양 · 이름 · 주소 · 좌표 범위 · 필터 연산자 (0141 / §3.5 [보강 MP-1] ① ④ · MP-1조각)')
+  {
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '장소', 1)`, [dsId, dbBlock])
+    const placeProp = `plc${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const textProp = `txt${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    for (const [i, [id, type]] of [[placeProp, 'place'], [textProp, 'rich_text']].entries()) {
+      await client.query(
+        `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+         VALUES ($1, $2, $3, $4::property_type, '{}'::jsonb, $5, now(), now())`,
+        [id, dsId, type, type, `a${i}`],
+      )
+    }
+    const rowPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowPage, wsId, dsId, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowPage, dsId])
+
+    const put = `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, $3::jsonb)
+                 ON CONFLICT (page_id, property_id) DO UPDATE SET value = EXCLUDED.value`
+    const place = (over = {}) => ({ name: '서울시청', address: '서울 중구 세종대로 110', lat: 37.5665, lng: 126.978, ...over })
+    const cell = (p) => JSON.stringify({ type: 'place', place: p })
+    await client.query(put, [rowPage, placeProp, cell(place())])
+    ok('장소 칸 — 정상 경로가 통과한다')
+    await client.query(put, [rowPage, placeProp, cell(place({ address: '' }))])
+    ok('장소 칸 — 주소가 빈 글이어도 통과한다')
+    await client.query(put, [rowPage, placeProp, cell(place({ name: 'n'.repeat(255), address: 'a'.repeat(500), lat: -90, lng: 180 }))])
+    ok('★ 상한(이름 255 · 주소 500 · 좌표 끝값) — 통과한다')
+
+    const tryReject = async (label, value, propertyId = placeProp) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, [rowPage, propertyId, value])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === 'tg_ppv_place_shape') ok(`${label} — tg_ppv_place_shape 가 거부함 (${e.code})`)
+        else fail(`${label} — tg_ppv_place_shape 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const { name: _n, ...noName } = place()
+    await tryReject('★ 이름이 없다', cell(noName))
+    await tryReject('★ 이름이 비었다', cell(place({ name: '' })))
+    await tryReject('★ 이름 256자', cell(place({ name: 'n'.repeat(256) })))
+    await tryReject('★ 주소 501자', cell(place({ address: 'a'.repeat(501) })))
+    await tryReject('★ 주소가 글이 아니다', cell(place({ address: null })))
+    await tryReject('★ lat 91', cell(place({ lat: 91 })))
+    await tryReject('★ lat -90.5', cell(place({ lat: -90.5 })))
+    await tryReject('★ lng 180.1', cell(place({ lng: 180.1 })))
+    await tryReject('★ lat 이 수가 아니다(글)', cell(place({ lat: '37.5' })))
+    await tryReject('★ place 에 모르는 키', cell(place({ extra: 1 })))
+    await tryReject('★ 봉투에 모르는 키', JSON.stringify({ type: 'place', place: place(), extra: 1 }))
+    await tryReject('★ place 가 객체가 아니다', JSON.stringify({ type: 'place', place: '서울' }))
+    await tryReject('★ 봉투의 type 이 다르다', JSON.stringify({ type: 'rich_text', place: place() }))
+    await tryReject('★ 다른 타입의 칸에 장소 값', cell(place()), textProp)
+
+    const { rows } = await client.query(`SELECT operator, arity FROM filter_operator WHERE property_type = 'place' ORDER BY order_idx`)
+    if (rows.map((r) => `${r.operator}:${r.arity}`).join(',') === 'contains:1,does_not_contain:1,equals:1,does_not_equal:1,starts_with:1,ends_with:1,is_empty:0,is_not_empty:0') ok('★ 장소 연산자 — 글과 같은 여덟 개')
+    else fail(`장소 연산자가 어긋났다: ${JSON.stringify(rows)}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

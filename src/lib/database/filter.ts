@@ -257,6 +257,8 @@ const AXIS: Readonly<Record<MvpPropertyType, Axis>> = Object.freeze({
   phone_number: 'text',
   // 파일과 미디어(PT-4) — 사이드카는 파일 id 를 공백으로 이은 것. 비었는지만 묻는다
   files: 'text',
+  // 장소(MP-1) — 사이드카는 이름. 글과 같은 연산자이고 포함 · 포함하지 않음만 주소도 본다(`PLACE_OPERATORS`)
+  place: 'text',
 })
 
 const COLUMN: Readonly<Record<Axis, string>> = Object.freeze({
@@ -478,6 +480,18 @@ const MULTI_SELECT_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.fr
   is_not_empty: TEXT_OPERATORS.is_not_empty,
 })
 
+/**
+ * 장소(MP-1 · 정본 [보강 MP-1] ④) — 글의 여덟 연산자를 이름(사이드카)에 건다. 포함 · 포함하지 않음은 주소(값의 `place.address`)도 본다
+ * (노션 — 이름 · 주소 문자열 기준). 주소가 빈 글이면 맞지 않는다.
+ */
+const PLACE_CONTAINS = (c: string, p: string) =>
+  `(lower(${c}) LIKE '%' || lower(${p}) || '%' OR lower(v.value -> 'place' ->> 'address') LIKE '%' || lower(${p}) || '%')`
+const PLACE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  ...TEXT_OPERATORS,
+  contains: { arity: 1, like: true, predicate: PLACE_CONTAINS },
+  does_not_contain: { arity: 1, negate: true, like: true, predicate: PLACE_CONTAINS },
+})
+
 /** 파일과 미디어(PT-4 · 정본 [보강 PT-1] ⑧) — 비었음 · 비지 않음뿐이다(글과 같은 SQL 조각). */
 const FILES_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
   is_empty: TEXT_OPERATORS.is_empty,
@@ -526,6 +540,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     people: PEOPLE_OPERATORS,
     multi_select: MULTI_SELECT_OPERATORS,
     files: FILES_OPERATORS,
+    place: PLACE_OPERATORS,
     url: TEXT_OPERATORS,
     email: TEXT_OPERATORS,
     phone_number: TEXT_OPERATORS,

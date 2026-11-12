@@ -28,7 +28,7 @@ import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import type { CellValue, DateValue, MvpPropertyType } from './property-types.ts'
 
 /** 서로 바꿀 수 있는 타입(정본 ② · 상태는 ⑧ — 10n-24). 제목은 바꿀 수도 바꿔 올 수도 없다 · relation · rollup · 고유 ID 는 아직. */
-export const CONVERTIBLE_TYPES = ['rich_text', 'number', 'select', 'multi_select', 'status', 'checkbox', 'date'] as const
+export const CONVERTIBLE_TYPES = ['rich_text', 'number', 'select', 'multi_select', 'status', 'checkbox', 'date', 'place'] as const
 export type ConvertibleType = (typeof CONVERTIBLE_TYPES)[number]
 
 export function isConvertibleType(t: unknown): t is ConvertibleType {
@@ -66,6 +66,9 @@ export function cellToText(value: CellValue, optionName: (id: string) => string 
     // 파일과 미디어도(PT-4) — 바꾸면 참조를 내려야 해서 열지 않는다
     case 'files':
       return ''
+    // 장소 → 글은 이름(MP-1 ⑤)
+    case 'place':
+      return value.place.name
   }
 }
 
@@ -118,6 +121,9 @@ export function textToCell(raw: string, to: ConvertibleType, optionIdFor: (name:
       const date = parseDateText(text)
       return date === null ? { value: null, lost: true } : { value: { type: 'date', date }, lost: false }
     }
+    case 'place':
+      // 다른 타입 → 장소는 칸을 비운다(MP-1 ⑤ — 지오코딩을 몰래 하지 않는다). 값이 있던 칸은 손실이다
+      return { value: null, lost: !empty }
   }
 }
 
@@ -193,12 +199,17 @@ export function isBlank(value: CellValue): boolean {
       return value.phone_number.length === 0
     case 'files':
       return value.files.length === 0
+    case 'place':
+      return value.place.name.length === 0
   }
 }
 
 /** 이 타입에서 저 타입으로 바꿀 수 있는가(같은 타입은 바꾸는 것이 아니다). */
 export function canConvert(from: MvpPropertyType | string, to: unknown): to is ConvertibleType {
   if (!isConvertibleType(from) || !isConvertibleType(to) || from === to) return false
+  // 장소(MP-1 ⑤) — 글로 나가는 길(이름)과 어디서든 들어오는 길(칸을 비운다)뿐이다
+  if (from === 'place') return to === 'rich_text'
+  if (to === 'place') return true
   // 다중 선택은 선택과만(PT-1b) — 글·숫자와의 변환은 값의 뜻이 달라 열지 않는다
   if (from === 'multi_select') return to === 'select'
   if (to === 'multi_select') return from === 'select'

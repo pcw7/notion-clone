@@ -76,6 +76,11 @@ export function publicCell(column: PublicColumn, value: unknown, uniqueSeq: numb
       })
       return names.length === 0 ? EMPTY : { kind: 'files', names }
     }
+    // 장소(MP-1) — 이름만(글로)
+    case 'place': {
+      const name = record(cell.place)?.name
+      return typeof name === 'string' && name !== '' ? { kind: 'text', text: name } : EMPTY
+    }
     // 만든 · 마지막 편집 시각(PT-3) — 값은 행 페이지 블록의 열이다(읽을 때 끼운 `{type, <type>: ISO}`). 공개 화면은 보는 사람의 시간대를
     // 모르므로(쿠키를 읽으면 같은 게시 페이지가 보는 사람마다 달라진다) UTC 로 적고 그렇다고 밝힌다. 사람 둘은 공개 열이 아니다
     case 'created_time':

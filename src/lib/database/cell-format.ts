@@ -100,6 +100,9 @@ export function cellText(
     case 'files':
       // 파일 이름을 쉼표로(PT-4)
       return value.files.map((f) => f.name).join(', ')
+    case 'place':
+      // 이름 — 주소는 마우스를 올리면(`cell-view.tsx`)
+      return value.place.name
   }
 }
 
@@ -162,6 +165,7 @@ export function draftOf(value: CellValue): string {
     case 'people':
     case 'multi_select':
     case 'files':
+    case 'place':
       return ''
     case 'url':
       return value.url
@@ -242,6 +246,7 @@ export function parseDraft(type: MvpPropertyType, draft: string, previous: CellV
     case 'people':
     case 'multi_select':
     case 'files':
+    case 'place':
       return { ok: false, message: '입력칸으로 고치는 타입이 아닙니다' }
   }
 }
@@ -290,6 +295,8 @@ export function defaultColumnWidth(type: AppPropertyType): number {
     // 주소 · 메일은 길다(PT-2)
     case 'url':
     case 'email':
+    // 장소는 핀과 이름(MP-1)
+    case 'place':
     // relation 은 제목 칩이 여럿 선다 — 텍스트와 같은 폭.
     case 'relation':
       return 220

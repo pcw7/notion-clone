@@ -224,7 +224,8 @@ function startServer() {
     {
       cwd: ROOT,
       // 성능 계측(10e-1b) — 표본 비율 1(페이지 읽기마다) · 수집기의 절이 표에서 본다
-      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}`, PERF_SAMPLE_RATE: '1' },
+      // 장소 찾기(MP-1)는 이 판의 받는 서버(HOOK_PORT 의 /geo)에 묻는다 — 바깥 서비스에 닿지 않는다
+      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}`, PLACE_SEARCH_URL: `http://127.0.0.1:${HOOK_PORT}/geo`, PERF_SAMPLE_RATE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -34661,6 +34662,189 @@ async function main() {
           && (await evaluate(`${publicRow}.querySelector('[data-testid="public-db-files"]').closest('td').querySelectorAll('a, img').length === 0`))
           && !(await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(pngId)})`)),
         String(await evaluate(publicNames)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('장소 속성 (MP-1 · F-03-04)')) { try {
+      // 속성 추가에서 "장소" → 칸 편집기의 찾기 칸에 쓰고 Enter → 앱 서버가 대신 묻고(받는 서버 HOOK_PORT/geo) 결과 목록 → 고르면 칸에 핀 + 이름
+      // (주소는 title) · 서버에 {name, address, lat, lng} → 좌표를 쓰면 외부에 묻지 않고 바로 그 자리 → 못 찾으면 "찾지 못했습니다" → 지우기 →
+      // 필터(포함은 주소도) → 공개 표는 이름만. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 정본 §3.5 [보강 MP-1] ① ② ③ ④ ⑤.
+      const { createServer } = await import('node:http')
+      const asked = []
+      const geo = createServer((req, res) => {
+        const url = new URL(req.url ?? '/', 'http://stub')
+        asked.push({ path: url.pathname, q: url.searchParams.get('q'), format: url.searchParams.get('format'), limit: url.searchParams.get('limit'), lang: url.searchParams.get('accept-language'), agent: req.headers['user-agent'] ?? '' })
+        const q = url.searchParams.get('q') ?? ''
+        if (url.pathname !== '/geo/search') return void res.writeHead(404).end()
+        if (q === '고장') return void res.writeHead(500).end('아이고')
+        const body = q.includes('시청')
+          ? [
+              { lat: '37.5666', lon: '126.9784', name: '서울특별시청', display_name: '서울특별시청, 세종대로, 중구, 서울, 대한민국' },
+              { lat: '99', lon: '0', name: '틀린 줄', display_name: '버려진다' },
+              { lat: '35.1', lon: '129.04', name: '부산시청', display_name: '부산시청, 연제구, 부산, 대한민국' },
+            ]
+          : []
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+      })
+      await new Promise((r) => geo.listen(HOOK_PORT, '127.0.0.1', r))
+      try {
+        const stamp = Date.now()
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const until = async (fn, ms = 10000) => {
+          for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+          return false
+        }
+        const setSelect = (selector, value) => evaluate(`(() => {
+          const s = document.querySelector(${JSON.stringify(selector)})
+          if (!s) return false
+          s.value = ${JSON.stringify(value)}
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+          return true
+        })()`)
+        const db = (await api('POST', '/databases', { name: `장소 속성 ${stamp}` })).body.database
+        const view = db.defaultViewId
+        const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const mk = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const r1 = await mk('첫 일')
+        const r2 = await mk('둘째 일')
+        const r3 = await mk('셋째 일')
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+
+        // ── 속성 추가 ──
+        let formOpened = false
+        for (let i = 0; i < 5 && !formOpened; i += 1) {
+          await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다
+          await clickSelector('[data-testid="db-add-column"]')
+          formOpened = await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 2000)
+        }
+        check('★ 속성 추가의 유형 목록에 장소가 선다',
+          formOpened && (await evaluate(`[...document.querySelectorAll('select[aria-label="속성 유형"] option')].some((o) => o.value === 'place' && o.textContent.includes('장소'))`)))
+        await typeText('위치')
+        await setSelect('select[aria-label="속성 유형"]', 'place')
+        await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+        const serverColumns = async () => (await api('GET', `/views/${view}`)).body?.view?.columns ?? []
+        check('★ 만들면 장소 열이 선다 — 서버의 속성 타입도',
+          (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) &&
+            (await until(async () => (await serverColumns()).some((c) => c.name === '위치' && c.type === 'place'))),
+          JSON.stringify((await serverColumns()).map((c) => `${c.name}:${c.type}`)))
+        const cols = await serverColumns()
+        const prop = cols.find((c) => c.name === '위치').propertyId
+        const colAt = cols.findIndex((c) => c.propertyId === prop)
+        const CELL = (rowAt) => `td[data-cell="${rowAt}:${colAt}"]`
+        const serverPlace = async (row) => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === row)?.properties?.[prop]?.place ?? null
+        const cellName = (rowAt) => evaluate(`document.querySelector('${CELL(rowAt)} [data-testid="db-place-name"]')?.textContent ?? null`)
+        const openEditor = async (rowAt) => {
+          for (let i = 0; i < 6; i += 1) {
+            await waitHydrated(CELL(rowAt))
+            await clickSelector(CELL(rowAt))
+            await key('Enter')
+            if (await waitFor(`document.activeElement?.matches('[data-testid="db-place-input"]')`, 2000)) return true
+          }
+          return false
+        }
+        const resultNames = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-place-result"]')].map((li) => li.querySelector('span')?.textContent))`)
+
+        // ── 찾기 — Enter 로 한 번 · 앱 서버가 대신 묻는다 ──
+        check('전제 — 장소 칸을 누르고 Enter 를 치면 칸 편집기가 열리고 찾기 칸에 포커스가 있다', await openEditor(0))
+        await typeText('서울 시청')
+        await sleep(600)
+        check('★ 치는 동안에는 찾지 않는다(자동완성 없음) — Enter 를 치기 전에 받는 서버에 요청이 없다', asked.length === 0, JSON.stringify(asked))
+        await key('Enter')
+        check('★ Enter 로 찾으면 결과가 목록으로 선다 — 틀린 줄(lat 99)은 버려지고 둘만 남는다',
+          await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-place-result"]')].map((li) => li.querySelector('span')?.textContent)) === ${JSON.stringify(JSON.stringify(['서울특별시청', '부산시청']))}`, 10000),
+          String(await resultNames()))
+        const query = asked.at(-1)
+        check('★ 앱 서버가 Nominatim 형식으로 묻는다 — /search · jsonv2 · limit 5 · ko · 일반 User-Agent(사용자 정보 없음)',
+          asked.length === 1 && query?.path === '/geo/search' && query.q === '서울 시청' && query.format === 'jsonv2' && query.limit === '5'
+            && query.lang === 'ko' && query.agent === 'notion-clone (self-hosted)',
+          JSON.stringify(asked))
+        await clickSelector('[data-testid="db-place-result"]')
+        check('★ 결과를 고르면 칸에 핀 + 이름이 서고 주소는 마우스를 올릴 때(title)로 있다',
+          await waitFor(`document.querySelector('${CELL(0)} [data-testid="db-place-name"]')?.textContent === '서울특별시청'`, 10000)
+            && (await evaluate(`document.querySelector('${CELL(0)} [data-testid="db-place"]')?.getAttribute('title')`)) === '서울특별시청, 세종대로, 중구, 서울, 대한민국'
+            && (await evaluate(`!!document.querySelector('${CELL(0)} [data-testid="db-place"] svg')`)),
+          String(await cellName(0)))
+        check('★ 서버에 {name, address, lat, lng} 이 숫자로 저장된다',
+          await until(async () => {
+            const p = await serverPlace(r1)
+            return p?.name === '서울특별시청' && p.address === '서울특별시청, 세종대로, 중구, 서울, 대한민국' && p.lat === 37.5666 && p.lng === 126.9784
+          }),
+          JSON.stringify(await serverPlace(r1)))
+        check('고르면 편집기가 닫힌다', !(await evaluate(`!!document.querySelector('[data-testid="db-place-editor"]')`)))
+
+        // ── 좌표 — 외부에 묻지 않는다 ──
+        check('전제 — 둘째 행 장소 칸 편집기가 열린다', await openEditor(1))
+        const before = asked.length
+        await typeText('37.5665, 126.978')
+        await key('Enter')
+        check('★ 좌표를 쓰고 Enter 를 치면 외부에 묻지 않고 그 자리가 바로 고른다 — 이름은 쓴 글',
+          await waitFor(`document.querySelector('${CELL(1)} [data-testid="db-place-name"]')?.textContent === '37.5665, 126.978'`, 10000)
+            && (await until(async () => { const p = await serverPlace(r2); return p?.name === '37.5665, 126.978' && p.address === '' && p.lat === 37.5665 && p.lng === 126.978 }))
+            && asked.length === before,
+          JSON.stringify({ server: await serverPlace(r2), asked: asked.length - before }))
+
+        // ── 못 찾음 — 말하고 좌표를 권한다 ──
+        check('전제 — 셋째 행 장소 칸 편집기가 열린다', await openEditor(2))
+        await sleep(1200) // 사람마다 초당 1번 — 앞의 찾기와 한 초를 띄운다
+        await typeText('고장')
+        await key('Enter')
+        check('★ 찾기가 실패하면 "찾지 못했습니다" 와 좌표 쓰기를 권한다 — 칸은 그대로 비어 있다',
+          await waitFor(`/찾지 못했습니다/.test(document.querySelector('[data-testid="db-place-message"]')?.textContent ?? '') && /좌표/.test(document.querySelector('[data-testid="db-place-message"]')?.textContent ?? '')`, 10000)
+            && (await serverPlace(r3)) === null,
+          String(await evaluate(`document.querySelector('[data-testid="db-place-message"]')?.textContent ?? null`)))
+        await key('Escape')
+        await openEditor(2)
+        await sleep(1200) // 사람마다 초당 1번 — 다음 찾기가 속도 제한에 걸리지 않게
+        await typeText('없는곳')
+        await key('Enter')
+        check('결과가 없어도 같은 말을 한다',
+          await waitFor(`/찾지 못했습니다/.test(document.querySelector('[data-testid="db-place-message"]')?.textContent ?? '')`, 10000))
+        await key('Escape')
+
+        // ── 필터 — 포함은 주소도 본다 ──
+        const rowIds = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId))`)
+        await api('PATCH', `/views/${view}`, { filter: { property_id: prop, operator: 'contains', value: '세종대로' }, sorts: [] })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 필터 — "세종대로 포함" 은 이름에는 없고 주소에만 있는 행이 맞는다',
+          await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify([r1]))}`, 15000),
+          String(await rowIds()))
+        await api('PATCH', `/views/${view}`, { filter: { property_id: prop, operator: 'starts_with', value: '세종' }, sorts: [] })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 필터 — "세종 으로 시작" 은 이름만 본다 — 주소로는 맞지 않는다(빈 표)',
+          await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 0`, 15000), String(await rowIds()))
+        await api('PATCH', `/views/${view}`, { filter: null })
+
+        // ── 공개 표 — 이름만 ──
+        const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        const publicRow = (title) => `[...document.querySelectorAll('[data-testid="public-db-row"]')].find((tr) => tr.textContent.includes(${JSON.stringify(title)}))`
+        check('★ 공개 표 — 장소 칸은 이름만 그리고 주소 · 좌표는 문서에 없다',
+          await waitFor(`!!${publicRow('첫 일')} && ${publicRow('첫 일')}.textContent.includes('서울특별시청')`, 15000)
+            && !(await evaluate(`document.documentElement.outerHTML.includes('세종대로')`))
+            && !(await evaluate(`document.documentElement.outerHTML.includes('37.5666')`)),
+          String(await evaluate(`${publicRow('첫 일')}?.textContent ?? null`)))
+
+        // ── 지우기 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+        check('전제 — 첫 행 장소 칸 편집기가 열린다', await openEditor(0))
+        check('편집기에 지금 장소와 "지우기" 가 있다',
+          await evaluate(`document.querySelector('[data-testid="db-place-current"]')?.textContent.includes('서울특별시청') && !!document.querySelector('[data-testid="db-place-clear"]')`))
+        await clickSelector('[data-testid="db-place-clear"]')
+        check('★ 지우기를 누르면 칸이 비고 서버의 칸도 지워진다',
+          await waitFor(`!document.querySelector('${CELL(0)} [data-testid="db-place"]')`, 10000)
+            && (await until(async () => (await serverPlace(r1)) === null)),
+          JSON.stringify(await serverPlace(r1)))
+      } finally {
+        geo.closeAllConnections()
+        await new Promise((r) => geo.close(() => r()))
+      }
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) { try {
