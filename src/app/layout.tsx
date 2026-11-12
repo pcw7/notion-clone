@@ -4,6 +4,7 @@ import { themeOfSessionToken } from "@/lib/settings/theme";
 import { readDevicePreferences } from "@/lib/settings/device-preferences-cookie";
 import { APP_NAME, ROOT_TITLE } from "@/lib/nav/screen-title";
 import { supportCheckScript } from "@/lib/platform/browser-support";
+import ServiceWorker from "./service-worker";
 import "./globals.css";
 
 // 글꼴은 시스템 글꼴 묶음이다(디자인-1 · `globals.css` 의 `--font-sans` · `--font-mono`) — 웹 글꼴을 내려받지 않는다.
@@ -49,7 +50,11 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
         {/* 지원 브라우저(10i-1 · F-12-15) — 기능 감지 · 못 미치면 안내 띠(앱은 막지 않는다). 앱의 JS 보다 먼저 · ES5 */}
         <script dangerouslySetInnerHTML={{ __html: supportCheckScript() }} />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {children}
+        {/* 서비스 워커(OF-1 · F-12-04) — 운영 빌드에서만 등록 · 정적 파일과 오프라인 껍데기만 캐시한다 */}
+        <ServiceWorker />
+      </body>
     </html>
   );
 }
