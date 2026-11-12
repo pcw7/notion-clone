@@ -277,7 +277,7 @@ export async function PageContentBase({
             part="badge"
           />
           {/* 제안 모드(SG-1)가 켜진 동안의 표시 — 끄기 단추. 켜는 것은 페이지 메뉴 · 단축키(고칠 수 있는 사람만) */}
-          {access === 'edit' && <SuggestionModePill pageId={page.id} />}
+          {(access === 'edit' || access === 'suggest') && <SuggestionModePill pageId={page.id} />}
           {/* 접속자 줄(AW-1)의 자리 — 본문 편집기가 이 자리에 그린다(포털) */}
           <div id="page-presence-slot" data-testid="presence-slot" className="flex items-center" />
           <CommentPanel

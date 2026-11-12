@@ -56,6 +56,25 @@ export function confirmationReply(token: string, readOnly: boolean): string {
 
 export type ConfirmationReply = { readonly token: string; readonly confirmed: boolean }
 
+/**
+ * 연결 모드 알림(SG-5b · 정본 [보강 SG-1] ⑨) — 고칠 수 있는 연결과 제안만 쓰는 연결은 둘 다 Hocuspocus 로는 `read-write` 다. 서버가 첫
+ * 동기화 때 어느 쪽인지 알린다 — 편집기는 `suggest` 면 제안 모드로만 연다. 읽기 전용 연결에는 보내지 않는다.
+ */
+export type CollabMode = 'edit' | 'suggest'
+
+const MODE = 'collab:mode:'
+
+export function modeNotice(mode: CollabMode): string {
+  return `${MODE}${mode}`
+}
+
+/** 모드 알림이면 그 모드, 아니면 null. */
+export function parseModeNotice(payload: string): CollabMode | null {
+  if (payload === `${MODE}edit`) return 'edit'
+  if (payload === `${MODE}suggest`) return 'suggest'
+  return null
+}
+
 /** 확인 답이면 그 표와 확인 여부, 아니면 null. */
 export function parseConfirmationReply(payload: string): ConfirmationReply | null {
   if (payload.startsWith(CONFIRMED)) return { token: payload.slice(CONFIRMED.length), confirmed: true }

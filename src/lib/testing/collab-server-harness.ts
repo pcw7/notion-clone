@@ -51,6 +51,8 @@ export type Participant = {
   failure: string | null
   /** 받은 뒤에 서버가 이 문서 연결을 닫은 이유. */
   readonly closed: string[]
+  /** 서버가 보낸 stateless — 첫 동기화 때의 모드 알림(SG-5b)처럼 `ready` 전에 오는 것도 담는다. */
+  readonly stateless: string[]
 }
 
 export const cookieOf = (actor: Actor, extra: Record<string, string> = {}): Record<string, string> => ({
@@ -69,6 +71,7 @@ export function join(t: TestContext, url: string, name: string, headers: Record<
   const doc = new Y.Doc()
   if (clientId !== undefined) doc.clientID = clientId
   const closed: string[] = []
+  const stateless: string[] = []
   const state = { failure: null as string | null }
   const provider = new HocuspocusProvider({
     url,
@@ -82,6 +85,9 @@ export function join(t: TestContext, url: string, name: string, headers: Record<
     onClose: ({ event }: { event: { reason: string } }) => {
       if (event.reason) closed.push(event.reason)
     },
+    onStateless: ({ payload }: { payload: string }) => {
+      stateless.push(payload)
+    },
     // `WebSocketPolyfill` 은 런타임에 소켓 설정으로 넘어가지만 provider 설정 타입에는 없다 — 검사는 소켓을 provider 에 맡긴다.
   } as HocuspocusProviderConfiguration)
   t.after(() => provider.destroy())
@@ -89,6 +95,7 @@ export function join(t: TestContext, url: string, name: string, headers: Record<
     doc,
     provider,
     closed,
+    stateless,
     get failure() {
       return state.failure
     },

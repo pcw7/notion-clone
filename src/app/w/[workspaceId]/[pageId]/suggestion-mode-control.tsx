@@ -14,6 +14,7 @@ import { MENU_ROW, PageMenuDivider, usePageMenu } from './page-menu'
 import { usePageCommand } from '../page-commands'
 import {
   isSuggesting,
+  isSuggestOnly,
   noSuggestionCount,
   notSuggesting,
   setSuggesting,
@@ -95,9 +96,10 @@ export function SuggestionModeToggle({ pageId }: { pageId: string }) {
   )
 }
 
-/** 머리의 표시 — 켜진 동안만 선다(제안이 있으면 "제안 n개" 목록 열기 · 끄기 단추). */
+/** 머리의 표시 — 켜진 동안만 선다(제안이 있으면 "제안 n개" 목록 열기 · 끄기 단추 — 제안만 쓸 수 있으면 끄기가 없다 · SG-5b). */
 export function SuggestionModePill({ pageId }: { pageId: string }) {
   const on = useSuggesting(pageId)
+  const only = useSyncExternalStore(subscribeSuggestionMode, () => isSuggestOnly(pageId), notSuggesting)
   const count = useSuggestionCount(pageId)
   if (!on) return null
   return (
@@ -117,14 +119,16 @@ export function SuggestionModePill({ pageId }: { pageId: string }) {
           제안 {count}개
         </button>
       )}
-      <button
-        type="button"
-        aria-label="제안 모드 끄기"
-        onClick={() => setSuggesting(pageId, false)}
-        className="rounded-full px-1.5 hover:bg-green-600/10 dark:hover:bg-green-400/10"
-      >
-        끄기
-      </button>
+      {!only && (
+        <button
+          type="button"
+          aria-label="제안 모드 끄기"
+          onClick={() => setSuggesting(pageId, false)}
+          className="rounded-full px-1.5 hover:bg-green-600/10 dark:hover:bg-green-400/10"
+        >
+          끄기
+        </button>
+      )}
     </span>
   )
 }

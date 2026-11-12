@@ -71,7 +71,7 @@ import {
   type onMessageParameters,
 } from '@hocuspocus/provider'
 
-import { collabDocumentName, confirmationRequest, parseConfirmationReply } from './collab-protocol.ts'
+import { collabDocumentName, confirmationRequest, parseConfirmationReply, parseModeNotice, type CollabMode } from './collab-protocol.ts'
 
 /** 서버가 확인하지 않은 편집의 보존본. 페이지 · 사용자마다 합친 update 하나다. */
 export type PendingEditStore = {
@@ -127,6 +127,12 @@ export type CollabSnapshot = {
   readonly doc: Y.Doc
   /** 읽기 전용으로 받았는가. 아직 모르면(첫 인증 전 · 다시 여는 중) null. */
   readonly readOnly: boolean | null
+  /**
+   * 서버가 알린 연결 모드(SG-5b · `collab-protocol.ts`) — 읽기 전용이 아닌 연결만 받는다. 아직 모르면 null 이다. 다시 붙어도 지우지 않는다
+   * (모드가 바뀌면 서버가 닫는다 — 다음 첫 동기화가 다시 알린다). 서버가 "제안이 아니다"(`suggest_only`)나 `forbidden` 으로 닫으면
+   * 알림이 오기 전까지 `suggest` 로 둔다 — 고칠 수 있다고 여겨 보낸 편집이 다시 거부되지 않게 안전한 쪽으로.
+   */
+  readonly mode: CollabMode | null
   /** 서버와 이어져 있다. */
   readonly online: boolean
   /**
@@ -237,6 +243,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   /** 접속자 표시(AW-1)의 마지막 지역 상태 — provider 를 다시 만들 때 다시 싣는다. */
   let localPresence: LocalPresence | null = null
   let readOnly: boolean | null = null
+  let mode: CollabMode | null = null
   let online = false
   let connecting = true
   let graceTimer: ReturnType<typeof setTimeout> | null = null
@@ -290,6 +297,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   const snapshot = (): CollabSnapshot => ({
     doc,
     readOnly,
+    mode,
     online,
     connecting,
     unconfirmed: unconfirmed.length > 0,
@@ -348,6 +356,12 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   }
 
   const onStateless = (from: HocuspocusProvider, payload: string): void => {
+    const notice = parseModeNotice(payload)
+    if (notice !== null) {
+      mode = notice
+      emit()
+      return
+    }
     const reply = parseConfirmationReply(payload)
     if (reply === null || awaiting === null || awaiting.provider !== from || awaiting.token !== reply.token) return
     const { covers } = awaiting
@@ -507,6 +521,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   /** 로컬 문서와 보존본을 버리고 새 문서로 다시 연다(머리말). */
   const discard = (reason: string): void => {
     dropProvider()
+    if (reason === 'suggest_only' || reason === 'forbidden') mode = 'suggest'
     if (!reopening) {
       doc.off('update', onLocalUpdate)
       forgetUnconfirmed(reason)

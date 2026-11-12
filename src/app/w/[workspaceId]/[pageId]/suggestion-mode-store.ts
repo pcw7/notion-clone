@@ -6,9 +6,13 @@
  *
  * SG-3 — 본문의 제안 수(편집기가 문서에서 센다)와 "제안" 목록이 열렸는가도 여기다. 메뉴의 "제안 n개" · 머리의 표시가 열고, 편집기가
  * 목록을 그린다(편집기를 쥔 쪽이라 수락 · 거절 · 자리 고르기를 한다).
+ *
+ * SG-5b — 코멘트 권한자는 제안 모드로만 고친다(`isSuggestOnly` — 편집기가 연결 모드를 보고 적는다). 그동안 `isSuggesting` 은 늘 참이다.
  */
 
 const suggesting = new Set<string>()
+/** 제안만 쓸 수 있는 페이지(SG-5b) — 코멘트 권한자의 편집기가 적는다. 켜고 끌 수 없고 머리의 표시에 끄기가 없다. */
+const suggestOnly = new Set<string>()
 const counts = new Map<string, number>()
 const panels = new Set<string>()
 const listeners = new Set<() => void>()
@@ -25,7 +29,18 @@ export function subscribeSuggestionMode(listener: () => void): () => void {
 }
 
 export function isSuggesting(pageId: string): boolean {
-  return suggesting.has(pageId)
+  return suggesting.has(pageId) || suggestOnly.has(pageId)
+}
+
+export function isSuggestOnly(pageId: string): boolean {
+  return suggestOnly.has(pageId)
+}
+
+export function setSuggestOnly(pageId: string, on: boolean): void {
+  if (suggestOnly.has(pageId) === on) return
+  if (on) suggestOnly.add(pageId)
+  else suggestOnly.delete(pageId)
+  notify()
 }
 
 export function setSuggesting(pageId: string, on: boolean): void {

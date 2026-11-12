@@ -52,6 +52,8 @@
  *   - 볼 수 없는 페이지 · 없는 페이지 · 멤버가 아닌 워크스페이스는 모두 `not_found` 다(F-05-19 "404와 403을 구분하면 페이지
  *     존재가 새어나간다" · `auth/route-session.ts` 와 같은 매핑)
  *   - 볼 수만 있으면 읽기 전용 연결이다 — Hocuspocus 가 그 연결의 update 를 적용하지 않는다
+ *   - 코멘트만 있으면 **제안만 쓰는 연결**이다(SG-5b · 정본 [보강 SG-1] ⑨) — 읽기 전용이 아니고, 쓰기 경로 ①이 update 마다 제안인지
+ *     본다(`suggest_only`). 고칠 수 있는 연결과 Hocuspocus 로는 같으므로 첫 동기화 때 모드를 stateless 로 알린다(`collab-protocol.ts`)
  *   - 권한 검사(`onAuthenticate`)와 연결 등록 사이에는 문서 불러오기가 끼어 있다. 그 사이에 커밋된 회수는 다시 판정할 연결이 아직
  *     없어 지나간다 — 그래서 **첫 동기화(SyncStep1)에 답하기 전에** 한 번 더 판정한다. 그보다 뒤에 커밋된 회수는 이미 등록된 연결을
  *     권한 신호가 잡는다
@@ -75,6 +77,8 @@
  *   - 고칠 수 있던 연결이 볼 수만 있게 됐으면 `forbidden` 으로 **닫는다** — 읽기 전용으로 바꾸지 않는다. Hocuspocus 의 읽기 전용
  *     연결은 보낸 update 를 닫지 않고 조용히 버리고(`MessageReceiver` — 4.7.0 소스), provider 는 자기가 읽기 전용이 된 것을 모른다.
  *     쓰기 거부(5a)와 같은 이유로 닫아야 참여자가 알고 읽기 전용으로 다시 연다(6조각)
+ *   - 연결의 모드(`edit` · `suggest` · `view`)는 받을 때 정해 두고 지금 권한의 모드와 견준다(SG-5b) — 내려갔으면 `forbidden` ·
+ *     올라갔으면 `upgraded`. 제안만 쓰던 연결이 볼 수만 있게 되거나, 고칠 수 있던 연결이 제안만 쓰게 돼도 `forbidden` 이다
  *   - 볼 수만 있던 연결이 고칠 수 있게 됐으면 `upgraded` 로 닫는다(10n-67 · HANDOFF §3.2-300) — 읽기 전용 플래그를 그 자리에서 풀지
  *     않는다(읽기 전용 동안 서버가 버린 update 에 기대는 다음 update 가 `missing_dependencies` 로 닫힌다). 참여자는 문서를 버리지 않고
  *     곧바로 다시 붙어 고칠 수 있는 연결로 받는다(`collab-connection.ts` — 읽기 전용이라 버릴 편집이 없다)
@@ -99,8 +103,8 @@ import { resolveSessionContext, type SessionContext, type SessionDenialReason } 
 import { appendDocUpdate, projectPendingBody, type AppendFailure } from '../block/body-write.ts'
 import { asWorkspaceId, isUuid, type WorkspaceId } from '../ids.ts'
 import { openChangeFeed, type ChangeFeed, type ChangeFeedHandlers, type CollabSignal } from './change-feed.ts'
-import { collabDocumentName, confirmationReply, parseConfirmationRequest } from './collab-protocol.ts'
-import { loadDocState, pageAccess, readDocUpdatesAfter } from './doc-store.ts'
+import { collabDocumentName, confirmationReply, modeNotice, parseConfirmationRequest } from './collab-protocol.ts'
+import { loadDocState, pageAccess, readDocUpdatesAfter, type PageAccess } from './doc-store.ts'
 import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
 import { sanitizePresence } from './presence.ts'
 import { viewersOf, type PresenceStore } from './presence-registry.ts'
@@ -146,6 +150,8 @@ export type CollabContext = {
   readonly session: SessionContext
   /** 그 사람의 이름 — 접속자 표시(AW-1)의 awareness `user` 를 서버가 채울 때 쓴다(클라이언트가 보낸 이름은 버린다). */
   readonly userName: string
+  /** 받을 때의 연결 모드(SG-5b) — 다시 판정할 때 지금 권한의 모드와 견준다. `view` 면 읽기 전용 연결이다. */
+  readonly mode: Exclude<PageAccess, 'none'>
 }
 
 /** provider 가 받는 거부 이유 — 머리말. 쓰기 거부는 `appendDocUpdate` 의 이유 그대로다. */
@@ -263,7 +269,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       targets.map(async (connection) => {
         let verdict: CollabRejection | null
         try {
-          verdict = await connectionVerdict(connection.context as CollabContext, connection.readOnly)
+          verdict = await connectionVerdict(connection.context as CollabContext)
         } catch (error) {
           console.error('[collab] 연결의 권한을 다시 판정하지 못했다 — 닫는다:', error)
           verdict = 'unavailable'
@@ -351,13 +357,13 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
 
       const access = await pageAccess(resolved.context, address.pageId)
       if (access === 'none') throw rejection('not_found')
-      connectionConfig.readOnly = access !== 'edit'
+      connectionConfig.readOnly = access === 'view'
 
       // 접속자 표시(AW-1) — awareness 의 이름은 서버가 채운다. 연결을 받을 때 한 번 읽는다(이름을 바꾸면 다시 붙을 때 바뀐다).
       const named = await withReadTransaction((tx) =>
         tx.queryMaybe<{ name: string }>(`SELECT name FROM "user" WHERE id = $1`, [resolved.context.userId]),
       )
-      const context: CollabContext = { token, ...address, session: resolved.context, userName: named?.name ?? '' }
+      const context: CollabContext = { token, ...address, session: resolved.context, userName: named?.name ?? '', mode: access }
       return context
     },
 
@@ -423,9 +429,11 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       if (type === SYNC_STEP_1) {
         // 첫 동기화에 본문을 답하기 전에 다시 판정한다(머리말 "연결을 받을 때"). 지나야 방송도 받는다 — 곧이은 SyncStep2 가 그때의 상태를 준다.
         await options.beforeFirstSyncVerdict?.(context)
-        const verdict = await connectionVerdict(context, connection.readOnly)
+        const verdict = await connectionVerdict(context)
         if (verdict !== null) throw rejection(verdict)
         passedFirstSync.add(connection)
+        // 연결 모드를 알린다(SG-5b) — 곧이은 SyncStep2 보다 먼저 간다. 읽기 전용 연결은 Hocuspocus 의 scope 로 이미 안다
+        if (context.mode !== 'view') connection.sendStateless(modeNotice(context.mode))
         // 등록할 때 미뤄 둔 지금의 awareness 를 이제 보낸다(머리말 · 10n-56)
         ;(Connection.prototype as unknown as InitialAwareness).sendCurrentAwareness.call(connection)
         return
@@ -487,15 +495,18 @@ function gateBroadcasts(document: Document, allowed: (connection: Connection) =>
   target.broadcast = (encode, filter) => broadcast(encode, (connection) => allowed(connection) && (filter === undefined || filter(connection)))
 }
 
+/** 연결 모드의 차례(SG-5b) — 견주기에만 쓴다(권한 판정은 `pageAccess` 가 했다). */
+const MODE_RANK: Readonly<Record<CollabContext['mode'], number>> = { view: 0, suggest: 1, edit: 2 }
+
 /** 이 연결이 지금 권한으로도 그대로 있어도 되는가 — 아니면 닫을 이유. 연결을 받을 때와 같은 판정이다. */
-async function connectionVerdict(context: CollabContext, readOnly: boolean): Promise<CollabRejection | null> {
+async function connectionVerdict(context: CollabContext): Promise<CollabRejection | null> {
   const resolved = await resolveSessionContext(context.token, context.workspaceId)
   if (!resolved.ok) return sessionRejection(resolved.reason)
   const access = await pageAccess(resolved.context, context.pageId)
   if (access === 'none') return 'not_found'
-  if (access === 'view' && !readOnly) return 'forbidden'
-  // 올라갔다(10n-67) — 읽기 전용 플래그를 그 자리에서 풀지 않고 닫는다(머리말). 받을 때는 지금 권한으로 정하므로 첫 동기화에서는 드물다
-  if (access === 'edit' && readOnly) return 'upgraded'
+  if (MODE_RANK[access] < MODE_RANK[context.mode]) return 'forbidden'
+  // 올라갔다(10n-67 · SG-5b) — 연결의 모드를 그 자리에서 바꾸지 않고 닫는다(머리말). 받을 때는 지금 권한으로 정하므로 첫 동기화에서는 드물다
+  if (MODE_RANK[access] > MODE_RANK[context.mode]) return 'upgraded'
   return null
 }
 

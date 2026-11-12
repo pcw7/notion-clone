@@ -78,7 +78,7 @@ import {
 } from '../testing/collab-server-harness.ts'
 import { openChangeFeed, type ChangeFeed } from './change-feed.ts'
 import { collabDocumentName } from './collab-server.ts'
-import { confirmationRequest, parseConfirmationReply, type ConfirmationReply } from './collab-protocol.ts'
+import { confirmationRequest, modeNotice, parseConfirmationReply, type ConfirmationReply } from './collab-protocol.ts'
 import { loadDocState } from './doc-store.ts'
 import { createProjectionScheduler } from './projection-scheduler.ts'
 import { readBodyPm, readBodyYDoc, type BodyRead } from './ydoc.ts'
@@ -1019,5 +1019,44 @@ describe('⑰ 제안 마크 (SG-1 · 판결 U-2)', () => {
     const c = join(t, again.url, name, cookieOf(member))
     await ready(c)
     assert.deepEqual(suggestionsOf(c.doc), expected, '다시 띄운 서버가 로그에서 마크를 잃었다')
+  })
+})
+
+describe('⑱ 코멘트 권한자의 연결 (SG-5b · 정본 [보강 SG-1] ⑨)', () => {
+  test('★ 읽기 전용이 아니고 모드 알림은 suggest(고칠 수 있으면 edit) · 제안은 퍼진다 · 그냥 고치면 suggest_only 로 닫히고 쌓이지도 퍼지지도 않는다 · 고칠 수 있게 되면 upgraded', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    await restrict(owner, pageId, [[member, 'comment']])
+    const server = await startServer(t)
+    const [writer, suggester] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(member))]
+    await ready(writer, suggester)
+    assert.equal(suggester.provider.authorizedScope, 'read-write')
+    await waitFor('모드 알림이 온다', () => suggester.stateless.includes(modeNotice('suggest')) && writer.stateless.includes(modeNotice('edit')))
+    assert.ok(!suggester.stateless.includes(modeNotice('edit')))
+
+    // 제안은 퍼진다
+    const sid = randomUUID()
+    edit(suggester.doc, (tr, doc) => {
+      tr.insert(findBlock(doc, ids[0]).pos + 2, blockSchema.text('제안 ', [blockSchema.marks.suggestion_insert!.create({ sid, author_id: member.userId })]))
+    })
+    await waitFor('제안이 쓰는 쪽에 닿는다', () => readBodyPm(writer.doc).textContent.startsWith('제안 '))
+    const before = await logOf(pageId)
+    assert.ok(before.some((row) => row.actor_id === member.userId), '제안이 쌓였다')
+
+    // 그냥 고치면
+    edit(suggester.doc, insertAtStart(ids[0], '몰래 '))
+    await waitFor('닫힌다', () => suggester.closed.length > 0)
+    assert.deepEqual(suggester.closed, ['suggest_only'])
+    assert.deepEqual(await logOf(pageId), before, '거부된 편집이 쌓였다')
+    edit(writer.doc, insertAtStart(ids[0], '!'))
+    await waitFor('뒤에 보낸 편집이 닿는다', () => textsOf(bodyOf(writer.doc, pageId))[0].startsWith('!'))
+    assert.ok(!readBodyPm(writer.doc).textContent.includes('몰래'), '거부된 편집이 퍼졌다')
+
+    // 고칠 수 있게 되면 — 제안만 쓰던 연결을 닫는다(다시 붙으면 edit 로 받는다)
+    const again = join(t, server.url, name, cookieOf(member))
+    await ready(again)
+    assert.equal((await grantAccess(owner.ctx, pageId, { type: 'user', id: member.userId }, 'edit')).ok, true)
+    await waitFor('올라간 연결이 닫힌다', () => again.closed.length > 0)
+    assert.deepEqual(again.closed, ['upgraded'])
   })
 })
