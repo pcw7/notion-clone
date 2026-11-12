@@ -28,7 +28,7 @@ export async function rowStandsInView(
   today: string | null = null,
 ): Promise<boolean | null> {
   const view = await getView(ctx, viewId)
-  if (!view.ok) return null
+  if (!view.ok || view.value.type === 'dashboard') return null // 대시보드는 행을 그리지 않는다(DB-1)
   // 그 뷰가 보는 data source 의 행인가 — 아니면 "서지 않는다" 가 아니라 물을 수 없는 것이다
   const owner = await query<{ data_source_id: string }>(`SELECT data_source_id FROM page WHERE id = $1`, [rowId])
   if (owner[0]?.data_source_id !== view.value.dataSourceId) return null

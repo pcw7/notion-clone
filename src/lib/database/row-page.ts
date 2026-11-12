@@ -80,7 +80,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
     const view = await tx.queryMaybe<{ id: string }>(
       `SELECT id FROM view
-        WHERE database_id = $1 AND data_source_id = $2 AND owner_kind = 'database_view'
+        WHERE database_id = $1 AND data_source_id = $2 AND owner_kind = 'database_view' AND type <> 'dashboard'
         ORDER BY order_idx, id LIMIT 1`,
       [row.database_id, row.data_source_id],
     )

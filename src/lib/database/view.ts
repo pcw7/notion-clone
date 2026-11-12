@@ -95,6 +95,13 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
 // 캘린더(2g-1 · F-04-06)도 — 이것도 `ck_view_type` 이 이미 받는 이름이다.
 export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar', 'chart', 'timeline', 'map'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
+/**
+ * 새 탭으로 만들 수 있는 타입 — 위 여덟에 대시보드(DB-1)를 더한다. 대시보드는 행을 그리지 않는 탭이라 `MvpViewType`(화면의 타입별 표가 쓰는
+ * 이름)에는 넣지 않는다 — 그리기는 DB-2 의 일이다. 타입을 **바꿀** 때(`updateView`)는 여전히 `MVP_VIEW_TYPES` 만 받는다.
+ */
+export const CREATE_VIEW_TYPES = [...MVP_VIEW_TYPES, 'dashboard'] as const
+export type CreateViewType = (typeof CREATE_VIEW_TYPES)[number]
+export const DEFAULT_DASHBOARD_NAME = '대시보드'
 
 export const DEFAULT_VIEW_NAME = '표'
 export const MAX_VIEW_NAME_LENGTH = 200
@@ -224,7 +231,7 @@ export type ViewResult<T> =
 const fail = (reason: ViewFailure, issues?: readonly ValidationIssue[]): ViewResult<never> =>
   issues === undefined ? ({ ok: false, reason } as const) : ({ ok: false, reason, issues } as const)
 
-function isFailure<T>(v: T | ViewResult<never>): v is ViewResult<never> {
+export function isFailure<T>(v: T | ViewResult<never>): v is ViewResult<never> {
   return typeof v === 'object' && v !== null && 'ok' in v
 }
 
@@ -243,7 +250,7 @@ type DatabaseGate = { databaseId: string }
  *
  * data source 를 고르지 않는다(8e-1) — 데이터베이스는 여럿을 가질 수 있고, 어느 것인지는 뷰가 안다(`openView`).
  */
-async function openDatabase(
+export async function openDatabase(
   tx: Tx,
   ctx: SessionContext,
   databaseId: string,
@@ -280,14 +287,15 @@ async function openView(
   ctx: SessionContext,
   viewId: string,
   need: 'view' | 'edit_structure',
-): Promise<(DatabaseGate & { dataSourceId: string; viewId: string }) | ViewResult<never>> {
-  const row = await tx.queryMaybe<{ database_id: string; data_source_id: string; owner: string }>(
-    `SELECT v.database_id, v.data_source_id, ds.owner_database_id AS owner
+): Promise<(DatabaseGate & { dataSourceId: string; viewId: string; type: string; ownerKind: string }) | ViewResult<never>> {
+  // 대시보드 위젯(DB-1)도 연다 — 위젯은 탭 뷰와 같은 길로 읽고 고친다(필터 · 정렬 · 묶기 · 보이는 속성). 탭 목록에만 서지 않는다.
+  const row = await tx.queryMaybe<{ database_id: string; data_source_id: string; owner: string; type: string; owner_kind: string }>(
+    `SELECT v.database_id, v.data_source_id, ds.owner_database_id AS owner, v.type, v.owner_kind
        FROM view v
        JOIN block b ON b.id = v.database_id
        JOIN data_source ds ON ds.id = v.data_source_id
       WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
-        AND v.owner_kind = 'database_view'`,
+        AND v.owner_kind IN ('database_view', 'dashboard_widget')`,
     [viewId, ctx.workspaceId],
   )
   if (row === null) return fail('not_found')
@@ -296,7 +304,7 @@ async function openView(
   if (isFailure(gate)) return gate
   // 붙인 소스 — 원본을 못 보면 없는 것과 같은 답(남의 표의 스키마가 있는지 알리지 않는다)
   if (row.owner !== row.database_id && !(await canViewOwnerDatabase(tx, ctx, row.owner))) return fail('not_found')
-  return { ...gate, dataSourceId: row.data_source_id, viewId }
+  return { ...gate, dataSourceId: row.data_source_id, viewId, type: row.type, ownerKind: row.owner_kind }
 }
 
 function normalizeName(raw: unknown, fallback: string): string | null {
@@ -664,7 +672,7 @@ export async function listViews(
 
 export type CreateViewInput = {
   readonly name?: string
-  readonly type?: MvpViewType
+  readonly type?: CreateViewType
   /** 보드가 아니어도 둘 수 있다(F-04-11: "table view 도 group 을 가질 수 있다"). 보드인데 없으면 자동으로 고른다. */
   readonly groupBy?: GroupBy
   /**
@@ -684,15 +692,39 @@ export async function createView(
   databaseId: string,
   input: CreateViewInput = {},
 ): Promise<ViewResult<ViewDetail>> {
-  const name = normalizeName(input.name, DEFAULT_VIEW_NAME)
-  if (name === null) return fail('invalid_name')
-
   const type = input.type ?? 'table'
-  if (!MVP_VIEW_TYPES.includes(type)) return fail('unsupported_type')
+  if (!CREATE_VIEW_TYPES.includes(type)) return fail('unsupported_type')
+  const name = normalizeName(input.name, type === 'dashboard' ? DEFAULT_DASHBOARD_NAME : DEFAULT_VIEW_NAME)
+  if (name === null) return fail('invalid_name')
 
   return withCommandTransaction(async (tx) => {
     const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
     if (isFailure(gate)) return gate
+
+    // 대시보드(DB-1 ①) — 행을 그리지 않는 탭. `ck_view_needs_source` 때문에 소스는 그 데이터베이스의 첫 소유 소스(읽지 않는다) · 배치는 빈 줄 없음.
+    if (type === 'dashboard') {
+      const own = await tx.queryMaybe<{ data_source_id: string }>(
+        `SELECT dds.data_source_id FROM database_data_source dds
+           JOIN data_source ds ON ds.id = dds.data_source_id
+          WHERE dds.database_id = $1 AND ds.owner_database_id = $1 AND ds.lifecycle = 'live'
+          ORDER BY dds.order_idx, dds.data_source_id LIMIT 1`,
+        [databaseId],
+      )
+      if (own === null) return fail('not_found')
+      await lockTabs(tx, databaseId)
+      const last = await tx.queryMaybe<{ order_idx: string }>(
+        `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
+        [databaseId],
+      )
+      const dashboardId = randomUUID()
+      await tx.query(
+        `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, dashboard_layout, configuration, created_at, updated_at)
+         VALUES ($1, 'database_view', $2, $3, $4, 'dashboard', $5, '{"rows":[]}'::jsonb, '{}'::jsonb, now(), now())`,
+        [dashboardId, databaseId, own.data_source_id, name, orderKeyBetween(last?.order_idx ?? null, null)],
+      )
+      const created = await readView(tx, dashboardId, ctx.userId)
+      return created === null ? fail('not_found') : ({ ok: true, value: created } as const)
+    }
 
     // 0042 의 복합 FK 가 같은 것을 막지만, 거기까지 가면 예외라 화면이 받을 말이 없다 — 먼저 묻는다.
     const source = await tx.queryMaybe<{ data_source_id: string; owner: string }>(
@@ -707,47 +739,79 @@ export async function createView(
     if (source.owner !== databaseId && !(await canViewOwnerDatabase(tx, ctx, source.owner))) return fail('not_found')
     const dataSourceId = source.data_source_id
 
-    const grouped = await resolveGroupBy(tx, dataSourceId, type, input.groupBy, null)
-    if (isFailure(grouped)) return grouped
+    const viewId = await insertViewRow(tx, { databaseId, dataSourceId, name, type, groupBy: input.groupBy })
+    if (isFailure(viewId)) return viewId
 
-    // 캘린더는 날짜 속성이 필수다(2g-1) — 첫 날짜 속성을 고르고, 없으면 거부한다.
-    const calendar = type === 'calendar' ? await resolveCalendarLayout(tx, dataSourceId, readCalendarLayout(null)) : null
-    if (type === 'calendar' && calendar === null) return fail('date_required')
-    // 타임라인도 날짜 속성이 필수다(TL-1) — 같은 규칙. 세 키를 모두 쓴다.
-    const timeline = type === 'timeline' ? await resolveTimelineLayout(tx, dataSourceId, readTimelineLayout(null)) : null
-    if (type === 'timeline' && timeline === null) return fail('date_required')
+    const view = await readView(tx, viewId, ctx.userId)
+    return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
+  })
+}
 
+export type InsertViewRowInput = {
+  readonly databaseId: string
+  readonly dataSourceId: string
+  readonly name: string
+  readonly type: MvpViewType
+  readonly groupBy?: GroupBy
+  /** 대시보드 위젯이면 그 대시보드 뷰의 id — 탭 줄에 서지 않고 그 대시보드의 위젯으로 만든다(DB-1 ②). */
+  readonly widgetOf?: string
+}
+
+/**
+ * 새 뷰 한 줄을 넣는다 — 탭 뷰(`createView`)와 대시보드 위젯(`addDashboardWidget`)이 같은 기본값을 쓴다(보드의 그룹 · 캘린더 · 타임라인의 날짜 속성 ·
+ * 보이는 속성 시딩). 호출자가 권한 · 소스를 이미 봤다. 새 뷰의 id 를 돌려준다.
+ */
+export async function insertViewRow(tx: Tx, input: InsertViewRowInput): Promise<string | ViewResult<never>> {
+  const { databaseId, dataSourceId, name, type } = input
+  const grouped = await resolveGroupBy(tx, dataSourceId, type, input.groupBy, null)
+  if (isFailure(grouped)) return grouped
+
+  // 캘린더는 날짜 속성이 필수다(2g-1) — 첫 날짜 속성을 고르고, 없으면 거부한다.
+  const calendar = type === 'calendar' ? await resolveCalendarLayout(tx, dataSourceId, readCalendarLayout(null)) : null
+  if (type === 'calendar' && calendar === null) return fail('date_required')
+  // 타임라인도 날짜 속성이 필수다(TL-1) — 같은 규칙. 세 키를 모두 쓴다.
+  const timeline = type === 'timeline' ? await resolveTimelineLayout(tx, dataSourceId, readTimelineLayout(null)) : null
+  if (type === 'timeline' && timeline === null) return fail('date_required')
+
+  let last: { order_idx: string } | null
+  if (input.widgetOf === undefined) {
     // 맨 뒤 키 — 동시에 만들거나 옮기는 다른 쓰기와 한 줄로(10n-18 `lockTabs` — 그렇지 않으면 같은 키가 둘 생긴다)
     await lockTabs(tx, databaseId)
-    const last = await tx.queryMaybe<{ order_idx: string }>(
+    last = await tx.queryMaybe<{ order_idx: string }>(
       `SELECT order_idx FROM view
         WHERE database_id = $1 AND owner_kind = 'database_view'
         ORDER BY order_idx DESC LIMIT 1`,
       [databaseId],
     )
-
-    const viewId = randomUUID()
-    await tx.query(
-      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx,
-                         group_by, configuration, created_at, updated_at)
-       VALUES ($1, 'database_view', $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now(), now())`,
-      [
-        viewId,
-        databaseId,
-        dataSourceId,
-        name,
-        type,
-        orderKeyBetween(last?.order_idx ?? null, null),
-        grouped === null ? null : JSON.stringify(grouped),
-        JSON.stringify(calendar !== null ? { calendar } : timeline !== null ? { timeline } : {}),
-      ],
+  } else {
+    // 위젯의 차례는 그 대시보드 안에서만 뜻이 있다(보이는 차례는 배치가 정한다) — 호출자가 대시보드 행을 잠갔다
+    last = await tx.queryMaybe<{ order_idx: string }>(
+      `SELECT order_idx FROM view WHERE dashboard_view_id = $1 ORDER BY order_idx DESC LIMIT 1`,
+      [input.widgetOf],
     )
+  }
 
-    await seedViewProperties(tx, viewId, dataSourceId)
+  const viewId = randomUUID()
+  await tx.query(
+    `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx,
+                       group_by, configuration, dashboard_view_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, now(), now())`,
+    [
+      viewId,
+      input.widgetOf === undefined ? 'database_view' : 'dashboard_widget',
+      databaseId,
+      dataSourceId,
+      name,
+      type,
+      orderKeyBetween(last?.order_idx ?? null, null),
+      grouped === null ? null : JSON.stringify(grouped),
+      JSON.stringify(calendar !== null ? { calendar } : timeline !== null ? { timeline } : {}),
+      input.widgetOf ?? null,
+    ],
+  )
 
-    const view = await readView(tx, viewId, ctx.userId)
-    return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
-  })
+  await seedViewProperties(tx, viewId, dataSourceId)
+  return viewId
 }
 
 /**
@@ -784,7 +848,7 @@ export async function addPropertyToViews(
   const views = await tx.query<{ id: string; last: string | null }>(
     `SELECT v.id,
             (SELECT max(vp.order_idx) FROM view_property vp WHERE vp.view_id = v.id) AS last
-       FROM view v WHERE v.data_source_id = $1`,
+       FROM view v WHERE v.data_source_id = $1 AND v.type <> 'dashboard'`,
     [dataSourceId],
   )
   for (const view of views) {
@@ -952,6 +1016,10 @@ export async function updateView(
     )
     // 폼(7a-1)은 다른 종류로 바꾸지 않는다 — 설정 · 공개 토큰이 남은 채 행을 그리는 뷰가 되면 안 된다(정본 §3.6 끝 [보강] 폼 ①)
     if (current.type === 'form' && input.type !== undefined) return fail('unsupported_type')
+    // 대시보드(DB-1 ①)는 이름만 고친다 — 필터 · 정렬 · 묶기 · 타입이 없다(배치는 `updateDashboardLayout`)
+    if (current.type === 'dashboard' && Object.entries(input).some(([key, value]) => key !== 'name' && value !== undefined)) {
+      return fail('unsupported_type')
+    }
     // 갤러리 레이아웃 — 잠근 행의 지금 값 위에 바꿀 키만 얹는다(동시에 다른 키를 바꾼 사람의 것을 덮지 않는다).
     const gallery =
       input.gallery === undefined ? null : mergeGalleryLayout(readGalleryLayout(current.configuration), input.gallery)
@@ -1104,8 +1172,9 @@ export async function setPersonalView(ctx: SessionContext, viewId: string, input
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'view')
     if (isFailure(gate)) return gate
+    if (gate.type === 'dashboard') return fail('unsupported_type') // 대시보드는 필터 · 정렬이 없다(DB-1)
     const types = await readPropertyTypes(tx, gate.dataSourceId)
-    if (input.filter !== undefined && input.filter !== null) {
+if (input.filter !== undefined && input.filter !== null) {
       const issues = validateFilter(input.filter, types)
       if (issues.length > 0) return fail('invalid_filter', issues)
     }
@@ -1205,6 +1274,7 @@ export async function setViewColumn(
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
+    if (gate.type === 'dashboard') return fail('unsupported_type') // 대시보드는 보이는 속성이 없다(DB-1)
 
     const existing = await tx.queryMaybe<{ type: string }>(
       `SELECT p.type::text AS type
@@ -1267,6 +1337,7 @@ export async function moveViewColumn(
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
+    if (gate.type === 'dashboard') return fail('unsupported_type')
 
     const columns = await readColumns(tx, viewId)
     if (!columns.some((c) => c.propertyId === propertyId)) return fail('not_found')
@@ -1307,13 +1378,16 @@ export async function deleteView(ctx: SessionContext, viewId: string): Promise<V
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
+    // 위젯은 대시보드의 일부다 — 지우는 길은 `removeDashboardWidget`(배치에서도 뺀다)
+    if (gate.ownerKind !== 'database_view') return fail('not_found')
 
+    // 그 소스의 행을 그리는 뷰가 하나는 남아야 한다 — 대시보드는 행을 그리지 않으므로 세지 않는다(DB-1)
     const count = await tx.queryOne<{ n: string }>(
       `SELECT count(*) AS n FROM view
-        WHERE database_id = $1 AND data_source_id = $2 AND owner_kind = 'database_view'`,
+        WHERE database_id = $1 AND data_source_id = $2 AND owner_kind = 'database_view' AND type <> 'dashboard'`,
       [gate.databaseId, gate.dataSourceId],
     )
-    if (Number(count.n) <= 1) return fail('last_view')
+    if (gate.type !== 'dashboard' && Number(count.n) <= 1) return fail('last_view')
 
     await tx.query(`DELETE FROM view WHERE id = $1`, [viewId])
     return { ok: true, value: null } as const
@@ -1343,6 +1417,7 @@ export async function moveView(
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
+    if (gate.ownerKind !== 'database_view') return fail('not_found') // 위젯은 탭이 아니다
 
     // 그 데이터베이스의 탭 바꾸기를 한 줄로 세운다 — 잠근 **다음 문장**의 스냅샷이 앞선 옮기기를 모두 본다(READ COMMITTED 는 문장마다 새
     // 스냅샷). 뷰 행을 `FOR UPDATE` 로 잠그는 것으로는 모자랐다 — 기다린 뒤 값은 새것이 오지만 정렬은 옛 값으로 이미 끝나, 여럿이 같은

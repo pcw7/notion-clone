@@ -52,7 +52,7 @@ export async function moveViewRow(ctx: SessionContext, viewId: string, input: Mo
          JOIN data_source ds ON ds.id = v.data_source_id
          LEFT JOIN view_user_override o ON o.view_id = v.id AND o.user_id = $3
         WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
-          AND v.owner_kind = 'database_view'
+          AND v.owner_kind IN ('database_view', 'dashboard_widget') AND v.type <> 'dashboard'
           FOR NO KEY UPDATE OF v`,
       [viewId, ctx.workspaceId, ctx.userId],
     )

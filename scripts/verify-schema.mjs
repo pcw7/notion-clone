@@ -5776,6 +5776,122 @@ try {
     }
   }
 
+  {
+    // 대시보드(0143 · DB-1) — 위젯 ⇔ 부모 · 위젯 타입 · 위젯의 소스 · 대시보드는 탭 뷰 · 배치는 대시보드에만 · 배치의 모양 · 트리거 둘
+    for (const name of ['ck_view_widget_parent', 'ck_view_widget_type', 'ck_view_widget_source', 'ck_view_dashboard_owner', 'ck_view_dashboard_layout_owner', 'ck_view_dashboard_layout']) {
+      const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1`, [name])).rowCount
+      if (has === 1) ok(`${name} 이 있다`)
+      else fail(`${name} 이 없다`)
+    }
+    for (const name of ['trg_view_widget_parent', 'trg_view_dashboard_parent']) {
+      const has = (await client.query(`SELECT 1 FROM pg_trigger WHERE tgname = $1 AND NOT tgisinternal`, [name])).rowCount
+      if (has === 1) ok(`${name} 트리거가 있다`)
+      else fail(`${name} 트리거가 없다`)
+    }
+    const base = (await client.query(`SELECT id, database_id, data_source_id FROM view WHERE owner_kind = 'database_view' AND type <> 'dashboard' LIMIT 1`)).rows[0]
+    if (!base) {
+      ok('뷰가 없다 — 건너뛴다(제약은 마이그레이션이 세웠다)')
+    } else {
+      const U = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+      const dashboardId = randomUUID()
+      await client.query(
+        `INSERT INTO view (id, owner_kind, database_id, data_source_id, type, order_idx, dashboard_layout, configuration, created_at, updated_at)
+         VALUES ($1, 'database_view', $2, $3, 'dashboard', 'zz0', '{"rows":[]}'::jsonb, '{}'::jsonb, now(), now())`,
+        [dashboardId, base.database_id, base.data_source_id],
+      )
+      ok('대시보드 뷰 생성 (type=dashboard · 빈 배치)')
+      const widgetSql = `INSERT INTO view (id, owner_kind, database_id, data_source_id, type, order_idx, dashboard_view_id, configuration, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4, $5, 'a0', $6, '{}'::jsonb, now(), now())`
+      const widgetId = randomUUID()
+      await client.query(widgetSql, [widgetId, 'dashboard_widget', base.database_id, base.data_source_id, 'table', dashboardId])
+      ok('위젯 생성 (같은 데이터베이스의 대시보드 밑)')
+
+      // 거부가 **그 제약으로** 떨어져야 한다 — 다른 까닭으로 떨어지면 프로브가 빈 것이다
+      const rejectsBy = async (label, sql, params, ...names) => {
+        await client.query('SAVEPOINT probe')
+        try {
+          await client.query(sql, params)
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          fail(`${label} — 거부되어야 하는데 통과했다`)
+        } catch (e) {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          if (names.includes(e.constraint)) ok(`${label} — ${e.constraint} 가 거부함 (${e.code})`)
+          else fail(`${label} — ${names.join(' | ')} 가 아니라 ${e.constraint ?? e.code} (${String(e.message).split('\n')[0]})`)
+        }
+      }
+      const w = (kind, type, parent, ds = base.data_source_id) => [randomUUID(), kind, base.database_id, ds, type, parent]
+      await rejectsBy('★ 위젯인데 부모 대시보드가 없다', widgetSql, w('dashboard_widget', 'table', null), 'trg_view_widget_parent', 'ck_view_widget_parent')
+      await rejectsBy('★ 탭 뷰인데 부모 대시보드가 있다', widgetSql, w('database_view', 'table', dashboardId), 'ck_view_widget_parent')
+      await rejectsBy('★ 위젯 타입 form', widgetSql, w('dashboard_widget', 'form', dashboardId), 'ck_view_widget_type')
+      await rejectsBy('★ 위젯 타입 dashboard (중첩 금지)', widgetSql, w('dashboard_widget', 'dashboard', dashboardId), 'ck_view_widget_type', 'ck_view_dashboard_owner')
+      await rejectsBy('★ 위젯인데 소스가 없다', widgetSql, w('dashboard_widget', 'table', dashboardId, null), 'ck_view_widget_source')
+      await rejectsBy('★ 부모가 대시보드가 아니라 표 뷰', widgetSql, w('dashboard_widget', 'table', base.id), 'trg_view_widget_parent')
+      await rejectsBy('★ 부모가 없는 id', widgetSql, w('dashboard_widget', 'table', randomUUID()), 'trg_view_widget_parent')
+      await rejectsBy(
+        '★ 레이아웃 탭이 dashboard 타입',
+        `INSERT INTO view (id, owner_kind, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at)
+         VALUES ($1, 'layout_tab', $2, $3, 'dashboard', 'a0', '{}'::jsonb, now(), now())`,
+        [randomUUID(), base.database_id, base.data_source_id],
+        'ck_view_dashboard_owner',
+      )
+      // 부모가 다른 데이터베이스의 대시보드 — 다른 데이터베이스가 있을 때만
+      const foreign = (await client.query(`SELECT id, database_id FROM view WHERE owner_kind = 'database_view' AND database_id <> $1 LIMIT 1`, [base.database_id])).rows[0]
+      if (foreign) {
+        const foreignDash = randomUUID()
+        await client.query(
+          `INSERT INTO view (id, owner_kind, database_id, data_source_id, type, order_idx, dashboard_layout, configuration, created_at, updated_at)
+           SELECT $1, 'database_view', database_id, data_source_id, 'dashboard', 'zz1', '{"rows":[]}'::jsonb, '{}'::jsonb, now(), now() FROM view WHERE id = $2`,
+          [foreignDash, foreign.id],
+        )
+        await rejectsBy('★ 부모가 다른 데이터베이스의 대시보드', widgetSql, w('dashboard_widget', 'table', foreignDash), 'trg_view_widget_parent')
+      } else {
+        ok('다른 데이터베이스가 없다 — "다른 데이터베이스의 부모" 프로브는 건너뛴다')
+      }
+
+      // 배치 — 대시보드에만 · 모양
+      const setLayout = `UPDATE view SET dashboard_layout = $2::jsonb WHERE id = $1`
+      const cell = (n) => ({ view_id: U(n) })
+      for (const [label, layout] of [
+        ['빈 줄 없음', { rows: [] }],
+        ['3줄 × 4칸(12개 · 경계)', { rows: [1, 2, 3].map((r) => ({ height: ['small', 'medium', 'large'][r - 1], cells: [1, 2, 3, 4].map((c) => cell(r * 10 + c)) })) }],
+      ]) {
+        await client.query('SAVEPOINT okprobe')
+        try {
+          await client.query(setLayout, [dashboardId, JSON.stringify(layout)])
+          ok(`★ 배치 ${label} — 통과한다`)
+        } catch (e) {
+          fail(`배치 ${label} — 통과해야 하는데 거부됐다 (${e.message})`)
+        }
+        await client.query('ROLLBACK TO SAVEPOINT okprobe')
+      }
+      await rejectsBy('★ 표 뷰에 배치', setLayout, [base.id, JSON.stringify({ rows: [] })], 'ck_view_dashboard_layout_owner')
+      await rejectsBy('★ 위젯에 배치', setLayout, [widgetId, JSON.stringify({ rows: [] })], 'ck_view_dashboard_layout_owner')
+      const bad = async (label, layout) => rejectsBy(`★ 배치 ${label}`, setLayout, [dashboardId, JSON.stringify(layout)], 'ck_view_dashboard_layout')
+      await bad('줄 4개', { rows: [1, 2, 3, 4].map((n) => ({ height: 'small', cells: [cell(n)] })) })
+      await bad('한 줄에 칸 5개', { rows: [{ height: 'small', cells: [1, 2, 3, 4, 5].map(cell) }] })
+      await bad('칸이 없는 줄', { rows: [{ height: 'small', cells: [] }] })
+      await bad('height 가 모르는 값', { rows: [{ height: 'huge', cells: [cell(1)] }] })
+      await bad('height 가 빠졌다(NULL 이면 통과하는 구멍)', { rows: [{ cells: [cell(1)] }] })
+      await bad('rows 가 빠졌다', {})
+      await bad('rows 가 배열이 아니다', { rows: 'x' })
+      await bad('같은 위젯이 두 번', { rows: [{ height: 'small', cells: [cell(1)] }, { height: 'small', cells: [cell(1)] }] })
+      await bad('view_id 가 uuid 가 아니다', { rows: [{ height: 'small', cells: [{ view_id: 'abc' }] }] })
+      await bad('view_id 가 빠졌다', { rows: [{ height: 'small', cells: [{}] }] })
+      await bad('칸의 모르는 키', { rows: [{ height: 'small', cells: [{ view_id: U(1), w: 2 }] }] })
+      await bad('줄의 모르는 키', { rows: [{ height: 'small', cells: [cell(1)], gap: 1 }] })
+      await bad('최상위의 모르는 키', { rows: [], extra: 1 })
+      await bad('배열 자체', [])
+
+      // 위젯이 달린 대시보드는 타입 · 데이터베이스 · 종류를 못 바꾼다
+      await rejectsBy('★ 위젯이 달린 대시보드의 타입 바꾸기', `UPDATE view SET type = 'table', dashboard_layout = NULL WHERE id = $1`, [dashboardId], 'trg_view_dashboard_parent')
+      // 대시보드를 지우면 위젯도(0015 의 CASCADE)
+      await client.query(`DELETE FROM view WHERE id = $1`, [dashboardId])
+      const left = (await client.query(`SELECT 1 FROM view WHERE id = $1`, [widgetId])).rowCount
+      if (left === 0) ok('★ 대시보드를 지우면 위젯 뷰도 지워진다 (CASCADE)')
+      else fail('대시보드를 지웠는데 위젯 뷰가 남았다')
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

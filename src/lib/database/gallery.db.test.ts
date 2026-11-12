@@ -64,10 +64,13 @@ describe('① 갤러리 뷰', () => {
 })
 
 describe('② 아직 받지 않는 뷰 타입', () => {
-  test('대시보드는 거부한다 — CHECK 은 받는 이름이지만 명령이 막는다(지도는 MP-2 에서 열렸다)', async (t) => {
+  test('폼은 이 길로 만들지 않고 · 대시보드로 바꿀 수도 없다 — CHECK 은 받는 이름이지만 명령이 막는다(지도는 MP-2 · 대시보드는 DB-1 에서 만들기가 열렸다)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const db = unwrap(await createDatabase(fx.owner.ctx, { name: `갤러리 ${Date.now()}` }))
-    const r = await createView(fx.owner.ctx, db.id, { type: 'dashboard' as MvpViewType })
+    const r = await createView(fx.owner.ctx, db.id, { type: 'form' as MvpViewType })
     assert.equal(!r.ok && r.reason, 'unsupported_type')
+    // 대시보드는 새 탭으로만 — 표를 대시보드로 바꾸지 않는다
+    const switched = await updateView(fx.owner.ctx, db.defaultViewId, { type: 'dashboard' as MvpViewType })
+    assert.equal(!switched.ok && switched.reason, 'unsupported_type')
   })
 })

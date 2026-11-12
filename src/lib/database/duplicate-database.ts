@@ -196,7 +196,7 @@ async function duplicateCore(
     const linkedIds = attachments.map((a) => String(a.data_source_id)).filter((ds) => !sourceIds.includes(ds))
     const views = await readRows(tx,
       `SELECT to_jsonb(v) AS row FROM view v
-        WHERE ((v.database_id = $1 AND v.owner_kind = 'database_view' AND v.data_source_id = ANY($2::uuid[]))
+        WHERE ((v.database_id = $1 AND v.owner_kind IN ('database_view', 'dashboard_widget') AND v.data_source_id = ANY($2::uuid[]))
             OR (v.owner_kind = 'layout_tab' AND v.data_source_id = ANY($3::uuid[])))
         ORDER BY v.order_idx, v.id`, [databaseId, [...sourceIds, ...linkedIds], sourceIds])
     const viewIds = views.map((v) => String(v.id))
@@ -237,11 +237,11 @@ async function duplicateCore(
     await insertRows(tx, 'status_group', statusGroups.map((g) => remapIds(g, ids)))
     await insertRows(tx, 'select_option', selectOptions.map((o) => remapIds(o, ids)))
     await insertRows(tx, 'property_dependency', dependencies.map((d) => remapIds(d, ids)))
-    // 뷰 — 대시보드 뷰를 가리키는 칸은 뷰를 다 넣은 뒤 · 템플릿은 아직 없다(행이 없다 — D-3)
-    await insertRows(tx, 'view', views.map((v) => fresh(v, { dashboard_view_id: null, default_template_page_id: null, owner_user_id: null })))
-    for (const v of views) {
-      if (v.dashboard_view_id != null) await tx.query(`UPDATE view SET dashboard_view_id = $2 WHERE id = $1`, [ids.get(String(v.id)), ids.get(String(v.dashboard_view_id)) ?? null])
-    }
+    // 뷰 — 템플릿은 아직 없다(행이 없다 — D-3). 대시보드(DB-1)의 `dashboard_layout` 은 `fresh` 의 지도가 칸의 view_id 를 새 위젯 id 로 옮긴다(⑥).
+    // 위젯은 대시보드를 가리키므로(0143 의 CHECK · 트리거) 대시보드를 먼저 넣고 위젯을 따로 넣는다 — 위젯의 `dashboard_view_id` 도 지도가 옮긴다.
+    const stripped = { default_template_page_id: null, owner_user_id: null }
+    await insertRows(tx, 'view', views.filter((v) => v.owner_kind !== 'dashboard_widget').map((v) => fresh(v, stripped)))
+    await insertRows(tx, 'view', views.filter((v) => v.owner_kind === 'dashboard_widget').map((v) => fresh(v, stripped)))
     await insertRows(tx, 'view_property', viewProperties.map((vp) => remapIds(vp, ids)))
     // 폼 — 닫힌 채(공개 주소는 사본의 것이 아니다 — 토큰은 하나다)
     await insertRows(tx, 'form_view', forms.map((f) => fresh(f, { access: 'closed', token: null, updated_by: ctx.userId })))
