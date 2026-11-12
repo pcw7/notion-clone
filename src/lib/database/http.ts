@@ -21,6 +21,7 @@ import type { RelationFailure } from './relation.ts'
 import type { GroupFailure } from './group.ts'
 import type { TemplateFailure } from './template.ts'
 import type { ViewFailure } from './view.ts'
+import type { DashboardFailure } from './dashboard.ts'
 import type { TreeMatch } from './query.ts'
 
 export function rowFailureStatus(reason: RowFailure): number {
@@ -213,6 +214,11 @@ export function viewFailureStatus(reason: ViewFailure): number {
     case 'invalid_position':
       return 400
   }
+}
+
+/** 대시보드 명령의 거부(DB-1) — 뷰의 것에 더해 판이 낡았다(`conflict` — 다시 읽으면 풀린다) · 자리가 없다(`full`)는 지금 상태가 허락하지 않는 409. */
+export function dashboardFailureStatus(reason: DashboardFailure): number {
+  return reason === 'conflict' || reason === 'full' ? 409 : viewFailureStatus(reason)
 }
 
 /** 실패 결과를 응답으로. 라이브러리가 준 `issues` · `currentVersion` 을 그대로 싣는다. */

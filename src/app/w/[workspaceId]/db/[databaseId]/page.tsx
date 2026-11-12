@@ -262,6 +262,8 @@ export default async function DatabasePage({
   const isMap = view.value.type === 'map'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
   const isForm = view.value.type === 'form'
+  // 대시보드(DB-1 ①) — 행을 읽지 않는다. 위젯을 그리는 것은 DB-2 의 일이다
+  const isDashboard = view.value.type === 'dashboard'
   const form = isForm ? await readForm(ctx, view.value.id) : null
   if (form !== null && !form.ok) notFound()
   // 캘린더의 보이는 달(2g-2) — 주소의 `m`(`YYYY-MM`). 없으면 이번 달(UTC — 화면의 "오늘" 단추가 보는 사람의 달로 옮긴다).
@@ -277,7 +279,7 @@ export default async function DatabasePage({
   // 보는 사람의 오늘(시간대 쿠키 · `time-zone-cookie.tsx` 가 쓴다) — 상대 날짜 그룹(B-3)과 상대 날짜 필터(R-1)가 같은 날을 쓴다
   const viewerToday = await readViewerToday()
   const [tablePage, catalog, board, chartPage, mapPage] = await Promise.all([
-    isBoard || isCalendar || isForm || isChart || isTimeline || isMap
+    isBoard || isCalendar || isForm || isChart || isTimeline || isMap || isDashboard
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
           // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
@@ -789,7 +791,11 @@ export default async function DatabasePage({
       {isBoard && search !== null && board !== null && board.ok && board.value.groups.every((g) => g.count === 0) && (
         <SearchEmpty search={search} />
       )}
-      {isBoard ? (
+      {isDashboard ? (
+        <p className="px-2 text-sm text-neutral-500" data-testid="db-dashboard-pending">
+          대시보드 화면은 준비 중입니다
+        </p>
+      ) : isBoard ? (
         groupBy !== null && groupProperty !== null && board !== null && board.ok && subProperty !== null ? (
           // 하위 그룹이 있는 보드(B-4b) — 가로줄마다 보드 하나
           <SubGroupedBoard

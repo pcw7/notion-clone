@@ -68,6 +68,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   if (!view.ok) {
     return Response.json({ error: view.reason }, { status: view.reason === 'forbidden' ? 403 : 404 })
   }
+  // 대시보드는 행을 그리지 않는다(DB-1 ①) — 그 소스의 행을 이 주소로 읽거나 더하지 않는다. 위젯은 자기 뷰 id 로 읽는다.
+  if (view.value.type === 'dashboard') return notFound()
 
   const params = new URL(request.url).searchParams
   const rawLimit = Number(params.get('limit'))
@@ -166,6 +168,8 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   if (!view.ok) {
     return Response.json({ error: view.reason }, { status: view.reason === 'forbidden' ? 403 : 404 })
   }
+  // 대시보드는 행을 그리지 않는다(DB-1 ①) — 그 소스의 행을 이 주소로 읽거나 더하지 않는다. 위젯은 자기 뷰 id 로 읽는다.
+  if (view.value.type === 'dashboard') return notFound()
 
   // 템플릿을 주면 그 행을 복제한다(F-08-02). 안 주면 빈 행이다 — 같은 주소인 이유는 **같은 동작**이어서다:
   // `New ▾` 의 목록에서 무엇을 고르든 사용자에게는 "여기에 새 항목"이고, 응답도 표가 그대로 끼워 넣는 행 하나다.

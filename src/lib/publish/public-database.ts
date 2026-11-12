@@ -236,6 +236,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
        FROM view v
        JOIN data_source ds ON ds.id = v.data_source_id
       WHERE v.database_id = $1 AND v.owner_kind = 'database_view' AND ds.owner_database_id = $1 AND ds.lifecycle = 'live'
+        AND v.type <> 'dashboard' -- 대시보드는 공개 화면의 탭이 아니다(DB-1 ⑥ · 폼처럼 뒤로) — 행을 그리지 않는 뷰가 표로 떨어지지 않게 질의에서 뺀다
       ORDER BY v.order_idx, v.id`,
     [databaseId],
   )
