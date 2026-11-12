@@ -36,7 +36,9 @@ import {
 } from '../database/filter.ts'
 import { toVerificationCell } from '../database/verification-cell.ts'
 import type { Tx } from '../db/tx.ts'
-import { readGalleryLayout, type GallerySize } from '../database/gallery.ts'
+import { GALLERY_COVER_MAX_DEPTH, readGalleryLayout, type GalleryAspect, type GalleryLayout, type GallerySize } from '../database/gallery.ts'
+import { readImageSource } from '../block/image.ts'
+import { coverBackground, coverFileId, pageCoverOfFormat } from '../block/page-cover.ts'
 import { cellDays, readCalendarLayout, shiftMonth, type CalendarWeekStart } from '../database/calendar.ts'
 import { readTimelineLayout, type TimelineZoom } from '../database/timeline.ts'
 import { shiftWindow, type TimelineWindow } from '../database/timeline-geometry.ts'
@@ -80,6 +82,16 @@ export type PublicColumn = {
   readonly prefix: string | null
 }
 
+/**
+ * 갤러리 카드의 미리보기 그림(PV-5) — 파일 id 를 싣지 않는다. 우리 파일은 **블록 id**(주소는 화면이 공개 파일 길로 만든다 ·
+ * 커버는 행 페이지 id 로 · 본문 이미지는 그 이미지 블록 id 로), 바깥 주소는 그 주소, 내장 커버는 배경.
+ */
+export type PublicPreview =
+  | { readonly kind: 'cover' }
+  | { readonly kind: 'image'; readonly blockId: string }
+  | { readonly kind: 'url'; readonly url: string }
+  | { readonly kind: 'background'; readonly background: string }
+
 export type PublicRow = {
   readonly id: string
   readonly title: readonly RichTextRun[]
@@ -93,6 +105,8 @@ export type PublicRow = {
   readonly span: { readonly start: string; readonly end: string } | null
   /** 타임라인 막대의 색(옵션 색 이름) — `color_by` 가 없으면 'default'. */
   readonly barColor: string
+  /** 갤러리 카드의 미리보기 그림(PV-5) — 갤러리가 아니거나 뷰가 "없음"이거나 그림이 없으면 null. */
+  readonly preview: PublicPreview | null
 }
 
 /** 공개 화면이 그리는 모양 — 첫 뷰의 레이아웃 중 그릴 수 있는 것. 나머지(폼 · 못 그리는 보드 · 차트 · 날짜 속성 없는 캘린더)는 표. */
@@ -156,6 +170,8 @@ export type PublicTable = {
   readonly map: PublicMap | null
   /** 갤러리 카드 크기(뷰의 설정 · 갤러리가 아니면 기본값). */
   readonly cardSize: GallerySize
+  /** 갤러리 카드 그림의 맞춤(뷰의 설정 · PV-5). */
+  readonly cardAspect: GalleryAspect
   /** 캘린더 · 타임라인일 때만. */
   readonly window: PublicWindow | null
   readonly viewName: string
@@ -187,7 +203,7 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: Windo
   // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
   return (
     (await publicTableOf(tx, target.pageId, win, chosen)) ?? {
-      viewId: '', tabs: [], layout: 'table', viewType: 'table', board: null, chart: null, map: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
+      viewId: '', tabs: [], layout: 'table', viewType: 'table', board: null, chart: null, map: null, cardSize: 'medium', cardAspect: 'cover', window: null, viewName: '', columns: [], rows: [], truncated: false,
     }
   )
 }
@@ -245,7 +261,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   const chart = await readChart(tx, view, types)
   if (chart !== null) {
     return {
-      ...head, layout: 'chart', viewType: view.type, board: null, chart, map: null, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      ...head, layout: 'chart', viewType: view.type, board: null, chart, map: null, cardSize: 'medium', cardAspect: 'cover', window: null, viewName: view.name ?? '',
       columns: [], rows: [], truncated: false,
     }
   }
@@ -253,7 +269,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   const mapped = await readMap(tx, view, types, columns)
   if (mapped !== null) {
     return {
-      ...head, layout: 'map', viewType: view.type, board: null, chart: null, map: mapped.map, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      ...head, layout: 'map', viewType: view.type, board: null, chart: null, map: mapped.map, cardSize: 'medium', cardAspect: 'cover', window: null, viewName: view.name ?? '',
       columns: [], rows: [], truncated: mapped.truncated,
     }
   }
@@ -317,6 +333,9 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     .map((row) => ({ row, span: spanOf(row.properties_cache) }))
     // 창 밖(넓혀 물은 가장자리) · 칸 값에서 날짜 글자를 못 읽는 행은 뺀다
     .filter(({ span }) => dated === null || (span !== null && overlapsWindow(span.start, span.end, dated.window)))
+  // 갤러리 카드의 미리보기 그림(PV-5) — 위에서 OPENABLE_ROW 로 고른 행만 묻는다(공개로 열리지 않는 행의 그림은 질의에 들지 않는다)
+  const gallery = readGalleryLayout(view.configuration)
+  const previews = layout === 'gallery' ? await readPublicPreviews(tx, gallery.cover, kept.map(({ row }) => ({ id: row.id, format: row.format }))) : new Map<string, PublicPreview>()
   return {
     ...head,
     layout,
@@ -324,7 +343,8 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     board,
     chart: null,
     map: null,
-    cardSize: readGalleryLayout(view.configuration).cover_size,
+    cardSize: gallery.cover_size,
+    cardAspect: gallery.cover_aspect,
     window: dated === null ? null : dated.window,
     viewName: view.name ?? '',
     columns,
@@ -337,9 +357,60 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
       groupKey: board === null || groupId === null ? null : boardKeyOf(board.spec, row.properties_cache?.[groupId]),
       span,
       barColor: colorOf(row.properties_cache),
+      preview: previews.get(row.id) ?? null,
     })),
     truncated: rows.length > cap,
   }
+}
+
+/**
+ * 갤러리 카드의 미리보기 그림(PV-5) — 뷰의 설정(`gallery.cover`)대로. **부르는 쪽이 공개로 열리는 행(`OPENABLE_ROW`)만 넘긴다** — 이 함수는
+ * 받은 행의 것만 읽는다. 파일 id 는 내보내지 않는다(커버는 행 id · 본문 이미지는 그 블록 id 로 공개 파일 길이 연다).
+ *   · page_cover — 행 페이지의 커버: 올린 이미지 → cover · 주소 → url · 내장 → background (앱의 `readPageCoverCards` 와 같은 갈래)
+ *   · page_content — 본문의 깊이 우선 첫 이미지(앱의 `readCardCovers` 와 같은 걸음 · 하위 페이지 · 데이터베이스 안으로는 내려가지 않는다 ·
+ *     빈 이미지 블록은 건너뛰지 않고 "없음"): 올린 이미지 → 그 블록 id · 주소 → url
+ */
+async function readPublicPreviews(
+  tx: Tx,
+  mode: GalleryLayout['cover'],
+  rows: readonly { readonly id: string; readonly format: Record<string, unknown> | null }[],
+): Promise<Map<string, PublicPreview>> {
+  const out = new Map<string, PublicPreview>()
+  if (rows.length === 0 || mode === 'none') return out
+  if (mode === 'page_cover') {
+    for (const row of rows) {
+      const cover = pageCoverOfFormat(row.format)
+      if (cover === null) continue
+      if (cover.type === 'gallery') out.set(row.id, { kind: 'background', background: coverBackground(cover) })
+      else if (cover.type === 'external') out.set(row.id, { kind: 'url', url: cover.url })
+      else if (coverFileId(cover) !== null) out.set(row.id, { kind: 'cover' })
+    }
+    return out
+  }
+  const found = await tx.query<{ row_id: string; id: string; properties: unknown }>(
+    `WITH RECURSIVE walk AS (
+       SELECT b.id, b.parent_id AS row_id, b.type, b.properties, (b.order_key COLLATE "C")::text AS path, 1 AS depth
+         FROM live_block b
+         JOIN live_block rp ON rp.id = b.parent_id
+        WHERE b.parent_type = 'block' AND b.parent_id = ANY($1::uuid[])
+       UNION ALL
+       SELECT c.id, w.row_id, c.type, c.properties, w.path || chr(1) || c.order_key, w.depth + 1
+         FROM walk w
+         JOIN live_block c ON c.parent_type = 'block' AND c.parent_id = w.id
+        WHERE w.type NOT IN ('page', 'database') AND w.depth < ${GALLERY_COVER_MAX_DEPTH}
+     )
+     SELECT DISTINCT ON (row_id) row_id, id, properties
+       FROM walk
+      WHERE type = 'image'
+      ORDER BY row_id, path COLLATE "C", id`,
+    [rows.map((r) => r.id)],
+  )
+  for (const r of found) {
+    const source = readImageSource(r.properties)
+    if (source === null) continue
+    out.set(r.row_id, source.kind === 'file' ? { kind: 'image', blockId: r.id } : { kind: 'url', url: source.url })
+  }
+  return out
 }
 
 /**

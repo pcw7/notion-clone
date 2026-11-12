@@ -31,6 +31,9 @@ export type GalleryLayout = {
   readonly cover_aspect: GalleryAspect
 }
 
+/** 본문에서 첫 이미지를 찾는 깊이의 상한(Y-1) — 앱의 카드와 공개 카드(PV-5)가 같은 값을 쓴다. */
+export const GALLERY_COVER_MAX_DEPTH = 10
+
 export const DEFAULT_GALLERY_LAYOUT: GalleryLayout = { cover: 'page_content', cover_size: 'medium', cover_aspect: 'cover' }
 
 const isOneOf = <T extends string>(list: readonly T[], v: unknown): v is T => typeof v === 'string' && (list as readonly string[]).includes(v)

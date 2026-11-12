@@ -165,6 +165,11 @@
 .pub-db-list-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.375rem 0; border-bottom: 1px solid rgba(55, 53, 47, 0.09); }
 .pub-card-props { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; color: #6b7280; }
 .pub-card { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.625rem 0.75rem; border: 1px solid rgba(55, 53, 47, 0.16); border-radius: 6px; font-size: 0.875rem; }
+.pub-card:has(> .pub-card-cover) { padding-top: 0; overflow: hidden; }
+.pub-card-cover { margin: 0 -0.75rem 0.125rem; height: 8rem; overflow: hidden; background: rgba(135, 131, 120, 0.1); }
+.pub-card-cover img { display: block; width: 100%; height: 100%; }
+.pub-db-gallery[data-size='small'] .pub-card-cover { height: 5.5rem; }
+.pub-db-gallery[data-size='large'] .pub-card-cover { height: 11rem; }
 .pub-db-gallery { --pub-card-w: 15rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pub-card-w), 1fr)); gap: 0.75rem; }
 .pub-db-gallery[data-size='small'] { --pub-card-w: 10rem; }
 .pub-db-gallery[data-size='large'] { --pub-card-w: 20rem; }
