@@ -52,6 +52,7 @@ import {
   calendarMonth,
   monthSpan,
   overlapsWindow,
+  pickView,
   publicToday,
   PUBLIC_WINDOW_MAX_ROWS,
   timelineWindow,
@@ -135,7 +136,14 @@ export type PublicWindow = {
 /** 보드의 재료 — 그룹 기준의 이름 · 열을 짓는 명세(옵션은 스키마 순서). */
 export type PublicBoard = { readonly propertyName: string; readonly spec: BoardSpec }
 
+/** 뷰 탭(PV-4) — 폼 뷰를 뺀 뷰의 탭 차례. `name` 이 비면 화면이 레이아웃 이름으로 채운다. */
+export type PublicViewTab = { readonly id: string; readonly name: string; readonly type: string }
+
 export type PublicTable = {
+  /** 고른 뷰의 id(PV-4). */
+  readonly viewId: string
+  /** 뷰 탭(PV-4) — 하나뿐이면 화면이 탭을 그리지 않는다. */
+  readonly tabs: readonly PublicViewTab[]
   /** 그리는 모양(실제로 그릴 것 — 보드인데 그룹이 못 그리는 타입이면 'table'). */
   readonly layout: PublicLayout
   /** 뷰에 저장된 레이아웃 그대로(`view.type`). */
@@ -173,13 +181,13 @@ type ColumnRow = { property_id: string; name: string; type: string; unique_id_pr
  * 데이터베이스를 여는 공개 화면의 표 — 게시 루트인 데이터베이스(6a-2c-2) · 게시된 페이지 안의 인라인 데이터베이스(I-4b). 연 것이
  * 데이터베이스가 아니면 null. 부르는 쪽이 같은 트랜잭션에서 판정(`resolvePublicPageIn`)을 지났다.
  */
-export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: WindowQuery | null = null): Promise<PublicTable | null> {
+export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: WindowQuery | null = null, chosen: readonly string[] = []): Promise<PublicTable | null> {
   const node = await tx.queryMaybe<{ type: string }>(`SELECT type FROM block WHERE id = $1`, [target.pageId])
   if (node?.type !== 'database') return null
   // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
   return (
-    (await publicTableOf(tx, target.pageId, win)) ?? {
-      layout: 'table', viewType: 'table', board: null, chart: null, map: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
+    (await publicTableOf(tx, target.pageId, win, chosen)) ?? {
+      viewId: '', tabs: [], layout: 'table', viewType: 'table', board: null, chart: null, map: null, cardSize: 'medium', window: null, viewName: '', columns: [], rows: [], truncated: false,
     }
   )
 }
@@ -189,11 +197,12 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget, win: Windo
  * `openablePagesIn` — 공개 본문의 인라인 데이터베이스 · I-4b). 이 함수는 판정을 다시 하지 않고 **행마다의 공개 조건**만 건다.
  *
  * `win` — 연 페이지 자신의 표일 때 주소의 창 값(PV-2). 없으면(인라인) 오늘이 든 창이고 이전 · 다음 링크가 없다.
+ * `chosen` — 주소의 `?v=` 전부(PV-4). 이 데이터베이스의 탭이 아닌 값은 무시한다.
  */
-export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery | null = null): Promise<PublicTable | null> {
+export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery | null = null, chosen: readonly string[] = []): Promise<PublicTable | null> {
 
-  // 소유한 data source 의 첫 뷰 — 붙인 소스(linked)는 다른 데이터베이스의 행이다(그 데이터베이스는 게시되지 않았다)
-  const view = await tx.queryMaybe<{
+  // 소유한 data source 의 뷰들(탭 순서) — 붙인 소스(linked)는 다른 데이터베이스의 행이다(그 데이터베이스는 게시되지 않았다)
+  const views = await tx.query<{
     id: string
     name: string | null
     type: string
@@ -207,12 +216,16 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
        FROM view v
        JOIN data_source ds ON ds.id = v.data_source_id
       WHERE v.database_id = $1 AND v.owner_kind = 'database_view' AND ds.owner_database_id = $1 AND ds.lifecycle = 'live'
-      ORDER BY v.order_idx, v.id
-      LIMIT 1`,
+      ORDER BY v.order_idx, v.id`,
     [databaseId],
   )
   // 소유한 살아 있는 소스가 없다(붙인 소스만 가진 그릇 · 정본 [보강 L-1] ④) — 그릴 공개 표가 없다
-  if (view === null) return null
+  if (views.length === 0) return null
+  // 탭(PV-4) — 폼 뷰는 뺀다(자기 공개 링크가 있다). 주소의 `?v=` 중 이 데이터베이스의 탭인 첫 값이 뷰 · 없으면 첫 탭(탭이 없으면 첫 뷰 — 폼은 표로)
+  const tabs: PublicViewTab[] = views.filter((v) => v.type !== 'form').map((v) => ({ id: v.id, name: v.name ?? '', type: v.type }))
+  const pickedId = pickView(chosen, tabs.map((t) => t.id))
+  const view = views.find((v) => v.id === (pickedId ?? tabs[0]?.id)) ?? views[0]!
+  const head = { viewId: view.id, tabs }
 
   const columns = await publicColumns(
     tx,
@@ -232,7 +245,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   const chart = await readChart(tx, view, types)
   if (chart !== null) {
     return {
-      layout: 'chart', viewType: view.type, board: null, chart, map: null, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      ...head, layout: 'chart', viewType: view.type, board: null, chart, map: null, cardSize: 'medium', window: null, viewName: view.name ?? '',
       columns: [], rows: [], truncated: false,
     }
   }
@@ -240,7 +253,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
   const mapped = await readMap(tx, view, types, columns)
   if (mapped !== null) {
     return {
-      layout: 'map', viewType: view.type, board: null, chart: null, map: mapped.map, cardSize: 'medium', window: null, viewName: view.name ?? '',
+      ...head, layout: 'map', viewType: view.type, board: null, chart: null, map: mapped.map, cardSize: 'medium', window: null, viewName: view.name ?? '',
       columns: [], rows: [], truncated: mapped.truncated,
     }
   }
@@ -305,6 +318,7 @@ export async function publicTableOf(tx: Tx, databaseId: string, win: WindowQuery
     // 창 밖(넓혀 물은 가장자리) · 칸 값에서 날짜 글자를 못 읽는 행은 뺀다
     .filter(({ span }) => dated === null || (span !== null && overlapsWindow(span.start, span.end, dated.window)))
   return {
+    ...head,
     layout,
     viewType: view.type,
     board,

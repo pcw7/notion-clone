@@ -17,7 +17,7 @@ import { contactLinkProps } from '@/lib/database/contact-links'
 import { headerTicks, placeBar, windowWidth } from '@/lib/database/timeline-geometry'
 import type { PublicBoard, PublicColumn, PublicRow, PublicRowProperties, PublicTable, PublicWindow } from '@/lib/publish/public-database'
 import { PUBLIC_TABLE_MAX_ROWS } from '@/lib/publish/public-database'
-import { monthCells, PUBLIC_WINDOW_MAX_ROWS } from '@/lib/publish/public-window'
+import { monthCells, PUBLIC_WINDOW_MAX_ROWS, tabHref, windowHref } from '@/lib/publish/public-window'
 import type { PublicPageView } from '@/lib/publish/public-read'
 import { RichText, UNTITLED, publicHref, titleText } from './public-blocks'
 import { checkboxLabel, publicCell } from './public-cells'
@@ -165,7 +165,7 @@ function WindowNav({ win, view, title }: { win: PublicWindow; view: PublicPageVi
   return (
     <div className="pub-win-head">
       {win.nav && (
-        <a href={`${base}?${key}=${win.prev}`} rel="nofollow" className="pub-win-link" data-testid="public-window-prev" aria-label="이전">
+        <a href={windowHref(base, view.query, key, win.prev)}rel="nofollow" className="pub-win-link" data-testid="public-window-prev" aria-label="이전">
           ‹
         </a>
       )}
@@ -173,7 +173,7 @@ function WindowNav({ win, view, title }: { win: PublicWindow; view: PublicPageVi
         {title}
       </span>
       {win.nav && (
-        <a href={`${base}?${key}=${win.next}`} rel="nofollow" className="pub-win-link" data-testid="public-window-next" aria-label="다음">
+        <a href={windowHref(base, view.query, key, win.next)}rel="nofollow" className="pub-win-link" data-testid="public-window-next" aria-label="다음">
           ›
         </a>
       )}
@@ -264,7 +264,45 @@ function TimelineView({ table, win, view }: { table: PublicTable; win: PublicWin
   )
 }
 
+/** 뷰 이름이 비었을 때 탭에 쓰는 레이아웃 이름. */
+const TAB_FALLBACK: Readonly<Record<string, string>> = {
+  table: '표', board: '보드', list: '목록', gallery: '갤러리', calendar: '캘린더', timeline: '타임라인', chart: '차트', map: '지도', dashboard: '대시보드',
+}
+
+/** 뷰 탭(PV-4) — 링크다(스크립트 없이 연다). 탭이 하나면 그리지 않는다. */
+function ViewTabs({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
+  if (table.tabs.length < 2) return null
+  const ids = table.tabs.map((t) => t.id)
+  const path = publicHref(view, view.target.pageId)
+  return (
+    <nav className="pub-view-tabs" aria-label="뷰" data-testid="public-view-tabs">
+      {table.tabs.map((tab) => (
+        <a
+          key={tab.id}
+          href={tabHref(path, view.query, ids, tab.id)}
+          rel="nofollow"
+          className="pub-view-tab"
+          data-testid="public-view-tab"
+          data-view-id={tab.id}
+          aria-current={tab.id === table.viewId ? 'page' : undefined}
+        >
+          {tab.name !== '' ? tab.name : (TAB_FALLBACK[tab.type] ?? '뷰')}
+        </a>
+      ))}
+    </nav>
+  )
+}
+
 export function PublicTableView({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
+  return (
+    <>
+      <ViewTabs table={table} view={view} />
+      <PublicTableBody table={table} view={view} />
+    </>
+  )
+}
+
+function PublicTableBody({ table, view }: { table: PublicTable; view: PublicPageView }): ReactNode {
   const win = table.window
   // 캘린더 · 타임라인(PV-2) — 창 안의 행만 · 끌기 · 만들기는 없다
   if (win !== null && (table.layout === 'calendar' || table.layout === 'timeline')) {

@@ -148,6 +148,11 @@
 .pub-db { display: flex; flex-direction: column; gap: 0.5rem; }
 /* 본문 안의 인라인 데이터베이스(I-4b) — 이름 줄 아래에 표 */
 .pub-inline-db { display: flex; flex-direction: column; gap: 0.25rem; }
+/* 공개 화면의 뷰 탭(PV-4) — 링크 */
+.pub-view-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid rgba(55, 53, 47, 0.16); margin-bottom: 0.5rem; font-size: 0.875rem; }
+.pub-view-tab { padding: 0.25rem 0.625rem; border-bottom: 2px solid transparent; color: #6b7280; text-decoration: none; }
+.pub-view-tab:hover { background: rgba(135, 131, 120, 0.15); }
+.pub-view-tab[aria-current='page'] { color: inherit; font-weight: 600; border-bottom-color: currentColor; }
 .pub-db-view { font-size: 0.875rem; font-weight: 600; color: #6b7280; }
 .pub-db-table { width: 100%; font-size: 0.875rem; }
 .pub-db-table td { vertical-align: top; }

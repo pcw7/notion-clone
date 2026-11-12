@@ -69,6 +69,8 @@ export type PublicPageView = {
   /** 본문 북마크의 메타(F-4b · 정본 §3.4 [보강 F-4] ⑤) — 열쇠는 해시를 뗀 주소. 캐시를 **읽기만** 한다(익명 방문이 가져오기를 일으키지 않는다). */
   readonly bookmarks: ReadonlyMap<string, LinkPreview>
   readonly table: PublicTable | null
+  /** 주소의 날짜 창 · 뷰 탭 값(PV-4) — 뷰 탭의 링크가 다른 값을 둔 채 이 데이터베이스의 `v` 만 바꾼다. */
+  readonly query: WindowQuery
   /** 연 페이지가 데이터베이스의 행이면 그 속성 묶음(6a-2c-2 — 제목 아래). 아니면 null. */
   readonly rowProperties: PublicRowProperties | null
 }
@@ -111,7 +113,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
     const hidden = new Set<string>()
     for (const row of scope) {
       if (row.type !== DATABASE_TYPE || row.lifecycle !== 'live' || !openable.has(row.id)) continue
-      const table = await publicTableOf(tx, row.id)
+      const table = await publicTableOf(tx, row.id, null, options.window?.v ?? [])
       if (table === null) hidden.add(row.id)
       else inlineDatabases.set(row.id, table)
     }
@@ -160,7 +162,8 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),
         emoji: new Map(emoji.map((row) => [row.id, { name: row.name, deleted: row.deleted }])),
-        table: isDatabase ? await readPublicTableIn(tx, target, options.window ?? {}) : null,
+        table: isDatabase ? await readPublicTableIn(tx, target, options.window ?? {}, options.window?.v ?? []) : null,
+        query: options.window ?? {},
         databases: inlineDatabases,
         files,
         bookmarks,
