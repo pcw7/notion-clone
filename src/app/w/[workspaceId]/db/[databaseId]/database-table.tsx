@@ -107,6 +107,7 @@ import {
   type MvpPropertyType,
   type OptionColor,
   type OptionType,
+  type PlaceRef,
   type SelectOption,
   type StatusGroupKind,
 } from '@/lib/database/property-types'
@@ -138,7 +139,7 @@ import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
 import type { OptionEditActions } from './select-editor'
-import { ButtonEditFormLazy, FilesEditorLazy, FormulaEditFormLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
+import { ButtonEditFormLazy, FilesEditorLazy, FormulaEditFormLazy, PlaceEditorLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
 import { containsAcrossLayers } from '../../anchored-layer'
 import { AddColumn } from './add-column'
 import { useTableChanges } from './use-table-changes'
@@ -475,7 +476,8 @@ export function DatabaseTable(props: {
 
     // 사람 칸(6g-2)은 초안이 없다 — 고르는 순간마다 저장된다(`people-editor.tsx`). 여는 것이 전부다. 다중 선택(PT-1)도 같다.
     // 파일 칸(PT-4)도 같다 — 올리기 · 빼기마다 저장된다(`files-editor.tsx`)
-    if (column.type === 'people' || column.type === 'multi_select' || column.type === 'files') {
+    // 장소 칸(MP-1)도 같다 — 고르는 순간 저장된다(`place-editor.tsx`)
+    if (column.type === 'people' || column.type === 'multi_select' || column.type === 'files' || column.type === 'place') {
       setMode({ kind: 'editing', at })
       return
     }
@@ -496,7 +498,7 @@ export function DatabaseTable(props: {
     const column = columns[at.col]
     if (row === undefined || column === undefined || !isCellColumn(column)) return true
     // select · status · 사람은 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
-    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people' || column.type === 'multi_select' || column.type === 'files') return true
+    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people' || column.type === 'multi_select' || column.type === 'files' || column.type === 'place') return true
 
     const previous = valueAt(row, column)
     const parsed = parseDraft(column.type, draft, previous)
@@ -689,6 +691,15 @@ export function DatabaseTable(props: {
     const column = columns[at.col]
     if (row === undefined || column === undefined || !isCellColumn(column) || column.type !== 'files') return
     void saveCell(row.id, column, { type: 'files', files: next }, valueAt(row, column))
+  }
+
+  /** 장소 칸을 고친다(MP-1) — 고르면 그 장소로, 지우기면 비운다(통째 값). 저장한 뒤 편집을 닫는다. */
+  const setPlace = (at: CellPos, next: PlaceRef | null) => {
+    const row = rows[at.row]
+    const column = columns[at.col]
+    if (row === undefined || column === undefined || !isCellColumn(column) || column.type !== 'place') return
+    void saveCell(row.id, column, next === null ? emptyValue('place') : { type: 'place', place: next }, valueAt(row, column))
+    setMode({ kind: 'selected', at })
   }
 
   const createOption = async (at: CellPos, name: string, group?: StatusGroupKind) => {
@@ -2022,6 +2033,18 @@ export function DatabaseTable(props: {
                             current={cell.value.files}
                             align={isList ? 'right' : 'left'}
                             onChange={(next) => setFiles(at, next)}
+                          />
+                        </>
+                      ) : isEditing && cell.kind === 'cell' && cell.value.type === 'place' ? (
+                        <>
+                          {isList ? <div className="min-w-0 flex-1">{display}</div> : display}
+                          <PlaceEditorLazy
+                            // 칸이 바뀌면 새로 마운트한다 — 찾은 결과는 한 칸의 것이다
+                            key={`${row.id}:${column.propertyId}`}
+                            workspaceId={workspaceId}
+                            current={cell.value.place.name === '' ? null : cell.value.place}
+                            align={isList ? 'right' : 'left'}
+                            onChange={(next) => setPlace(at, next)}
                           />
                         </>
                       ) : isEditing && cell.kind === 'cell' && cell.value.type === 'people' ? (

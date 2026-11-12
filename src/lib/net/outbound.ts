@@ -330,6 +330,103 @@ export async function getHtml(
   return { ok: false, reason: 'too_many_redirects', status: null, detail: `${maxRedirects}번 넘게` }
 }
 
+// ── GET JSON — 장소 찾기(MP-1 · 정본 §3.5 [보강 MP-1] ②) ──────────────
+
+/** 한 번 가져오기의 시간 상한 — 사람이 결과 목록을 기다린다. */
+export const JSON_TIMEOUT_MS = 5_000
+/** 읽는 본문의 상한 — 넘으면 JSON 이 잘려 읽히지 않으므로 실패다. */
+export const MAX_JSON_BYTES = 256 * 1024
+
+export type JsonFailure = OutboundFailure | 'not_json'
+
+export type JsonResult =
+  | { readonly ok: true; readonly status: number; readonly body: unknown }
+  | { readonly ok: false; readonly reason: JsonFailure; readonly status: number | null; readonly detail: string }
+
+/**
+ * JSON 을 GET 한다 — 모양 · 이름 풀이 · 주소 검사 · 고정 연결은 POST 와 같다(`pinTarget`). 리다이렉트는 따라가지 않는다(3xx 는 실패) ·
+ * 본문이 상한을 넘거나 JSON 이 아니면 `not_json` · 사용자 정보는 헤더에 싣지 않는다(고정된 일반 User-Agent). 던지지 않는다 — 실패는 결과로 준다.
+ *
+ * @param options.resolve 이름 풀이를 바꿔 끼운다(검사만)
+ */
+export async function getJson(
+  rawUrl: string,
+  options: { readonly resolve?: Resolver; readonly timeoutMs?: number; readonly maxBytes?: number; readonly headers?: Readonly<Record<string, string>> } = {},
+): Promise<JsonResult> {
+  const pinned = await pinTarget(rawUrl, options.resolve)
+  if (!pinned.ok) return pinned.failure
+  const { url, host, target } = pinned
+  const timeoutMs = options.timeoutMs ?? JSON_TIMEOUT_MS
+  const maxBytes = options.maxBytes ?? MAX_JSON_BYTES
+  const requestOptions: RequestOptions = {
+    method: 'GET',
+    hostname: host,
+    port: portOf(url),
+    path: `${url.pathname}${url.search}`,
+    agent: false,
+    headers: {
+      ...options.headers,
+      accept: 'application/json',
+      'accept-encoding': 'identity',
+      'user-agent': 'notion-clone (self-hosted)',
+    },
+    lookup: pinnedLookup(target),
+  }
+  return new Promise<JsonResult>((resolve) => {
+    let settled = false
+    const send = url.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = send(requestOptions, (res: IncomingMessage) => {
+      const status = res.statusCode ?? 0
+      if (status >= 300 && status < 400) {
+        res.resume()
+        settle({ ok: false, reason: 'redirect', status, detail: String(res.headers.location ?? '').slice(0, 500) })
+        return
+      }
+      if (status < 200 || status >= 300) {
+        res.resume()
+        settle({ ok: false, reason: 'http_error', status, detail: `HTTP ${status}` })
+        return
+      }
+      const chunks: Buffer[] = []
+      let seen = 0
+      let tooBig = false
+      res.on('data', (chunk: Buffer) => {
+        if (tooBig) return
+        seen += chunk.length
+        if (seen > maxBytes) {
+          tooBig = true
+          res.destroy()
+          return
+        }
+        chunks.push(chunk)
+      })
+      const finish = () => {
+        if (tooBig) return settle({ ok: false, reason: 'not_json', status, detail: `${maxBytes}바이트 넘게` })
+        try {
+          settle({ ok: true, status, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown })
+        } catch {
+          settle({ ok: false, reason: 'not_json', status, detail: 'JSON 이 아니다' })
+        }
+      }
+      res.on('end', finish)
+      res.on('close', finish)
+      res.on('error', finish)
+    })
+    const deadline = setTimeout(() => {
+      req.destroy(new Error('timeout'))
+      settle({ ok: false, reason: 'timeout', status: null, detail: `${timeoutMs}ms` })
+    }, timeoutMs)
+    function settle(result: JsonResult): void {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      resolve(result)
+    }
+    req.on('error', (e) => settle({ ok: false, reason: 'network', status: null, detail: e.message.slice(0, 500) }))
+    req.end()
+  })
+}
+
 /**
  * JSON 을 POST 한다 — 모양 · 이름 풀이 · 주소 검사 · 고정 연결(머리말 ① ~ ④). 던지지 않는다 — 실패는 결과로 준다.
  *

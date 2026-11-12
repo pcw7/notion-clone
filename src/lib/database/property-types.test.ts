@@ -38,7 +38,7 @@ const valid = (type: Parameters<typeof validateCellValue>[0], v: unknown): boole
 describe('레지스트리', () => {
   test('MVP 6종 + status + people (마스터 W8-a "프로퍼티 5종" + 필수 title · 보드 4c-1 이 status 를 · 6g-1 이 사람을 더했다)', () => {
     assert.deepEqual([...MVP_PROPERTY_TYPES], [
-      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'people', 'multi_select', 'url', 'email', 'phone_number', 'files',
+      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date', 'people', 'multi_select', 'url', 'email', 'phone_number', 'files', 'place',
     ])
   })
 
@@ -47,7 +47,8 @@ describe('레지스트리', () => {
   })
 
   test('스키마 ENUM 에는 있지만 MVP 가 아닌 타입은 거른다', () => {
-    assert.equal(isMvpPropertyType('place'), false)
+    // 장소(place)는 MP-1 부터 셀 타입이다 — ENUM 의 마지막 빈자리가 찼다
+    assert.equal(isMvpPropertyType('place'), true)
     assert.equal(isMvpPropertyType('formula'), false)
     assert.equal(isMvpPropertyType('nonsense'), false)
     assert.equal(isMvpPropertyType('number'), true)

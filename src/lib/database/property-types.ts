@@ -79,6 +79,8 @@ export const MVP_PROPERTY_TYPES = [
   'phone_number',
   // 파일과 미디어(PT-4 · 정본 [보강 PT-1] ⑧) — 값은 올린 파일 {id, name} 의 배열. 파일 블록 · 아이콘 · 커버와 같은 장부(`file.ref_count`)
   'files',
+  // 장소(MP-1 · 정본 [보강 MP-1] ①) — 값은 {name, address, lat, lng}. 찾기는 앱 서버가 대신 묻는다(`place-search.ts`)
+  'place',
 ] as const
 export type MvpPropertyType = (typeof MVP_PROPERTY_TYPES)[number]
 
@@ -308,6 +310,10 @@ export function isContactType(t: unknown): t is ContactType {
 export const MAX_FILES_PER_CELL = 20
 export const MAX_FILE_NAME_LENGTH = 255
 
+/** 장소 칸의 한계(정본 [보강 MP-1] ①). 마이그레이션 0141 의 수와 같다. */
+export const PLACE_NAME_MAX = 255
+export const PLACE_ADDRESS_MAX = 500
+
 /** 파일 칸이 가리키는 파일 id — 칸의 장부(`file.ref_count`)가 센다. */
 export function fileIdsOf(value: CellValue): string[] {
   return value.type === 'files' ? value.files.map((f) => f.id) : []
@@ -368,6 +374,8 @@ export const DEFAULT_PROPERTY_TYPE: MvpPropertyType = 'rich_text'
 export type OptionRef = { readonly id: string }
 /** 파일 칸의 한 칸 — 올린 파일의 id · 보일 이름(PT-4). */
 export type FileRef = { readonly id: string; readonly name: string }
+/** 장소 칸의 한 칸 — 이름 · 주소(없으면 빈 글) · 위도 · 경도(MP-1). */
+export type PlaceRef = { readonly name: string; readonly address: string; readonly lat: number; readonly lng: number }
 
 /**
  * 옵션 색. 마이그레이션 0013 의 `option_color` ENUM 과 **같은 순서**다.
@@ -440,6 +448,8 @@ export type CellValue =
   | { readonly type: 'phone_number'; readonly phone_number: string }
   /** 올린 파일의 id · 보일 이름 — 넣은 차례 · 같은 파일은 한 번 · 20개 이하(PT-4). */
   | { readonly type: 'files'; readonly files: readonly FileRef[] }
+  /** 장소 하나 — 이름이 비면 칸이 없다(MP-1). */
+  | { readonly type: 'place'; readonly place: PlaceRef }
 
 /** `page_property_value` 의 사이드카 컬럼. 한 셀은 보통 하나만 채운다. */
 export type Sidecars = {
@@ -488,6 +498,8 @@ export function emptyValue(type: MvpPropertyType): CellValue {
       return { type: 'phone_number', phone_number: '' }
     case 'files':
       return { type: 'files', files: [] }
+    case 'place':
+      return { type: 'place', place: { name: '', address: '', lat: 0, lng: 0 } }
   }
 }
 
@@ -522,6 +534,8 @@ export function isEmptyValue(value: CellValue): boolean {
       return value.phone_number.length === 0
     case 'files':
       return value.files.length === 0
+    case 'place':
+      return value.place.name.length === 0
   }
 }
 
@@ -728,6 +742,29 @@ export function validateCellValue(
       }
       return []
     }
+
+    case 'place': {
+      const raw = v.place
+      const p = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null
+      if (p === null) return [{ path: `${path}.place`, message: '객체여야 합니다' }]
+      const extra = Object.keys(p).find((k) => k !== 'name' && k !== 'address' && k !== 'lat' && k !== 'lng')
+      if (extra !== undefined) return [{ path: `${path}.place.${extra}`, message: '알 수 없는 키입니다' }]
+      // 비운 칸(`emptyValue('place')`) — 쓰기가 칸을 지운다(`row.ts` writeCells)
+      if (p.name === '' && p.address === '' && p.lat === 0 && p.lng === 0) return []
+      if (typeof p.name !== 'string' || p.name.length === 0 || p.name.length > PLACE_NAME_MAX) {
+        return [{ path: `${path}.place.name`, message: `이름은 1~${PLACE_NAME_MAX}자입니다` }]
+      }
+      if (typeof p.address !== 'string' || p.address.length > PLACE_ADDRESS_MAX) {
+        return [{ path: `${path}.place.address`, message: `주소는 ${PLACE_ADDRESS_MAX}자까지입니다` }]
+      }
+      if (typeof p.lat !== 'number' || !Number.isFinite(p.lat) || p.lat < -90 || p.lat > 90) {
+        return [{ path: `${path}.place.lat`, message: '위도는 -90~90 의 수입니다' }]
+      }
+      if (typeof p.lng !== 'number' || !Number.isFinite(p.lng) || p.lng < -180 || p.lng > 180) {
+        return [{ path: `${path}.place.lng`, message: '경도는 -180~180 의 수입니다' }]
+      }
+      return []
+    }
   }
 }
 
@@ -784,6 +821,10 @@ export function deriveSidecars(value: CellValue): Sidecars {
     case 'files':
       // 파일 id 를 공백으로 — multi_select 와 같은 축(비었는지 · 찬 칸 수)
       return { ...NO_SIDECARS, text: nullIfEmpty(value.files.map((f) => f.id).join(' ')) }
+
+    case 'place':
+      // 이름 — 필터 · 정렬이 보는 글(주소는 포함 연산자가 값에서 따로 본다 · `filter.ts` `PLACE_OPERATORS`)
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.place.name) }
   }
 }
 

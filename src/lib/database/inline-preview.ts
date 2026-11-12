@@ -22,7 +22,7 @@ export const INLINE_PREVIEW_ROWS = 10
 /** 그리는 열 수의 상한 — 본문 폭에 맞춘다(제목 포함). */
 export const INLINE_PREVIEW_COLUMNS = 5
 
-const PREVIEW_TYPES: ReadonlySet<string> = new Set(['title', 'rich_text', 'number', 'select', 'multi_select', 'status', 'checkbox', 'date', 'url', 'email', 'phone_number'])
+const PREVIEW_TYPES: ReadonlySet<string> = new Set(['title', 'rich_text', 'number', 'select', 'multi_select', 'status', 'checkbox', 'date', 'url', 'email', 'phone_number', 'place'])
 
 export type InlinePreview = {
   /** 머리 — 열 이름. */

@@ -37,6 +37,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   email: '이메일',
   phone_number: '전화',
   files: '파일과 미디어',
+  place: '장소',
   created_time: '만든 시각',
   created_by: '만든 사람',
   last_edited_time: '마지막 편집 시각',
@@ -64,6 +65,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   email: '@',
   phone_number: '✆',
   files: '⎘',
+  place: '⚲',
   created_time: '◷',
   created_by: '◉',
   last_edited_time: '◷',
@@ -185,6 +187,20 @@ function ContactCell({ type, text }: { type: ContactType; text: string }) {
   )
 }
 
+/** 장소 칸(MP-1) — 핀 아이콘 + 이름 한 줄. 주소는 `title` 로(마우스를 올리면). */
+export function PlaceCell({ name, address }: { name: string; address: string }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1" data-testid="db-place" {...(address === '' ? {} : { title: address })}>
+      <svg aria-hidden viewBox="0 0 16 16" className="size-3.5 flex-none text-neutral-500" fill="currentColor">
+        <path d="M8 1a4.5 4.5 0 0 0-4.5 4.5C3.5 9 8 15 8 15s4.5-6 4.5-9.5A4.5 4.5 0 0 0 8 1zm0 6.2a1.7 1.7 0 1 1 0-3.4 1.7 1.7 0 0 1 0 3.4z" />
+      </svg>
+      <span className="min-w-0 flex-1 truncate" data-testid="db-place-name">
+        {name}
+      </span>
+    </span>
+  )
+}
+
 /**
  * 파일 칸의 칩들(PT-4) — 이름 · 그림이면 작은 미리보기. 누르면 그 파일의 주소로(새 탭 · 파일 블록과 같은 `/content` 길 — 세션이 판정한다).
  * 칩을 누르는 것은 고치는 동작이 아니다 — 칸의 누름 · 키 처리로 번지지 않게 한다. 워크스페이스를 모르면(카드 배지) 이름만 그린다.
@@ -280,6 +296,9 @@ export function CellDisplay({
   switch (value.type) {
     case 'files':
       return value.files.length === 0 ? null : <FileChips files={value.files} {...(workspaceId === undefined ? {} : { workspaceId })} />
+    // 장소(MP-1) — 핀 아이콘과 이름. 주소는 마우스를 올리면(`title`)
+    case 'place':
+      return value.place.name === '' ? null : <PlaceCell name={value.place.name} address={value.place.address} />
     case 'people':
       return <PeopleChips ids={value.people.map((p) => p.id)} names={names} />
     case 'checkbox':

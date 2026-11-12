@@ -268,7 +268,8 @@ describe('addProperty', () => {
     if (skipReason) return t.skip(skipReason)
     const { dataSourceId } = await newTable()
     // @ts-expect-error — 런타임 방어를 확인한다
-    const r = await addProperty(fx.owner.ctx, dataSourceId, { name: '주소', type: 'place' })
+    // 장소(place)는 MP-1 부터 만들 수 있다 — 모르는 타입으로 확인한다
+    const r = await addProperty(fx.owner.ctx, dataSourceId, { name: '주소', type: 'nonsense' })
     assert.equal(r.ok, false)
     if (!r.ok) assert.equal(r.reason, 'unsupported_type')
   })

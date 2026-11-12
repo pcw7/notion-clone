@@ -101,6 +101,8 @@ export function calculationsFor(type: MvpPropertyType | AutoMetaType): readonly 
     case 'multi_select':
     // 파일과 미디어(PT-4) — 같다(값 있는 칸 수)
     case 'files':
+    // 장소(MP-1) — 같다(고유 값은 이름이 같은 다른 곳을 하나로 접어 뜻이 없다)
+    case 'place':
       return ['count_all', 'count_values', 'count_empty', 'percent_empty', 'percent_not_empty']
     default:
       return COMMON

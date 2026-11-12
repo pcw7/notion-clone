@@ -118,6 +118,7 @@ const COMMON: readonly RollupFunction[] = [
   'percent_empty',
   'percent_not_empty',
 ]
+const PLACE_ROLLUP_FUNCTIONS: readonly RollupFunction[] = ['count', 'count_values', 'empty', 'not_empty', 'percent_empty', 'percent_not_empty']
 const EXTRA: Readonly<Partial<Record<MvpPropertyType, readonly RollupFunction[]>>> = Object.freeze({
   number: ['sum', 'average', 'median', 'min', 'max', 'range'],
   checkbox: ['checked', 'unchecked', 'percent_checked', 'percent_unchecked'],
@@ -127,6 +128,8 @@ const EXTRA: Readonly<Partial<Record<MvpPropertyType, readonly RollupFunction[]>
 
 /** 이 타입의 프로퍼티를 대상으로 고를 수 있는 함수 — 폼이 보여 주는 순서 그대로. */
 export function rollupFunctionsFor(type: MvpPropertyType): readonly RollupFunction[] {
+  // 장소(MP-1 ⑤)는 세기만 — 원본 보이기 · 고유 값은 칸의 객체를 글로 그려야 해서 열지 않는다
+  if (type === 'place') return PLACE_ROLLUP_FUNCTIONS
   return [...COMMON, ...(EXTRA[type] ?? [])]
 }
 
@@ -326,6 +329,8 @@ export function uniqueKey(v: CellValue): string | null {
       return `t:${v.phone_number}`
     case 'files':
       return `f:${v.files.map((f) => f.id).join(' ')}`
+    case 'place':
+      return `l:${v.place.name}|${v.place.lat}|${v.place.lng}`
   }
 }
 
