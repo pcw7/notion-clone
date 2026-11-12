@@ -48,7 +48,7 @@ type ErrorBody = {
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 
-function messageOf(status: number, body: ErrorBody): string {
+export function messageOf(status: number, body: ErrorBody): string {
   // 값의 계약 위반은 서버가 필드별로 이유를 준다. 그것이 가장 구체적이다.
   const issue = body?.issues?.[0]?.message
   if (issue) return issue
@@ -1049,6 +1049,8 @@ export function updateView(
   workspaceId: string,
   viewId: string,
   patch: {
+    /** 뷰 이름 — 대시보드의 위젯 이름(DB-3)도 이 명령이다. */
+    readonly name?: string
     readonly type?: MvpViewType
     readonly filter?: FilterNode | null
     readonly sorts?: readonly SortKey[]
