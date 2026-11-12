@@ -156,6 +156,9 @@ describe('② 위젯', () => {
     assert.equal(view.type, 'board')
     assert.ok(view.groupBy !== null, '보드 위젯은 첫 select 로 그룹')
     assert.ok(view.columns.some((c) => c.name === '이름' && c.visible))
+    // 화면의 `?view=` 가 이것으로 그 대시보드 탭을 고른다(DB-2) — 탭 뷰는 null
+    assert.equal(view.dashboardViewId, s.dashboardId)
+    assert.equal(unwrap(await getView(fx.owner.ctx, s.dashboardId)).dashboardViewId, null)
     const row = (await query<{ owner_kind: string; dashboard_view_id: string; database_id: string }>(
       `SELECT owner_kind, dashboard_view_id, database_id FROM view WHERE id = $1`, [board.widgetId]))[0]!
     assert.deepEqual([row.owner_kind, row.dashboard_view_id, row.database_id], ['dashboard_widget', s.dashboardId, s.databaseId])

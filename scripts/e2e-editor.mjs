@@ -17741,6 +17741,169 @@ async function main() {
         JSON.stringify({ asked, detached, after: after.map((d) => d.id), originRows: originRows.length }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('대시보드 그리기 (DB-2 · F-04-20)')) { try {
+      // 대시보드 뷰가 위젯(다른 뷰)을 격자로 그린다 — 줄마다 높이 · 한 줄의 칸은 폭을 나눈다 · 위젯마다 그 뷰의 보통 화면(표는 처음 25줄 · 보드의
+      // 열 · 차트) · 원본을 못 보는 동료에게 연결 위젯은 "볼 수 없는 위젯"(이름 · 행이 어디에도 없다) · "전체로 열기" 는 `?view=` 로 위젯 뷰를
+      // 도구줄째 열고 "← 대시보드" 로 돌아간다 · 거기서 건 필터가 대시보드의 위젯에 든다 · 위젯은 탭 줄에 없다 · 빈 대시보드는 "위젯이 없습니다".
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 그릇 — 30행(순번 1~30 · 단계 가/나)
+      const db = (await api('POST', '/databases', { name: `대시그릇${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const titleOf = async (viewId) => (await api('GET', `/views/${viewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleProp = await titleOf(db.defaultViewId)
+      const num = (await api('POST', `/data-sources/${ds}/properties`, { name: '순번', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const ga = (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name: '가' })).body.option.id
+      const na = (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name: '나' })).body.option.id
+      for (let i = 1; i <= 30; i += 1) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [
+            { propertyId: titleProp, value: { type: 'title', title: [textRun(`대시행${i}`)] } },
+            { propertyId: num, value: { type: 'number', number: i } },
+            { propertyId: stage, value: { type: 'select', select: { id: i % 2 === 0 ? ga : na } } },
+          ],
+        })
+      }
+      // 원본(다른 데이터베이스) — 그릇에 붙이고 그 소스로 위젯 하나. 동료는 원본을 볼 수 없다
+      const original = (await api('POST', '/databases', { name: `대시원본${stamp}` })).body.database
+      const secretRow = `기밀원본행${stamp}`
+      await api('POST', `/views/${original.defaultViewId}/rows`, { cells: [{ propertyId: await titleOf(original.defaultViewId), value: { type: 'title', title: [textRun(secretRow)] } }] })
+      const linked = await api('POST', `/databases/${db.id}/linked-sources`, { dataSourceId: original.dataSourceId })
+
+      // 대시보드 — [표 · 보드] / [차트 · 원본의 표]. 첫 줄 large · 둘째 줄 small
+      const dash = (await api('POST', `/databases/${db.id}/views`, { type: 'dashboard', name: `대시${stamp}` })).body?.view?.id
+      const secretName = `기밀위젯${stamp}`
+      const addWidget = async (body) => (await api('POST', `/views/${dash}/dashboard/widgets`, body)).body?.widgetId
+      const tableW = await addWidget({ dataSourceId: ds, type: 'table', name: `표위젯${stamp}` })
+      const boardW = await addWidget({ dataSourceId: ds, type: 'board', name: `보드위젯${stamp}`, row: 0 })
+      const chartW = await addWidget({ dataSourceId: ds, type: 'chart', name: `차트위젯${stamp}` })
+      const secretW = await addWidget({ dataSourceId: original.dataSourceId, type: 'table', name: secretName, row: 1 })
+      const read = (await api('GET', `/views/${dash}/dashboard`)).body?.dashboard
+      const patched = await api('PATCH', `/views/${dash}/dashboard`, {
+        layout: { rows: (read?.layout?.rows ?? []).map((r, i) => ({ height: i === 0 ? 'large' : 'small', cells: r.cells })) },
+        updatedAt: read?.updatedAt,
+      })
+      const shape = (patched.body?.dashboard?.layout?.rows ?? []).map((r) => [r.height, r.cells.map((c) => c.view_id)])
+      check('대시보드 · 위젯 넷 · 배치 [표 · 보드] / [차트 · 원본의 표]를 API 로 만든다',
+        linked.status === 201 && JSON.stringify(shape) === JSON.stringify([['large', [tableW, boardW]], ['small', [chartW, secretW]]]),
+        JSON.stringify({ linked: linked.status, shape }))
+
+      // 동료 — 그릇은 보고 원본은 못 본다
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const mate = await joinAs(workspaceId, await createUser(`대시 동료 ${stamp}`), 'member')
+      const hidden = [
+        await aclMod.stopInheriting(ctx, original.id),
+        await aclMod.grantAccess(ctx, original.id, { type: 'user', id: ctx.userId }, 'full_access'),
+        await aclMod.revokeAccess(ctx, original.id, { type: 'workspace_everyone', id: null }),
+      ].every((r) => r.ok)
+
+      const DASH_URL = `${BASE}/w/${workspaceId}/db/${db.id}?v=${dash}`
+      const W = (id) => `[data-testid="db-widget"][data-widget-id="${id}"]`
+      const settled = `document.querySelectorAll('[data-testid="db-widget"]').length === 4 && !document.querySelector('[data-testid="db-widget-loading"]')`
+      await send('Page.navigate', { url: DASH_URL })
+      const ready = await waitFor(settled, 20000)
+      const grid = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-dashboard-row"]')].map((row) => {
+        const cells = [...row.querySelectorAll('[data-testid="db-widget"]')]
+        return [row.dataset.height, cells.map((c) => c.dataset.widgetId), cells.map((c) => Math.round(c.getBoundingClientRect().height)), cells.map((c) => Math.round(c.getBoundingClientRect().width))]
+      }))`).then((s) => JSON.parse(s))
+      check('★ 격자 — 줄마다 그 높이(large 640 · small 320) · 칸 수(2 · 2) · 한 줄의 칸은 폭을 똑같이 나눈다',
+        ready && grid.length === 2
+          && JSON.stringify(grid.map((g) => [g[0], g[1], g[2]])) === JSON.stringify([['large', [tableW, boardW], [640, 640]], ['small', [chartW, secretW], [320, 320]]])
+          && grid.every((g) => Math.abs(g[3][0] - g[3][1]) <= 2 && g[3][0] > 100),
+        JSON.stringify({ ready, grid }))
+      const tableRows = `document.querySelectorAll('${W(tableW)} [data-testid="db-table"] tbody tr').length`
+      check('★ 표 위젯 — 그 뷰의 표로 처음 25줄(30행 중) · "더 있음"',
+        (await evaluate(tableRows)) === 25
+          && /더 있음/.test(await evaluate(`document.querySelector('${W(tableW)} [data-testid="db-row-count"]')?.textContent ?? ''`))
+          && (await evaluate(`document.querySelector('${W(tableW)} [data-testid="db-widget-name"]')?.textContent`)) === `표위젯${stamp}`,
+        JSON.stringify([await evaluate(tableRows), await evaluate(`document.querySelector('${W(tableW)}')?.textContent?.slice(0, 120) ?? '(없음)'`)]))
+      check('★ 보드 위젯 — 단계로 묶은 열(가 · 나)이 선다',
+        await waitFor(`document.querySelectorAll('${W(boardW)} [data-testid="db-board"] [data-testid="db-board-column"]').length >= 2`, 5000),
+        await evaluate(`document.querySelector('${W(boardW)}')?.textContent?.slice(0, 160) ?? '(없음)'`))
+      check('★ 차트 위젯 — 차트가 서고 막대가 있다',
+        await waitFor(`!!document.querySelector('${W(chartW)} [data-testid="db-chart"]') && document.querySelectorAll('${W(chartW)} [data-testid="chart-mark"]').length >= 2`, 10000),
+        await evaluate(`document.querySelector('${W(chartW)}')?.innerHTML?.slice(0, 200) ?? '(없음)'`))
+      check('볼 수 있는 사람에게는 연결 위젯이 그대로 — 이름 · 원본의 행',
+        (await evaluate(`document.querySelector('${W(secretW)} [data-testid="db-widget-name"]')?.textContent`)) === secretName
+          && (await evaluate(`document.querySelector('${W(secretW)}')?.textContent?.includes(${JSON.stringify(secretRow)}) ?? false`)),
+        await evaluate(`document.querySelector('${W(secretW)}')?.textContent?.slice(0, 160) ?? '(없음)'`))
+      const tabIds = `JSON.stringify([...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => [t.dataset.viewId, t.getAttribute('aria-current')]))`
+      const tabsOnDash = JSON.parse(await evaluate(tabIds))
+      check('★ 위젯은 탭 줄에 없다 · 대시보드 탭이 고른 탭 · 대시보드에는 도구줄이 없다',
+        tabsOnDash.length === 3 && !tabsOnDash.some(([id]) => [tableW, boardW, chartW, secretW].includes(id))
+          && tabsOnDash.find(([id]) => id === dash)?.[1] === 'page' && !(await evaluate(`!!document.querySelector('[data-testid="db-filter-button"]')`)),
+        JSON.stringify(tabsOnDash))
+
+      // 원본을 못 보는 동료 — 그 위젯은 "볼 수 없는 위젯"(이름 · 타입 · 행이 문서 어디에도 없다) · 다른 위젯은 선다
+      const asMate = { cookie: `nc_session=${mate.token}` }
+      const mateHtml = await (await fetch(DASH_URL, { headers: asMate })).text()
+      const lockedTag = mateHtml.match(new RegExp(`<section[^>]*data-widget-id="${secretW}"[^>]*>`))?.[0] ?? ''
+      check('★ 원본을 못 보는 동료 — 연결 위젯은 "볼 수 없는 위젯" · 그 이름 · 원본의 행 · 타입이 문서에 없다(다른 위젯은 선다)',
+        hidden && mateHtml.includes('data-testid="db-widget-locked"') && mateHtml.includes('볼 수 없는 위젯')
+          && lockedTag.includes('data-locked="true"') && !lockedTag.includes('data-widget-type')
+          && !mateHtml.includes(secretName) && !mateHtml.includes(secretRow) && mateHtml.includes(`표위젯${stamp}`),
+        JSON.stringify({ hidden, locked: mateHtml.includes('db-widget-locked'), lockedTag, name: mateHtml.includes(secretName), row: mateHtml.includes(secretRow) }))
+      const mateOpen = await (await fetch(`${BASE}/w/${workspaceId}/db/${db.id}?view=${secretW}`, { headers: asMate })).text()
+      check('그 위젯의 "전체로" 주소도 열리지 않는다 — 그릇의 첫 뷰로(이름 · 행 없이)',
+        mateOpen.includes('data-testid="db-view-tab"') && !mateOpen.includes('data-testid="db-widget-back"') && !mateOpen.includes(secretName) && !mateOpen.includes(secretRow),
+        JSON.stringify([mateOpen.includes('db-widget-back'), mateOpen.includes(secretName), mateOpen.includes(secretRow)]))
+
+      // "전체로 열기" — `?view=<위젯>` · 위젯의 도구줄 · "← 대시보드" · 탭 줄은 대시보드를 고른 채
+      await clickSelector(`${W(tableW)} [data-testid="db-widget-open"]`)
+      const opened = await waitFor(`location.search.includes(${JSON.stringify(`view=${tableW}`)}) && !!document.querySelector('[data-testid="db-filter-button"]')
+        && !!document.querySelector('[data-testid="db-widget-back"]') && !document.querySelector('[data-testid="db-dashboard"]')`, 15000)
+      const tabsOnWidget = JSON.parse(await evaluate(tabIds))
+      check('★ "전체로 열기" — ?view=<위젯> 로 그 위젯 뷰를 도구줄째 연다 · "← 대시보드" · 대시보드 탭이 고른 탭 · 위젯은 탭이 아니다',
+        opened && tabsOnWidget.find(([id]) => id === dash)?.[1] === 'page' && !tabsOnWidget.some(([id]) => id === tableW)
+          && (await evaluate(`document.querySelector('[data-testid="db-widget-full-name"]')?.textContent`)) === `표위젯${stamp}`,
+        JSON.stringify({ opened, search: await evaluate('location.search'), tabsOnWidget }))
+
+      // 거기서 필터(순번 > 25) — 위젯 뷰를 고친다
+      await clickSelector('[data-testid="db-filter-button"]')
+      if (!(await waitFor(`!!document.querySelector('[data-testid="db-filter-rule"]')`, 2000))) await clickSelector('[data-testid="db-filter-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 속성"]')`, 5000)
+      await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 속성"]', num)
+      await waitFor(`[...(document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]')?.options ?? [])].some((o) => o.value === 'greater_than')`, 5000)
+      await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]', 'greater_than')
+      await evaluate(`(() => { const i = document.querySelector('[data-testid="db-filter-value"]'); i.focus(); i.select() })()`)
+      await typeText('25')
+      await key('Enter')
+      const filtered = await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 5`, 10000)
+      await key('Escape')
+      const widgetView = (await api('GET', `/views/${tableW}`)).body?.view
+      const tabView = (await api('GET', `/views/${db.defaultViewId}`)).body?.view
+      check('★ 전체로 연 위젯에서 건 필터는 그 위젯 뷰의 것이다(그릇의 탭 뷰는 그대로)',
+        filtered && (widgetView?.effectiveFilter ?? null) !== null && (tabView?.effectiveFilter ?? null) === null,
+        JSON.stringify({ filtered, widget: widgetView?.effectiveFilter ?? null, tab: tabView?.effectiveFilter ?? null }))
+
+      await clickSelector('[data-testid="db-widget-back"]')
+      const back = await waitFor(`location.search.includes(${JSON.stringify(`v=${dash}`)}) && !location.search.includes('view=') && ${settled}`, 15000)
+      check('★ "← 대시보드" 로 돌아오면 그 필터가 위젯에 든다(5행 · 다른 위젯은 그대로)',
+        back && (await waitFor(`${tableRows} === 5`, 10000)) && (await evaluate(`document.querySelectorAll('${W(boardW)} [data-testid="db-board-column"]').length >= 2`)),
+        JSON.stringify([back, await evaluate(tableRows), await evaluate('location.search')]))
+
+      // 빈 대시보드
+      const empty = (await api('POST', `/databases/${db.id}/views`, { type: 'dashboard', name: `빈대시${stamp}` })).body?.view?.id
+      const emptyHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${db.id}?v=${empty}`, { headers: { cookie: authed.cookie } })).text()
+      check('빈 대시보드 — "위젯이 없습니다"(고칠 수 있는 사람에게는 편집이 곧 생긴다는 말)',
+        emptyHtml.includes('data-testid="db-dashboard-empty"') && emptyHtml.includes('위젯이 없습니다') && emptyHtml.includes('곧 생깁니다'),
+        String(emptyHtml.includes('db-dashboard-empty')))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('제목 아래 고정 — 서버 (3a-1 · F-16-02)')) { try {
       // 레이아웃 적용(PUT …/layout)이 고정을 받는다 — 순서대로 서고, 주지 않으면 그대로다 · 16개는 400 too_many_pinned · 제목은 400.
       // 숨김과의 관계 · 지운 속성 · 행 페이지는 DB 검사가 본다.

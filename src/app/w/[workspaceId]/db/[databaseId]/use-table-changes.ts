@@ -21,8 +21,17 @@
  * 화면이 캐시에 들지 못해 가려져 있었다.
  */
 
-import { useEffect, useRef } from 'react'
+import { createContext, createElement, useContext, useEffect, useRef, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
+
+/**
+ * 이 안의 화면은 변경 알림을 구독하지 않는다 — 대시보드의 위젯(DB-2). 위젯마다 열면 위젯 수만큼 연결이 열려 호스트당 연결 수(HTTP/1.1 은 6)를
+ * 다 차지한다(아래 bfcache 와 같은 까닭 · 10n-7). 위젯은 연 때의 판이고, 고치거나 따라가려면 "전체로 열기" 다.
+ */
+const ChangesOff = createContext(false)
+export function WithoutTableChanges({ children }: { readonly children: ReactNode }) {
+  return createElement(ChangesOff.Provider, { value: true }, children)
+}
 
 export function useTableChanges(
   workspaceId: string,
@@ -37,9 +46,10 @@ export function useTableChanges(
     latest.current = handlers
   })
   const sinceAtMount = useRef(since)
+  const off = useContext(ChangesOff)
 
   useEffect(() => {
-    if (!enabled || typeof EventSource === 'undefined') return
+    if (!enabled || off || typeof EventSource === 'undefined') return
     let source: EventSource | null = null
     let revoked = false
     const open = (at: number | undefined) => {
@@ -81,7 +91,7 @@ export function useTableChanges(
       window.removeEventListener('pageshow', onShow)
       source?.close()
     }
-  }, [workspaceId, dataSourceId, enabled])
+  }, [workspaceId, dataSourceId, enabled, off])
 }
 
 /**
