@@ -36,10 +36,10 @@ import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/
 import * as api from './table-api'
 
 /** 탭의 종류 아이콘. 장식이다 — 이름이 곧 종류를 말한다. */
-export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡', gallery: '⊞', calendar: '▤', chart: '◔', timeline: '☰', form: '✎' }
-const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록', gallery: '갤러리', calendar: '캘린더', chart: '차트', timeline: '타임라인' }
+export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡', gallery: '⊞', calendar: '▤', chart: '◔', timeline: '☰', form: '✎', map: '⌖' }
+const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록', gallery: '갤러리', calendar: '캘린더', chart: '차트', timeline: '타임라인', map: '지도' }
 /** 이 화면이 만들 수 있는 종류(차트는 CH-2, 타임라인은 TL-2 에서 더했다). */
-const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list', 'gallery', 'calendar', 'chart', 'timeline']
+const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list', 'gallery', 'calendar', 'chart', 'timeline', 'map']
 
 const MENU_ITEM =
   'block w-full rounded px-2 py-1 text-left text-sm hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800'

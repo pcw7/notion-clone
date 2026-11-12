@@ -57,6 +57,7 @@ import { readPropertyTypes } from './query.ts'
 import { fitGroupByToType, isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import { isColorType, mergeTimelineLayout, readTimelineLayout, validateTimelinePatch, type LiveTimelineLayout, type TimelineLayout } from './timeline.ts'
 import { mergeChartLayout, readChartLayout, validateChartPatch, type ChartLayout } from './chart.ts'
+import { mergeMapLayout, readMapLayout, validateMapPatch, type MapLayout } from './map.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
 import { readFormulaConfig } from './formula-schema.ts'
 import { displayFormula } from '../formula/formula.ts'
@@ -92,7 +93,7 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
  */
 // 갤러리(2f-1 · F-04-05)를 더했다 — `ck_view_type`(0022)이 이미 받는 이름이라 마이그레이션이 없다.
 // 캘린더(2g-1 · F-04-06)도 — 이것도 `ck_view_type` 이 이미 받는 이름이다.
-export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar', 'chart', 'timeline'] as const
+export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar', 'chart', 'timeline', 'map'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
 
 export const DEFAULT_VIEW_NAME = '표'
@@ -141,6 +142,8 @@ export type ViewDetail = {
   readonly gallery: GalleryLayout
   /** 차트 레이아웃(CH-1 · `configuration.chart`) — 저장된 것이 없으면 기본값이다(`readChartLayout`). 차트가 아닌 뷰에도 온다. */
   readonly chart: ChartLayout
+  /** 지도 레이아웃(MP-2 · `configuration.map`) — 저장된 것이 없으면 기본값이다(`readMapLayout`). 지도가 아닌 뷰에도 온다. */
+  readonly map: MapLayout
   /**
    * 캘린더 레이아웃(2g-1 · `configuration.calendar`). 날짜 속성이 살아 있는 날짜 컬럼이 아니면(지워졌다 · 타입을 바꿨다) `date_property_id`
    * 가 null 이다 — 저장값은 남는다(그룹 속성과 같은 규칙). 캘린더가 아닌 뷰는 날짜 속성 null · 달.
@@ -507,6 +510,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     columns,
     gallery: readGalleryLayout(row.configuration),
     chart: readChartLayout(row.configuration),
+    map: readMapLayout(row.configuration),
     calendar: liveCalendarLayout(row.configuration, columns),
     timeline: liveTimelineLayout(row.configuration, columns),
     personal: personalFilter === null && personalSorts === null ? null : { filter: personalFilter !== null, sorts: personalSorts !== null },
@@ -824,6 +828,8 @@ export type UpdateViewInput = {
   readonly gallery?: Partial<GalleryLayout>
   /** 차트 레이아웃의 바꿀 키만(CH-1) — 갤러리와 같은 규칙(지금 값 위에 합쳐 `configuration.chart` 한 키만). */
   readonly chart?: Partial<ChartLayout>
+  /** 지도 레이아웃의 바꿀 키만(MP-2) — 같은 규칙(`configuration.map` 한 키만). `map_by` 는 이 표의 장소 속성이어야 한다. */
+  readonly map?: Partial<MapLayout>
   /**
    * 캘린더 레이아웃의 바꿀 키만(2g-1) — 갤러리와 같은 규칙(지금 값 위에 합쳐 `configuration.calendar` 한 키만). 날짜 속성은 이 표의 살아 있는
    * 날짜 속성이어야 한다.
@@ -921,6 +927,15 @@ export async function updateView(
       const issues = validateChartPatch(input.chart)
       if (issues.length > 0) return fail('invalid_layout', issues)
     }
+    if (input.map !== undefined) {
+      const issues = validateMapPatch(input.map)
+      // 기준은 이 데이터베이스(데이터 소스)의 살아 있는 장소 속성이어야 한다 — 남의 표 · 다른 타입의 속성 id 는 거부
+      const mapBy = (input.map as { map_by?: unknown }).map_by
+      if (issues.length === 0 && typeof mapBy === 'string' && types.get(mapBy) !== 'place') {
+        issues.push({ path: 'map.map_by', message: '이 데이터베이스의 장소 속성이어야 합니다' })
+      }
+      if (issues.length > 0) return fail('invalid_layout', issues)
+    }
     if (input.calendar !== undefined) {
       const issues = validateCalendarPatch(input.calendar, types)
       if (issues.length > 0) return fail('invalid_layout', issues)
@@ -942,6 +957,7 @@ export async function updateView(
       input.gallery === undefined ? null : mergeGalleryLayout(readGalleryLayout(current.configuration), input.gallery)
     const chart =
       input.chart === undefined ? null : mergeChartLayout(readChartLayout(current.configuration), input.chart)
+    const map = input.map === undefined ? null : mergeMapLayout(readMapLayout(current.configuration), input.map)
     // 캘린더 레이아웃 — 바꿀 키를 얹거나(2g-1), 캘린더로 **바꿀 때** 날짜 속성을 고른다(저장된 것이 살아 있으면 그대로).
     const storedCalendar = readCalendarLayout(current.configuration)
     const patchedCalendar = input.calendar === undefined ? storedCalendar : { ...storedCalendar, ...input.calendar }
@@ -964,6 +980,7 @@ export async function updateView(
     const configurationPatch = {
       ...(gallery === null ? {} : { gallery }),
       ...(chart === null ? {} : { chart }),
+      ...(map === null ? {} : { map }),
       ...(calendar === undefined ? {} : { calendar }),
       ...(timeline === undefined ? {} : { timeline }),
     }

@@ -225,7 +225,7 @@ function startServer() {
       cwd: ROOT,
       // 성능 계측(10e-1b) — 표본 비율 1(페이지 읽기마다) · 수집기의 절이 표에서 본다
       // 장소 찾기(MP-1)는 이 판의 받는 서버(HOOK_PORT 의 /geo)에 묻는다 — 바깥 서비스에 닿지 않는다
-      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}`, PLACE_SEARCH_URL: `http://127.0.0.1:${HOOK_PORT}/geo`, PERF_SAMPLE_RATE: '1' },
+      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}`, PLACE_SEARCH_URL: `http://127.0.0.1:${HOOK_PORT}/geo`, MAP_TILE_URL: 'off', PERF_SAMPLE_RATE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -15594,6 +15594,143 @@ async function main() {
       check('★ 차트 종류는 남고 모르는 종류는 400',
         donut.status === 200 && reread?.kind === 'donut' && badKind.status === 400,
         JSON.stringify({ reread, bad: badKind.status }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('지도 뷰 (MP-2 · F-04-19)')) { try {
+      // 뷰 추가의 "지도" → 장소가 있는 행마다 핀 하나(빈 행은 없다) → 핀을 누르면 제목 말풍선 → 누르면 행이 피크로 열린다 → 필터가 핀을 줄인다 →
+      // 도구줄 "지도" 의 "지도 기준" 이 두 번째 장소 속성으로 바꾼다 → "높이" 가 configuration.map.height 로 남는다(새로고침 뒤에도) →
+      // 101개 → 핀 100 + "100개까지 보입니다" → 장소 속성이 없으면 "장소 속성을 먼저 만드세요". 타일은 끈 판(MAP_TILE_URL=off)이라 출처 표시가 없다.
+      // 장소 값은 API 로 바로 심는다(지오코딩 없음) · 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 정본 §3.5 [보강 MP-1] ⑥.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const until = async (fn, ms = 10000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const pinRows = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-map-pin"]')].map((p) => p.dataset.rowId).sort())`).then((s) => JSON.parse(s))
+      const placeCell = (propertyId, name, lat, lng) => ({ propertyId, value: { type: 'place', place: { name, address: '', lat, lng } } })
+      const open = async (path) => {
+        await send('Page.navigate', { url: `${BASE}${path}` })
+        return waitFor(`document.readyState === 'complete'`, 15000)
+      }
+
+      const db = (await api('POST', '/databases', { name: `지도 뷰 ${stamp}`, privateTop: true })).body.database
+      const ds = db.dataSourceId
+      const base = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${base}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const loc = (await api('POST', `/data-sources/${ds}/properties`, { name: '위치', type: 'place' })).body.property.id
+      const branch = (await api('POST', `/data-sources/${ds}/properties`, { name: '지점', type: 'place' })).body.property.id
+      const num = (await api('POST', `/data-sources/${ds}/properties`, { name: '순번', type: 'number' })).body.property.id
+      const mk = async (title, extra) =>
+        (await api('POST', `/views/${base}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...extra] })).body.row.id
+      const seoul = await mk('서울 지점', [placeCell(loc, '서울', 37.5665, 126.978), placeCell(branch, '강남', 37.4979, 127.0276), { propertyId: num, value: { type: 'number', number: 30 } }])
+      const busan = await mk('부산 지점', [placeCell(loc, '부산', 35.1796, 129.0756), { propertyId: num, value: { type: 'number', number: 5 } }])
+      const jeju = await mk('제주 지점', [placeCell(loc, '제주', 33.4996, 126.5312), placeCell(branch, '서귀포', 33.2541, 126.5601), { propertyId: num, value: { type: 'number', number: 20 } }])
+      const blank = await mk('장소 없는 행', [{ propertyId: num, value: { type: 'number', number: 1 } }])
+
+      // ── 뷰 추가 → 지도 ──
+      await open(`/w/${workspaceId}/db/${db.id}`)
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      await clickOn('[data-testid="db-view-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add-map"]')`, 3000)
+      await clickOn('[data-testid="db-view-add-map"]')
+      check('★ 뷰 추가의 "지도" — 장소가 있는 행 셋마다 핀 하나(빈 행은 없다)',
+        await waitFor(`document.querySelectorAll('[data-testid="db-map-pin"]').length === 3`, 20000))
+      const mapId = await evaluate(`new URLSearchParams(location.search).get('v')`)
+      const pins = await pinRows()
+      check('★ 핀은 그 행의 것이다 — data-row-id 가 서울 · 부산 · 제주(빈 행은 없다)',
+        JSON.stringify(pins) === JSON.stringify([seoul, busan, jeju].sort()) && !pins.includes(blank), JSON.stringify(pins))
+      const served = (await api('GET', `/views/${mapId}/map`)).body
+      check('서버의 핀도 같다 — mapBy 는 첫 장소 속성(위치) · 100개 넘침 아님',
+        served?.mapBy === loc && served.pins.length === 3 && served.truncated === false, JSON.stringify(served))
+      check('타일을 끈 판 — 출처 표시가 없고 data-tiles=off · 처음 높이는 480',
+        await evaluate(`!document.querySelector('.leaflet-control-attribution') && document.querySelector('[data-testid="db-map"]').dataset.tiles === 'off' && document.querySelector('[data-testid="db-map"]').getBoundingClientRect().height === 480`))
+
+      // ── 핀 → 말풍선 → 행 열기 ──
+      await clickOn(`[data-testid="db-map-pin"][data-row-id="${busan}"]`)
+      check('★ 핀을 누르면 행 제목 말풍선이 선다',
+        await waitFor(`document.querySelector('.leaflet-popup [data-testid="db-map-popup-open"]')?.textContent === '부산 지점'`, 8000))
+      await clickOn('.leaflet-popup [data-testid="db-map-popup-open"]')
+      check('★ 말풍선의 제목을 누르면 행이 열린다(뷰의 열기 방식 — 피크 · 주소의 peek)',
+        await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(busan)}`, 10000))
+
+      // ── 필터 → 핀이 줄어든다 ──
+      await api('PATCH', `/views/${mapId}`, { filter: { property_id: num, operator: 'greater_than', value: 10 } })
+      await open(`/w/${workspaceId}/db/${db.id}?v=${mapId}`)
+      check('★ 필터(순번 > 10)를 지난 행만 핀이 된다 — 서울 · 제주',
+        await waitFor(`document.querySelectorAll('[data-testid="db-map-pin"]').length === 2`, 20000)
+          && JSON.stringify(await pinRows()) === JSON.stringify([seoul, jeju].sort()))
+      await api('PATCH', `/views/${mapId}`, { filter: null })
+
+      // ── 지도 기준 · 높이 ──
+      await open(`/w/${workspaceId}/db/${db.id}?v=${mapId}`)
+      await waitFor(`document.querySelectorAll('[data-testid="db-map-pin"]').length === 3`, 20000)
+      await clickOn('[data-testid="db-map-settings"]')
+      check('전제 — 도구줄 "지도" 패널이 열리고 지도 기준에 두 장소 속성이 있다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-map-by-select"] option').length === 2`, 8000))
+      await setSelect('[data-testid="db-map-by-select"]', branch)
+      check('★ "지도 기준" 을 지점으로 바꾸면 그 칸에 값이 있는 행(서울 · 제주)만 핀이 된다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-map-pin"]').length === 2`, 20000)
+          && JSON.stringify(await pinRows()) === JSON.stringify([seoul, jeju].sort()))
+      check('기준이 서버에 남는다 — configuration.map.map_by',
+        await until(async () => (await api('GET', `/views/${mapId}`)).body?.view?.map?.map_by === branch))
+      await setSelect('[data-testid="db-map-height-select"]', '720')
+      check('★ 높이를 "크게" 로 바꾸면 서버에 남고(configuration.map.height) 칸이 720px 이 된다',
+        (await until(async () => (await api('GET', `/views/${mapId}`)).body?.view?.map?.height === 720))
+          && (await waitFor(`document.querySelector('[data-testid="db-map"]')?.getBoundingClientRect().height === 720`, 15000)))
+      await open(`/w/${workspaceId}/db/${db.id}?v=${mapId}`)
+      check('★ 새로고침 뒤에도 높이 720 · 기준 지점이 남는다',
+        await waitFor(`document.querySelector('[data-testid="db-map"]')?.getBoundingClientRect().height === 720 && document.querySelectorAll('[data-testid="db-map-pin"]').length === 2`, 20000))
+
+      // ── 101개 → 100핀 + 안내 ──
+      const many = (await api('POST', '/databases', { name: `지도 많음 ${stamp}`, privateTop: true })).body.database
+      const manyLoc = (await api('POST', `/data-sources/${many.dataSourceId}/properties`, { name: '위치', type: 'place' })).body.property.id
+      const manyTitle = (await api('GET', `/views/${many.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (let start = 0; start < 101; start += 10) {
+        await Promise.all(Array.from({ length: Math.min(10, 101 - start) }, (_, k) => {
+          const i = start + k
+          return api('POST', `/views/${many.defaultViewId}/rows`, {
+            cells: [{ propertyId: manyTitle, value: { type: 'title', title: [textRun(`행 ${i}`)] } }, placeCell(manyLoc, `p${i}`, (i % 120) - 60, (i % 340) - 170)],
+          })
+        }))
+      }
+      const manyView = (await api('POST', `/databases/${many.id}/views`, { type: 'map', name: '지도' })).body.view
+      await open(`/w/${workspaceId}/db/${many.id}?v=${manyView.id}`)
+      check('★ 장소가 있는 행 101개 → 핀 100개 + "100개까지 보입니다"',
+        await waitFor(`document.querySelectorAll('[data-testid="db-map-pin"]').length === 100`, 30000)
+          && (await evaluate(`document.querySelector('[data-testid="db-map-truncated"]')?.textContent.trim()`)) === '100개까지 보입니다')
+
+      // ── 장소 속성이 없다 ──
+      const bare = (await api('POST', '/databases', { name: `지도 속성 없음 ${stamp}`, privateTop: true })).body.database
+      const bareView = (await api('POST', `/databases/${bare.id}/views`, { type: 'map', name: '지도' })).body.view
+      await open(`/w/${workspaceId}/db/${bare.id}?v=${bareView.id}`)
+      check('★ 장소 속성이 없는 데이터베이스의 지도는 "장소 속성을 먼저 만드세요"',
+        await waitFor(`document.querySelector('[data-testid="db-map-needs-place"]')?.textContent.trim() === '장소 속성을 먼저 만드세요'`, 15000)
+          && (await evaluate(`!document.querySelector('[data-testid="db-map"]')`)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('차트 — 화면 (CH-2 · F-04-08)')) { try {

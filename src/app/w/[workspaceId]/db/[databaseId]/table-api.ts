@@ -18,6 +18,7 @@ import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
 import type { TimelineLayout } from '@/lib/database/timeline'
 import type { ChartLayout } from '@/lib/database/chart'
+import type { MapLayout } from '@/lib/database/map'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
@@ -1060,6 +1061,8 @@ export function updateView(
     readonly gallery?: Partial<GalleryLayout>
     /** 차트 레이아웃의 바꿀 키만(CH-2). */
     readonly chart?: Partial<ChartLayout>
+    /** 지도 레이아웃의 바꿀 키만(MP-2). */
+    readonly map?: Partial<MapLayout>
     /** 캘린더 레이아웃의 바꿀 키만(2g-2). */
     readonly calendar?: Partial<CalendarLayout>
     /** 타임라인 레이아웃의 바꿀 키만(TL-2). */
