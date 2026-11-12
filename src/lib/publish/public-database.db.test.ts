@@ -23,6 +23,7 @@ import { createRow, trashRow } from '../database/row.ts'
 import { createTemplate } from '../database/template.ts'
 import { setPersonalView, setViewColumn, updateView } from '../database/view.ts'
 import { withReadTransaction } from '../db/tx.ts'
+import { query } from '../db/pool.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { stopInheriting } from '../permissions/acl.ts'
 import { resolvePublicPage } from './public-access.ts'
@@ -437,5 +438,111 @@ describe('⑥ ★ 차트의 자기 집계 (PV-3)', () => {
     // 날짜 계산(가장 이른 날짜)은 Y값이 아니다 — 앱과 같이 저장만 해 두고 공개 화면은 표로
     unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: status, calculation: { property_id: due, function: 'earliest_date' } } }))
     assert.equal((await chartOf(token)).layout, 'table')
+  })
+})
+
+// ── MP-3 — 지도 ────────────────────────────────────────────────────────
+
+describe('⑦ ★ 지도의 자기 질의 (MP-3)', () => {
+  const place = (name: string, lat = 37.5665, lng = 126.978): CellValue => ({ type: 'place', place: { name, address: '비밀 주소', lat, lng } })
+
+  /**
+   * 지도 표 — 위치(장소) · 점수(숫자) · 행: A(서울 · 10) B(부산 · 20) C(장소 없음 · 30) D(대전 · 40 · 상속 끊음) E(광주 · 50 · 휴지통) G(제주 · 100 · 필터 밖) +
+   * 템플릿 T(장소 있음). 뷰: 지도 · 점수 < 60.
+   */
+  async function mapped() {
+    const ws = await createBareWorkspace('공개 지도')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique('공개 지도') }))
+    const ds = db.dataSourceId
+    unwrap(await addProperty(boss.ctx, ds, { name: '위치', type: 'place' }))
+    unwrap(await addProperty(boss.ctx, ds, { name: '점수', type: 'number' }))
+    const schema = unwrap(await getSchema(boss.ctx, ds))
+    const id = (name: string) => schema.properties.find((p) => p.name === name)!.id
+    const [title, loc, score] = [id('이름'), id('위치'), id('점수')]
+    const row = async (name: string, n: number, where: CellValue | null) =>
+      unwrap(
+        await createRow(boss.ctx, ds, {
+          cells: [
+            { propertyId: title, value: { type: 'title', title: [textRun(name)] } as CellValue },
+            { propertyId: score, value: { type: 'number', number: n } as CellValue },
+            ...(where === null ? [] : [{ propertyId: loc, value: where }]),
+          ],
+        }),
+      ).id
+    const rows = {
+      A: await row('A', 10, place('서울', 37.5, 127)), B: await row('B', 20, place('부산', 35.1, 129)), C: await row('C', 30, null),
+      D: await row('D', 40, place('대전')), E: await row('E', 50, place('광주')), G: await row('G', 100, place('제주')),
+    }
+    await createTemplate(boss.ctx, ds, { title: 'T' })
+    assert.ok((await stopInheriting(boss.ctx, rows.D)).ok)
+    assert.ok((await trashRow(boss.ctx, rows.E)).ok)
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'map', filter: { property_id: score, operator: 'less_than', value: 60 } }))
+    const token = unwrap(await publishPage(boss.ctx, db.id)).token!
+    return { boss, db, ds, loc, score, rows, token, title, row }
+  }
+  const mapOf = async (token: string) => {
+    const table = await tableOf(token)
+    assert.ok(table !== null && typeof table !== 'string')
+    return table
+  }
+
+  test('핀은 공개로 열리는 행 · 공유 필터 · 장소 값이 있는 행만 — 이름과 좌표만 싣는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { rows, token } = await mapped()
+    const table = await mapOf(token)
+    assert.equal(table.layout, 'map')
+    assert.equal(table.rows.length, 0)
+    assert.equal(table.truncated, false)
+    assert.deepEqual(table.map?.pins.map((p) => [p.rowId, p.title, p.name]), [[rows.A, 'A', '서울'], [rows.B, 'B', '부산']])
+    assert.deepEqual(table.map?.pins[0], { rowId: rows.A, title: 'A', name: '서울', lat: 37.5, lng: 127 })
+    assert.equal(table.map?.height, 480)
+    assert.ok(!JSON.stringify(table).includes('비밀 주소'), '주소는 싣지 않는다')
+  })
+
+  test('모양이 틀린 장소 값은 건너뛴다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { rows, token } = await mapped()
+    await query(
+      `UPDATE page SET properties_cache = jsonb_set(properties_cache, ARRAY[(SELECT id FROM property WHERE name = '위치' AND data_source_id = page.data_source_id), 'place', 'lat'], '999'::jsonb) WHERE id = $1`,
+      [rows.A],
+    )
+    assert.deepEqual((await mapOf(token)).map?.pins.map((p) => p.rowId), [rows.B])
+  })
+
+  test('101개 → 100핀 + truncated · 정확히 100개는 truncated 아님', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { token, row } = await mapped()
+    for (let i = 0; i < 98; i += 1) await row(`R${i}`, 1, place(`곳${i}`))
+    const hundred = await mapOf(token)
+    assert.equal(hundred.map?.pins.length, 100)
+    assert.equal(hundred.truncated, false)
+    await row('R넘침', 1, place('넘침'))
+    const over = await mapOf(token)
+    assert.equal(over.map?.pins.length, 100)
+    assert.equal(over.truncated, true)
+  })
+
+  test('★ 처음 100개는 표와 같은 차례 — 뷰의 정렬(점수 오름차순)이면 점수가 큰 B 가 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, rows, score, token, row } = await mapped()
+    for (let i = 0; i < 99; i += 1) await row(`R${i}`, 1, place(`곳${i}`))
+    // 정렬이 없으면 수동 순서 — 먼저 만든 A · B 가 든다
+    const manual = (await mapOf(token)).map?.pins.map((p) => p.rowId) ?? []
+    assert.ok(manual.includes(rows.A) && manual.includes(rows.B))
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { sorts: [{ property_id: score, direction: 'asc' }] }))
+    const sorted = (await mapOf(token)).map?.pins.map((p) => p.rowId) ?? []
+    assert.equal(sorted.length, 100)
+    assert.ok(sorted.includes(rows.A) && !sorted.includes(rows.B), '점수 1 의 99개 · A(10) 다음에서 끊긴다')
+  })
+
+  test('보이는 장소 열이 없으면 표(viewType 은 map 그대로)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, db, loc, token } = await mapped()
+    unwrap(await setViewColumn(boss.ctx, db.defaultViewId, loc, { visible: false }))
+    const table = await mapOf(token)
+    assert.equal(table.layout, 'table')
+    assert.equal(table.viewType, 'map')
+    assert.equal(table.map, null)
   })
 })

@@ -192,6 +192,9 @@
 @media (max-width: 640px) { .pub-tl-row { grid-template-columns: 6rem minmax(0, 1fr); } .pub-cal-day { min-height: 3.5rem; } }
 :root[data-theme='dark'] .pub-cal-grid, :root[data-theme='dark'] .pub-cal-weekday, :root[data-theme='dark'] .pub-cal-day { border-color: rgba(255, 255, 255, 0.14); }
 :root[data-theme='dark'] .pub-db-list-item, :root[data-theme='dark'] .pub-card { border-color: rgba(255, 255, 255, 0.14); }
+/* 공개 화면의 뷰(MP-3) — 지도 */
+.pub-map { position: relative; z-index: 0; width: 100%; overflow: hidden; border: 1px solid rgba(55, 53, 47, 0.16); border-radius: 4px; }
+:root[data-theme='dark'] .pub-map { border-color: rgba(255, 255, 255, 0.14); }
 /* 공개 화면의 뷰(PV-3) — 차트 */
 .pub-chart { color: #6b7280; }
 .pub-chart-svg { display: block; width: 100%; max-width: 48rem; height: auto; }

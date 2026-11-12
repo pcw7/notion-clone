@@ -22,6 +22,8 @@ import type { PublicPageView } from '@/lib/publish/public-read'
 import { RichText, UNTITLED, publicHref, titleText } from './public-blocks'
 import { checkboxLabel, publicCell } from './public-cells'
 import { PublicChartView } from './public-chart'
+import { PublicMap } from './public-map-lazy'
+import { MAX_MAP_PINS, mapTileUrl } from '@/lib/database/map'
 
 function CellView({ column, value, uniqueSeq, view }: { column: PublicColumn; value: unknown; uniqueSeq: number | null; view: PublicPageView }): ReactNode {
   const cell = publicCell(column, value, uniqueSeq)
@@ -289,6 +291,27 @@ export function PublicTableView({ table, view }: { table: PublicTable; view: Pub
       <section className="pub-db" data-testid="public-table" data-layout="chart" aria-label={table.viewName || '데이터베이스'}>
         {table.viewName !== '' && <p className="pub-db-view">{table.viewName}</p>}
         <PublicChartView chart={table.chart} />
+      </section>
+    )
+  }
+  // 지도(MP-3) — 핀은 지연 로드한 Leaflet 이 그린다. 타일 주소는 서버가 환경 변수에서 읽어 넘긴다(빌드에 박지 않는다)
+  if (table.layout === 'map' && table.map !== null) {
+    const pins = table.map.pins.map((pin) => ({ ...pin, href: publicHref(view, pin.rowId) }))
+    return (
+      <section className="pub-db" data-testid="public-table" data-layout="map" aria-label={table.viewName || '데이터베이스'}>
+        {table.viewName !== '' && <p className="pub-db-view">{table.viewName}</p>}
+        {pins.length === 0 ? (
+          <p className="pub-note" data-testid="public-table-empty">
+            표시할 항목이 없습니다.
+          </p>
+        ) : (
+          <PublicMap pins={pins} height={table.map.height} tileUrl={mapTileUrl(process.env.MAP_TILE_URL)} />
+        )}
+        {table.truncated && (
+          <p className="pub-note" data-testid="public-table-truncated">
+            {MAX_MAP_PINS}개까지 보입니다.
+          </p>
+        )}
       </section>
     )
   }
