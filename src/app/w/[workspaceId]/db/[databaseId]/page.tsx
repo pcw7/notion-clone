@@ -46,18 +46,32 @@
  * (`contentAccess`), 뷰 안의 차례 · 열 집계 · 그룹 숨기기 · 기본 템플릿은 그릇의 권한(`viewAccess`), 보드의 카드 끌기 · 칼럼 메뉴는 둘 다.
  * 전에는 교집합 하나로 열어 그릇은 볼 수만 있고 원본은 고칠 수 있는 사람에게 칸이 닫혔다(§3.2-139 ① 의 과소 표시). 도구줄 · 탭 ·
  * 소스 창은 뷰의 것이라 그릇의 권한 그대로다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 대시보드 (DB-2 · F-04-20 · 정본 [보강 DB-1] ④)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 대시보드 뷰는 행을 읽지 않고 위젯(다른 뷰)을 격자로 그린다(`dashboard-view.tsx`). 위젯마다 **이 화면과 같은 읽기 · 같은 컴포넌트**
+ * (`renderView` 의 위젯 모양 — 처음 25줄 · 도구줄 · 창 · 피크 없이)를 `Suspense` 경계 안에서 따로 부른다(동시에 셋까지 · 차례대로).
+ * "전체로 열기" 는 `?view=<위젯 id>` — 탭 줄은 그 대시보드를 고른 채 "← 대시보드" 가 서고, 내용은 위젯 뷰의 보통 화면이다(도구줄이 위젯
+ * 뷰를 고친다). 위젯은 탭 줄에 서지 않는다(`listViews` 는 `database_view` 만).
  */
 
 import Link from '@/app/link'
 import { notFound } from 'next/navigation'
+import type { ReactNode } from 'react'
 
 import { isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { feedClock } from '@/lib/database/row-feed'
-import { getDatabase, listDatabaseAncestors } from '@/lib/database/database'
-import { databaseLockState } from '@/lib/permissions/lock'
+import { getDatabase, listDatabaseAncestors, type DatabaseAccess, type DatabaseDetail } from '@/lib/database/database'
+import { databaseLockState, type LockState } from '@/lib/permissions/lock'
+import type { SessionContext } from '@/lib/auth/session-context'
 import { readForm } from '@/lib/database/form'
-import { getView, listViews } from '@/lib/database/view'
+import { getView, listViews, type ViewDetail, type ViewSummary } from '@/lib/database/view'
+import { readDashboard } from '@/lib/database/dashboard'
+import { createGate, dashboardGrid, widgetBodyPx, WIDGET_READ_CONCURRENCY, WIDGET_ROW_LIMIT, type Gate } from '@/lib/database/dashboard-grid'
+import { DashboardView, WidgetUnavailable } from './dashboard-view'
 import { cardParentsOnlyPair, filterColumnsOf, isCardView, nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
@@ -139,12 +153,14 @@ function panelSourcesOf(
   }))
 }
 
+const firstOf = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value) ?? null
+
 export default async function DatabasePage({
   params,
   searchParams,
 }: PageProps<'/w/[workspaceId]/db/[databaseId]'>) {
   const { workspaceId, databaseId } = await params
-  const { v, q, m, w, peek } = await searchParams
+  const { v, q, m, w, peek, view: widgetParam } = await searchParams
   // 읽기 전의 시각 — 화면이 구독할 때 들고 가 그 사이의 변경을 메운다(#250 · `use-table-changes.ts`)
   const renderedAt = feedClock()
   // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
@@ -233,18 +249,197 @@ export default async function DatabasePage({
       </main>
     )
   }
-  const current = openable.find((view) => view.id === v) ?? openable[0]
+  // 위젯을 전체로(DB-2 · 정본 [보강 DB-1] ④) — `?view=<위젯 id>`. 탭 줄은 그 위젯의 대시보드를 고른 채로 서고 "← 대시보드" 로 돌아간다 ·
+  // 내용 · 도구줄은 위젯 뷰의 것이다(보통 뷰의 명령으로 고친다). 열 수 없는 위젯(원본을 볼 수 없다 · 지워졌다 · 다른 데이터베이스의 것)이면
+  // 없는 `?v=` 처럼 탭의 뷰로 연다.
+  const widgetId = firstOf(widgetParam)
+  const widget = widgetId !== null && isUuid(widgetId) ? await getView(ctx, widgetId) : null
+  const widgetTab =
+    widget !== null && widget.ok && widget.value.databaseId === databaseId
+      ? openable.find((tab) => tab.id === widget.value.dashboardViewId && tab.type === 'dashboard')
+      : undefined
+  const current = widgetTab ?? openable.find((view) => view.id === v) ?? openable[0]
 
-  const view = await getView(ctx, current.id)
+  const view = widgetTab !== undefined && widget !== null && widget.ok ? widget : await getView(ctx, current.id)
   if (!view.ok) notFound()
 
-  // 페이지 열기 모드(8n-1 · F-02-20 · 정본 §3.6 [보강] 페이지 열기 모드) — 지금 주소(뷰 · 검색 · 달)가 피크를 닫는 주소이고 피크를 여는
-  // 주소의 바탕이다. 전체 페이지 뷰는 행 링크가 행 화면으로 간다(`peekBase` null).
-  const firstOf = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value) ?? null
-  const here = databaseHref(workspaceId, databaseId, { v: current.id, q: firstOf(q), m: firstOf(m) })
+  // 지금 주소(뷰 · 검색 · 달) — 피크를 닫는 주소이고 피크를 여는 주소의 바탕이다(8n-1). 전체로 연 위젯이면 `view`.
+  const here = databaseHref(workspaceId, databaseId, {
+    ...(widgetTab !== undefined ? { view: view.value.id } : { v: current.id }),
+    q: firstOf(q),
+    m: firstOf(m),
+  })
+  const viewerToday = await readViewerToday()
+  const { name, icon } = database.value
+  const sources = database.value.dataSources
+  const multiSource = sources.length > 1
+  const currentSource = sources.find((source) => source.id === view.value.dataSourceId) ?? null
+  // 데이터베이스 잠금(7f-2) — 구조를 고칠 수 있어도 잠겨 있으면 구조 화면(속성 · 뷰 · 템플릿 · 이름)을 닫는다. 서버도 `locked` 로
+  // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
+  const lock = await databaseLockState(ctx, databaseId)
+  const access = lock?.locked ? { ...database.value.access, canEditStructure: false } : database.value.access
+  const content = await renderView({
+    ctx, workspaceId, databaseId, database, views, view, here, search, m, w, peek: firstOf(peek), renderedAt, lock, widget: null,
+  })
+
+  return (
+    // 맞은 글자 강조(V-3) — 지금의 검색어를 칸 · 카드 제목에 내려 준다
+    <SearchTermProvider term={search}>
+    <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
+      {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름(피크로 연 행이 있어도 그대로) */}
+      <DocumentTitle title={contentTitle(database.value.name)} />
+      {/* 상대 날짜 필터(R-1)면 서버의 오늘을 이 기기의 오늘에 맞춘다 — 처음 방문(쿠키 없음)이면 한 번 새로 받는다 */}
+      <ViewerTodaySync today={usesRelativeDate(view.value.effectiveFilter) ? viewerToday : null} />
+      {/* 좁은 화면(폰)에서는 감는다 — 단추가 늘면(휴지통 T-2) 한 줄이 화면 폭을 넘어 문서가 가로로 흘렀다(10j-2) */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <DatabaseTrailNav trail={databaseTrail({ workspaceId, ancestors, database: { id: databaseId, name, icon } })} />
+        <div className="flex flex-wrap items-center gap-2">
+          <LockButton
+            lockUrl={`/api/workspaces/${workspaceId}/databases/${databaseId}/lock`}
+            locked={lock?.locked ?? false}
+            canToggle={lock?.canToggle ?? false}
+            reloadOnUnlock={false}
+            hint="잠긴 데이터베이스 — 속성 · 뷰 · 템플릿 · 이름을 고칠 수 없습니다(행과 값은 고칩니다)"
+          />
+          <MovePageControl
+            workspaceId={workspaceId}
+            pageId={databaseId}
+            currentParentId={null}
+            currentTeamspaceId={database.value.teamspaceId}
+            currentPrivate={database.value.ownerUserId !== null && database.value.ownerUserId === ctx.userId}
+            targets={[]}
+            teamspaces={moveTeamspaces}
+          />
+          {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). 내보내기 · 공유는 표를 보는 일이다 —
+              "만들기만"(모든 행을 볼 수 없다 · 6f-2b-2)에게는 세우지 않는다(누르면 404 다). */}
+          {access.canViewAllRows && <ExportButton workspaceId={workspaceId} rootId={databaseId} />}
+          {/* 공유(6f-1) — 페이지와 같은 패널 · 레벨에 "내용 편집"이 선다 · 웹 게시 절은 없다 */}
+          {access.canViewAllRows && <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />}
+          {/* 휴지통으로(28번 트랙 T-2 · 정본 [보강 T-1]) — 그 데이터베이스의 "내용 편집" 이 있을 때만(서버가 다시 묻는다). 지우면 놓인 페이지로
+              (인라인이면 그 페이지 — 경로의 마지막 조상) · 최상위면 워크스페이스 홈 */}
+          {/* 복제(29번 트랙 D-4) — 원본을 볼 수 있는 사람(복제는 원본을 고치지 않는다 · 사본의 자리에 만들 수 있는지는 서버가 묻는다) */}
+          {access.canViewAllRows && <DuplicateDatabaseButton workspaceId={workspaceId} databaseId={databaseId} />}
+          {access.canEditContent && (
+            <DeletePageButton workspaceId={workspaceId} pageId={databaseId} childCount={0} parentPageId={ancestors.at(-1)?.id ?? null} />
+          )}
+        </div>
+      </div>
+
+      {/* 아이콘(8c-3b)은 이름 위에 선다 — 페이지 머리와 같다. 고치는 사람은 이름과 같다(구조 · 잠금이면 닫힌다 — `access` 가 이미 담는다). */}
+      <div className="group/header flex flex-col gap-2">
+        <PageIconControl
+          workspaceId={workspaceId}
+          pageId={databaseId}
+          kind="database"
+          initialIcon={icon}
+          readOnly={!access.canEditStructure}
+        />
+        <DatabaseTitle
+          workspaceId={workspaceId}
+          databaseId={databaseId}
+          initialName={name}
+          canEdit={access.canEditStructure}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1">
+        {multiSource && currentSource !== null && (
+          <p className="flex items-center gap-2 px-1 text-sm font-medium text-neutral-600 dark:text-neutral-300" data-testid="db-source-name">
+            {currentSource.name}
+            {/* 붙인 소스(2l-3) — 연결 표시와 원본으로 가는 길 */}
+            {!currentSource.owned && currentSource.ownerDatabaseId !== null && (
+              <Link
+                href={`/w/${workspaceId}/db/${currentSource.ownerDatabaseId}`}
+                data-testid="db-source-original-link"
+                className="rounded px-1.5 py-0.5 text-xs font-normal text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+              >
+                ↗ 연결된 소스 — 원본 열기
+              </Link>
+            )}
+          </p>
+        )}
+        <ViewTabs
+          workspaceId={workspaceId}
+          databaseId={databaseId}
+          views={views.value}
+          currentId={current.id}
+          canEdit={access.canEditStructure}
+          // 뷰를 더할 소스 — 원본을 못 보는 붙인 소스는 고를 수 없다(서버가 거부한다 · 이름도 없다)
+          sources={sources.filter((source) => source.readable).map((source) => ({ id: source.id, name: source.name, owned: source.owned }))}
+        />
+        {/* 전체로 연 위젯(DB-2) — 탭 줄은 대시보드를 고른 채 · 돌아가는 길과 위젯 이름 */}
+        {widgetTab !== undefined && (
+          <p className="flex min-w-0 items-center gap-2 px-1 pt-1 text-sm" data-testid="db-widget-full">
+            <Link
+              href={databaseHref(workspaceId, databaseId, { v: widgetTab.id })}
+              data-testid="db-widget-back"
+              className="shrink-0 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            >
+              ← 대시보드
+            </Link>
+            <span data-testid="db-widget-full-name" className="truncate font-medium text-neutral-700 dark:text-neutral-200">
+              {view.value.name}
+            </span>
+          </p>
+        )}
+      </div>
+
+      {content}
+    </main>
+    </SearchTermProvider>
+  )
+}
+
+type RenderViewInput = {
+  readonly ctx: SessionContext
+  readonly workspaceId: string
+  readonly databaseId: string
+  readonly database: { readonly value: DatabaseDetail & { readonly access: DatabaseAccess } }
+  readonly views: { readonly value: readonly ViewSummary[] }
+  readonly view: { readonly value: ViewDetail }
+  /** 피크를 닫는 주소이자 여는 주소의 바탕 — 위젯이면 그 대시보드의 주소 */
+  readonly here: string
+  readonly search: string | null
+  readonly m: string | string[] | undefined
+  readonly w: string | string[] | undefined
+  readonly peek: string | null
+  readonly renderedAt: ReturnType<typeof feedClock>
+  readonly lock: LockState | null
+  /** 대시보드의 위젯으로 — 처음 25줄 · 도구줄 · 창 · 피크 없이(DB-2 ④). `rowPx` 는 그 줄의 높이(지도는 칸에 맞춘다) */
+  readonly widget: { readonly rowPx: number } | null
+}
+
+/**
+ * 대시보드의 위젯 하나(DB-2 ④) — 그 위젯 뷰의 보통 읽기 · 보통 화면을 위젯 모양으로. 대시보드의 `Suspense` 경계 안에서 따로 읽힌다(동시에
+ * `gate` 만큼 · 배치 차례대로). 읽는 사이에 원본을 볼 수 없게 됐으면 이름 없이 "볼 수 없는 위젯".
+ */
+async function WidgetContent({
+  gate,
+  widgetId,
+  rowPx,
+  ...base
+}: Omit<RenderViewInput, 'view' | 'peek' | 'search' | 'widget'> & { readonly gate: Gate; readonly widgetId: string; readonly rowPx: number }) {
+  const release = await gate.acquire()
+  try {
+    const view = await getView(base.ctx, widgetId)
+    if (!view.ok) return <WidgetUnavailable />
+    return await renderView({ ...base, view, search: null, peek: null, widget: { rowPx } })
+  } finally {
+    release()
+  }
+}
+
+/**
+ * 뷰 하나의 내용 — 도구줄 · 창 · 그 뷰의 화면 · 행 피크. 첫 화면은 서버가 한 번에 읽는다(머리말). 대시보드의 위젯도 이것을 그대로 부른다
+ * (`widget` — 처음 25줄 · 도구줄 · 창 · 피크 없이).
+ */
+async function renderView({
+  ctx, workspaceId, databaseId, database, views, view, here, search, m, w, peek, renderedAt, lock, widget,
+}: RenderViewInput): Promise<ReactNode> {
+  // 페이지 열기 모드(8n-1 · F-02-20 · 정본 §3.6 [보강] 페이지 열기 모드) — `here` 가 피크를 닫는 주소이고 피크를 여는 주소의 바탕이다. 전체
+  // 페이지 뷰는 행 링크가 행 화면으로 간다(`peekBase` null).
   const peekBase = view.value.openPagesIn === 'full_page' ? null : here
-  const peekId = firstOf(peek)
-  const peekRow = peekId !== null && isUuid(peekId) ? asBlockId(peekId) : null
+  const peekRow = !widget && peek !== null && isUuid(peek) ? asBlockId(peek) : null
 
   const isBoard = view.value.type === 'board'
   // 표 · 목록의 그룹(G-1 · 정본 [보강 G-1]) — 그룹 기준이 있으면 보드와 같은 읽기로 그룹마다 첫 페이지를 받는다
@@ -262,10 +457,14 @@ export default async function DatabasePage({
   const isMap = view.value.type === 'map'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
   const isForm = view.value.type === 'form'
-  // 대시보드(DB-1 ①) — 행을 읽지 않는다. 위젯을 그리는 것은 DB-2 의 일이다
+  // 대시보드(DB-1 ① · DB-2) — 행을 읽지 않는다. 배치와 위젯 목록만 읽고, 위젯은 저마다 따로 읽힌다(`WidgetContent`)
   const isDashboard = view.value.type === 'dashboard'
   const form = isForm ? await readForm(ctx, view.value.id) : null
   if (form !== null && !form.ok) notFound()
+  const dashboard = isDashboard && !widget ? await readDashboard(ctx, view.value.id) : null
+  if (dashboard !== null && !dashboard.ok) notFound()
+  // 한 대시보드에서 동시에 읽는 위젯 수를 묶는다 — 연결 풀을 혼자 쓰지 않고 위 줄부터 차례로 흘러 들어온다
+  const widgetGate = createGate(WIDGET_READ_CONCURRENCY)
   // 캘린더의 보이는 달(2g-2) — 주소의 `m`(`YYYY-MM`). 없으면 이번 달(UTC — 화면의 "오늘" 단추가 보는 사람의 달로 옮긴다).
   const calendarMonth = isYm(m) ? m : new Date().toISOString().slice(0, 7)
   // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
@@ -287,7 +486,8 @@ export default async function DatabasePage({
           sorts: view.value.effectiveSorts,
           // 정렬이 없으면 이 뷰의 수동 순서(10n-59)
           manualOrderViewId: view.value.id,
-          limit: view.value.loadLimit,
+          // 위젯은 처음 25줄(DB-2 ④) — 더는 "더 보기" · "전체로 열기"
+          limit: widget ? WIDGET_ROW_LIMIT : view.value.loadLimit,
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
           ...(subItems === null ? {} : { treeScope: { parentPropertyId: subItems.parentPropertyId, scope: view.value.subItemFilterScope } }),
           ...(flatSubItems === null ? {} : { flatScope: { parentPropertyId: flatSubItems.parentPropertyId, scope: view.value.subItemFilterScope } }),
@@ -295,8 +495,8 @@ export default async function DatabasePage({
           search,
           today: viewerToday,
         }),
-    // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
-    readOperatorCatalog(),
+    // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17). 위젯에는 도구줄이 없다.
+    widget ? [] : readOperatorCatalog(),
     isBoard || isGroupedRows || isGroupedGallery ? queryGroups(ctx, view.value.id, { search, today: viewerToday }) : null,
     isChart ? queryGroupSummary(ctx, view.value.id, { search, today: viewerToday }) : null,
     isMap ? queryMapPins(ctx, view.value.id, { search, today: viewerToday }) : null,
@@ -307,7 +507,7 @@ export default async function DatabasePage({
   if (board !== null && !board.ok && board.reason !== 'not_grouped') notFound()
   if (chartPage !== null && !chartPage.ok && chartPage.reason !== 'not_grouped') notFound()
 
-  const { name, icon, access: granted } = database.value
+  const { name, access: granted } = database.value
 
   // ── 데이터 소스(8e-2 · F-04-23) ──
   // 이 뷰가 보는 소스. 소스가 둘 이상이면 그 이름이 탭 줄 위에 서고(노션: *"you'll see the data source's name above the horizontal bar of
@@ -316,9 +516,7 @@ export default async function DatabasePage({
   const multiSource = sources.length > 1
   const currentSource = sources.find((source) => source.id === view.value.dataSourceId) ?? null
   const tableName = multiSource && currentSource !== null ? currentSource.name : name
-  // 데이터베이스 잠금(7f-2) — 구조를 고칠 수 있어도 잠겨 있으면 구조 화면(속성 · 뷰 · 템플릿 · 이름)을 닫는다. 서버도 `locked` 로
-  // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
-  const lock = await databaseLockState(ctx, databaseId)
+  // 데이터베이스 잠금(7f-2) — 페이지가 읽은 것(`lock`)으로 구조 화면을 닫는다(머리와 같은 규칙)
   const access = lock?.locked ? { ...granted, canEditStructure: false } : granted
   // 붙인 소스의 뷰(2l-3 · N-2) — 칸 · 행 · 속성은 원본의 권한, 뷰 안의 차례 · 열 집계 · 기본 템플릿은 그릇의 권한(머리말 ·
   // `linked-access.ts`). 원본의 잠금은 원본의 구조를 닫는다.
@@ -337,7 +535,7 @@ export default async function DatabasePage({
   )
   // DB automation(5b-3a) — 그 표(소스)의 전체 권한이 있을 때만 배지가 온다(정의의 문과 같다 · 없으면 null). 실행 쪽이 보는 잠금은 소스의
   // 원본 데이터베이스의 것이다 — 붙인 소스면 원본의 잠금.
-  const automationBadge = await dbAutomationBadge(ctx, view.value.dataSourceId)
+  const automationBadge = widget ? null : await dbAutomationBadge(ctx, view.value.dataSourceId)
   const automationLocked = (ownerId === null ? lock : originalLock)?.locked ?? false
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
@@ -580,10 +778,10 @@ export default async function DatabasePage({
   // 필터에 든 사람의 이름(6g-2b) — 칩 · 패널이 이름으로 그린다(숨긴 컬럼으로도 거른다 — 컬럼 전부에서 타입을 본다)
   const filterRules = readRules(view.value.effectiveFilter)
   const filterTypes = new Map(filterColumnsOf(columns).map((c) => [c.propertyId, c.type]))
-  const filterPeople = filterRules.editable ? filterPeopleIds(filterRules.rules, filterTypes) : []
+  const filterPeople = filterRules.editable && !widget ? filterPeopleIds(filterRules.rules, filterTypes) : []
   const filterPeopleNames = filterPeople.length === 0 ? {} : await loadPeopleNames(ctx, filterPeople)
   // 필터에 든 행의 제목(10n-45) — relation "포함" 의 값은 행 id 라 칩이 제목 맵으로 그린다(볼 수 없는 행 · 지워진 행을 가른다)
-  const filterRows = filterRules.editable ? filterRowIds(filterRules.rules, filterTypes) : []
+  const filterRows = filterRules.editable && !widget ? filterRowIds(filterRules.rules, filterTypes) : []
   const filterRowTitles = filterRows.length === 0 ? {} : (await loadRelationLabels(ctx, filterRows)).labels
 
   // ── rollup 칸의 값 ──
@@ -627,98 +825,17 @@ export default async function DatabasePage({
   const defaultTemplate = defaultRow === null ? null : { id: defaultRow.id, title: defaultRow.title }
 
   return (
-    // 맞은 글자 강조(V-3) — 지금의 검색어를 칸 · 카드 제목에 내려 준다
-    <SearchTermProvider term={search}>
-    <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
-      {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름(피크로 연 행이 있어도 그대로) */}
-      <DocumentTitle title={contentTitle(database.value.name)} />
-      {/* 상대 날짜 필터(R-1)면 서버의 오늘을 이 기기의 오늘에 맞춘다 — 처음 방문(쿠키 없음)이면 한 번 새로 받는다 */}
-      <ViewerTodaySync today={usesRelativeDate(view.value.effectiveFilter) ? viewerToday : null} />
-      {/* 좁은 화면(폰)에서는 감는다 — 단추가 늘면(휴지통 T-2) 한 줄이 화면 폭을 넘어 문서가 가로로 흘렀다(10j-2) */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <DatabaseTrailNav trail={databaseTrail({ workspaceId, ancestors, database: { id: databaseId, name, icon } })} />
-        <div className="flex flex-wrap items-center gap-2">
-          <LockButton
-            lockUrl={`/api/workspaces/${workspaceId}/databases/${databaseId}/lock`}
-            locked={lock?.locked ?? false}
-            canToggle={lock?.canToggle ?? false}
-            reloadOnUnlock={false}
-            hint="잠긴 데이터베이스 — 속성 · 뷰 · 템플릿 · 이름을 고칠 수 없습니다(행과 값은 고칩니다)"
-          />
-          <MovePageControl
-            workspaceId={workspaceId}
-            pageId={databaseId}
-            currentParentId={null}
-            currentTeamspaceId={database.value.teamspaceId}
-            currentPrivate={database.value.ownerUserId !== null && database.value.ownerUserId === ctx.userId}
-            targets={[]}
-            teamspaces={moveTeamspaces}
-          />
-          {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). 내보내기 · 공유는 표를 보는 일이다 —
-              "만들기만"(모든 행을 볼 수 없다 · 6f-2b-2)에게는 세우지 않는다(누르면 404 다). */}
-          {access.canViewAllRows && <ExportButton workspaceId={workspaceId} rootId={databaseId} />}
-          {/* 공유(6f-1) — 페이지와 같은 패널 · 레벨에 "내용 편집"이 선다 · 웹 게시 절은 없다 */}
-          {access.canViewAllRows && <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />}
-          {/* 휴지통으로(28번 트랙 T-2 · 정본 [보강 T-1]) — 그 데이터베이스의 "내용 편집" 이 있을 때만(서버가 다시 묻는다). 지우면 놓인 페이지로
-              (인라인이면 그 페이지 — 경로의 마지막 조상) · 최상위면 워크스페이스 홈 */}
-          {/* 복제(29번 트랙 D-4) — 원본을 볼 수 있는 사람(복제는 원본을 고치지 않는다 · 사본의 자리에 만들 수 있는지는 서버가 묻는다) */}
-          {access.canViewAllRows && <DuplicateDatabaseButton workspaceId={workspaceId} databaseId={databaseId} />}
-          {access.canEditContent && (
-            <DeletePageButton workspaceId={workspaceId} pageId={databaseId} childCount={0} parentPageId={ancestors.at(-1)?.id ?? null} />
-          )}
-        </div>
-      </div>
-
-      {/* 아이콘(8c-3b)은 이름 위에 선다 — 페이지 머리와 같다. 고치는 사람은 이름과 같다(구조 · 잠금이면 닫힌다 — `access` 가 이미 담는다). */}
-      <div className="group/header flex flex-col gap-2">
-        <PageIconControl
-          workspaceId={workspaceId}
-          pageId={databaseId}
-          kind="database"
-          initialIcon={icon}
-          readOnly={!access.canEditStructure}
-        />
-        <DatabaseTitle
-          workspaceId={workspaceId}
-          databaseId={databaseId}
-          initialName={name}
-          canEdit={access.canEditStructure}
-        />
-      </div>
-
-      <div className="flex flex-col gap-1">
-        {multiSource && currentSource !== null && (
-          <p className="flex items-center gap-2 px-1 text-sm font-medium text-neutral-600 dark:text-neutral-300" data-testid="db-source-name">
-            {currentSource.name}
-            {/* 붙인 소스(2l-3) — 연결 표시와 원본으로 가는 길 */}
-            {!currentSource.owned && currentSource.ownerDatabaseId !== null && (
-              <Link
-                href={`/w/${workspaceId}/db/${currentSource.ownerDatabaseId}`}
-                data-testid="db-source-original-link"
-                className="rounded px-1.5 py-0.5 text-xs font-normal text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-              >
-                ↗ 연결된 소스 — 원본 열기
-              </Link>
-            )}
-          </p>
-        )}
-        <ViewTabs
-          workspaceId={workspaceId}
-          databaseId={databaseId}
-          views={views.value}
-          currentId={current.id}
-          canEdit={access.canEditStructure}
-          // 뷰를 더할 소스 — 원본을 못 보는 붙인 소스는 고를 수 없다(서버가 거부한다 · 이름도 없다)
-          sources={sources.filter((source) => source.readable).map((source) => ({ id: source.id, name: source.name, owned: source.owned }))}
-        />
-      </div>
-
+    <>
       {form !== null && form.ok ? (
         <FormEditor key={form.value.viewId} workspaceId={workspaceId} initial={form.value} />
       ) : (
       <>
+      {/* 위젯에는 도구줄 · 창이 없다 — 고치는 것은 "전체로 열기" 에서(DB-2 ④) */}
+      {!widget && (
       <div className="flex flex-wrap items-start gap-2">
         <div className="min-w-0 flex-1">
+          {/* 대시보드는 필터 · 정렬 · 묶기를 갖지 않는다(DB-1 ①) — 창(데이터 소스 · 템플릿 · 자동화)은 데이터베이스의 것이라 선다 */}
+          {!isDashboard && (
           <ViewToolbar
             workspaceId={workspaceId}
             viewId={view.value.id}
@@ -747,6 +864,7 @@ export default async function DatabasePage({
             peopleNames={filterPeopleNames}
             rowTitles={filterRowTitles}
           />
+          )}
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}
         {access.canEditStructure && (
@@ -779,10 +897,11 @@ export default async function DatabasePage({
           />
         )}
       </div>
+      )}
 
       {/* "만들기만"(6f-2b-2 · 정본 [보강] 행 단위 접근 규칙 ⑥) — 표는 열리지만 자기가 열 수 있는 행만 온다. 빈 표 · 작은 개수를 필터 탓으로
           읽지 않게 말한다. */}
-      {!contentAccess.canViewAllRows && (
+      {!widget && !contentAccess.canViewAllRows && (
         <p role="note" data-testid="db-restricted" className="px-1 text-sm text-neutral-500">
           이 표에서는 내가 열 수 있는 행만 보입니다. 행을 더할 수 있지만 다른 사람의 행은 보이지 않고, 개수 · 합계도 내 행만 셉니다.
         </p>
@@ -792,9 +911,30 @@ export default async function DatabasePage({
         <SearchEmpty search={search} />
       )}
       {isDashboard ? (
-        <p className="px-2 text-sm text-neutral-500" data-testid="db-dashboard-pending">
-          대시보드 화면은 준비 중입니다
-        </p>
+        dashboard !== null && dashboard.ok && (
+          <DashboardView
+            rows={dashboardGrid(dashboard.value.layout, dashboard.value.widgets)}
+            canEditStructure={access.canEditStructure}
+            openHref={(id) => databaseHref(workspaceId, databaseId, { view: id })}
+            renderWidget={(id, rowPx) => (
+              <WidgetContent
+                gate={widgetGate}
+                widgetId={id}
+                rowPx={rowPx}
+                ctx={ctx}
+                workspaceId={workspaceId}
+                databaseId={databaseId}
+                database={database}
+                views={views}
+                here={here}
+                m={m}
+                w={w}
+                renderedAt={renderedAt}
+                lock={lock}
+              />
+            )}
+          />
+        )
       ) : isBoard ? (
         groupBy !== null && groupProperty !== null && board !== null && board.ok && subProperty !== null ? (
           // 하위 그룹이 있는 보드(B-4b) — 가로줄마다 보드 하나
@@ -893,7 +1033,8 @@ export default async function DatabasePage({
               dataSourceId={view.value.dataSourceId}
               renderedAt={renderedAt}
               pins={mapPage.value.pins}
-              height={view.value.map.height}
+              // 위젯이면 칸에 맞춘다(DB-2 ④)
+              height={widget !== null ? widgetBodyPx(widget.rowPx) : view.value.map.height}
               // 서버가 환경 변수에서 읽어 넘긴다 — 빌드에 박지 않는다(NEXT_PUBLIC 아님)
               tileUrl={mapTileUrl(process.env.MAP_TILE_URL)}
               peekBase={peekBase}
@@ -1104,7 +1245,6 @@ export default async function DatabasePage({
           <PeekPageContent key={peekRow} ctx={ctx} workspaceId={workspaceId} pageId={peekRow} shareOpen={false} renderedAt={renderedAt} frame="peek" />
         </RowPeek>
       )}
-    </main>
-    </SearchTermProvider>
+    </>
   )
 }

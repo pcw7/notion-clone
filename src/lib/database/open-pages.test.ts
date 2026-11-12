@@ -17,6 +17,8 @@ test('① 데이터베이스 화면의 주소', () => {
   assert.equal(databaseHref('ws', 'db', {}), '/w/ws/db/db')
   assert.equal(databaseHref('ws', 'db', { v: 'view', q: '', m: null }), '/w/ws/db/db?v=view')
   assert.equal(databaseHref('ws', 'db', { v: 'view', q: '김 하나&', m: '2026-10' }), '/w/ws/db/db?v=view&q=%EA%B9%80+%ED%95%98%EB%82%98%26&m=2026-10')
+  // 전체로 연 대시보드 위젯(DB-2) — `view`
+  assert.equal(databaseHref('ws', 'db', { view: 'widget', q: '김', m: null }), '/w/ws/db/db?view=widget&q=%EA%B9%80')
 })
 
 test('② ★ 행을 여는 주소 — 전체 페이지 · 피크(쌓지 않는다)', () => {

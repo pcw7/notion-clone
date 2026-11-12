@@ -28,14 +28,17 @@ export function isOpenPagesIn(value: unknown): value is OpenPagesIn {
   return typeof value === 'string' && (OPEN_PAGES_IN as readonly string[]).includes(value)
 }
 
-/** 데이터베이스 화면의 주소 — 지금 보는 뷰 · 검색 · 달을 지닌 채(`peek` 은 빼고). 피크를 닫는 주소이자 피크를 여는 주소의 바탕. */
+/**
+ * 데이터베이스 화면의 주소 — 지금 보는 뷰 · 검색 · 달을 지닌 채(`peek` 은 빼고). 피크를 닫는 주소이자 피크를 여는 주소의 바탕.
+ * `view` 는 전체로 연 대시보드 위젯(DB-2 · 정본 [보강 DB-1] ④ — 탭 뷰의 `v` 와 따로다).
+ */
 export function databaseHref(
   workspaceId: string,
   databaseId: string,
-  params: { readonly v?: string | null; readonly q?: string | null; readonly m?: string | null },
+  params: { readonly v?: string | null; readonly view?: string | null; readonly q?: string | null; readonly m?: string | null },
 ): string {
   const query = new URLSearchParams()
-  for (const key of ['v', 'q', 'm'] as const) {
+  for (const key of ['v', 'view', 'q', 'm'] as const) {
     const value = params[key]
     if (typeof value === 'string' && value !== '') query.set(key, value)
   }

@@ -182,6 +182,8 @@ export type ViewDetail = {
    * 표시 범위가 "포함" 이 된다. 하위 항목이 켜진 표 · 목록에서만 뜻이 있다.
    */
   readonly subItemDisplay: SubItemDisplay
+  /** 대시보드 위젯(DB-1 ②)이면 그 대시보드 뷰의 id · 탭 뷰는 null — 화면이 `?view=` 로 연 위젯의 탭을 고른다(DB-2). */
+  readonly dashboardViewId: string | null
 }
 
 export type ViewSummary = {
@@ -336,6 +338,7 @@ type ViewRow = {
   configuration: unknown
   personal_filter: unknown
   personal_sorts: unknown
+  dashboard_view_id: string | null
 }
 
 /**
@@ -477,7 +480,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
             v.filter, v.sorts, v.group_by, v.sub_group_by, v.load_limit, v.configuration, v.open_pages_in,
-            v.sub_item_filter_scope, v.sub_item_display,
+            v.sub_item_filter_scope, v.sub_item_display, v.dashboard_view_id,
             -- 이 사람의 개인 필터 · 정렬(2h-1) — NULL 이면 덮어쓰지 않았다
             o.filter AS personal_filter, o.sorts AS personal_sorts,
             -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
@@ -524,6 +527,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     personal: personalFilter === null && personalSorts === null ? null : { filter: personalFilter !== null, sorts: personalSorts !== null },
     effectiveFilter: personalFilter !== null ? personalFilter : sharedFilter,
     effectiveSorts: personalSorts ?? sharedSorts,
+    dashboardViewId: row.dashboard_view_id,
   }
 }
 
