@@ -88,9 +88,7 @@ import {
 } from './property-types.ts'
 import { readOptionsOf } from './options.ts'
 import {
-  DEFAULT_DATE_UNIT,
   DEFAULT_WEEK_START,
-  RELATIVE_KEYS,
   isBucketKey,
   isDateUnit,
   isWeekStart,
@@ -100,8 +98,9 @@ import {
   type DateUnit,
   type WeekStart,
 } from './date-group.ts'
-import { DEFAULT_NUMBER_SIZE, isNumberBucketKey, isNumberSize, shiftNumber } from './number-group.ts'
-import { DEFAULT_TEXT_MODE, FOLDED_CHOSEONG, OTHER_INITIAL, compareTextKeys, isInitialKey, isTextMode, type TextMode } from './text-group.ts'
+import { isNumberBucketKey, isNumberSize, shiftNumber } from './number-group.ts'
+import { isInitialKey, isTextMode, type TextMode } from './text-group.ts'
+import { SORTABLE_GROUP_TYPES, bucketKeySql, isDataBucket, orderBuckets, readDataBucket } from './group-bucket.ts'
 import { readSubItemPair } from './sub-items.ts'
 import {
   compileTree,
@@ -195,9 +194,6 @@ export type GroupSort = (typeof GROUP_SORTS)[number]
 export function isGroupSort(value: unknown): value is GroupSort {
   return typeof value === 'string' && (GROUP_SORTS as readonly string[]).includes(value)
 }
-
-/** 순서를 고를 수 있는 그룹 — 그룹이 옵션이 아니라 데이터에서 나오는 타입(B-1 · B-2 · B-2b). */
-const SORTABLE_GROUP_TYPES: readonly string[] = ['date', 'number', 'rich_text']
 
 /** 그룹 머리의 계산 — 어느 속성의 칸으로 어느 함수를. */
 export type GroupCalculation = { readonly property_id: string; readonly function: Calculation }
@@ -633,13 +629,8 @@ async function readAxis(tx: Tx, groupBy: GroupBy, types: PropertyTypes, today: s
     options: hasOptionRegistry(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     statusByGroup,
     defaultOptionId,
-    dateUnit: propertyType === 'date' ? (isDateUnit(groupBy.date_unit) ? groupBy.date_unit : DEFAULT_DATE_UNIT) : null,
-    numberSize: propertyType === 'number' ? (isNumberSize(groupBy.number_size) ? groupBy.number_size : DEFAULT_NUMBER_SIZE) : null,
-    textMode: propertyType === 'rich_text' ? (isTextMode(groupBy.text_by) ? groupBy.text_by : DEFAULT_TEXT_MODE) : null,
-    today,
-    weekStart: isWeekStart(groupBy.week_start) ? groupBy.week_start : DEFAULT_WEEK_START,
-    // 그룹의 순서(S-1) — 데이터에서 나온 그룹만(타입을 바꾼 뒤의 저장값은 오름으로 읽는다)
-    sort: SORTABLE_GROUP_TYPES.includes(propertyType) && groupBy.sort === 'descending' ? 'descending' : 'ascending',
+    // 버킷 설정(B-1 · B-2 · B-2b · B-3 · S-1) — 공개 화면(PV-6)과 같은 읽기(`group-bucket.ts`)
+    ...readDataBucket(groupBy, propertyType, today),
   }
 }
 
@@ -659,21 +650,9 @@ function catalogOf(board: GroupAxis, counted: ReadonlyMap<string, unknown> = new
   // 날짜(B-1) — 그룹은 옵션이 아니라 데이터에서 나온다: 필터 · 검색 · 권한을 지난 행이 든 버킷들(날짜 오름차순) · 값 없음이 맨 앞
   // 숫자(B-2)도 그렇다 — 구간들은 **숫자 오름차순**(글자 순이면 -10 · 100 · 20)
   // 글(B-2b)도 그렇다 — 글 그대로는 한국어 순서 · 첫 글자는 ㄱ ~ ㅎ · A ~ Z · #
-  if (board.dateUnit !== null || board.numberSize !== null || board.textMode !== null) {
-    const keys = [...counted.keys()].filter((k) => k !== NO_VALUE_KEY)
-    const { textMode } = board
-    const relativeOrder: readonly string[] = RELATIVE_KEYS
-    const buckets =
-      board.numberSize !== null
-        ? keys.sort((a, b) => Number(a) - Number(b))
-        : textMode !== null
-          ? keys.sort((a, b) => compareTextKeys(a, b, textMode))
-          : board.dateUnit === 'relative'
-            ? keys.sort((a, b) => relativeOrder.indexOf(a) - relativeOrder.indexOf(b))
-            : keys.sort()
-    // 내림(S-1)이면 뒤집는다 — 값 없음은 그래도 맨 앞
-    if (board.sort === 'descending') buckets.reverse()
-    return [{ key: NO_VALUE_KEY, ...none }, ...buckets.map((key) => ({ key, ...none }))]
+  // 내림(S-1)이면 뒤집는다 — 값 없음은 그래도 맨 앞. 차례는 공개 화면(PV-6)과 같은 `orderBuckets`
+  if (isDataBucket(board)) {
+    return [{ key: NO_VALUE_KEY, ...none }, ...orderBuckets(counted.keys(), board).map((key) => ({ key, ...none }))]
   }
   if (board.propertyType === 'checkbox') {
     return [
@@ -717,45 +696,9 @@ function fillOptionOf(board: GroupAxis, kind: StatusGroupKind): string | null {
  * checkbox: NULL(셀 없음)은 false 다 — `checkbox` 의 빈 값이 false 이기 때문(`emptyValue`).
  */
 function keyExprOf(board: GroupAxis, params: ParamBag, alias = 'gv'): string {
-  // 날짜(B-1) — 값에 적힌 달력 날짜(`start` 의 앞 열 자)가 든 버킷의 첫 날 · 값 없음은 ''(시간대로 옮기지 않는다 — `date-group.ts`)
-  // 상대 날짜(B-3) — 적힌 날짜가 오늘에서 며칠 떨어졌나(`date - date` 는 날수) · 이름은 `date-group.ts` 의 `relativeOf` 와 같은 경계
-  if (board.dateUnit === 'relative') {
-    const today = params.bind(board.today)
-    return `(SELECT CASE WHEN r.n IS NULL THEN ''
-                     WHEN r.n = 0 THEN 'today' WHEN r.n = 1 THEN 'tomorrow' WHEN r.n = -1 THEN 'yesterday'
-                     WHEN r.n BETWEEN 2 AND 7 THEN 'next_7' WHEN r.n BETWEEN -7 AND -2 THEN 'last_7'
-                     WHEN r.n BETWEEN 8 AND 30 THEN 'next_30' WHEN r.n BETWEEN -30 AND -8 THEN 'last_30'
-                     WHEN r.n > 30 THEN 'later' ELSE 'earlier' END
-               FROM (SELECT (left(${alias}.value -> 'date' ->> 'start', 10))::date - ${today}::date AS n) r)`
-  }
-  if (board.dateUnit !== null) {
-    const date = `(left(${alias}.value -> 'date' ->> 'start', 10))::date`
-    // 일요일 시작의 주(B-3b) — 그 주의 일요일(`dow` 는 일요일 = 0). 월요일 시작은 date_trunc('week')(ISO)
-    const bucket =
-      board.dateUnit === 'day'
-        ? date
-        : board.dateUnit === 'week' && board.weekStart === 'sunday'
-          ? `(${date} - extract(dow from ${date})::int)`
-          : `date_trunc('${board.dateUnit}', ${date})`
-    return `coalesce(to_char(${bucket}, 'YYYY-MM-DD'), '')`
-  }
-  // 숫자(B-2) — 구간의 아래 끝을 numeric 으로 정확히 · 글자는 trim_scale 의 것(`number-group.ts`) · 값 없음은 ''
-  // 글(B-2b) — 글 그대로는 사이드카 그대로 · 첫 글자는 첫 비공백 글자의 머리(한글은 초성 — 표는 `text-group.ts` 의 것 · 음절은 코드
-  // 포인트로 가른다 — ko 콜레이션의 BETWEEN 은 자음 낱자를 음절 사이에 넣는다)
-  if (board.textMode === 'exact') return `coalesce(${alias}.text_value, '')`
-  if (board.textMode === 'first') {
-    const table = params.bind(FOLDED_CHOSEONG)
-    const other = params.bind(OTHER_INITIAL)
-    return `(SELECT CASE WHEN f.c IS NULL THEN ''
-                     WHEN ascii(f.c) BETWEEN 44032 AND 55203 THEN substr(${table}::text, (ascii(f.c) - 44032) / 588 + 1, 1)
-                     WHEN f.c ~ '^[A-Za-z]$' THEN upper(f.c)
-                     ELSE ${other}::text END
-               FROM (SELECT substring(${alias}.text_value from '\\S') AS c) f)`
-  }
-  if (board.numberSize !== null) {
-    const size = params.bind(String(board.numberSize))
-    return `coalesce(trim_scale(floor(${alias}.num_value / ${size}::numeric) * ${size}::numeric)::text, '')`
-  }
+  // 날짜(B-1 · B-3) · 숫자(B-2) · 글(B-2b) — 데이터에서 나온 버킷. 공개 화면(PV-6)과 같은 식(`group-bucket.ts` `bucketKeySql`) · 값 없음은 ''
+  const data = bucketKeySql(board, params, alias)
+  if (data !== null) return data
   if (board.propertyType === 'checkbox') {
     return `(CASE WHEN ${alias}.bool_value THEN 'true' ELSE 'false' END)`
   }

@@ -37,6 +37,10 @@ import { resolvePublicPage } from './public-access.ts'
 import { publicTableOf, readPublicRowPropertiesIn, readPublicTableIn } from './public-database.ts'
 import { publishPage, unpublishPage } from './public-link.ts'
 import { readPublicPage } from './public-read.ts'
+import { queryGroups, queryGroupSummary } from '../database/group.ts'
+import { groupLabel } from '../database/board-drag.ts'
+import { buildBoardColumns } from './public-board.ts'
+import { publicToday } from './public-window.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -164,7 +168,7 @@ describe('② ★ 표에 서는 행 = 공개로 열리는 행', () => {
 })
 
 describe('④ ★ 첫 뷰의 레이아웃 (PV-1)', () => {
-  test('보드(선택으로 묶음)는 레이아웃 · 옵션 · 숨긴 그룹을 싣고 행은 표와 같다 · 날짜로 묶으면 표로 돌아간다', async (t) => {
+  test('보드(선택으로 묶음)는 레이아웃 · 옵션 · 숨긴 그룹을 싣고 행은 표와 같다 · 다중 선택으로 묶으면 표로 돌아간다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { boss, ds, db, token, status, rows } = await board()
     const tableLayout = await tableOf(token)
@@ -184,10 +188,10 @@ describe('④ ★ 첫 뷰의 레이아웃 (PV-1)', () => {
     assert.deepEqual(asBoard.rows.map((r) => r.id), tableLayout.rows.map((r) => r.id), '고르는 행 · 순서는 표와 같다')
     assert.ok(asBoard.rows.every((r) => r.groupKey !== null))
 
-    // 날짜로 묶은 보드는 공개 경로가 버킷을 계산하지 않는다 — 표
-    unwrap(await addProperty(boss.ctx, ds, { name: '기한', type: 'date' }))
-    const dateId = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.name === '기한')!.id
-    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: dateId } }))
+    // 다중 선택으로 묶은 보드는 공개 경로가 그리지 않는다 — 표(날짜 · 숫자 · 글은 PV-6 이 그린다 — ⑩)
+    unwrap(await addProperty(boss.ctx, ds, { name: '태그', type: 'multi_select' }))
+    const tagsId = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.name === '태그')!.id
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: tagsId } }))
     const fallback = await tableOf(token)
     assert.ok(fallback !== null && typeof fallback !== 'string')
     assert.equal(fallback.layout, 'table')
@@ -430,18 +434,18 @@ describe('⑥ ★ 차트의 자기 집계 (PV-3)', () => {
     assert.deepEqual(number.chart?.groups, [])
   })
 
-  test('그리지 못하는 X축 · Y계산은 표 — 날짜로 묶음 · 숫자로 묶음 · 날짜 계산', async (t) => {
+  test('그리지 못하는 X축 · Y계산은 표 — 다중 선택으로 묶음 · 날짜 계산', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    const { boss, db, status, score, due, rows, token } = await charted()
-    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'chart', groupBy: { property_id: due }, chart: { kind: 'column' } }))
-    const byDate = await chartOf(token)
-    assert.equal(byDate.layout, 'table')
-    assert.equal(byDate.viewType, 'chart')
-    assert.equal(byDate.chart, null)
-    assert.ok(byDate.rows.some((r) => r.id === rows.A), '표는 행을 싣는다')
-
-    unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: score } }))
-    assert.equal((await chartOf(token)).layout, 'table')
+    const { boss, db, ds, status, due, rows, token } = await charted()
+    // 다중 선택은 공개 경로가 그리지 않는다(날짜 · 숫자 · 글은 PV-6 이 그린다 — ⑩)
+    unwrap(await addProperty(boss.ctx, ds, { name: '태그', type: 'multi_select' }))
+    const tags = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.name === '태그')!.id
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'chart', groupBy: { property_id: tags }, chart: { kind: 'column' } }))
+    const byTags = await chartOf(token)
+    assert.equal(byTags.layout, 'table')
+    assert.equal(byTags.viewType, 'chart')
+    assert.equal(byTags.chart, null)
+    assert.ok(byTags.rows.some((r) => r.id === rows.A), '표는 행을 싣는다')
 
     // 날짜 계산(가장 이른 날짜)은 Y값이 아니다 — 앱과 같이 저장만 해 두고 공개 화면은 표로
     unwrap(await updateView(boss.ctx, db.defaultViewId, { groupBy: { property_id: status, calculation: { property_id: due, function: 'earliest_date' } } }))
@@ -773,5 +777,200 @@ describe('⑨ ★ 갤러리의 미리보기 그림 (PV-5)', () => {
     const table = await tableOf(g.token)
     assert.ok(table !== null && typeof table !== 'string')
     assert.ok(table.rows.every((r) => r.preview === null))
+  })
+})
+
+// ── PV-6 — 날짜 · 숫자 · 글로 묶은 보드 · 차트 ─────────────────────────────
+
+describe('⑩ ★ 날짜 · 숫자 · 글로 묶은 보드 · 차트 (PV-6)', () => {
+  /** 공개 화면의 오늘(UTC · `publicToday`)에서 n 일 떨어진 날. */
+  const dayFrom = (n: number): string => {
+    const t = new Date(`${publicToday()}T00:00:00Z`)
+    t.setUTCDate(t.getUTCDate() + n)
+    return t.toISOString().slice(0, 10)
+  }
+
+  /**
+   * 묶을 표 — 기한(날짜) · 점수(숫자) · 메모(글) · 태그(다중 선택). 행(모두 공개로 열린다):
+   *   A 오늘 · 3 · 가방 / B 어제 · 12 · 고양이 / C 3일 뒤 · 17 · 까치(ㄲ → ㄱ) / D 20일 전 · 25 · 나무 / E 100일 뒤 · -4 · apple /
+   *   F 2001-02-03(토) · 40 · 123 / G 값 없음
+   */
+  async function bucketed() {
+    const ws = await createBareWorkspace('공개 버킷')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique('공개 버킷') }))
+    const ds = db.dataSourceId
+    for (const [name, type] of [['기한', 'date'], ['점수', 'number'], ['메모', 'rich_text'], ['태그', 'multi_select']] as const) {
+      unwrap(await addProperty(boss.ctx, ds, { name, type }))
+    }
+    const schema = unwrap(await getSchema(boss.ctx, ds))
+    const id = (name: string) => schema.properties.find((p) => p.name === name)!.id
+    const [title, due, score, memo, tags] = [id('이름'), id('기한'), id('점수'), id('메모'), id('태그')]
+    const specs: [string, string | null, number | null, string | null][] = [
+      ['A', dayFrom(0), 3, '가방'],
+      ['B', dayFrom(-1), 12, '고양이'],
+      ['C', dayFrom(3), 17, '까치'],
+      ['D', dayFrom(-20), 25, '나무'],
+      ['E', dayFrom(100), -4, 'apple'],
+      ['F', '2001-02-03', 40, '123'],
+      ['G', null, null, null],
+    ]
+    const rows: Record<string, string> = {}
+    for (const [name, date, n, text] of specs) {
+      rows[name] = unwrap(
+        await createRow(boss.ctx, ds, {
+          cells: [
+            { propertyId: title, value: { type: 'title', title: [textRun(name)] } as CellValue },
+            ...(date === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start: date } } as CellValue }]),
+            ...(n === null ? [] : [{ propertyId: score, value: { type: 'number', number: n } as CellValue }]),
+            ...(text === null ? [] : [{ propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(text)] } as CellValue }]),
+          ],
+        }),
+      ).id
+    }
+    const token = unwrap(await publishPage(boss.ctx, db.id)).token!
+    return { boss, db, ds, due, score, memo, tags, rows, token }
+  }
+  type Fixture = Awaited<ReturnType<typeof bucketed>>
+
+  /** 앱의 보드 — 숨기지 않은 열의 [키 · 이름 · 행](보는 사람의 오늘 = 공개 화면의 오늘). */
+  const appBoard = async (b: Fixture, propertyName: string) => {
+    const page = unwrap(await queryGroups(b.boss.ctx, b.db.defaultViewId, { today: publicToday() }))
+    return page.groups.filter((g) => !g.hidden).map((g) => [g.key, groupLabel(page.propertyType, propertyName, g, page), g.rows.map((r) => r.id).sort()])
+  }
+  /** 공개 보드 — 화면과 같은 열 짓기(`buildBoardColumns`)의 [키 · 이름 · 행]. */
+  const publicBoard = async (b: Fixture) => {
+    const table = await tableOf(b.token)
+    assert.ok(table !== null && typeof table !== 'string')
+    assert.equal(table.layout, 'board', JSON.stringify(table.board))
+    return buildBoardColumns(table.board!.spec, table.rows, (r) => r.groupKey ?? '').map((c) => [c.key, c.name, c.rows.map((r) => r.id).sort()])
+  }
+  /** 앱의 차트 — 숨기지 않은 막대의 [키 · 이름 · 개수 · 값]. */
+  const appChart = async (b: Fixture, propertyName: string) => {
+    const page = unwrap(await queryGroupSummary(b.boss.ctx, b.db.defaultViewId, { today: publicToday() }))
+    return page.groups
+      .filter((g) => !g.hidden)
+      .map((g) => [g.key, groupLabel(page.propertyType, propertyName, g, page), g.count, (g.value as { value?: unknown } | null)?.value ?? null])
+  }
+  const publicChart = async (b: Fixture) => {
+    const table = await tableOf(b.token)
+    assert.ok(table !== null && typeof table !== 'string')
+    assert.equal(table.layout, 'chart')
+    return table.chart!.groups.map((g) => [g.key, g.name, g.count, (g.value as { value?: unknown } | null)?.value ?? null])
+  }
+
+  test('★ 날짜(월 · 주 — 일요일 시작) — 열은 앱의 그룹과 같은 키 · 이름 · 차례 · 같은 행 · 값 없음 "기한 없음" 열이 맨 앞', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await bucketed()
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'board', groupBy: { property_id: b.due } }))
+    const month = await publicBoard(b)
+    assert.deepEqual(month, await appBoard(b, '기한'))
+    assert.deepEqual(month[0], ['', '기한 없음', [b.rows.G]])
+    assert.deepEqual(month[1], ['2001-02-01', '2001년 2월', [b.rows.F]], '가장 이른 달이 값 없음 다음')
+
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: { property_id: b.due, date_unit: 'week', week_start: 'sunday' } }))
+    const week = await publicBoard(b)
+    assert.deepEqual(week, await appBoard(b, '기한'))
+    assert.deepEqual(week[1], ['2001-01-28', '2001년 1월 28일 주', [b.rows.F]], '토요일(2/3)의 주는 그 전 일요일')
+  })
+
+  test('★ 상대 날짜 — 공개 화면의 오늘(UTC)로 · 앱과 같은 열', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await bucketed()
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'board', groupBy: { property_id: b.due, date_unit: 'relative' } }))
+    const relative = await publicBoard(b)
+    assert.deepEqual(relative, await appBoard(b, '기한'))
+    assert.deepEqual(relative.map(([, name]) => name), ['기한 없음', '그 전', '지난 30일', '어제', '오늘', '앞으로 7일', '그 뒤'])
+    assert.deepEqual(relative.find(([key]) => key === 'today')?.[2], [b.rows.A])
+  })
+
+  test('★ 숫자(크기 10) — 숨긴 그룹은 뺀다 · 내림 · 값 없음 열도 숨긴다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await bucketed()
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'board', groupBy: { property_id: b.score, number_size: 10, hidden: ['10'] } }))
+    const number = await publicBoard(b)
+    assert.deepEqual(number, await appBoard(b, '점수'))
+    assert.deepEqual(number.map(([key, name]) => `${key}:${name}`), [':점수 없음', '-10:-10 ~ 0', '0:0 ~ 10', '20:20 ~ 30', '40:40 ~ 50'], '숨긴 10 ~ 20 은 없다')
+
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: { property_id: b.score, number_size: 10, hidden: [''], sort: 'descending' } }))
+    const down = await publicBoard(b)
+    assert.deepEqual(down, await appBoard(b, '점수'))
+    assert.deepEqual(down.map(([key]) => key), ['40', '20', '10', '0', '-10'])
+  })
+
+  test('★ 글 — 첫 글자(한글은 초성 · 된소리는 예사소리로) · 글 그대로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await bucketed()
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'board', groupBy: { property_id: b.memo, text_by: 'first' } }))
+    const first = await publicBoard(b)
+    assert.deepEqual(first, await appBoard(b, '메모'))
+    assert.deepEqual(first, [
+      ['', '메모 없음', [b.rows.G]],
+      ['ㄱ', 'ㄱ', [b.rows.A, b.rows.B, b.rows.C].sort()],
+      ['ㄴ', 'ㄴ', [b.rows.D]],
+      ['A', 'A', [b.rows.E]],
+      ['#', '그 밖', [b.rows.F]],
+    ])
+
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: { property_id: b.memo } }))
+    const exact = await publicBoard(b)
+    assert.deepEqual(exact, await appBoard(b, '메모'))
+    assert.equal(exact.length, 7, '값 없음 + 글 여섯')
+  })
+
+  test('★ 차트 — 날짜 · 숫자 · 글의 X축은 앱의 차트와 같은 막대(키 · 이름 · 개수 · 합계 · 차례) · 숨긴 그룹은 뺀다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await bucketed()
+    const cases = [
+      { name: '기한', groupBy: { property_id: b.due, calculation: { property_id: b.score, function: 'sum' as const } } },
+      { name: '기한', groupBy: { property_id: b.due, date_unit: 'relative' as const } },
+      { name: '점수', groupBy: { property_id: b.score, number_size: 10, hidden: ['10'] } },
+      { name: '메모', groupBy: { property_id: b.memo, text_by: 'first' as const } },
+    ]
+    for (const c of cases) {
+      unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'chart', groupBy: c.groupBy, chart: { kind: 'column' } }))
+      const bars = await publicChart(b)
+      assert.deepEqual(bars, await appChart(b, c.name), JSON.stringify(c.groupBy))
+      assert.equal(bars[0]![1], `${c.name} 없음`, '값 없음 막대가 맨 앞')
+    }
+    const sums = await (async () => {
+      unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: cases[0]!.groupBy }))
+      return publicChart(b)
+    })()
+    assert.deepEqual(sums.find(([key]) => key === '2001-02-01'), ['2001-02-01', '2001년 2월', 1, 40], '그 달의 점수 합')
+    const number = await (async () => {
+      unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: cases[2]!.groupBy }))
+      return publicChart(b)
+    })()
+    assert.ok(!number.some(([key]) => key === '10'), '숨긴 구간은 막대가 없다')
+  })
+
+  test('아직 그리지 못하는 기준은 그대로 — 다중 선택 · 상태의 범주 단위는 표 · 하위 그룹은 빼고 그린다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await bucketed()
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'board', groupBy: { property_id: b.tags } }))
+    const byTags = await tableOf(b.token)
+    assert.ok(byTags !== null && typeof byTags !== 'string')
+    assert.equal(byTags.layout, 'table')
+    assert.equal(byTags.board, null)
+    assert.equal(byTags.rows.length, 7, '행은 그대로')
+
+    unwrap(await addProperty(b.boss.ctx, b.ds, { name: '진행', type: 'status' }))
+    const progress = unwrap(await getSchema(b.boss.ctx, b.ds)).properties.find((p) => p.name === '진행')!.id
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: { property_id: progress, status_by: 'group' } }))
+    assert.equal(((await tableOf(b.token)) as { layout: string }).layout, 'table', '범주 단위는 표')
+
+    // 하위 그룹(가로줄)은 읽지 않는다 — 열은 앱의 열과 같고 행은 모두 열에 선다
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { groupBy: { property_id: b.due }, subGroupBy: { property_id: b.score } }))
+    const app = unwrap(await queryGroups(b.boss.ctx, b.db.defaultViewId, { today: publicToday() }))
+    assert.ok(app.sub !== null, '앱은 가로줄을 그린다')
+    const flat = await publicBoard(b)
+    assert.deepEqual(flat.map(([key, name]) => [key, name]), app.groups.filter((g) => !g.hidden).map((g) => [g.key, groupLabel(app.propertyType, '기한', g, app)]))
+    assert.equal(flat.flatMap(([, , ids]) => ids as string[]).length, 7)
+
+    // 차트의 쌓기도 읽지 않는다 — 막대는 그룹 합계(앱의 그룹 개수와 같다)
+    unwrap(await updateView(b.boss.ctx, b.db.defaultViewId, { type: 'chart', chart: { kind: 'column' } }))
+    const stacked = await publicChart(b)
+    assert.deepEqual(stacked.map(([key, , count]) => [key, count]), (await appChart(b, '기한')).map(([key, , count]) => [key, count]))
   })
 })
