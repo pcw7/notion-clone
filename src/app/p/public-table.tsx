@@ -19,7 +19,7 @@ import type { PublicBoard, PublicColumn, PublicRow, PublicRowProperties, PublicT
 import { PUBLIC_TABLE_MAX_ROWS } from '@/lib/publish/public-database'
 import { monthCells, PUBLIC_WINDOW_MAX_ROWS, tabHref, windowHref } from '@/lib/publish/public-window'
 import type { PublicPageView } from '@/lib/publish/public-read'
-import { RichText, UNTITLED, publicHref, titleText } from './public-blocks'
+import { RichText, UNTITLED, publicFileHref, publicHref, titleText } from './public-blocks'
 import { checkboxLabel, publicCell } from './public-cells'
 import { PublicChartView } from './public-chart'
 import { PublicMap } from './public-map-lazy'
@@ -105,9 +105,40 @@ function CardProps({ table, row, view }: { table: PublicTable; row: PublicRow; v
   )
 }
 
+/**
+ * 갤러리 카드의 미리보기 그림(PV-5) — 카드의 맨 위. 올린 이미지는 공개 파일 길(커버는 행 id · 본문 이미지는 그 블록 id)·
+ * 바깥 주소는 그대로 · 내장 커버는 배경. referrer 를 보내지 않는다. 그림이 없으면 그리지 않는다.
+ */
+function CardPreview({ table, row, view }: { table: PublicTable; row: PublicRow; view: PublicPageView }): ReactNode {
+  const preview = row.preview
+  if (table.layout !== 'gallery' || preview === null) return null
+  const fit = table.cardAspect === 'contain' ? 'contain' : 'cover'
+  return (
+    <div
+      className="pub-card-cover"
+      data-testid="public-card-cover"
+      data-preview={preview.kind}
+      style={preview.kind === 'background' ? { background: preview.background } : undefined}
+    >
+      {preview.kind !== 'background' && (
+        // eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로)
+        <img
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          data-testid="public-card-image"
+          style={{ objectFit: fit }}
+          src={preview.kind === 'url' ? preview.url : preview.kind === 'cover' ? publicFileHref(view, row.id, 'cover') : publicFileHref(view, preview.blockId, 'image')}
+        />
+      )}
+    </div>
+  )
+}
+
 function RowCard({ table, row, view }: { table: PublicTable; row: PublicRow; view: PublicPageView }): ReactNode {
   return (
     <div className="pub-card" data-testid="public-card" data-row-id={row.id}>
+      <CardPreview table={table} row={row} view={view} />
       <RowTitle row={row} view={view} />
       <CardProps table={table} row={row} view={view} />
     </div>

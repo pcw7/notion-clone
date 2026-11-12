@@ -14,6 +14,11 @@ import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createPage, titleFromPlainText } from '../block/page.ts'
+import { savePageBody } from '../block/save-page-body.ts'
+import type { EditorBlock } from '../editor/document.ts'
+import { uploadFile } from '../file/file.ts'
+import { setFileStorage } from '../file/storage.ts'
+import { readPublicBlockFile } from './public-file.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase, createInlineDatabase } from '../database/database.ts'
 import { createFormView } from '../database/form.ts'
@@ -646,5 +651,127 @@ describe('⑧ ★ 뷰 탭 (PV-4)', () => {
     const swapped = await read([two.gallery])
     assert.equal(swapped.databases.get(one.id)?.layout, 'table', '첫째는 자기 뷰가 아니라서 첫 뷰')
     assert.equal(swapped.databases.get(two.id)?.layout, 'gallery')
+  })
+})
+
+describe('⑨ ★ 갤러리의 미리보기 그림 (PV-5)', () => {
+  const store = new Map<string, Uint8Array>()
+  before(() => {
+    setFileStorage({
+      kind: 'memory',
+      async put(key, bytes) { store.set(key, bytes) },
+      async read(key) { return store.get(key) ?? null },
+      async remove(key) { store.delete(key) },
+    })
+  })
+  after(() => setFileStorage(null))
+
+  const PNG = (fill: number): Uint8Array => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, fill, fill, fill, fill])
+  const upload = async (boss: Awaited<ReturnType<typeof board>>['boss'], fill: number): Promise<string> => {
+    const r = await uploadFile(boss.ctx, { bytes: PNG(fill), mime: 'image/png', originalName: null })
+    assert.ok(r.ok)
+    return r.file.id
+  }
+  const setFormat = (id: string, patch: Record<string, unknown>) =>
+    query(`UPDATE block SET format = coalesce(format, '{}'::jsonb) || $2::jsonb WHERE id = $1`, [id, JSON.stringify(patch)])
+  const imageBlock = (id: string, source: Record<string, unknown>): EditorBlock => ({ id, type: 'image', title: [], properties: { source } }) as EditorBlock
+  const body = async (boss: Awaited<ReturnType<typeof board>>['boss'], rowId: string, blocks: EditorBlock[]) =>
+    assert.ok((await savePageBody(boss.ctx, rowId, { blocks })).ok)
+
+  /**
+   * 갤러리 데이터베이스 — 행 C(올린 커버 · 본문 이미지도 있다) · I(본문: 토글 안 이미지가 맨 뒤 이미지보다 먼저) · X(바깥 주소 이미지) ·
+   * N(아무것도 없다) · 닫힌 행 K(상속을 끊음) · 휴지통 행 T · 템플릿 — 닫힌 셋도 커버 · 이미지를 가진다.
+   */
+  async function gallery() {
+    const ws = await createBareWorkspace('공개 갤러리')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique('공개 갤러리') }))
+    const ds = db.dataSourceId
+    const row = async () => unwrap(await createRow(boss.ctx, ds, {})).id
+    const ids = { C: await row(), I: await row(), X: await row(), N: await row(), K: await row(), T: await row() }
+    const template = unwrap(await createTemplate(boss.ctx, ds, { title: 'T' })).id
+    const coverFile = await upload(boss, 11)
+    for (const id of [ids.C, ids.K, ids.T, template]) await setFormat(id, { page_cover: { type: 'file', file_id: await upload(boss, 12) } })
+    await setFormat(ids.C, { page_cover: { type: 'file', file_id: coverFile } })
+    const nested = crypto.randomUUID()
+    const last = crypto.randomUUID()
+    const external = crypto.randomUUID()
+    const closedImage = crypto.randomUUID()
+    const cImage = crypto.randomUUID()
+    await body(boss, ids.C, [imageBlock(cImage, { type: 'file', file_id: await upload(boss, 13) })])
+    await body(boss, ids.I, [
+      { id: crypto.randomUUID(), type: 'toggle', title: [textRun('접기')], children: [imageBlock(nested, { type: 'file', file_id: await upload(boss, 14) })] } as EditorBlock,
+      imageBlock(last, { type: 'file', file_id: await upload(boss, 15) }),
+    ])
+    await body(boss, ids.X, [imageBlock(external, { type: 'external', url: 'https://example.com/a.png' })])
+    for (const id of [ids.K, ids.T, template]) await body(boss, id, [imageBlock(id === ids.K ? closedImage : crypto.randomUUID(), { type: 'file', file_id: await upload(boss, 16) })])
+    assert.ok((await stopInheriting(boss.ctx, ids.K)).ok)
+    assert.ok((await trashRow(boss.ctx, ids.T)).ok)
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { type: 'gallery' }))
+    const token = unwrap(await publishPage(boss.ctx, db.id)).token!
+    return { boss, db, ids, template, token, nested, last, external, cImage, closedImage }
+  }
+
+  const previewsOf = async (token: string) => {
+    const table = await tableOf(token)
+    assert.ok(table !== null && typeof table !== 'string')
+    assert.equal(table.layout, 'gallery')
+    return new Map(table.rows.map((r) => [r.id, r.preview]))
+  }
+
+  test('★ 본문의 첫 이미지(기본) — 깊이 우선(토글 안이 먼저) · 올린 파일은 블록 id · 바깥 주소는 그대로 · 없으면 없음 · 닫힌 행은 표에도 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await gallery()
+    const previews = await previewsOf(g.token)
+    assert.deepEqual([...previews.keys()].sort(), [g.ids.C, g.ids.I, g.ids.N, g.ids.X].sort(), '공개로 열리는 행만 — 상속을 끊은 행 · 휴지통 · 템플릿은 없다')
+    assert.deepEqual(previews.get(g.ids.I), { kind: 'image', blockId: g.nested })
+    assert.deepEqual(previews.get(g.ids.C), { kind: 'image', blockId: g.cImage })
+    assert.deepEqual(previews.get(g.ids.X), { kind: 'url', url: 'https://example.com/a.png' })
+    assert.equal(previews.get(g.ids.N), null)
+    assert.ok(!JSON.stringify([...previews]).includes(g.closedImage), '닫힌 행의 이미지 블록 id 는 출력에 없다')
+  })
+
+  test('★ 페이지 커버 — 올린 이미지는 cover(행 id 로 연다) · 내장은 배경 · 주소는 url · 닫힌 행은 없다 · 파일 id 는 출력에 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await gallery()
+    await setFormat(g.ids.I, { page_cover: { type: 'gallery', gallery: 'gradient_1' } })
+    await setFormat(g.ids.X, { page_cover: { type: 'external', url: 'https://example.com/cover.png' } })
+    unwrap(await updateView(g.boss.ctx, g.db.defaultViewId, { gallery: { cover: 'page_cover' } }))
+    const previews = await previewsOf(g.token)
+    assert.deepEqual(previews.get(g.ids.C), { kind: 'cover' })
+    assert.equal(previews.get(g.ids.I)?.kind, 'background')
+    assert.deepEqual(previews.get(g.ids.X), { kind: 'url', url: 'https://example.com/cover.png' })
+    assert.equal(previews.get(g.ids.N), null)
+    assert.ok(![g.ids.K, g.ids.T, g.template].some((id) => previews.has(id)), '공개로 열리지 않는 행')
+    const files = await query<{ id: string }>(`SELECT id FROM file WHERE workspace_id = $1`, [g.boss.ctx.workspaceId])
+    const out = JSON.stringify([...previews])
+    assert.ok(files.every((f) => !out.includes(f.id)), '파일 id 는 싣지 않는다')
+  })
+
+  test('미리보기 "없음" — 어떤 행에도 그림이 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await gallery()
+    unwrap(await updateView(g.boss.ctx, g.db.defaultViewId, { gallery: { cover: 'none' } }))
+    assert.ok([...(await previewsOf(g.token)).values()].every((p) => p === null))
+  })
+
+  test('★ 만든 주소가 실제로 열린다 — 열리는 행의 커버 · 본문 이미지는 파일을 주고 닫힌 행의 것은 닫혀 있다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await gallery()
+    assert.equal((await readPublicBlockFile(g.token, g.ids.C, 'cover'))?.bytes[8], 11)
+    assert.equal((await readPublicBlockFile(g.token, g.nested, 'image'))?.bytes[8], 14)
+    assert.equal((await readPublicBlockFile(g.token, g.ids.K, 'cover')), null, '상속을 끊은 행의 커버')
+    assert.equal((await readPublicBlockFile(g.token, g.closedImage, 'image')), null, '상속을 끊은 행의 본문 이미지')
+    assert.equal((await readPublicBlockFile(g.token, g.ids.T, 'cover')), null, '휴지통 행의 커버')
+    assert.equal((await readPublicBlockFile(g.token, g.template, 'cover')), null, '템플릿의 커버')
+  })
+
+  test('갤러리가 아닌 뷰는 그림을 싣지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await gallery()
+    unwrap(await updateView(g.boss.ctx, g.db.defaultViewId, { type: 'list' }))
+    const table = await tableOf(g.token)
+    assert.ok(table !== null && typeof table !== 'string')
+    assert.ok(table.rows.every((r) => r.preview === null))
   })
 })

@@ -22,10 +22,10 @@ import { withReadTransaction } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { imageContentPath, imageDisplayUrl, readImageSource } from '../block/image.ts'
 import { coverBackground, readPageCover } from '../block/page-cover.ts'
-import type { GalleryLayout } from './gallery.ts'
+import { GALLERY_COVER_MAX_DEPTH, type GalleryLayout } from './gallery.ts'
 
 /** 본문을 걷는 깊이의 상한(Y-1) — 그보다 깊은 이미지는 보지 않는다(편집기의 중첩도 그만큼 깊지 않다). */
-const MAX_COVER_DEPTH = 10
+const MAX_COVER_DEPTH = GALLERY_COVER_MAX_DEPTH
 
 /**
  * 카드의 미리보기 하나 — 이미지 주소(글) 또는 내장 커버의 배경(PC-5 — 단색 · 그라디언트는 그림이 아니다). 글을 그대로 둔 것은 2f-2 부터의

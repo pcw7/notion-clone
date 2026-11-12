@@ -33156,6 +33156,63 @@ async function main() {
       await api('DELETE', `/pages/${db.id}/publish`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 갤러리의 미리보기 그림 (PV-5 · F-06-08)')) { try {
+      // 게시된 갤러리의 카드가 앱과 같은 미리보기를 그린다 — 본문의 첫 이미지(기본) · 페이지 커버 · 없음. 그림은 공개 파일 길(블록 id · 행 id)로
+      // 열린다(세션 없이 200 · 그림). 그림이 없는 카드는 그림 자리도 없다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 정본 [보강 PV-1] ⑥.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const form = new FormData()
+      form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), '카드.png')
+      const fileId = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      const db = (await api('POST', '/databases', { name: `공개 카드 ${stamp}`, privateTop: true })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const [withCover, withBody, plain] = [await row('커버 행'), await row('본문 행'), await row('빈 행')]
+      const imageId = randomUUID()
+      await saveBody(withBody, { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('앞 문단')], properties: {}, format: {}, children: [] }, { id: imageId, type: 'image', title: [], properties: { source: { type: 'file', file_id: fileId } }, format: {}, children: [] }] })
+      await api('PATCH', `/pages/${withCover}`, { cover: { type: 'file', file_id: fileId } })
+      const typed = await api('PATCH', `/views/${view}`, { type: 'gallery' })
+      check('PV-5 · 첫 뷰를 갤러리로 바꾼다', typed.status === 200, JSON.stringify(typed.body).slice(0, 200))
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('PV-5 · 데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        return waitFor(`!!document.querySelector('[data-testid="public-db-gallery"]')`, 15000)
+      }
+      const cardImg = (id) => `[data-testid="public-card"][data-row-id="${id}"] [data-testid="public-card-image"]`
+      const loaded = (id) => `(() => { const img = document.querySelector('${cardImg(id)}'); return !!img && img.complete && img.naturalWidth > 0 })()`
+      const srcOf = (id) => evaluate(`document.querySelector('${cardImg(id)}')?.getAttribute('src') ?? ''`)
+
+      await open()
+      const bodyPath = `/p/${token}/blocks/${imageId}/image`
+      check('★ 기본(본문의 첫 이미지) — 본문 행의 카드는 그 이미지 블록의 공개 경로 그림', (await waitFor(loaded(withBody), 15000)) && (await srcOf(withBody)) === bodyPath, await srcOf(withBody))
+      check('★ 그림이 없는 카드(커버만 있는 행 · 빈 행)는 그림 자리도 없다',
+        await evaluate(`!document.querySelector('${cardImg(withCover)}') && !document.querySelector('${cardImg(plain)}') && document.querySelectorAll('[data-testid="public-card-cover"]').length === 1`))
+      const served = await rawFetch(`${BASE}${bodyPath}`)
+      check('★ 본문 이미지의 공개 경로 — 세션 없이 200 · 그림', served.status === 200 && (served.headers.get('content-type') ?? '').startsWith('image/'), `${served.status} ${served.headers.get('content-type')}`)
+
+      await api('PATCH', `/views/${view}`, { gallery: { cover: 'page_cover' } })
+      await open()
+      const coverPath = `/p/${token}/blocks/${withCover}/cover`
+      check('★ 페이지 커버 — 커버 행의 카드는 행 id 의 공개 커버 경로 그림 · 본문 행은 그림이 없다',
+        (await waitFor(loaded(withCover), 15000)) && (await srcOf(withCover)) === coverPath && (await evaluate(`!document.querySelector('${cardImg(withBody)}')`)), await srcOf(withCover))
+      const coverServed = await rawFetch(`${BASE}${coverPath}`)
+      check('★ 커버의 공개 경로 — 세션 없이 200 · 그림', coverServed.status === 200 && (coverServed.headers.get('content-type') ?? '').startsWith('image/'), String(coverServed.status))
+
+      await api('PATCH', `/views/${view}`, { gallery: { cover: 'none' } })
+      await open()
+      check('★ 미리보기 "없음" — 어떤 카드에도 그림이 없다', await evaluate(`document.querySelectorAll('[data-testid="public-card"]').length === 3 && !document.querySelector('[data-testid="public-card-cover"]')`))
+
+      await api('DELETE', `/pages/${db.id}/publish`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('공개 화면의 지도 (MP-3 · F-06-08)')) { try {
       // 첫 뷰가 지도인 게시 데이터베이스는 공개 화면도 핀으로 — 장소가 있는 행마다 핀 하나(장소 없는 행 · 필터 밖의 행은 없다) · 핀을 누르면 말풍선에
       // 이름 · 행 링크 → 링크가 공개 행 페이지로 간다 · 101개 → 핀 100 + "100개까지 보입니다". 타일은 끈 판(MAP_TILE_URL=off)이라 출처 표시가 없다.
