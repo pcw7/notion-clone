@@ -13,22 +13,25 @@
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { createPage, titleFromPlainText } from '../block/page.ts'
 import { textRun } from '../contracts/rich-text.ts'
-import { createDatabase } from '../database/database.ts'
+import { createDatabase, createInlineDatabase } from '../database/database.ts'
+import { createFormView } from '../database/form.ts'
 import { addDataSource, trashDataSource } from '../database/data-source.ts'
 import { applyRecordLayout } from '../database/layout.ts'
 import { addProperty, addSelectOption, deleteProperty, getSchema } from '../database/property.ts'
 import type { CellValue } from '../database/property-types.ts'
 import { createRow, trashRow } from '../database/row.ts'
 import { createTemplate } from '../database/template.ts'
-import { setPersonalView, setViewColumn, updateView } from '../database/view.ts'
+import { createView, setPersonalView, setViewColumn, updateView } from '../database/view.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { query } from '../db/pool.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { stopInheriting } from '../permissions/acl.ts'
 import { resolvePublicPage } from './public-access.ts'
-import { readPublicRowPropertiesIn, readPublicTableIn } from './public-database.ts'
+import { publicTableOf, readPublicRowPropertiesIn, readPublicTableIn } from './public-database.ts'
 import { publishPage, unpublishPage } from './public-link.ts'
+import { readPublicPage } from './public-read.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -544,5 +547,104 @@ describe('⑦ ★ 지도의 자기 질의 (MP-3)', () => {
     assert.equal(table.layout, 'table')
     assert.equal(table.viewType, 'map')
     assert.equal(table.map, null)
+  })
+})
+
+// ── PV-4 — 뷰 탭 ─────────────────────────────────────────────────────────
+
+describe('⑧ ★ 뷰 탭 (PV-4)', () => {
+  /** 뷰가 표(기본) · 보드 · 폼 · 갤러리 순인 데이터베이스 — 행 하나(점수 30) · 보드 뷰는 점수 ≥ 25 필터. */
+  async function tabbed(boss: Awaited<ReturnType<typeof board>>['boss'], name: string) {
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique(name) }))
+    unwrap(await addProperty(boss.ctx, db.dataSourceId, { name: '점수', type: 'number' }))
+    const score = unwrap(await getSchema(boss.ctx, db.dataSourceId)).properties.find((p) => p.name === '점수')!.id
+    unwrap(await createRow(boss.ctx, db.dataSourceId, { cells: [{ propertyId: score, value: { type: 'number', number: 30 } as CellValue }] }))
+    unwrap(await addProperty(boss.ctx, db.dataSourceId, { name: '단계', type: 'select' }))
+    const stage = unwrap(await getSchema(boss.ctx, db.dataSourceId)).properties.find((p) => p.name === '단계')!.id
+    const boardView = unwrap(await createView(boss.ctx, db.id, { type: 'board', name: '보드 탭', groupBy: { property_id: stage } }))
+    const form = unwrap(await createFormView(boss.ctx, db.id, { name: '신청 폼' }))
+    const gallery = unwrap(await createView(boss.ctx, db.id, { type: 'gallery' }))
+    unwrap(await updateView(boss.ctx, boardView.id, { filter: { property_id: score, operator: 'greater_than', value: 99 } }))
+    return { db, score, ids: { first: db.defaultViewId, board: boardView.id, form: form.viewId, gallery: gallery.id } }
+  }
+
+  const tableWith = async (databaseId: string, chosen: readonly string[]) =>
+    withReadTransaction(async (tx) => {
+      const table = await publicTableOf(tx, databaseId, null, chosen)
+      assert.ok(table !== null)
+      return table
+    })
+
+  test('탭 — 앱의 탭 차례 · 폼 뷰는 뺀다 · 이름이 비면 빈 글자(화면이 레이아웃 이름으로 채운다) · 안 고르면 첫 뷰', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await board()
+    const { db, ids } = await tabbed(boss, '탭 있는 표')
+    const table = await tableWith(db.id, [])
+    assert.deepEqual(table.tabs.map((x) => x.id), [ids.first, ids.board, ids.gallery])
+    assert.deepEqual(table.tabs.map((x) => x.type), ['table', 'board', 'gallery'])
+    assert.equal(table.tabs[1]!.name, '보드 탭')
+    assert.ok(!table.tabs.some((x) => x.id === ids.form), '폼 뷰는 탭이 아니다')
+    assert.equal(table.viewId, ids.first)
+    assert.equal(table.layout, 'table')
+  })
+
+  test('v 가 뷰를 고른다 — 그 뷰의 레이아웃 · 공유 필터 · 폼 뷰 id 는 무시하고 첫 뷰', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await board()
+    const { db, ids } = await tabbed(boss, '고르는 표')
+    const asGallery = await tableWith(db.id, [ids.gallery])
+    assert.equal(asGallery.viewId, ids.gallery)
+    assert.equal(asGallery.layout, 'gallery')
+    assert.equal(asGallery.rows.length, 1)
+    // 보드 뷰의 필터(점수 > 99)가 걸린다 — 첫 뷰와 다른 행 집합이다. (그룹 기준이 없으면 보드가 아니라 표로 그린다)
+    const asBoard = await tableWith(db.id, [ids.board])
+    assert.equal(asBoard.viewId, ids.board)
+    assert.equal(asBoard.viewType, 'board')
+    assert.equal(asBoard.rows.length, 0, '고른 뷰 자신의 필터')
+    const form = await tableWith(db.id, [ids.form])
+    assert.equal(form.viewId, ids.first, '폼 뷰 id 는 탭이 아니다')
+    assert.equal(form.layout, 'table')
+  })
+
+  test('★ 남의 뷰 · 모르는 id 는 무시 — v 가 없을 때와 같은 출력 · 다른 데이터베이스의 뷰는 새지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await board()
+    const a = await tabbed(boss, '내 표')
+    const b = await tabbed(boss, '남의 표')
+    const plain = await tableWith(a.db.id, [])
+    for (const stray of [[b.ids.gallery], [b.ids.board], ['00000000-0000-0000-0000-000000000000'], ['nope'], ['']]) {
+      assert.deepEqual(await tableWith(a.db.id, stray), plain, JSON.stringify(stray))
+    }
+    // 낯선 id 가 앞에 있어도 자기 뷰인 첫 값을 고른다
+    assert.equal((await tableWith(a.db.id, [b.ids.gallery, a.ids.gallery])).viewId, a.ids.gallery)
+    assert.ok(!JSON.stringify(plain).includes(b.ids.gallery), '다른 데이터베이스의 뷰 id 가 출력에 없다')
+  })
+
+  test('★ 한 페이지의 데이터베이스 둘 — 각자 자기 v 를 고른다 (인라인 · readPublicPage)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await board()
+    const doc = (await createPage(boss.ctx, { privateTop: true, title: titleFromPlainText(unique('문서')) })).id
+    const mk = async (name: string) => {
+      const made = await createInlineDatabase(boss.ctx, { parentPageId: doc, name })
+      assert.ok(made.ok, JSON.stringify(made))
+      const g = unwrap(await createView(boss.ctx, made.value.id, { type: 'gallery' }))
+      const l = unwrap(await createView(boss.ctx, made.value.id, { type: 'list' }))
+      return { id: made.value.id, gallery: g.id, list: l.id }
+    }
+    const one = await mk(unique('첫째'))
+    const two = await mk(unique('둘째'))
+    const token = unwrap(await publishPage(boss.ctx, doc)).token!
+    const read = async (v: readonly string[]) => {
+      const r = await readPublicPage(token, undefined, { window: { v } })
+      assert.ok(r.ok, JSON.stringify(r))
+      return r.value
+    }
+    const both = await read([one.gallery, two.list])
+    assert.equal(both.databases.get(one.id)?.layout, 'gallery')
+    assert.equal(both.databases.get(two.id)?.layout, 'list')
+    assert.deepEqual(both.query.v, [one.gallery, two.list], '탭 링크가 다른 v 를 둘 수 있게 주소의 값이 실린다')
+    const swapped = await read([two.gallery])
+    assert.equal(swapped.databases.get(one.id)?.layout, 'table', '첫째는 자기 뷰가 아니라서 첫 뷰')
+    assert.equal(swapped.databases.get(two.id)?.layout, 'gallery')
   })
 })

@@ -33053,6 +33053,109 @@ async function main() {
       await api('DELETE', `/pages/${db.id}/publish`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 화면의 뷰 탭 (PV-4 · F-06-08)')) { try {
+      // 게시된 데이터베이스의 뷰(폼 빼고)가 탭으로 — 링크다. ?v= 로 고르고 · 탭을 누르면 그 v 만 바꾸고 m · from 은 뺀다. 모르는 v 는 첫 뷰.
+      // 한 페이지의 인라인 데이터베이스 둘은 각자 자기 v 를 고른다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 정본 [보강 PV-1] ⑤.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `공개 탭 ${stamp}`, privateTop: true })).body.database
+      const first = db.defaultViewId
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '기한', type: 'date' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const titleProp = (await api('GET', `/views/${first}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      await api('PATCH', `/views/${first}`, { name: '전체 표' })
+      for (const [t, s] of [['가', '2031-03-10'], ['나', '2031-03-20']]) {
+        await api('POST', `/views/${first}/rows`, {
+          cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: due, value: { type: 'date', date: { start: s } } }],
+        })
+      }
+      const boardId = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '단계 보드', groupBy: { property_id: stage } })).body.view.id
+      const calId = (await api('POST', `/databases/${db.id}/views`, { type: 'calendar', name: '일정 달력' })).body.view.id
+      const calPatch = await api('PATCH', `/views/${calId}`, { calendar: { date_property_id: due } })
+      check('PV-4 · 달력 뷰에 기한을 건다', calPatch.status === 200, JSON.stringify(calPatch.body).slice(0, 200))
+      const formMade = (await api('POST', `/databases/${db.id}/forms`, { name: `숨은 신청 폼 ${stamp}` })).body?.form
+      check('PV-4 · 폼 뷰도 만든다', typeof formMade?.viewId === 'string')
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('PV-4 · 데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+
+      const open = async (query = '') => {
+        await send('Page.navigate', { url: `${BASE}/p/${token}${query}` })
+        return waitFor(`!!document.querySelector('[data-testid="public-table"]')`, 15000)
+      }
+      const layoutJs = `(document.querySelector('[data-testid="public-table"]')?.getAttribute('data-layout') ?? 'table')`
+      const tabsJs = `[...document.querySelectorAll('[data-testid="public-view-tab"]')].map((a) => a.textContent.trim()).join('|')`
+      const currentJs = `document.querySelector('[data-testid="public-view-tab"][aria-current="page"]')?.getAttribute('data-view-id') ?? ''`
+      const vsJs = `JSON.stringify(new URLSearchParams(location.search).getAll('v'))`
+      const tab = (id) => `[data-testid="public-view-tab"][data-view-id="${id}"]`
+
+      await open()
+      check('★ 공개 화면에 뷰 탭 3개(폼 뺀) — 앱의 차례 · 이름 그대로', (await evaluate(tabsJs)) === '전체 표|단계 보드|일정 달력', String(await evaluate(tabsJs)))
+      check('폼 뷰 이름은 문서에 없다', await evaluate(`!document.body.textContent.includes('숨은 신청 폼')`))
+      check('★ 안 고르면 첫 탭이 선택(aria-current)이고 표로 그린다', (await evaluate(currentJs)) === first && (await evaluate(layoutJs)) === 'table' && (await evaluate(`!!document.querySelector('.pub-db-table')`)))
+      check('탭은 링크다 — 스크립트 없이 열린다(a[href])', await evaluate(`[...document.querySelectorAll('[data-testid="public-view-tab"]')].every((a) => a.tagName === 'A' && a.getAttribute('href').includes('v='))`))
+
+      // 보드 탭
+      await clickSelector(tab(boardId))
+      check('★ 보드 탭을 누르면 주소에 v= 이 서고 보드로 그린다',
+        (await waitFor(`${vsJs} === ${JSON.stringify(JSON.stringify([boardId]))} && ${layoutJs} === 'board'`, 15000)) && (await evaluate(currentJs)) === boardId,
+        `${await evaluate(vsJs)} · ${await evaluate(layoutJs)}`)
+
+      // 달력 탭 → ?m= 이동
+      await open(`?v=${calId}&m=2031-03`)
+      check('★ 달력 탭(?v=&m=) — 그 뷰의 달력 · 3월의 두 행', (await evaluate(layoutJs)) === 'calendar' && (await evaluate(`document.querySelector('[data-testid="public-db-calendar"]')?.getAttribute('data-month')`)) === '2031-03'
+        && (await evaluate(`document.querySelectorAll('[data-testid="public-calendar-item"]').length`)) === 2)
+      const nextHref = await evaluate(`document.querySelector('[data-testid="public-window-next"]')?.getAttribute('href') ?? ''`)
+      check('★ 달력 다음 링크는 v 를 둔 채 m 만 옮긴다', nextHref === `/p/${token}?v=${calId}&m=2031-04`, nextHref)
+      await clickSelector('[data-testid="public-window-next"]')
+      check('★ 다음 달(4월)로 — 행이 없다', await waitFor(`document.querySelector('[data-testid="public-db-calendar"]')?.getAttribute('data-month') === '2031-04' && !document.querySelector('[data-testid="public-calendar-item"]')`, 15000))
+      // 다른 탭으로 갔다 오면 m 은 사라진다
+      await clickSelector(tab(boardId))
+      check('★ 탭을 바꾸면 m 이 주소에서 빠진다', await waitFor(`${layoutJs} === 'board' && !new URLSearchParams(location.search).has('m')`, 15000), await evaluate(`location.search`))
+      await clickSelector(tab(calId))
+      const thisMonth = new Date().toISOString().slice(0, 7)
+      check('★ 달력 탭으로 돌아오면 오늘이 든 달(이전 창을 잊는다)',
+        await waitFor(`document.querySelector('[data-testid="public-db-calendar"]')?.getAttribute('data-month') === ${JSON.stringify(thisMonth)}`, 15000), await evaluate(`location.search`))
+      check('돌아온 주소에는 v 하나뿐', (await evaluate(vsJs)) === JSON.stringify([calId]))
+
+      // 모르는 v · 폼 뷰 id → 첫 뷰
+      await open('?v=00000000-0000-0000-0000-000000000000')
+      check('★ 모르는 v 는 무시 — 첫 탭 · 표', (await evaluate(currentJs)) === first && (await evaluate(layoutJs)) === 'table')
+      await open(`?v=${formMade?.viewId}`)
+      check('폼 뷰 id 의 v 도 무시 — 첫 탭 · 표', (await evaluate(currentJs)) === first && (await evaluate(layoutJs)) === 'table')
+
+      // 인라인 데이터베이스 둘 — 각자 자기 v
+      const host = (await api('POST', '/pages', { title: `탭 호스트 ${stamp}` })).body.page.id
+      const inl = []
+      for (const name of ['첫째 표', '둘째 표']) {
+        const made = (await api('POST', `/pages/${host}/databases`, { name })).body.database
+        const gallery = (await api('POST', `/databases/${made.id}/views`, { type: 'gallery', name: '그림' })).body.view.id
+        inl.push({ id: made.id, table: made.defaultViewId, gallery })
+      }
+      const hostToken = (await api('PUT', `/pages/${host}/publish`)).body?.token
+      check('PV-4 · 인라인 데이터베이스 둘이 든 페이지를 게시한다', typeof hostToken === 'string', String(hostToken))
+      await send('Page.navigate', { url: `${BASE}/p/${hostToken}` })
+      const inlLayout = (i) => `(() => { const s = document.querySelectorAll('[data-testid="public-inline-database"]')[${i}]?.querySelector('[data-testid="public-table"]'); return s ? (s.getAttribute('data-layout') ?? 'table') : '(없음)' })()`
+      const inlTabs = (i) => `document.querySelectorAll('[data-testid="public-inline-database"]')[${i}]?.querySelectorAll('[data-testid="public-view-tab"]').length`
+      check('★ 인라인 데이터베이스마다 자기 탭(2개씩)', await waitFor(`${inlTabs(0)} === 2 && ${inlTabs(1)} === 2`, 15000), `${await evaluate(inlTabs(0))} · ${await evaluate(inlTabs(1))}`)
+      await clickSelector(`[data-database-id="${inl[0].id}"] ${tab(inl[0].gallery)}`)
+      check('★ 첫째의 그림 탭 — 첫째만 갤러리 · 둘째는 그대로', await waitFor(`${inlLayout(0)} === 'gallery' && ${inlLayout(1)} === 'table'`, 15000), `${await evaluate(inlLayout(0))} · ${await evaluate(inlLayout(1))}`)
+      check('주소에는 첫째의 v 하나', (await evaluate(vsJs)) === JSON.stringify([inl[0].gallery]))
+      await clickSelector(`[data-database-id="${inl[1].id}"] ${tab(inl[1].gallery)}`)
+      check('★ 둘째의 그림 탭 — 첫째의 선택을 두고 둘 다 갤러리', await waitFor(`${inlLayout(0)} === 'gallery' && ${inlLayout(1)} === 'gallery'`, 15000)
+        && (await evaluate(vsJs)) === JSON.stringify([inl[0].gallery, inl[1].gallery]), await evaluate(vsJs))
+      await clickSelector(`[data-database-id="${inl[0].id}"] ${tab(inl[0].table)}`)
+      check('★ 첫째를 표로 되돌려도 둘째의 v 는 남는다', await waitFor(`${inlLayout(0)} === 'table' && ${inlLayout(1)} === 'gallery'`, 15000)
+        && (await evaluate(vsJs)) === JSON.stringify([inl[1].gallery, inl[0].table]), await evaluate(vsJs))
+
+      await api('DELETE', `/pages/${host}/publish`)
+      await api('DELETE', `/pages/${db.id}/publish`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('공개 화면의 지도 (MP-3 · F-06-08)')) { try {
       // 첫 뷰가 지도인 게시 데이터베이스는 공개 화면도 핀으로 — 장소가 있는 행마다 핀 하나(장소 없는 행 · 필터 밖의 행은 없다) · 핀을 누르면 말풍선에
       // 이름 · 행 링크 → 링크가 공개 행 페이지로 간다 · 101개 → 핀 100 + "100개까지 보입니다". 타일은 끈 판(MAP_TILE_URL=off)이라 출처 표시가 없다.

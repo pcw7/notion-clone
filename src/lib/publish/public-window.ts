@@ -26,12 +26,47 @@ import { windowFrom, windowForToday, type TimelineWindow } from '../database/tim
 export const PUBLIC_WINDOW_MAX_ROWS = 200
 
 /** 주소의 창 값 — 모양은 여기서 보지 않는다(`calendarMonth` · `timelineWindow` 가 본다). */
-export type WindowQuery = { readonly m?: string | null; readonly from?: string | null }
+export type WindowQuery = {
+  readonly m?: string | null
+  readonly from?: string | null
+  /** 뷰 탭(PV-4)의 `?v=` — 여러 번 쓸 수 있다(데이터베이스마다 자기 뷰의 것을 고른다). */
+  readonly v?: readonly string[]
+}
 
-/** Next 의 `searchParams` 에서 창 값만 — 배열이면 첫 값. */
+/** `?v=` 값의 상한 — 한 화면의 데이터베이스 수보다 넉넉하게. 낱말이 길거나 쉼표가 든 값은 뷰 id 가 아니다. */
+const MAX_VIEW_PARAMS = 20
+const MAX_VIEW_PARAM_LENGTH = 64
+
+/** Next 의 `searchParams` 에서 창 값(배열이면 첫 값)과 뷰 탭 값(`v` — 모두)만. */
 export function windowQueryOf(searchParams: Readonly<Record<string, string | string[] | undefined>>): WindowQuery {
   const first = (v: string | string[] | undefined): string | null => (Array.isArray(v) ? (v[0] ?? null) : (v ?? null))
-  return { m: first(searchParams.m), from: first(searchParams.from) }
+  const all = searchParams.v === undefined ? [] : Array.isArray(searchParams.v) ? searchParams.v : [searchParams.v]
+  const v = [...new Set(all.filter((x) => x !== '' && x.length <= MAX_VIEW_PARAM_LENGTH && !x.includes(',')))].slice(0, MAX_VIEW_PARAMS)
+  return { m: first(searchParams.m), from: first(searchParams.from), v }
+}
+
+/** 데이터베이스가 자기 뷰(`ownIds` — 탭 차례)에서 고르는 뷰 — `?v=` 중 자기 뷰인 첫 값. 없으면 null(첫 뷰). */
+export function pickView(chosen: readonly string[] | undefined, ownIds: readonly string[]): string | null {
+  return (chosen ?? []).find((id) => ownIds.includes(id)) ?? null
+}
+
+/** 이전 · 다음 창의 주소 — 고른 뷰들(`v`)은 그대로 두고 창 값(`m` 또는 `from`) 하나만 싣는다. */
+export function windowHref(path: string, query: WindowQuery, key: 'm' | 'from', value: string): string {
+  const params = new URLSearchParams()
+  for (const id of query.v ?? []) params.append('v', id)
+  params.set(key, value)
+  return `${path}?${params.toString()}`
+}
+
+/**
+ * 뷰 탭의 주소(PV-4) — 이 데이터베이스의 `v` 만 바꾸고 다른 데이터베이스의 `v` 는 둔다. 날짜 창(`m` · `from`)은 다른 뷰의 창이라 뺀다.
+ * `path` 는 지금 연 페이지의 경로(`publicHref`).
+ */
+export function tabHref(path: string, query: WindowQuery, ownIds: readonly string[], viewId: string): string {
+  const params = new URLSearchParams()
+  for (const id of query.v ?? []) if (!ownIds.includes(id)) params.append('v', id)
+  params.append('v', viewId)
+  return `${path}?${params.toString()}`
 }
 
 /** DB 의 date 가 받는 해 — 이 밖은 오늘의 창으로 돌린다. */

@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { calendarMonth, monthCells, monthSpan, overlapsWindow, timelineWindow, windowQueryOf } from './public-window.ts'
+import { calendarMonth, monthCells, monthSpan, overlapsWindow, pickView, tabHref, timelineWindow, windowHref, windowQueryOf } from './public-window.ts'
 
 const TODAY = '2026-11-09'
 
@@ -34,8 +34,36 @@ describe('창 값 읽기', () => {
   })
 
   test('searchParams 에서 첫 값만', () => {
-    assert.deepEqual(windowQueryOf({ m: ['2026-01', '2026-02'], from: '2026-01-01', x: 'y' }), { m: '2026-01', from: '2026-01-01' })
-    assert.deepEqual(windowQueryOf({}), { m: null, from: null })
+    assert.deepEqual(windowQueryOf({ m: ['2026-01', '2026-02'], from: '2026-01-01', x: 'y' }), { m: '2026-01', from: '2026-01-01', v: [] })
+    assert.deepEqual(windowQueryOf({}), { m: null, from: null, v: [] })
+  })
+
+  test('?v= — 모두 읽는다 · 중복 · 빈 값 · 너무 긴 값 · 쉼표가 든 값은 버린다', () => {
+    assert.deepEqual(windowQueryOf({ v: 'a' }).v, ['a'])
+    assert.deepEqual(windowQueryOf({ v: ['a', 'b', 'a', '', 'x,y', 'z'.repeat(65)] }).v, ['a', 'b'])
+    assert.equal(windowQueryOf({ v: Array.from({ length: 30 }, (_, i) => `v${i}`) }).v?.length, 20)
+  })
+})
+
+describe('뷰 탭 (PV-4)', () => {
+  test('pickView — 자기 뷰인 첫 값 · 낯선 id 는 무시 · 없으면 null', () => {
+    assert.equal(pickView(['x', 'b', 'a'], ['a', 'b']), 'b')
+    assert.equal(pickView(['x'], ['a', 'b']), null)
+    assert.equal(pickView([], ['a']), null)
+    assert.equal(pickView(undefined, ['a']), null)
+  })
+
+  test('windowHref — 고른 뷰(v)를 두고 창 값 하나만', () => {
+    assert.equal(windowHref('/p/t', {}, 'm', '2026-04'), '/p/t?m=2026-04')
+    assert.equal(windowHref('/p/t/pg', { m: '2026-03', v: ['a', 'b'] }, 'from', '2026-05-01'), '/p/t/pg?v=a&v=b&from=2026-05-01')
+  })
+
+  test('tabHref —이 데이터베이스의 v 만 바꾼다 · 다른 데이터베이스의 v 는 둔다 · m · from 은 뺀다', () => {
+    const own = ['a1', 'a2']
+    assert.equal(tabHref('/p/t', {}, own, 'a2'), '/p/t?v=a2')
+    assert.equal(tabHref('/p/t/pg', { m: '2026-03', from: '2026-01-01', v: ['a1'] }, own, 'a2'), '/p/t/pg?v=a2', 'm · from 이 빠지고 자기 v 는 바뀐다')
+    assert.equal(tabHref('/p/t', { v: ['b1', 'a1', 'c1'] }, own, 'a2'), '/p/t?v=b1&v=c1&v=a2', '다른 데이터베이스의 v 는 그대로')
+    assert.equal(tabHref('/s/d/s', { v: ['a1', 'a2'] }, own, 'a1'), '/s/d/s?v=a1', '자기 v 가 겹쳐 있어도 하나로')
   })
 })
 
