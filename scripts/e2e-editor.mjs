@@ -1943,7 +1943,8 @@ async function main() {
       await send('Page.navigate', { url: sharedUrl })
       await waitFor(`!!document.querySelector('.blk-editor')`, 15000)
       const other = await openTab(sharedUrl)
-      check('둘째 탭이 같은 페이지를 연다', await other.waitFor(`!!document.querySelector('.blk-editor')`, 20000))
+      check('둘째 탭이 같은 페이지를 연다', await other.waitFor(`!!document.querySelector('.blk-editor')`, 20000),
+        await other.evaluate(`JSON.stringify({ sw: navigator.serviceWorker.controller?.scriptURL ?? null, shell: !!document.querySelector('[data-testid="offline-shell"]'), text: document.body.innerText.slice(0, 300) })`).catch((e) => String(e)))
 
       const box = await rect('.blk-editor')
       await click(box.x + 40, box.y + 10)
@@ -35973,6 +35974,132 @@ async function main() {
           // jsonb 는 키 순서를 다시 매긴다 — 값으로 비교한다
           && ((s) => s?.length === 1 && s[0].property_id === score && s[0].direction === 'desc')((await stored())?.sorts),
         JSON.stringify((await stored())?.sorts))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('오프라인 껍데기 (OF-1 · F-12-04)')) { try {
+      // 서비스 워커(`public/sw.js`)는 정적 파일과 오프라인 껍데기만 캐시한다(정본 §3.7 [보강 OF-1] ①). 운영 빌드라 앱이 첫 화면에서 이미
+      // 등록했다 — 워커가 화면을 맡기를 기다리고, 네트워크를 끊고(화면 · 워커 둘 다 — CDP 의 네트워크 흉내는 대상마다다) 앱 주소로 가면
+      // 껍데기가 선다. 캐시에는 정적 파일과 껍데기뿐이다. 워커는 등록한 채 둔다 — 판 전체가 그 아래에서 돈다(운영과 같게).
+      const { OFFLINE_URL, STATIC_PREFIX } = await import(new URL('../src/lib/offline/sw-policy.ts', import.meta.url).href)
+      // 서버 쪽 — 껍데기는 빌드 때 그린 정적 화면(쿠키를 실어도 같은 HTML) · 로그인한 화면은 private 으로 나간다(워커가 넣지 않는 까닭)
+      const bare = await fetch(`${BASE}${OFFLINE_URL}`)
+      const bareHtml = await bare.text()
+      const withCookieHtml = await (await fetch(`${BASE}${OFFLINE_URL}`, { headers: { cookie: authed.cookie } })).text()
+      check('★ 껍데기(/offline)는 빌드 때 그린 정적 화면 — 쿠키를 실어도 같은 HTML · 로그인 정보가 없다 · private · no-store 가 아니다',
+        bare.status === 200 && bareHtml.includes('오프라인입니다') && withCookieHtml === bareHtml && !bareHtml.includes(email)
+          && !bareHtml.includes(workspaceId) && !/private|no-store/.test(bare.headers.get('cache-control') ?? ''),
+        `${bare.status} ${bare.headers.get('cache-control')} · 쿠키를 실은 것과 같은 HTML ${withCookieHtml === bareHtml}`)
+      const authedPage = await fetch(`${BASE}/w/${workspaceId}/${pageId}`, { headers: { cookie: authed.cookie } })
+      check('로그인한 화면은 private · no-store 로 나간다', /private/.test(authedPage.headers.get('cache-control') ?? '') && /no-store/.test(authedPage.headers.get('cache-control') ?? ''),
+        `${authedPage.status} ${authedPage.headers.get('cache-control')}`)
+      const otherPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+
+      // 온라인 — 페이지를 열고 워커가 화면을 맡기를 기다린다(루트 레이아웃이 등록했다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+      await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+      const controlled = await waitFor(`navigator.serviceWorker.controller?.scriptURL === ${JSON.stringify(`${BASE}/sw.js`)}`, 15000)
+      const swState = await evaluate(`navigator.serviceWorker.getRegistration().then((r) => r?.active?.state ?? null)`)
+      check('★ 운영 빌드는 서비스 워커(/sw.js)를 등록하고 워커가 화면을 맡는다', controlled && swState === 'activated', `${controlled} ${swState}`)
+
+      // 워커 대상에 붙는다(브라우저 연결 · flatten 세션) — 화면을 끊어도 워커의 fetch 는 따로 끊어야 한다
+      const version = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const browserWs = new WebSocket(version.webSocketDebuggerUrl)
+      await new Promise((ok, no) => { browserWs.onopen = ok; browserWs.onerror = no })
+      let browserSeq = 0
+      const browserPending = new Map()
+      browserWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)(m); browserPending.delete(m.id) }
+      }
+      const browserSend = (method, params = {}, sessionId = undefined) => new Promise((ok, no) => {
+        const id = ++browserSeq
+        browserPending.set(id, (m) => (m.error ? no(new Error(`${method}: ${m.error.message}`)) : ok(m.result)))
+        browserWs.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+      // 화면의 응답 — 어디서 왔는가(워커의 캐시 · 네트워크)
+      const urls = new Map()
+      const seen = []
+      const watch = (event) => {
+        const m = JSON.parse(event.data)
+        if (m.method === 'Network.requestWillBeSent') urls.set(m.params.requestId, m.params.request.url)
+        else if (m.method === 'Network.responseReceived') {
+          const r = m.params.response
+          seen.push({ url: r.url, status: r.status, fromServiceWorker: r.fromServiceWorker === true, source: r.serviceWorkerResponseSource ?? null })
+        } else if (m.method === 'Network.loadingFailed') seen.push({ url: urls.get(m.params.requestId) ?? '?', failed: m.params.errorText })
+      }
+      cdp.ws.addEventListener('message', watch)
+      let swSession = null
+      const setOffline = async (offline) => {
+        await send('Network.emulateNetworkConditions', { offline, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        if (swSession !== null) await browserSend('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }, swSession)
+      }
+      try {
+        let swTarget = null
+        for (let i = 0; i < 50 && swTarget === null; i += 1) {
+          const { targetInfos } = await browserSend('Target.getTargets')
+          swTarget = targetInfos.find((t) => t.type === 'service_worker' && t.url === `${BASE}/sw.js`) ?? null
+          if (swTarget === null) await sleep(100)
+        }
+        if (swTarget === null) throw new Error('서비스 워커 대상을 찾지 못했다')
+        swSession = (await browserSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true })).sessionId
+        await browserSend('Network.enable', {}, swSession)
+
+        // 오프라인 — 아직 열지 않은 페이지로 간다
+        await send('Page.navigate', { url: 'about:blank' })
+        await setOffline(true)
+        seen.length = 0
+        const errorsBefore = pageErrors.length
+        const nav = await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${otherPage}` })
+        const shellUp = await waitFor(`!!document.querySelector('[data-testid="offline-shell"]') && document.body.textContent.includes('오프라인입니다')`, 15000)
+        const at = await evaluate('location.pathname')
+        check('★ 네트워크가 끊긴 채 앱 주소로 가면 오프라인 껍데기가 선다 — 주소는 그대로', shellUp && at === `/w/${workspaceId}/${otherPage}` && !nav.errorText,
+          `${shellUp} ${at} ${nav.errorText ?? ''}`)
+        await waitFor(`document.readyState === 'complete'`, 10000)
+        await sleep(1000)
+        check('껍데기는 살아난 뒤에도 그대로다(하이드레이션이 화면을 바꾸지 않는다 · 화면 오류 없음)',
+          (await evaluate(`!!document.querySelector('[data-testid="offline-shell"]') && !document.body.textContent.includes('Application error')`))
+            && pageErrors.length === errorsBefore, pageErrors.slice(errorsBefore).join(' | '))
+        const statics = seen.filter((s) => s.url.includes(STATIC_PREFIX))
+        const fromCache = statics.filter((s) => !s.failed && s.fromServiceWorker && s.source === 'cache-storage')
+        const styled = await evaluate(`[...document.styleSheets].some((s) => (s.href ?? '').includes('/_next/static/') && s.cssRules.length > 0)`)
+        check('★ 껍데기의 정적 파일(스타일 · 스크립트)은 워커의 캐시에서 왔다 — 네트워크 없이 제 모양으로 선다',
+          statics.length > 0 && fromCache.length === statics.length && styled,
+          `${fromCache.length}/${statics.length} · 스타일 ${styled} · 캐시 밖 ${JSON.stringify(statics.filter((s) => !fromCache.includes(s)).slice(0, 3))}`)
+
+        // 이미 열었던 페이지도 껍데기 — 로그인한 화면을 남기지 않았다
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        check('★ 이미 열었던 페이지도 껍데기다 — 로그인한 화면을 캐시하지 않았다',
+          await waitFor(`!!document.querySelector('[data-testid="offline-shell"]') && !document.querySelector('.blk-editor')`, 15000))
+
+        // 워커의 캐시를 다 펼친다 — 정적 파일과 껍데기뿐
+        const cached = await evaluate(`(async () => {
+          const out = []
+          for (const name of await caches.keys()) {
+            const cache = await caches.open(name)
+            for (const r of await cache.keys()) out.push({ name, path: new URL(r.url).pathname })
+          }
+          return out
+        })()`)
+        const strays = cached.filter((c) => c.path !== OFFLINE_URL && !c.path.startsWith(STATIC_PREFIX))
+        check('★ 워커의 캐시에는 정적 파일과 껍데기뿐 — 로그인한 화면(HTML) · API 응답은 없다',
+          cached.some((c) => c.path === OFFLINE_URL) && strays.length === 0, `${cached.length}개 · 섞인 것 ${JSON.stringify(strays.slice(0, 5))}`)
+        check('정적 파일은 쓰는 대로 캐시에 쌓인다(먼저 캐시)', cached.some((c) => c.name.startsWith('nc-static-') && c.path.startsWith(STATIC_PREFIX)),
+          JSON.stringify([...new Set(cached.map((c) => c.name))]))
+        const shellText = await evaluate(`caches.match(${JSON.stringify(OFFLINE_URL)}, { ignoreVary: true }).then((r) => (r ? r.text() : ''))`)
+        check('★ 캐시한 껍데기에 로그인 정보가 없다(이메일 · 워크스페이스)',
+          shellText.includes('오프라인입니다') && !shellText.includes(email) && !shellText.includes(workspaceId))
+
+        // 다시 연결 — 같은 주소가 평소대로 열린다
+        await setOffline(false)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        check('★ 다시 연결되면 평소대로 열린다(편집기 · 껍데기 아님)',
+          await waitFor(`!!document.querySelector('.blk-editor [data-block-id]') && !document.querySelector('[data-testid="offline-shell"]')`, 15000))
+      } finally {
+        await setOffline(false).catch(() => undefined)
+        if (swSession !== null) await browserSend('Target.detachFromTarget', { sessionId: swSession }).catch(() => undefined)
+        browserWs.close()
+        cdp.ws.removeEventListener('message', watch)
+      }
     } catch (thrown) { await sectionThrew(thrown) } }
 
     section('전체')
