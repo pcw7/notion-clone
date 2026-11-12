@@ -97,7 +97,10 @@ import { DuplicateDatabaseButton } from './duplicate-database-button'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { ViewTabs } from './view-tabs'
 import { FormEditor } from './form-editor'
-import { ViewToolbar, type BoardSettings, type ChartSettings } from './view-toolbar'
+import { ViewToolbar, type BoardSettings, type ChartSettings, type MapSettings } from './view-toolbar'
+import { DatabaseMap } from './database-map-lazy'
+import { mapTileUrl, MAX_MAP_PINS, resolveMapBy } from '@/lib/database/map'
+import { queryMapPins } from '@/lib/database/map-query'
 import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
 import { DatabaseCalendar } from './database-calendar'
@@ -255,6 +258,8 @@ export default async function DatabasePage({
   const isChart = view.value.type === 'chart'
   // 타임라인(TL-2) — 날짜 속성의 기간을 가로 막대로. 처음 창은 보는 사람의 오늘 근처(이후의 창은 화면이 따로 묻는다)
   const isTimeline = view.value.type === 'timeline'
+  // 지도(MP-2) — 행을 표처럼 그리지 않는다. 장소 칸에 값이 있는 처음 100개를 핀으로(Leaflet 은 이 뷰를 그릴 때만 받는다)
+  const isMap = view.value.type === 'map'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
   const isForm = view.value.type === 'form'
   const form = isForm ? await readForm(ctx, view.value.id) : null
@@ -271,8 +276,8 @@ export default async function DatabasePage({
   const parentsOnly = showsParentsOnly(view.value.type) ? cardParentsOnlyPair(view.value.columns, view.value.subItemDisplay) : null
   // 보는 사람의 오늘(시간대 쿠키 · `time-zone-cookie.tsx` 가 쓴다) — 상대 날짜 그룹(B-3)과 상대 날짜 필터(R-1)가 같은 날을 쓴다
   const viewerToday = await readViewerToday()
-  const [tablePage, catalog, board, chartPage] = await Promise.all([
-    isBoard || isCalendar || isForm || isChart || isTimeline
+  const [tablePage, catalog, board, chartPage, mapPage] = await Promise.all([
+    isBoard || isCalendar || isForm || isChart || isTimeline || isMap
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
           // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
@@ -292,7 +297,9 @@ export default async function DatabasePage({
     readOperatorCatalog(),
     isBoard || isGroupedRows || isGroupedGallery ? queryGroups(ctx, view.value.id, { search, today: viewerToday }) : null,
     isChart ? queryGroupSummary(ctx, view.value.id, { search, today: viewerToday }) : null,
+    isMap ? queryMapPins(ctx, view.value.id, { search, today: viewerToday }) : null,
   ])
+  if (mapPage !== null && !mapPage.ok) notFound()
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
   if (board !== null && !board.ok && board.reason !== 'not_grouped') notFound()
@@ -506,6 +513,17 @@ export default async function DatabasePage({
     view.value.calendar.view_range === 'week'
       ? weekGrid(calendarWeek, view.value.calendar.week_start)
       : monthGrid(calendarMonth, view.value.calendar.week_start)
+  // 지도의 설정(MP-2) — 구조를 고칠 수 있는 사람에게만. 지도가 실제로 쓰는 장소 속성(저장된 것이 없거나 지워졌으면 첫 장소 속성)
+  const mapSettings: MapSettings | undefined =
+    isMap && access.canEditStructure
+      ? {
+          layout: view.value.map,
+          effectiveMapBy: resolveMapBy(
+            view.value.map.map_by,
+            view.value.columns.filter((c) => c.type === 'place').map((c) => c.propertyId),
+          ),
+        }
+      : undefined
   const timelineWindow = isTimeline ? windowForToday(viewerToday, view.value.timeline.zoom) : null
   const timelinePage =
     timelineWindow !== null && view.value.timeline.date_property_id !== null
@@ -537,7 +555,9 @@ export default async function DatabasePage({
     ? calendarPage.value.rows
     : timelinePage !== null && timelinePage.ok
       ? timelinePage.value.rows
-      : firstRows).map((r) => r.id as string)
+      : mapPage !== null && mapPage.ok
+        ? mapPage.value.pins.map((p) => ({ id: p.rowId }))
+        : firstRows).map((r) => r.id as string)
   const neighbors = peekRow === null || peekBase === null ? { prev: null, next: null } : peekNeighbors(drawnOrder, peekRow)
   const peekNeighborHrefs = {
     prev: neighbors.prev === null || peekBase === null ? null : rowOpenHref(workspaceId, neighbors.prev, peekBase),
@@ -720,6 +740,7 @@ export default async function DatabasePage({
             {...(isGallery ? { gallery: view.value.gallery } : {})}
             {...(isCalendar ? { calendar: view.value.calendar } : {})}
             {...(chartSettings !== undefined ? { chart: chartSettings } : {})}
+            {...(mapSettings !== undefined ? { map: mapSettings } : {})}
             personal={view.value.personal}
             peopleNames={filterPeopleNames}
             rowTitles={filterRowTitles}
@@ -849,6 +870,32 @@ export default async function DatabasePage({
             {access.canEditStructure
               ? '도구줄의 "차트"에서 X축을 다시 고르세요.'
               : '고칠 수 있는 사람이 X축을 다시 골라야 합니다.'}
+          </p>
+        )
+      ) : isMap ? (
+        mapPage !== null && mapPage.ok && mapPage.value.mapBy !== null ? (
+          <>
+            {mapPage.value.truncated && (
+              <p className="px-2 pb-1 text-xs text-neutral-500" data-testid="db-map-truncated">
+                {MAX_MAP_PINS}개까지 보입니다
+              </p>
+            )}
+            <DatabaseMap
+              // 핀 · 높이가 바뀌면 새로 그린다
+              key={`${view.value.id}:${mapPage.value.mapBy}`}
+              workspaceId={workspaceId}
+              dataSourceId={view.value.dataSourceId}
+              renderedAt={renderedAt}
+              pins={mapPage.value.pins}
+              height={view.value.map.height}
+              // 서버가 환경 변수에서 읽어 넘긴다 — 빌드에 박지 않는다(NEXT_PUBLIC 아님)
+              tileUrl={mapTileUrl(process.env.MAP_TILE_URL)}
+              peekBase={peekBase}
+            />
+          </>
+        ) : (
+          <p className="px-2 text-sm text-neutral-500" data-testid="db-map-needs-place">
+            장소 속성을 먼저 만드세요
           </p>
         )
       ) : isTimeline ? (

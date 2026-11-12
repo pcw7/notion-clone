@@ -64,10 +64,10 @@ describe('① 갤러리 뷰', () => {
 })
 
 describe('② 아직 받지 않는 뷰 타입', () => {
-  test('지도는 거부한다 — CHECK 은 받는 이름이지만 명령이 막는다', async (t) => {
+  test('대시보드는 거부한다 — CHECK 은 받는 이름이지만 명령이 막는다(지도는 MP-2 에서 열렸다)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const db = unwrap(await createDatabase(fx.owner.ctx, { name: `갤러리 ${Date.now()}` }))
-    const r = await createView(fx.owner.ctx, db.id, { type: 'map' as MvpViewType })
+    const r = await createView(fx.owner.ctx, db.id, { type: 'dashboard' as MvpViewType })
     assert.equal(!r.ok && r.reason, 'unsupported_type')
   })
 })

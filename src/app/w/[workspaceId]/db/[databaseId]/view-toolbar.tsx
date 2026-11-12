@@ -92,11 +92,20 @@ import {
 } from '@/lib/database/sub-item-scope'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
 import type { ChartLayout } from '@/lib/database/chart'
+import type { MapLayout } from '@/lib/database/map'
 
 // 차트 패널의 내용은 "차트" 단추를 누를 때에야 읽는다(CH-6 · 번들 예산)
 const ChartPanel = dynamic(() => import('./chart-panel'))
+// 지도 패널도 같다(MP-2)
+const MapPanel = dynamic(() => import('./map-panel'))
 
-type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'chart' | 'open'
+type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'chart' | 'map' | 'open'
+
+/** 지도의 설정(MP-2) — 지도 뷰이고 구조를 고칠 수 있는 사람에게만 온다. `effectiveMapBy` 는 지도가 실제로 쓰는 장소 속성이다. */
+export type MapSettings = {
+  readonly layout: MapLayout
+  readonly effectiveMapBy: string | null
+}
 
 /**
  * 보드의 그룹 설정(보드 4b조각). 보드 뷰일 때만 온다 — "그룹" 버튼과 패널이 그때만 그려진다.
@@ -149,6 +158,7 @@ export function ViewToolbar({
   gallery,
   calendar,
   chart,
+  map,
   personal,
   peopleNames = {},
   rowTitles = {},
@@ -178,6 +188,8 @@ export function ViewToolbar({
   calendar?: LiveCalendarLayout
   /** 차트 뷰의 설정(CH-2). 차트이고 구조를 고칠 수 있을 때만 온다 — "차트" 단추와 패널이 그때만 그려진다. */
   chart?: ChartSettings
+  /** 지도 뷰의 설정(MP-2). 지도이고 구조를 고칠 수 있을 때만 온다 — "지도" 단추와 패널이 그때만 그려진다. */
+  map?: MapSettings
   /**
    * 이 사람의 개인 필터 · 정렬(2h-2 · F-04-17) — 어느 쪽을 덮어썼는지. 있으면 "나만 보는" 표시와 초기화 · (편집자) 모두에게 저장이 선다.
    * `filter` · `sorts` 로 받는 것은 이미 "실제로 쓰는" 것이다(서버 렌더가 개인 것을 얹었다).
@@ -301,6 +313,9 @@ export function ViewToolbar({
         {canEdit && chart !== undefined && (
           <ToolbarButton label="차트" count={0} active={panel === 'chart'} testId="chart-settings" panel="chart" onClick={() => toggle('chart')} />
         )}
+        {canEdit && map !== undefined && (
+          <ToolbarButton label="지도" count={0} active={panel === 'map'} testId="db-map-settings" panel="map" onClick={() => toggle('map')} />
+        )}
         {canEdit && openPagesIn !== undefined && (
           <ToolbarButton label="열기" count={0} active={panel === 'open'} testId="db-open-mode-button" panel="open" onClick={() => toggle('open')} />
         )}
@@ -416,6 +431,16 @@ export function ViewToolbar({
             onSaveLayout={(patch) => run(() => updateView(workspaceId, viewId, { chart: patch }))}
             onSaveGroupBy={(next) => run(() => updateView(workspaceId, viewId, { groupBy: next }))}
             onSaveSub={(next) => run(() => updateView(workspaceId, viewId, { subGroupBy: next }))}
+            onClose={close}
+          />
+        )}
+        {panel === 'map' && canEdit && map !== undefined && (
+          <MapPanel
+            columns={columns}
+            layout={map.layout}
+            effectiveMapBy={map.effectiveMapBy}
+            locked={busy}
+            onSave={(patch) => run(() => updateView(workspaceId, viewId, { map: patch }))}
             onClose={close}
           />
         )}

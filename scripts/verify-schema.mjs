@@ -5726,6 +5726,56 @@ try {
     else fail(`장소 연산자가 어긋났다: ${JSON.stringify(rows)}`)
   }
 
+  console.log('\n[100] 지도 뷰의 레이아웃 (0142 / §3.5 [보강 MP-1] ⑥ · MP-2조각)')
+  {
+    // configuration.map = { map_by, height } — 정확히 이 두 키 · map_by 는 글 또는 null(키는 있어야 한다) · height 는 240~960 정수.
+    const viewRow = (await client.query(`SELECT id FROM view LIMIT 1`)).rows[0]
+    const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = 'ck_view_map_layout'`)).rowCount
+    if (has === 1) ok('ck_view_map_layout 이 있다')
+    else fail('ck_view_map_layout 이 없다')
+    if (!viewRow) {
+      ok('뷰가 없다 — 건너뛴다(CHECK 은 마이그레이션이 세웠다)')
+    } else {
+      const set = `UPDATE view SET configuration = jsonb_set(coalesce(configuration, '{}'::jsonb), '{map}', $2::jsonb, true) WHERE id = $1`
+      const map = (over) => JSON.stringify({ map_by: null, height: 480, ...over })
+      for (const [label, json] of [
+        ['map_by null · 480', map({})],
+        ['map_by 글 · 240(경계)', map({ map_by: 'p1', height: 240 })],
+        ['height 960(경계)', map({ height: 960 })],
+      ]) {
+        await client.query('SAVEPOINT okprobe')
+        try {
+          await client.query(set, [viewRow.id, json])
+          ok(`★ ${label} — 통과한다`)
+        } catch (e) {
+          fail(`${label} — 통과해야 하는데 거부됐다 (${e.message})`)
+        }
+        await client.query('ROLLBACK TO SAVEPOINT okprobe')
+      }
+      const rejects = async (label, json) => {
+        await client.query('SAVEPOINT probe')
+        try {
+          await client.query(set, [viewRow.id, json])
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          fail(`${label} — 거부되어야 하는데 통과했다`)
+        } catch (e) {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          if (e.code === '23514' && e.constraint === 'ck_view_map_layout') ok(`${label} — ck_view_map_layout 가 거부함`)
+          else fail(`${label} — ck_view_map_layout 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+        }
+      }
+      await rejects('★ height 239', map({ height: 239 }))
+      await rejects('★ height 961', map({ height: 961 }))
+      await rejects('★ height 소수(480.5)', map({ height: 480.5 }))
+      await rejects('★ height 가 글', map({ height: '480' }))
+      await rejects('★ height 가 빠졌다(NULL 이면 통과하는 구멍)', JSON.stringify({ map_by: null }))
+      await rejects('★ map_by 가 빠졌다', JSON.stringify({ height: 480 }))
+      await rejects('★ map_by 가 수', map({ map_by: 3 }))
+      await rejects('★ 모르는 키(zoom)', map({ zoom: 3 }))
+      await rejects('지도 키가 객체가 아니다', JSON.stringify('480'))
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

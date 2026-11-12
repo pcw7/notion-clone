@@ -21,6 +21,7 @@ import { deleteView, getView, moveView, updateView, type MvpViewType } from '@/l
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
 import type { ChartLayout } from '@/lib/database/chart'
+import type { MapLayout } from '@/lib/database/map'
 import type { TimelineLayout } from '@/lib/database/timeline'
 import { viewFailureStatus } from '@/lib/database/http'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
@@ -56,6 +57,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     gallery?: unknown
     calendar?: unknown
     chart?: unknown
+    map?: unknown
     timeline?: unknown
     position?: unknown
   }
@@ -89,6 +91,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('gallery' in body ? { gallery: body.gallery as Partial<GalleryLayout> } : {}),
     // 차트 레이아웃(CH-1) — 바꿀 키만. 모양은 명령이 본다(`validateChartPatch`).
     ...('chart' in body ? { chart: body.chart as Partial<ChartLayout> } : {}),
+    // 지도 레이아웃(MP-2) — 바꿀 키만. 장소 속성이 이 표의 것인지는 명령이 본다.
+    ...('map' in body ? { map: body.map as Partial<MapLayout> } : {}),
     // 캘린더 레이아웃(2g-1) — 바꿀 키만. 날짜 속성이 이 표의 것인지는 명령이 본다.
     ...('calendar' in body ? { calendar: body.calendar as Partial<CalendarLayout> } : {}),
     // 타임라인 레이아웃(TL-1) — 바꿀 키만. 날짜 속성이 이 표의 것인지는 명령이 본다.
