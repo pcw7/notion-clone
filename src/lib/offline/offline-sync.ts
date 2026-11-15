@@ -16,6 +16,12 @@
  *      없게 됐으면(404 · 정책 403) 지운다
  *   6. **데이터베이스(OF-4)는 판을 묻지 않고 늘 다시 받는다** — 처음 50행의 글자뿐이라 작고, 칸의 글자가 다른 표의 제목 · 사람의 이름에도
  *      달려 있어 값싼 판이 없다. 다시 받기가 곧 판정이다 — 볼 수 없게 됐으면(404 · 정책 403) 곧바로 지운다(보존본이 없다 · 읽기만)
+ *   7. **자동 내려받기(OF-5 · ⑥)** — 스위치를 켰으면 이 워크스페이스의 즐겨찾기 · 최근 10개를 묻고(`GET …/offline/auto` — 요금제가 막으면
+ *      `plan_required` → 원하는 것이 없다) 없는 것을 받고(OF-2 의 라우트 · 거부면 건너뛴다) 까닭을 더하고 뺀다(`offline-auto.ts`). 보내기
+ *      뒤라 이번에 보낸 사본의 빈 까닭도 여기서 지운다. 사본이 없어도 스위치를 켰으면 돈다
+ *
+ * 설정의 지우기(`removeOfflineCopies` · OF-5) — 까닭을 모두 뺀다. 못 보낸 편집은 먼저 보내 보고(시간 상한), 남으면 그 사본을 빈 채로 남긴다
+ * (편집을 버리지 않는다 · 다음 돌기가 보낸 뒤 지운다). 보존본은 지우지 않는다 — 확인받은 편집은 이미 거기 없다.
  *
  * **보존본은 읽었던 그대로일 때만 지운다**(`replacePendingIf`) — 같은 페이지를 편집기가 열고 있으면 그 연결이 더한 편집이 같은 열쇠에
  * 쓰인다. 뒤에서 보낸 연결이 확인을 받고 지울 때 그것까지 지우면, 탭을 닫았을 때 확인받지 못한 편집이 사라진다.
@@ -47,16 +53,23 @@ import {
   type SyncReply,
   type SyncRequest,
 } from './offline-resync.ts'
+import { anyAutoOn, NO_SOURCES, parseAutoSources, planAutoDownload, type AutoSources } from './offline-auto.ts'
+import type { RemoveReport } from './offline-list.ts'
 import { deletePendingEdits, listPendingEdits, readPendingEdit, replacePendingIf } from './offline-pending.ts'
 import {
   isDatabaseRecord,
   isPageRecord,
+  OFFLINE_REASONS,
+  offlineRecord,
   openOfflineStore,
   parseOfflineDatabasePayload,
   parseOfflinePayload,
   refreshedDatabaseRecord,
+  withReasonChange,
+  type AutoDownloadSettings,
   type OfflineDatabaseRecord,
   type OfflinePageRecord,
+  type OfflineReason,
   type OfflineStore,
 } from './offline-store.ts'
 
@@ -202,6 +215,85 @@ async function refreshDatabase(store: OfflineStore, record: OfflineDatabaseRecor
   return 'refreshed'
 }
 
+// ── 자동 내려받기(OF-5) ───────────────────────────────────────────────
+
+/** 이 워크스페이스의 원천 — 요금제가 막거나(`plan_required`) 들어올 수 없으면 원하는 것이 없다. 받지 못했으면 null(손대지 않는다). */
+async function fetchAutoSources(workspaceId: string): Promise<AutoSources | null> {
+  let res: Response
+  try {
+    res = await fetch(`/api/workspaces/${workspaceId}/offline/auto`, { cache: 'no-store' })
+  } catch {
+    return null
+  }
+  if (res.status === 403 || res.status === 404) {
+    // 로그인 · 라우트가 없는 서버(배포 중)의 거부로는 까닭을 빼지 않는다
+    const error = await errorOf(res)
+    return error === 'plan_required' || error === 'not_found' ? NO_SOURCES : null
+  }
+  if (!res.ok) return null
+  return parseAutoSources(await res.json().catch(() => null))
+}
+
+/** 받아 둔다 — OF-2 의 라우트(내보내기 정책 그대로). 거부(정책 403 · 404)면 건너뛴다. */
+async function downloadPage(store: OfflineStore, userId: string, workspaceId: string, pageId: string, reasons: readonly OfflineReason[]): Promise<boolean> {
+  const [first, ...rest] = reasons
+  if (first === undefined) return false
+  let res: Response
+  try {
+    res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/offline`, { cache: 'no-store' })
+  } catch {
+    return false
+  }
+  if (!res.ok) return false
+  const payload = parseOfflinePayload(await res.json().catch(() => null))
+  if (payload === null || payload.pageId !== pageId) return false
+  const record = offlineRecord(payload, { userId, workspaceId, reason: first, now: Date.now(), previous: await store.get(userId, pageId) })
+  await store.put(withReasonChange(record, { add: rest, drop: [] }, false) ?? record)
+  return true
+}
+
+/** 머리말 7 — 원천을 묻고(켠 스위치가 있을 때) 까닭을 더하고 빼고, 없는 것을 받는다. */
+async function syncAutoDownload(config: ResyncConfig, store: OfflineStore, settings: AutoDownloadSettings): Promise<void> {
+  const workspaceId = config.workspaceId ?? null
+  const sources = workspaceId !== null && anyAutoOn(settings) ? await fetchAutoSources(workspaceId) : null
+  const plan = planAutoDownload({ records: await store.list(config.userId), settings, workspaceId, sources })
+  if (plan.changes.length > 0) {
+    const pending = new Set(await listPendingEdits(config.userId))
+    for (const change of plan.changes) await store.changeReasons(config.userId, change.pageId, change, pending.has(change.pageId))
+  }
+  if (workspaceId === null) return
+  await runLimited(plan.downloads, CONCURRENCY, (d) => downloadPage(store, config.userId, workspaceId, d.pageId, d.reasons))
+}
+
+/** 설정의 지우기 · 모두 지우기(머리말). 남긴 수는 못 보낸 편집이 있는 사본이다. */
+export async function removeOfflineCopies(config: ResyncConfig, pageIds: readonly string[] | 'all'): Promise<RemoveReport> {
+  const store = await openOfflineStore()
+  if (store === null) return { removed: 0, kept: 0 }
+  try {
+    const targets = (await store.list(config.userId)).filter((r) => pageIds === 'all' || pageIds.includes(r.pageId))
+    let pending = new Set(targets.length === 0 ? [] : await listPendingEdits(config.userId))
+    const unsent = targets.filter(isPageRecord).filter((r) => pending.has(r.pageId))
+    if (unsent.length > 0 && (typeof navigator === 'undefined' || navigator.onLine)) {
+      // 먼저 보내 본다(로그아웃과 같은 상한) — 넘긴 연결은 제 시간 상한에 내려간다
+      await withTimeout(
+        runLimited(unsent, CONCURRENCY, (record) => flushPage(config, record, LOGOUT_FLUSH_MS)),
+        LOGOUT_FLUSH_MS + 1000,
+      ).catch(() => undefined)
+      pending = new Set(await listPendingEdits(config.userId))
+    }
+    let removed = 0
+    let kept = 0
+    for (const record of targets) {
+      const left = await store.changeReasons(config.userId, record.pageId, { add: [], drop: OFFLINE_REASONS }, pending.has(record.pageId))
+      if (left === null) removed += 1
+      else kept += 1
+    }
+    return { removed, kept }
+  } finally {
+    store.close()
+  }
+}
+
 /** 버린 문서의 글 — 편집기의 "다시 불러왔습니다"와 같은 것(복사할 수 있게). */
 function discardedText(discarded: DiscardedDoc, pageId: string): string {
   try {
@@ -221,7 +313,8 @@ export async function runResync(config: ResyncConfig): Promise<ResyncReport> {
   if (store === null) return report()
   try {
     const all = await store.list(config.userId)
-    if (all.length === 0) return report()
+    const settings = await store.autoDownload(config.userId)
+    if (all.length === 0 && !anyAutoOn(settings)) return report()
     const records = all.filter(isPageRecord)
     const databases = all.filter(isDatabaseRecord)
     const pending = new Set(records.length === 0 ? [] : await listPendingEdits(config.userId))
@@ -273,6 +366,9 @@ export async function runResync(config: ResyncConfig): Promise<ResyncReport> {
       await store.remove(config.userId, databases[i].pageId)
       gone += 1
     }
+
+    // 자동 내려받기(OF-5) — 보내기 · 지우기 뒤에(머리말 7)
+    await syncAutoDownload(config, store, settings)
     return report()
   } finally {
     store.close()
@@ -335,6 +431,8 @@ export async function handleSyncRequest(request: SyncRequest): Promise<SyncReply
       case 'discard':
         await discardOfflineData(request.users)
         return { id: request.id, ok: true, value: null }
+      case 'remove':
+        return { id: request.id, ok: true, value: await removeOfflineCopies(request.config, request.pageIds) }
     }
   } catch (error) {
     return { id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }

@@ -9,7 +9,9 @@
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import { listWorkspaceAudit } from '@/lib/audit/audit'
+import { entitlement } from '@/lib/billing/entitlement'
 import { planOverview } from '@/lib/billing/overview'
+import { collabServerUrl } from '@/lib/collab/collab-url'
 import { canCreateCustomEmoji, listCustomEmoji } from '@/lib/emoji/custom-emoji'
 import { readSiteDomain } from '@/lib/publish/site'
 import type { SessionContext } from '@/lib/auth/session-context'
@@ -32,6 +34,7 @@ import { AccessibilityPanel } from './accessibility-panel'
 import { AuditPanel } from './audit-panel'
 import { EmojiPanel } from './emoji-panel'
 import { MfaPanel } from './mfa-panel'
+import { OfflinePanel } from './offline-panel'
 import { PasswordPanel } from './password-panel'
 import { PlanPanel } from './plan-panel'
 import { SitePanel } from './site-panel'
@@ -76,6 +79,17 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
     case 'accessibility':
       // 이 기기의 고대비 · 움직임 줄이기(10d-2) — 지금 값은 요청의 쿠키에서(계정의 설정 표가 아니다)
       return <AccessibilityPanel initial={await readDevicePreferences()} />
+    case 'offline':
+      // 이 기기에 내려받은 것 · 자동 내려받기(OF-5) — 목록 · 스위치는 브라우저가 읽는다. 서버는 요금제가 자동 내려받기를 허락하는가만 준다
+      // (원천 라우트가 다시 묻는다 — `plan_required`)
+      return (
+        <OfflinePanel
+          workspaceId={ctx.workspaceId}
+          userId={ctx.userId}
+          collabUrl={collabServerUrl()}
+          autoAllowed={await entitlement(ctx.workspaceId, 'offline.auto_download')}
+        />
+      )
     case 'site':
       // 사이트 주소(6c-2) — 지금 주소는 여기서 읽는다. 정하는 것은 소유자만(패널 목록이 걸렀다 — 명령이 다시 묻는다).
       return <SitePanel workspaceId={ctx.workspaceId} initialName={await readSiteDomain(ctx)} />

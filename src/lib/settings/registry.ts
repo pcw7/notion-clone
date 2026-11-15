@@ -72,6 +72,8 @@ export const SETTING_GROUPS = [
       { id: 'account.profile', label: '프로필' },
       { id: 'account.preferences', label: '환경설정' },
       { id: 'account.security', label: '보안' },
+      // 오프라인(OF-5 · F-12-04) — 이 기기에 내려받은 것 · 자동 내려받기. 누구에게나(패널 하나로 선다 · 이 브라우저의 값이다).
+      { id: 'account.offline', label: '오프라인' },
     ],
   },
   {

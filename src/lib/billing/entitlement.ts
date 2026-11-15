@@ -43,6 +43,8 @@ export const ENTITLEMENTS = {
   'publish.link_expiry': 'boolean',
   /** 검증 속성을 더하고 행을 검증할 수 있는가(F-03-23 · VF-1) — Business · Enterprise. 해제 · 있던 값의 읽기는 무관하다. */
   'database.verification': 'boolean',
+  /** 즐겨찾기 · 최근 페이지를 이 기기에 자동으로 내려받는가(F-12-04 · OF-5) — Plus · Business · Enterprise. 직접 내려받기는 무관하다. */
+  'offline.auto_download': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

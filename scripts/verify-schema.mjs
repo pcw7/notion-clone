@@ -5892,6 +5892,17 @@ try {
     }
   }
 
+  {
+    // 오프라인 자동 내려받기(0144 · OF-5 · §3.7 [보강 OF-1] ⑥) — 엔타이틀먼트 하나 · Free 만 false · 모든 요금제가 같은 종류로 갖는다
+    const ent = (await client.query(
+      `SELECT p.code, e.kind, e.value FROM plan_entitlement e JOIN plan p ON p.id = e.plan_id WHERE e.key = 'offline.auto_download' ORDER BY p.code`,
+    )).rows
+    const byPlan = Object.fromEntries(ent.map((r) => [r.code, r.value]))
+    if (ent.length === 4 && ent.every((r) => r.kind === 'boolean') && byPlan.free === false && byPlan.plus === true && byPlan.business === true && byPlan.enterprise === true) {
+      ok('★ 엔타이틀먼트 offline.auto_download — Plus · Business · Enterprise 만 true')
+    } else fail(`엔타이틀먼트 offline.auto_download 가 요금제와 맞지 않는다 — ${JSON.stringify(ent)}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

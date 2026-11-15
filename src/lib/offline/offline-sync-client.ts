@@ -5,9 +5,11 @@
  * 틀(`/offline#sync`)로 열어 그 안에서 한다(`offline-sync-frame.ts` → `offline-sync.ts`) — 여기는 `yjs` · 협업 연결을 부르지 않는다. 앱의
  * 화면의 모듈 그래프에 그것들이 들어오면 페이지 화면의 첫 JS 가 커진다(`offline-sync-frame.ts` 머리말).
  *
- *   - **다시 맞추기** — 한 번에 하나 · 몰리면 한 번(`createResyncScheduler`). 이 사람의 사본이 없으면 틀을 열지 않는다(대부분의 사람은
- *     내려받은 것이 없다 — 사본 수만 센다) · 오프라인이면 돌지 않는다
+ *   - **다시 맞추기** — 한 번에 하나 · 몰리면 한 번(`createResyncScheduler`). 이 사람의 사본이 없고 자동 내려받기(OF-5)도 꺼져 있으면 틀을
+ *     열지 않는다(대부분의 사람은 내려받은 것이 없다 — 사본 수 · 스위치만 읽는다) · 오프라인이면 돌지 않는다. 설정이 스위치를 바꾸면 한 번
+ *     청하고 그 돌기가 끝나기를 기다린다(약속이 그 돌기에 풀린다)
  *   - **로그아웃** — 남은 편집을 보내 보고 물을 말을 받는다 · 지운다
+ *   - **설정의 지우기**(OF-5) — 까닭을 모두 뺀다 · 못 보낸 편집이 있는 사본은 남긴다(`offline-sync.ts` `removeOfflineCopies`)
  *   - 틀은 맡긴 일이 없으면 내린다 — 다음에 다시 연다(워커가 캐시한 껍데기). 답이 오지 않는 일은 시간 상한에서 실패로 끝낸다
  */
 
@@ -21,6 +23,8 @@ import {
   type SyncReply,
   type SyncRequest,
 } from './offline-resync.ts'
+import { anyAutoOn, workspaceFromPath } from './offline-auto.ts'
+import type { RemoveReport } from './offline-list.ts'
 import { openOfflineStore } from './offline-store.ts'
 import { isFrameMessage, SYNC_HASH, SYNC_READY, SYNC_REPLY, SYNC_REQUEST } from './offline-sync-frame.ts'
 import { OFFLINE_URL } from './sw-policy.ts'
@@ -125,12 +129,12 @@ function call(body: WithoutId<SyncRequest>): Promise<unknown> {
   })
 }
 
-/** 이 사람의 사본이 있는가 — 본문은 읽지 않는다. */
-async function hasOfflineCopies(userId: string): Promise<boolean> {
+/** 할 일이 있는가 — 이 사람의 사본이 있거나 자동 내려받기를 켰다. 본문은 읽지 않는다. */
+async function hasOfflineWork(userId: string): Promise<boolean> {
   const store = await openOfflineStore()
   if (store === null) return false
   try {
-    return (await store.count(userId)) > 0
+    return (await store.count(userId)) > 0 || anyAutoOn(await store.autoDownload(userId))
   } catch {
     return false
   } finally {
@@ -140,24 +144,45 @@ async function hasOfflineCopies(userId: string): Promise<boolean> {
 
 let scheduler: ResyncScheduler | null = null
 let latest: { readonly config: ResyncConfig; readonly onNotice: (notice: ResyncNotice) => void } | null = null
+/** 청한 뒤 아직 돌지 않은 돌기를 기다리는 쪽 — 다음 돌기가 끝나면 푼다. */
+let waiters: (() => void)[] = []
 
-/** 돌기를 청한다 — 앱을 열 때 · 브라우저가 `online` 을 알릴 때. 알릴 것이 있으면 `onNotice`(그 돌기에서 한 일만 — 지운 사본은 다시 세지 않는다). */
-export function requestResync(config: ResyncConfig, onNotice: (notice: ResyncNotice) => void): void {
-  latest = { config, onNotice }
+/**
+ * 돌기를 청한다 — 앱을 열 때 · 브라우저가 `online` 을 알릴 때 · 설정이 자동 내려받기를 바꿀 때. 알릴 것이 있으면 `onNotice`(그 돌기에서 한
+ * 일만 — 지운 사본은 다시 세지 않는다 · 주지 않으면 앞서 받은 것). 약속은 이 청을 받은 돌기가 끝나면 풀린다(할 일이 없어 돌지 않아도).
+ */
+export function requestResync(config: ResyncConfig, onNotice?: (notice: ResyncNotice) => void): Promise<void> {
+  // 자동 내려받기(OF-5)는 지금 연 워크스페이스로 맞춘다 — 레이아웃의 알림은 넘기지 않으므로 주소에서(`workspaceFromPath` 머리말)
+  const workspaceId = config.workspaceId ?? workspaceFromPath(window.location.pathname)
+  latest = { config: workspaceId === undefined ? config : { ...config, workspaceId }, onNotice: onNotice ?? latest?.onNotice ?? (() => undefined) }
+  const done = new Promise<void>((resolve) => waiters.push(resolve))
   scheduler ??= createResyncScheduler(
     async () => {
       const target = latest
-      if (target === null || !navigator.onLine || !(await hasOfflineCopies(target.config.userId))) return
+      const finished = waiters
+      waiters = []
       try {
-        const notice = resyncNotice((await call({ kind: 'resync', config: target.config })) as ResyncReport)
-        if (notice !== null) target.onNotice(notice)
-      } catch (error) {
-        console.warn('[offline] 다시 맞추지 못했다:', error)
+        if (target === null || !navigator.onLine || !(await hasOfflineWork(target.config.userId))) return
+        try {
+          const notice = resyncNotice((await call({ kind: 'resync', config: target.config })) as ResyncReport)
+          if (notice !== null) target.onNotice(notice)
+        } catch (error) {
+          console.warn('[offline] 다시 맞추지 못했다:', error)
+        }
+      } finally {
+        for (const resolve of finished) resolve()
       }
     },
     { delayMs: RESYNC_DELAY_MS },
   )
   scheduler.request()
+  return done
+}
+
+/** 설정의 지우기 · 모두 지우기(OF-5) — 까닭을 모두 뺀다. 못 보낸 편집이 있는 사본은 남긴다(그 수가 `kept`). */
+export async function removeOfflineCopies(config: ResyncConfig, pageIds: readonly string[] | 'all'): Promise<RemoveReport> {
+  const report = (await call({ kind: 'remove', config, pageIds })) as RemoveReport | null
+  return report ?? { removed: 0, kept: 0 }
 }
 
 /** 로그아웃 전 — 지금 계정(`flushAs`)의 남은 편집을 보내 보고, 그래도 남았으면 물을 말(없으면 null). */

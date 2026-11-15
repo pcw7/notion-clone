@@ -32,6 +32,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '검증 속성'
     case 'publish.link_expiry':
       return '공개 링크의 만료'
+    case 'offline.auto_download':
+      return '오프라인 자동 내려받기'
     default:
       return key
   }
