@@ -36283,6 +36283,273 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('오프라인 다시 붙기 (OF-3 · F-12-04)')) { try {
+      // 다시 붙으면(정본 §3.7 [보강 OF-1] ④) — 새 멤버가 소유자의 페이지 셋을 공유받아 내려받는다(OF-2 의 스위치). 네트워크를 끊고(화면 · 워커
+      // 둘 다) 껍데기의 오프라인 편집기에서 둘에 친다. 그 사이 소유자가 다른 하나를 고치고 · 친 것 하나의 공유를 거둔다. 다시 붙어 앱의 아무
+      // 화면이나 열면 — 친 글은 **그 페이지를 열지 않고** 서버에 가고(뒤에서 연 협업 연결 · 6c 확인 뒤 보존본을 지운다), 바뀐 페이지의 사본은
+      // 서버의 새 글을 담고, 거둔 페이지의 사본과 보존본은 지워지고(서버로 가지 않는다) 알림이 선다. 끝으로 협업 서버를 내린 채 친 글이 남은
+      // 채 로그아웃하면 "보내지 못한 편집이 사라집니다"로 묻고(취소하면 그대로) · 확인하면 그 사람의 사본 · 보존본이 모두 지워진다.
+      // 끝에 연결 · 협업 서버 · 브라우저 세션을 되돌리고 이 절이 남긴 IndexedDB 항목을 지운다(워커는 OF-1 처럼 등록한 채 둔다).
+      const { OFFLINE_DB_NAME, PAGES_STORE, META_STORE, offlinePageKey } = await import(new URL('../src/lib/offline/offline-store.ts', import.meta.url).href)
+      const { DB_NAME: PENDING_DB, STORE_NAME: PENDING_STORE, pendingEditKey } = await import(new URL('../src/lib/collab/pending-store.ts', import.meta.url).href)
+      const { grantAccess, revokeAccess } = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const { readBodyPm } = await import(new URL('../src/lib/collab/ydoc.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { hashSessionToken } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
+      const Y = await import('yjs')
+      const stamp = Date.now()
+      const mate = await joinAs(workspaceId, await createUser(`다시 붙는 사람 ${stamp}`), 'member')
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const original = { typed: `고칠 본문 ${stamp}`, changed: `바뀌기 전 ${stamp}`, revoked: `거둘 본문 ${stamp}` }
+      const typed = `오프라인에서 친 글 ${stamp}`
+      const serverNew = `서버에서 고친 글 ${stamp}`
+      const typedRevoked = `거둔 뒤에 친 글 ${stamp}`
+      const unsent = `보내지 못할 글 ${stamp}`
+      /** 소유자의 개인 페이지 — 본문을 넣고 이 사람에게 고치기를 준다(거둘 수 있게). */
+      const sharedPage = async (label, text) => {
+        const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `${label} ${stamp}`, privateTop: true }) })).json()).page.id
+        await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', text)] })
+        const granted = await grantAccess(ctx, page, { type: 'user', id: mate.userId }, 'edit')
+        if (!granted.ok) throw new Error(`공유하지 못했다: ${JSON.stringify(granted)}`)
+        return page
+      }
+      const typedPage = await sharedPage('오프라인에서 고칠 문서', original.typed)
+      const changedPage = await sharedPage('서버에서 바뀔 문서', original.changed)
+      const revokedPage = await sharedPage('거둘 문서', original.revoked)
+      const serverText = async (page) => (await readBody(page)).doc.blocks.map((b) => (b.title ?? []).map((r) => r.text?.content ?? '').join('')).join('\n')
+      /** IndexedDB 의 항목들 — 열쇠가 `prefix` 로 시작하는 것(바이트는 base64 로). 없는 데이터베이스는 만들지 않는다. */
+      const idbRows = (db, store, prefix) => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(db)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve([])
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(store)})) { d.close(); return resolve([]) }
+          const req = d.transaction(${JSON.stringify(store)}, 'readonly').objectStore(${JSON.stringify(store)}).getAll()
+          req.onsuccess = () => {
+            d.close()
+            resolve(req.result.filter((v) => String(v.key).startsWith(${JSON.stringify(prefix)})).map((v) => {
+              const raw = v.state ?? v.update
+              const b = raw ? new Uint8Array(raw) : new Uint8Array()
+              let s = ''
+              for (let i = 0; i < b.length; i += 1) s += String.fromCharCode(b[i])
+              return { key: v.key, userId: v.userId ?? null, seq: v.seq ?? null, bytes: b.byteLength, base64: btoa(s) }
+            }))
+          }
+          req.onerror = () => { d.close(); resolve([]) }
+        }
+      })`)
+      const idbDelete = (db, store, prefix) => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(db)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve(false)
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(store)})) { d.close(); return resolve(false) }
+          const s = d.transaction(${JSON.stringify(store)}, 'readwrite').objectStore(${JSON.stringify(store)})
+          const req = s.getAllKeys()
+          req.onsuccess = () => {
+            for (const k of req.result) if (String(k).startsWith(${JSON.stringify(prefix)})) s.delete(k)
+            s.transaction.oncomplete = () => { d.close(); resolve(true) }
+          }
+          req.onerror = () => { d.close(); resolve(false) }
+        }
+      })`)
+      const recordOf = async (page) => (await idbRows(OFFLINE_DB_NAME, PAGES_STORE, offlinePageKey(mate.userId, page)))[0] ?? null
+      const pendingOf = async (page) => (await idbRows(PENDING_DB, PENDING_STORE, pendingEditKey(mate.userId, page)))[0] ?? null
+      const stateText = (row) => {
+        if (row === null) return ''
+        const doc = new Y.Doc()
+        Y.applyUpdate(doc, Buffer.from(row.base64, 'base64'))
+        return readBodyPm(doc).textContent
+      }
+      /** `probe` 가 참이 될 때까지(그 값) — 아니면 마지막 값. */
+      const until = async (probe, ms) => {
+        const end = Date.now() + ms
+        let value = await probe()
+        while (!value && Date.now() < end) {
+          await sleep(250)
+          value = await probe()
+        }
+        return value
+      }
+      const download = async (page) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+        await waitFor(`navigator.serviceWorker.controller?.scriptURL === ${JSON.stringify(`${BASE}/sw.js`)}`, 15000)
+        await clickSelector('[data-testid="page-menu"]')
+        await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'off'`, 15000)
+        await clickSelector('[data-testid="offline-toggle"]')
+        return waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'on'
+          && (document.querySelector('[data-testid="offline-status"]')?.textContent ?? '').includes('네트워크 없이 열 수 있습니다')`, 40000)
+      }
+      /** 껍데기의 오프라인 편집기에서 그 페이지의 글 끝에 친다 — 보존본에 쌓이기를 기다리고 닫는다. */
+      const typeOffline = async (page, before, text) => {
+        await clickSelector(`[data-testid="offline-page"][data-page-id="${page}"]`)
+        await waitFor(`document.querySelector('[data-testid="offline-editor"]')?.dataset.pageId === ${JSON.stringify(page)}
+          && (document.querySelector('[data-testid="offline-editor"] .blk-editor')?.textContent ?? '').includes(${JSON.stringify(before)})`, 15000)
+        const box = await rect(`[data-testid="offline-editor"] .blk-editor [data-block-id] > *:first-child`)
+        await click(box.x + box.w - 4, box.y + box.h / 2)
+        await key('End')
+        await typeText(` ${text}`)
+        await waitFor(`(document.querySelector('[data-testid="offline-editor"] .blk-editor')?.textContent ?? '').includes(${JSON.stringify(text)})`, 5000)
+        const pending = await until(async () => ((await pendingOf(page))?.bytes ?? 0) > 0, 10000)
+        await clickSelector('[data-testid="offline-editor-close"]')
+        await waitFor(`!document.querySelector('[data-testid="offline-editor"]')`, 5000)
+        return pending
+      }
+      const liveSession = async (token) => Number((await dbQuery(`SELECT count(*)::int AS n FROM user_session WHERE token_hash = $1 AND revoked_at IS NULL`, [hashSessionToken(token)]))[0]?.n) === 1
+
+      // 워커 대상에 붙는 길 — 화면을 끊어도 워커의 fetch 는 따로 끊어야 한다(OF-1 · OF-2 와 같다)
+      const version = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const browserWs = new WebSocket(version.webSocketDebuggerUrl)
+      await new Promise((ok, no) => { browserWs.onopen = ok; browserWs.onerror = no })
+      let browserSeq = 0
+      const browserPending = new Map()
+      browserWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)(m); browserPending.delete(m.id) }
+      }
+      const browserSend = (method, params = {}, sessionId = undefined) => new Promise((ok, no) => {
+        const id = ++browserSeq
+        browserPending.set(id, (m) => (m.error ? no(new Error(`${method}: ${m.error.message}`)) : ok(m.result)))
+        browserWs.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+      let swSession = null
+      const setOffline = async (offline) => {
+        await send('Network.emulateNetworkConditions', { offline, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        if (swSession !== null) await browserSend('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }, swSession)
+      }
+      const errorsBefore = pageErrors.length
+      try {
+        await browseAs(mate.token)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
+
+        // 온라인 — 셋을 내려받는다(OF-2 의 스위치 · 편집기 청크도 받아 둔다)
+        const downloaded = [await download(typedPage), await download(changedPage), await download(revokedPage)]
+        const before = { typed: await recordOf(typedPage), changed: await recordOf(changedPage), revoked: await recordOf(revokedPage) }
+        check('셋을 내려받았다 — 사본마다 서버 판이 있다', downloaded.every(Boolean) && Object.values(before).every((r) => r !== null && /^\d+$/.test(r.seq)),
+          JSON.stringify({ downloaded, seqs: Object.values(before).map((r) => r?.seq ?? null) }))
+
+        let swTarget = null
+        for (let i = 0; i < 50 && swTarget === null; i += 1) {
+          const { targetInfos } = await browserSend('Target.getTargets')
+          swTarget = targetInfos.find((t) => t.type === 'service_worker' && t.url === `${BASE}/sw.js`) ?? null
+          if (swTarget === null) await sleep(100)
+        }
+        if (swTarget === null) throw new Error('서비스 워커 대상을 찾지 못했다')
+        swSession = (await browserSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true })).sessionId
+        await browserSend('Network.enable', {}, swSession)
+
+        // 오프라인 — 껍데기의 편집기에서 둘에 친다
+        await send('Page.navigate', { url: 'about:blank' })
+        await setOffline(true)
+        await send('Page.navigate', { url: `${BASE}/offline` })
+        await waitFor(`!!document.querySelector('[data-testid="offline-page"][data-page-id="${typedPage}"]')`, 15000)
+        const typedPending = await typeOffline(typedPage, original.typed, typed)
+        const revokedPending = await typeOffline(revokedPage, original.revoked, typedRevoked)
+        check('오프라인에서 친 글은 보존본에 쌓였다(둘)', typedPending && revokedPending)
+
+        // 그 사이 서버에서 — 소유자가 하나를 고치고, 친 것 하나의 공유를 거둔다
+        await saveBody(changedPage, { blocks: [block(randomUUID(), 'paragraph', serverNew)] })
+        const revoked = await revokeAccess(ctx, revokedPage, { type: 'user', id: mate.userId })
+        if (!revoked.ok) throw new Error(`공유를 거두지 못했다: ${JSON.stringify(revoked)}`)
+
+        // 다시 붙는다 — 앱의 아무 화면(워크스페이스 홈)을 연다. 친 페이지는 열지 않는다
+        await setOffline(false)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)} && document.readyState === 'complete'`, 15000)
+        const arrived = await until(async () => {
+          const text = await serverText(typedPage)
+          return text.includes(typed) ? text : ''
+        }, 30000)
+        check('★ 다시 붙어 앱을 열기만 해도 — 그 페이지를 열지 않고 — 오프라인에서 친 글이 서버에 간다(뒤에서 연 협업 연결)',
+          String(arrived).includes(original.typed) && String(arrived).includes(typed) && (await evaluate('location.pathname')) === `/w/${workspaceId}`,
+          `${arrived || await serverText(typedPage)} · ${await evaluate('location.pathname')}`)
+        check('★ 서버가 확인하면 보존본을 지운다(6c)', await until(async () => (await pendingOf(typedPage)) === null, 15000), JSON.stringify(await pendingOf(typedPage)))
+
+        const changed = await until(async () => {
+          const row = await recordOf(changedPage)
+          return row !== null && stateText(row).includes(serverNew) ? row : null
+        }, 20000)
+        check('★ 서버에서 바뀐 페이지는 다시 받는다 — 사본이 서버의 새 글을 담고 판이 커졌다',
+          changed !== null && BigInt(changed.seq) > BigInt(before.changed.seq),
+          `${before.changed.seq} → ${changed?.seq ?? '(그대로)'} · ${stateText(await recordOf(changedPage))}`)
+        const typedRecord = await until(async () => {
+          const row = await recordOf(typedPage)
+          return row !== null && BigInt(row.seq) > BigInt(before.typed.seq) ? row : null
+        }, 20000)
+        const typedCopy = stateText(typedRecord)
+        check('보낸 페이지도 다시 받는다 — 사본은 서버 상태(받아 둔 글 + 오프라인에서 친 글) · 판이 커졌다',
+          typedRecord !== null && typedCopy.includes(original.typed) && typedCopy.includes(typed), `${typedRecord?.seq ?? '(그대로)'} · ${typedCopy}`)
+
+        const goneRecord = await until(async () => (await recordOf(revokedPage)) === null, 20000)
+        const gonePending = (await pendingOf(revokedPage)) === null
+        check('★ 공유를 거둔 페이지는 사본과 보존본을 곧바로 지운다', goneRecord && gonePending,
+          JSON.stringify({ record: await recordOf(revokedPage), pending: await pendingOf(revokedPage) }))
+        check('★ 거둔 페이지에 친 글은 서버로 가지 않았다(보낼 곳이 없다)', !(await serverText(revokedPage)).includes(typedRevoked), await serverText(revokedPage))
+        const notice = await waitFor(`(document.querySelector('[data-testid="offline-resync-notice"]')?.textContent ?? '').includes('권한이 없어져 오프라인 사본 1개를 지웠습니다')`, 15000)
+        check('★ 지웠다고 한 번 알린다 — "권한이 없어져 오프라인 사본 1개를 지웠습니다"', notice,
+          await evaluate(`document.querySelector('[data-testid="offline-resync-notice"]')?.textContent ?? '(알림 없음)'`))
+        await send('Page.navigate', { url: `${BASE}/offline` })
+        await waitFor(`document.querySelector('[data-testid="offline-pages"]')?.dataset.state === 'ready'`, 15000)
+        const listed = await evaluate(`[...document.querySelectorAll('[data-testid="offline-page"]')].map((b) => b.dataset.pageId)`)
+        check('껍데기의 목록에서 거둔 페이지가 빠졌다(남은 둘은 그대로)', listed.includes(typedPage) && listed.includes(changedPage) && !listed.includes(revokedPage), JSON.stringify(listed))
+        check('다시 붙기에서 화면 오류가 나지 않았다', pageErrors.length === errorsBefore, pageErrors.slice(errorsBefore).join(' | '))
+
+        // 로그아웃 — 협업 서버를 내린 채 친 글이 남으면 먼저 보내 보고(시간 상한), 못 보냈으면 묻는다
+        await stopCollab()
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${typedPage}` })
+        await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+        await sleep(500)
+        const line = await rect('.blk-editor [data-block-id] > *:first-child')
+        await click(line.x + line.w - 4, line.y + line.h / 2)
+        await key('End')
+        await typeText(` ${unsent}`)
+        check('협업 서버가 없는 동안 친 글은 보존본에 남는다', await until(async () => ((await pendingOf(typedPage))?.bytes ?? 0) > 0, 10000))
+        const SWITCHER = '[data-testid="sidebar-workspace-switcher"]'
+        const openSwitcher = async () => {
+          for (let i = 0; i < 6; i += 1) {
+            if (await evaluate(`!!document.querySelector('[data-testid="switcher-logout"]')`)) return true
+            await clickSelector(SWITCHER)
+            if (await waitFor(`!!document.querySelector('[data-testid="switcher-logout"]')`, 1500)) return true
+          }
+          return false
+        }
+        await openSwitcher()
+        await clickSelector('[data-testid="switcher-logout"]')
+        const warned = await waitFor(`(document.querySelector('[data-testid="logout-unsent-warning"]')?.textContent ?? '').includes('보내지 못한 편집이 사라집니다')`, 20000)
+        check('★ 보내지 못한 편집이 남은 채 로그아웃하면 화면 안에서 묻는다 — "보내지 못한 편집이 사라집니다"', warned && (await evaluate('location.pathname')) === `/w/${workspaceId}/${typedPage}`,
+          await evaluate(`document.querySelector('[data-testid="logout-unsent-warning"]')?.textContent ?? '(물음 없음)'`))
+        await clickSelector('[data-testid="logout-unsent-cancel"]')
+        await waitFor(`!document.querySelector('[data-testid="logout-unsent-warning"]')`, 5000)
+        check('취소하면 그대로 — 로그인한 채 · 보존본 · 사본이 남는다', (await liveSession(mate.token)) && (await pendingOf(typedPage)) !== null && (await recordOf(typedPage)) !== null)
+
+        await openSwitcher()
+        await clickSelector('[data-testid="switcher-logout"]')
+        await waitFor(`!!document.querySelector('[data-testid="logout-unsent-confirm"]')`, 20000)
+        await clickSelector('[data-testid="logout-unsent-confirm"]')
+        const out = await waitFor(`location.pathname === '/login'`, 20000)
+        const pagesLeft = await idbRows(OFFLINE_DB_NAME, PAGES_STORE, `${mate.userId}:`)
+        const pendingLeft = await idbRows(PENDING_DB, PENDING_STORE, `${mate.userId}:`)
+        const marks = await idbRows(OFFLINE_DB_NAME, META_STORE, '')
+        check('★ 확인하면 로그아웃하고 그 사람의 오프라인 사본 · 보존본이 모두 지워진다(마지막 사용자 표시도)',
+          out && !(await liveSession(mate.token)) && pagesLeft.length === 0 && pendingLeft.length === 0 && !marks.some((m) => m.userId === mate.userId),
+          JSON.stringify({ at: await evaluate('location.pathname'), pages: pagesLeft.length, pending: pendingLeft.length, marks }))
+      } finally {
+        await restartCollab().catch(() => undefined)
+        await setOffline(false).catch(() => undefined)
+        if (swSession !== null) await browserSend('Target.detachFromTarget', { sessionId: swSession }).catch(() => undefined)
+        browserWs.close()
+        // 이 절이 남긴 항목을 지운다 — 앱의 주소에서(about:blank 에서는 다른 저장소다)
+        if (!(await evaluate('location.origin').catch(() => '')).startsWith(BASE)) await send('Page.navigate', { url: `${BASE}/offline` }).catch(() => undefined)
+        await idbDelete(OFFLINE_DB_NAME, PAGES_STORE, `${mate.userId}:`).catch(() => undefined)
+        await idbDelete(PENDING_DB, PENDING_STORE, `${mate.userId}:`).catch(() => undefined)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' }).catch(() => undefined)
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

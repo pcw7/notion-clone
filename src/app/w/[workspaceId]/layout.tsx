@@ -38,6 +38,8 @@ import { ThemeShortcut } from './theme-shortcut'
 import { KeyboardCaret } from './keyboard-caret'
 import { TimeZoneCookie } from './time-zone-cookie'
 import { OfflineUserMark } from './offline-user-mark'
+import { OfflineResync } from './offline-resync'
+import { collabServerUrl } from '@/lib/collab/collab-url'
 import { WorkspaceShortcut } from './workspace-shortcut'
 
 /**
@@ -92,6 +94,8 @@ export default async function WorkspaceLayout({
         workspaceId={workspaceId}
         workspaceName={workspaceName}
         email={switcher.email}
+        userId={ctx.userId}
+        collabUrl={collabServerUrl()}
         workspaces={switcher.workspaces}
         otherAccounts={otherAccounts}
         tree={sections.workspacePages.map(toSidebarNode)}
@@ -139,6 +143,8 @@ export default async function WorkspaceLayout({
       <TimeZoneCookie />
       {/* 오프라인 껍데기가 누구의 목록을 보일지(OF-2) — 마지막으로 앱을 연 사람을 이 기기에 적는다 */}
       <OfflineUserMark userId={ctx.userId} />
+      {/* 다시 붙으면(OF-3) — 앱을 열 때 · `online` 마다 내려받은 페이지를 서버와 맞춘다(남은 편집 보내기 · 바뀐 것 다시 받기 · 볼 수 없게 된 것 지우기) */}
+      <OfflineResync userId={ctx.userId} collabUrl={collabServerUrl()} />
       {/* 워크스페이스 단축키(8j-1 · F-14-09) — Ctrl/Cmd + Shift + 1~9 가 스위처 목록의 그 자리로. 같은 이유로 사이드바 밖에 둔다. */}
       <WorkspaceShortcut workspaceId={workspaceId} workspaceIds={switcher.workspaces.map((w) => w.workspaceId)} />
       {/* 성능 계측(10e-1b · F-12-18) — 이 문서의 수집기. 표본 비율은 환경 변수(기본 0.2 · 0 이면 끈다) */}

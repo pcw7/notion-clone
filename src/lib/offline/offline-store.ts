@@ -138,8 +138,18 @@ export type OfflineStore = {
   release(userId: string, pageId: string, reason: OfflineReason): Promise<OfflinePageRecord | null>
   /** 오프라인 편집을 더한 상태로 바꾼다 — 그 사이 지운 기록이면 아무것도 하지 않는다. */
   updateState(userId: string, pageId: string, state: Uint8Array): Promise<void>
+  /**
+   * 다시 받은 것으로 바꾼다(OF-3) — 한 트랜잭션 안에서 지금 기록을 읽어 `change` 에 넘긴다. 그 사이 지운 기록이면 되살리지 않는다(null).
+   */
+  replace(userId: string, pageId: string, change: (current: OfflinePageRecord) => OfflinePageRecord): Promise<OfflinePageRecord | null>
+  /** 사본 하나를 지운다(볼 수 없게 된 페이지 · OF-3). 남기는 까닭과 상관없이. */
+  remove(userId: string, pageId: string): Promise<void>
+  /** 이 사람의 사본을 모두 지운다(로그아웃 · OF-3). 마지막 사용자 표시도 그 사람이면 지운다. 지운 수를 돌려준다. */
+  clear(userId: string): Promise<number>
   /** 이 사람의 사본 — 받은 때의 역순. */
   list(userId: string): Promise<OfflinePageRecord[]>
+  /** 이 사람의 사본 수 — 본문을 읽지 않는다(다시 붙기가 할 일이 있는지만 볼 때 · OF-3). */
+  count(userId: string): Promise<number>
   lastUser(): Promise<string | null>
   markUser(userId: string): Promise<void>
   close(): void
@@ -183,6 +193,11 @@ function toRecord(row: unknown): OfflinePageRecord | null {
   return { ...(row as OfflinePageRecord), state: new Uint8Array(row.state) }
 }
 
+/** 열쇠가 `{사용자}:` 로 시작하는 범위 — 그 사람의 기록만. */
+function userRange(userId: string): IDBKeyRange {
+  return IDBKeyRange.bound(`${userId}:`, `${userId}:￿`)
+}
+
 function indexedDbStore(db: IDBDatabase): OfflineStore {
   const pages = (mode: IDBTransactionMode): IDBObjectStore => db.transaction(PAGES_STORE, mode).objectStore(PAGES_STORE)
   const meta = (mode: IDBTransactionMode): IDBObjectStore => db.transaction(META_STORE, mode).objectStore(META_STORE)
@@ -211,14 +226,31 @@ function indexedDbStore(db: IDBDatabase): OfflineStore {
     async updateState(userId, pageId, state) {
       await modify(offlinePageKey(userId, pageId), (current) => withState(current, state))
     },
+    replace(userId, pageId, change) {
+      return modify(offlinePageKey(userId, pageId), change)
+    },
+    async remove(userId, pageId) {
+      await request(pages('readwrite').delete(offlinePageKey(userId, pageId)))
+    },
+    async clear(userId) {
+      const store = pages('readwrite')
+      const count = await request(store.count(userRange(userId)))
+      await request(store.delete(userRange(userId)))
+      const marks = meta('readwrite')
+      const row: unknown = await request(marks.get(LAST_USER_KEY))
+      if (isRecord(row) && row.userId === userId) await request(marks.delete(LAST_USER_KEY))
+      return count
+    },
     async list(userId) {
       // 열쇠가 `{사용자}:` 로 시작하는 것만 — 다른 사람의 사본은 읽지도 않는다
-      const range = IDBKeyRange.bound(`${userId}:`, `${userId}:￿`)
-      const rows = await request(pages('readonly').getAll(range))
+      const rows = await request(pages('readonly').getAll(userRange(userId)))
       return rows
         .map(toRecord)
         .filter((r): r is OfflinePageRecord => r !== null && r.userId === userId)
         .sort((a, b) => b.savedAt - a.savedAt)
+    },
+    count(userId) {
+      return request(pages('readonly').count(userRange(userId)))
     },
     async lastUser() {
       const row: unknown = await request(meta('readonly').get(LAST_USER_KEY))
