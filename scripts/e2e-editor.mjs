@@ -8412,6 +8412,45 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('할 일 체크박스 — 누르면 화면과 서버가 함께 바뀐다 (F-01-04)')) { try {
+      // 체크박스 클릭의 기본 동작을 막으면 처리기가 끝난 뒤 브라우저가 체크를 되돌린다 — 저장은 됐는데 화면은 곧바로 풀려 보였다
+      // (README 시연 녹화가 찾았다). 진짜 마우스로 눌러 화면의 체크와 서버의 값이 함께 바뀌는지 본다. 자기 데이터 — E2E_ONLY 로 홀로 돈다.
+      const todo = randomUUID()
+      const tPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `할 일 ${Date.now()}` }) })).json()).page.id
+      await saveBody(tPage, { blocks: [{ ...block(todo, 'to_do', '체크해 볼 일'), properties: { checked: false } }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tPage}` })
+      const box = `[data-block-id="${todo}"] input.blk-checkbox`
+      await waitFor(`!!document.querySelector('${box}') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(box)
+      const serverChecked = async () => {
+        const found = (await readBody(tPage)).doc.blocks.find((b) => b.id === todo)
+        return found?.properties?.checked === true
+      }
+      const pollServer = async (want) => {
+        for (let i = 0; i < 40; i += 1) {
+          if ((await serverChecked()) === want) return true
+          await sleep(250)
+        }
+        return false
+      }
+      const clickBox = async () => {
+        const r = await evaluate(`(() => { const b = document.querySelector('${box}').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 } })()`)
+        await click(r.x, r.y)
+      }
+
+      await clickBox()
+      await sleep(600)
+      const shownOn = await evaluate(`document.querySelector('${box}').checked`)
+      const savedOn = await pollServer(true)
+      check('★ 누르면 체크가 화면에 남는다 — 서버에도 체크(되돌아 풀려 보이지 않는다)', shownOn === true && savedOn, JSON.stringify({ shownOn, savedOn }))
+
+      await clickBox()
+      await sleep(600)
+      const shownOff = await evaluate(`document.querySelector('${box}').checked`)
+      const savedOff = await pollServer(false)
+      check('★ 다시 누르면 풀린다 — 화면과 서버가 함께', shownOff === false && savedOff, JSON.stringify({ shownOff, savedOff }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
