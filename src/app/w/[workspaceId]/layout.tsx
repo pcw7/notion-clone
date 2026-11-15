@@ -37,6 +37,7 @@ import { ReleaseWatcher } from './release-watcher'
 import { ThemeShortcut } from './theme-shortcut'
 import { KeyboardCaret } from './keyboard-caret'
 import { TimeZoneCookie } from './time-zone-cookie'
+import { OfflineUserMark } from './offline-user-mark'
 import { WorkspaceShortcut } from './workspace-shortcut'
 
 /**
@@ -136,6 +137,8 @@ export default async function WorkspaceLayout({
       {/* 소프트 키보드(10j-4 · F-12-12) — 보이는 영역만 줄이는 브라우저(iOS Safari)에서 캐럿이 키보드 아래에 남지 않게. 터치 기기에서만 듣는다 */}
       <KeyboardCaret />
       <TimeZoneCookie />
+      {/* 오프라인 껍데기가 누구의 목록을 보일지(OF-2) — 마지막으로 앱을 연 사람을 이 기기에 적는다 */}
+      <OfflineUserMark userId={ctx.userId} />
       {/* 워크스페이스 단축키(8j-1 · F-14-09) — Ctrl/Cmd + Shift + 1~9 가 스위처 목록의 그 자리로. 같은 이유로 사이드바 밖에 둔다. */}
       <WorkspaceShortcut workspaceId={workspaceId} workspaceIds={switcher.workspaces.map((w) => w.workspaceId)} />
       {/* 성능 계측(10e-1b · F-12-18) — 이 문서의 수집기. 표본 비율은 환경 변수(기본 0.2 · 0 이면 끈다) */}

@@ -17473,6 +17473,9 @@ async function main() {
         const before = rscCount()
         // 렌더 뒤의 변경 — 화면이 구독을 열면 서버가 곧바로 "바뀌었다"를 보낸다(#250)
         await rowOf('나')
+        // 서비스 워커(OF-1)가 페이지 이동을 먼저 받으면 그 요청은 워커 대상에서 나가 이 화면의 Fetch 가 붙잡지 못한다 — 이 절은 워커와
+        // 무관한 화면의 동작을 보므로 이 동안만 워커를 비켜 간다(전체 판 97babe1 이 잡았다)
+        await send('Network.setBypassServiceWorker', { bypass: true })
         await send('Fetch.enable', { patterns: [{ urlPattern: `*leave=${stamp}*`, resourceType: 'Document', requestStage: 'Request' }] })
         const leaving = send('Page.navigate', { url: `${BASE}/w/${workspaceId}?leave=${stamp}` })
         for (let i = 0; i < 600 && pausedCount() === 0; i += 1) await sleep(50)
@@ -17498,6 +17501,7 @@ async function main() {
       } finally {
         await send('Emulation.setCPUThrottlingRate', { rate: E2E_CPU_THROTTLE > 1 ? E2E_CPU_THROTTLE : 1 })
         await send('Fetch.disable').catch(() => undefined)
+        await send('Network.setBypassServiceWorker', { bypass: false }).catch(() => undefined)
         await releasePaused()
       }
     } catch (thrown) { await sectionThrew(thrown) } }
@@ -36099,6 +36103,183 @@ async function main() {
         if (swSession !== null) await browserSend('Target.detachFromTarget', { sessionId: swSession }).catch(() => undefined)
         browserWs.close()
         cdp.ws.removeEventListener('message', watch)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('오프라인 페이지 (OF-2 · F-12-04)')) { try {
+      // 페이지 메뉴의 "오프라인으로 쓰기" 가 본문 상태를 IndexedDB 에 내려받고 오프라인 편집기의 청크를 받아 둔다(정본 §3.7 [보강 OF-1] ② ③).
+      // 네트워크를 끊고(화면 · 워커 둘 다 — OF-1 과 같다) 껍데기에 가면 목록에 서고, 열면 로컬 Y.Doc 의 편집기가 본문을 보인다. 친 글은 보존본에
+      // 쌓였다가 연결된 채 그 페이지를 열면 서버에 간다(6c · 6d 의 길). 끄면 사본이 지워진다. 내보내기 정책을 끄면 멤버는 못 받는다.
+      // 끝에 이 절이 남긴 IndexedDB 항목을 지우고 연결을 되돌린다(워커는 OF-1 처럼 등록한 채 둔다).
+      const { OFFLINE_DB_NAME, PAGES_STORE, META_STORE, LAST_USER_KEY, offlinePageKey } = await import(new URL('../src/lib/offline/offline-store.ts', import.meta.url).href)
+      const { DB_NAME: PENDING_DB, STORE_NAME: PENDING_STORE, pendingEditKey } = await import(new URL('../src/lib/collab/pending-store.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const original = `받아 둘 본문 ${stamp}`
+      const typed = `오프라인에서 친 글 ${stamp}`
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `오프라인 문서 ${stamp}` }) })).json()).page.id
+      await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', original)] })
+      const recordKey = offlinePageKey(ctx.userId, page)
+      const pendingKey = pendingEditKey(ctx.userId, page)
+      /** IndexedDB 의 한 항목(바이트는 크기로) — 없는 데이터베이스는 만들지 않는다(만들면 앱의 업그레이드가 돌지 않는다). */
+      const idb = (db, store, key, mode = 'get') => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(db)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve(null)
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(store)})) { d.close(); return resolve(null) }
+          const s = d.transaction(${JSON.stringify(store)}, ${JSON.stringify(mode === 'get' ? 'readonly' : 'readwrite')}).objectStore(${JSON.stringify(store)})
+          const req = ${mode === 'get' ? `s.get(${JSON.stringify(key)})` : `s.delete(${JSON.stringify(key)})`}
+          req.onsuccess = () => {
+            const v = req.result
+            d.close()
+            resolve(v === undefined ? null : JSON.parse(JSON.stringify(v, (k, x) => (x instanceof Uint8Array ? { bytes: x.byteLength } : x))))
+          }
+          req.onerror = () => { d.close(); resolve(null) }
+        }
+      })`)
+      const serverText = async () => (await readBody(page)).doc.blocks.map((b) => (b.title ?? []).map((r) => r.text?.content ?? '').join('')).join('\n')
+
+      // 온라인 — 페이지를 열고 워커가 화면을 맡기를 기다린다(홀로 돌 때도 루트 레이아웃이 등록한다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+      await waitFor(`navigator.serviceWorker.controller?.scriptURL === ${JSON.stringify(`${BASE}/sw.js`)}`, 15000)
+      check('서버가 그린 페이지 메뉴에 "오프라인으로 쓰기" 줄이 있다(메뉴를 열기 전에는 받지 않은 자리)',
+        await evaluate(`document.querySelector('[data-testid="offline-toggle"]')?.textContent.includes('오프라인으로 쓰기') ?? false`))
+      await clickSelector('[data-testid="page-menu"]')
+      const ready = await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'off'`, 15000)
+      check('메뉴를 열면 스위치를 받아 이 기기의 상태(꺼짐)를 읽는다', ready, await evaluate(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state ?? '(없음)'`))
+      await clickSelector('[data-testid="offline-toggle"]')
+      const done = await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'on'
+        && (document.querySelector('[data-testid="offline-status"]')?.textContent ?? '').includes('네트워크 없이 열 수 있습니다')`, 40000)
+      check('★ 켜면 내려받고 편집기를 받아 둔다 — 진행 줄이 끝났다고 말한다', done, await evaluate(`document.querySelector('[data-testid="offline-status"]')?.textContent ?? '(줄 없음)'`))
+      const record = await idb(OFFLINE_DB_NAME, PAGES_STORE, recordKey)
+      const lastUser = await idb(OFFLINE_DB_NAME, META_STORE, LAST_USER_KEY)
+      check('★ IndexedDB 에 사본이 있다 — {사용자}:{페이지} · 까닭 toggled · 서버 판 · 크기 · 마지막으로 연 사람',
+        record?.pageId === page && record.workspaceId === workspaceId && JSON.stringify(record.reasons) === '["toggled"]' && /^\d+$/.test(record.seq)
+          && record.bytes > 0 && record.state?.bytes === record.bytes && record.title === `오프라인 문서 ${stamp}` && lastUser?.userId === ctx.userId,
+        JSON.stringify({ record, lastUser }))
+      const route = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/offline`, { headers: { cookie: authed.cookie } })
+      check('내려받기 라우트는 private · no-store 로 나간다', route.status === 200 && /private/.test(route.headers.get('cache-control') ?? '') && /no-store/.test(route.headers.get('cache-control') ?? ''),
+        `${route.status} ${route.headers.get('cache-control')}`)
+
+      // 워커 대상에 붙는다 — 화면을 끊어도 워커의 fetch 는 따로 끊어야 한다(OF-1 과 같다)
+      const version = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const browserWs = new WebSocket(version.webSocketDebuggerUrl)
+      await new Promise((ok, no) => { browserWs.onopen = ok; browserWs.onerror = no })
+      let browserSeq = 0
+      const browserPending = new Map()
+      browserWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)(m); browserPending.delete(m.id) }
+      }
+      const browserSend = (method, params = {}, sessionId = undefined) => new Promise((ok, no) => {
+        const id = ++browserSeq
+        browserPending.set(id, (m) => (m.error ? no(new Error(`${method}: ${m.error.message}`)) : ok(m.result)))
+        browserWs.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+      let swSession = null
+      const setOffline = async (offline) => {
+        await send('Network.emulateNetworkConditions', { offline, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        if (swSession !== null) await browserSend('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }, swSession)
+      }
+      const errorsBefore = pageErrors.length
+      try {
+        let swTarget = null
+        for (let i = 0; i < 50 && swTarget === null; i += 1) {
+          const { targetInfos } = await browserSend('Target.getTargets')
+          swTarget = targetInfos.find((t) => t.type === 'service_worker' && t.url === `${BASE}/sw.js`) ?? null
+          if (swTarget === null) await sleep(100)
+        }
+        if (swTarget === null) throw new Error('서비스 워커 대상을 찾지 못했다')
+        swSession = (await browserSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true })).sessionId
+        await browserSend('Network.enable', {}, swSession)
+
+        // 오프라인 — 껍데기로 간다
+        await send('Page.navigate', { url: 'about:blank' })
+        await setOffline(true)
+        await send('Page.navigate', { url: `${BASE}/offline` })
+        const listed = await waitFor(`!!document.querySelector('[data-testid="offline-shell"] [data-testid="offline-page"][data-page-id="${page}"]')`, 15000)
+        check('★ 네트워크 없이 껍데기에 가면 내려받은 페이지가 목록에 선다(제목 · 받은 때)', listed
+          && (await evaluate(`document.querySelector('[data-testid="offline-page"][data-page-id="${page}"]').textContent`)).includes(`오프라인 문서 ${stamp}`),
+          await evaluate(`document.querySelector('[data-testid="offline-pages"]')?.textContent ?? '(목록 없음)'`))
+        await clickSelector(`[data-testid="offline-page"][data-page-id="${page}"]`)
+        const opened = await waitFor(`(document.querySelector('[data-testid="offline-editor"] .blk-editor')?.textContent ?? '').includes(${JSON.stringify(original)})`, 15000)
+        check('★ 고르면 네트워크 없이 편집기가 선다 — 받아 둔 본문 · 제목(편집기의 코드는 워커의 캐시에서)', opened
+          && (await evaluate(`document.querySelector('[data-testid="offline-editor-title"]')?.textContent`)) === `오프라인 문서 ${stamp}`,
+          await evaluate(`document.querySelector('[data-testid="offline-open-error"]')?.textContent ?? document.querySelector('[data-testid="offline-editor"]')?.textContent?.slice(0, 200) ?? '(편집기 없음)'`))
+
+        // 친다 — 글의 끝에
+        const box = await rect(`[data-testid="offline-editor"] .blk-editor [data-block-id] > *:first-child`)
+        await click(box.x + box.w - 4, box.y + box.h / 2)
+        await key('End')
+        await typeText(` ${typed}`)
+        const shown = await waitFor(`(document.querySelector('[data-testid="offline-editor"] .blk-editor')?.textContent ?? '').includes(${JSON.stringify(typed)})`, 5000)
+        let pending = null
+        for (let i = 0; i < 40 && (pending === null || !(pending.update?.bytes > 0)); i += 1) {
+          pending = await idb(PENDING_DB, PENDING_STORE, pendingKey)
+          if (pending === null) await sleep(100)
+        }
+        check('★ 오프라인에서 친 글은 보존본(notion-clone-collab · {사용자}:{페이지})에 쌓인다', shown && pending?.update?.bytes > 0, JSON.stringify(pending))
+        const grown = await idb(OFFLINE_DB_NAME, PAGES_STORE, recordKey)
+        check('사본도 친 것을 담는다(상태가 커졌다 · 서버 판은 그대로)', grown?.bytes > record.bytes && grown.seq === record.seq, `${record.bytes} → ${grown?.bytes} · ${record.seq} → ${grown?.seq}`)
+        check('오프라인 편집기에서 화면 오류가 나지 않았다', pageErrors.length === errorsBefore, pageErrors.slice(errorsBefore).join(' | '))
+
+        // 다시 연결 — 평소대로 그 페이지를 열면 연결이 보존본을 보낸다
+        await setOffline(false)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+        let arrived = ''
+        for (let i = 0; i < 60 && !arrived.includes(typed); i += 1) {
+          arrived = await serverText()
+          if (!arrived.includes(typed)) await sleep(250)
+        }
+        check('★ 다시 연결되어 페이지를 열면 오프라인에서 친 글이 서버에 간다', arrived.includes(original) && arrived.includes(typed), arrived)
+        let cleared = false
+        for (let i = 0; i < 40 && !cleared; i += 1) {
+          cleared = (await idb(PENDING_DB, PENDING_STORE, pendingKey)) === null
+          if (!cleared) await sleep(250)
+        }
+        check('서버가 확인하면 보존본을 지운다(6c)', cleared)
+
+        // 끈다 — 사본이 지워지고 껍데기에서 사라진다
+        await clickSelector('[data-testid="page-menu"]')
+        await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'on'`, 15000)
+        await clickSelector('[data-testid="offline-toggle"]')
+        const off = await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'off'
+          && (document.querySelector('[data-testid="offline-status"]')?.textContent ?? '').includes('지웠습니다')`, 15000)
+        check('★ 끄면 이 기기에서 지운다 — 마지막 까닭이 빠지면 사본이 없다', off && (await idb(OFFLINE_DB_NAME, PAGES_STORE, recordKey)) === null,
+          await evaluate(`document.querySelector('[data-testid="offline-status"]')?.textContent ?? '(줄 없음)'`))
+        await send('Page.navigate', { url: `${BASE}/offline` })
+        const gone = await waitFor(`document.querySelector('[data-testid="offline-pages"]')?.dataset.state === 'ready' && !document.querySelector('[data-testid="offline-page"][data-page-id="${page}"]')`, 15000)
+        check('★ 지운 페이지는 껍데기의 목록에 없다', gone, await evaluate(`document.querySelector('[data-testid="offline-pages"]')?.textContent ?? '(목록 없음)'`))
+      } finally {
+        await setOffline(false).catch(() => undefined)
+        if (swSession !== null) await browserSend('Target.detachFromTarget', { sessionId: swSession }).catch(() => undefined)
+        browserWs.close()
+        // 이 절이 남긴 항목을 지운다 — 앱의 주소에서(about:blank 에서는 다른 저장소다)
+        if (!(await evaluate('location.origin').catch(() => '')).startsWith(BASE)) await send('Page.navigate', { url: `${BASE}/offline` }).catch(() => undefined)
+        await idb(OFFLINE_DB_NAME, PAGES_STORE, recordKey, 'delete').catch(() => undefined)
+        await idb(PENDING_DB, PENDING_STORE, pendingKey, 'delete').catch(() => undefined)
+      }
+
+      // 내보내기 정책을 끄면 멤버는 내려받지 못한다 — 스위치가 서지 않고 라우트가 거부한다(소유자는 그대로)
+      const setting = (k, value) => fetch(`${BASE}/api/workspaces/${workspaceId}/settings/${k}`, { method: 'PUT', headers: authed, body: JSON.stringify({ value }) })
+      const mate = await joinAs(workspaceId, await createUser(`오프라인 동료 ${stamp}`), 'member')
+      const mateCookie = { cookie: `nc_session=${mate.token}` }
+      try {
+        await setting('workspace.allow_export', false)
+        const mateHtml = await (await fetch(`${BASE}/w/${workspaceId}/${page}`, { headers: mateCookie })).text()
+        const ownerHtml = await (await fetch(`${BASE}/w/${workspaceId}/${page}`, { headers: { cookie: authed.cookie } })).text()
+        const mateRoute = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/offline`, { headers: mateCookie })
+        const mateBody = await mateRoute.json().catch(() => null)
+        const ownerRoute = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/offline`, { headers: { cookie: authed.cookie } })
+        check('★ 내보내기 정책을 끄면 멤버는 내려받지 못한다 — 스위치가 서지 않고 라우트는 403 policy_disabled · 소유자는 그대로',
+          mateHtml.includes('data-testid="page-menu"') && !mateHtml.includes('data-testid="offline-toggle"') && ownerHtml.includes('data-testid="offline-toggle"')
+            && mateRoute.status === 403 && mateBody?.error === 'policy_disabled' && ownerRoute.status === 200,
+          `멤버 화면의 스위치 ${mateHtml.includes('data-testid="offline-toggle"')} · 멤버 ${mateRoute.status} ${mateBody?.error} · 소유자 ${ownerRoute.status}`)
+      } finally {
+        await setting('workspace.allow_export', true)
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 

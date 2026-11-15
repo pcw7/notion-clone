@@ -22,6 +22,7 @@ import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
 import { breadcrumbTrail, rowTrail } from '@/lib/block/breadcrumb'
 import { loadPageRefLabels } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
+import { mayDownloadOffline } from '@/lib/offline/offline-page'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { listMovableTargets, listTeamspaceDestinations } from '@/lib/block/move-page'
 import { listDiscussions } from '@/lib/comment/discussion'
@@ -50,6 +51,7 @@ import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageMenu, PageMenuDivider } from './page-menu'
+import { OfflineToggle } from './offline-toggle'
 import { PageAppearanceControl } from './page-appearance-control'
 import { SuggestionListButton, SuggestionModePill, SuggestionModeToggle } from './suggestion-mode-control'
 import { NotifyMeControl } from './notify-me-control'
@@ -126,7 +128,7 @@ export async function PageContentBase({
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage, subscription] = await Promise.all([
+  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage, subscription, offlineAllowed] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -145,6 +147,8 @@ export async function PageContentBase({
     readRowPage(ctx, page.id),
     // 알림 받기(NM-1) — 지금 수준을 서버가 읽어 내려 준다(화면이 따로 부르지 않는다)
     readSubscription(ctx, page.id),
+    // 오프라인 내려받기(OF-2) — 내보내기 정책을 따른다(끄면 소유자만). 스위치를 세울지만 정한다 — 라우트가 다시 묻는다
+    mayDownloadOffline(ctx),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -345,6 +349,8 @@ export async function PageContentBase({
             {/* 업데이트(4d-3 · F-11-04) — 볼 수 있는 사람 모두 · 행도 */}
             <PageUpdatesButton workspaceId={workspaceId} pageId={page.id} />
             {rowPage === null && <ExportButton workspaceId={workspaceId} rootId={page.id} />}
+            {/* 오프라인으로 쓰기(OF-2 · F-12-04) — 이 기기에만 · 페이지만(데이터베이스는 OF-4) · 내려받을 수 있는 사람만(내보내기 정책) */}
+            {rowPage === null && offlineAllowed && <OfflineToggle workspaceId={workspaceId} pageId={page.id} userId={ctx.userId} />}
             <PageMenuDivider />
             <DeletePageButton
               workspaceId={workspaceId}
