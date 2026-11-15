@@ -18,3 +18,9 @@ test('그 밖 — 로그인 · 없는 페이지 · 일반 문구', () => {
   assert.equal(offlineDownloadError(500, null), '내려받지 못했습니다. 잠시 뒤 다시 시도해 주세요.')
   assert.equal(offlineDownloadError(403, 'constructor'), '내려받지 못했습니다. 잠시 뒤 다시 시도해 주세요.')
 })
+
+test('데이터베이스(OF-4) — 없는 것은 "이 데이터베이스를" · 정책 거부는 같은 말', () => {
+  assert.equal(offlineDownloadError(404, 'not_found'), '이 페이지를 찾을 수 없습니다. 지워졌거나 볼 수 없게 됐습니다.')
+  assert.equal(offlineDownloadError(404, 'not_found', '데이터베이스'), '이 데이터베이스를 찾을 수 없습니다. 지워졌거나 볼 수 없게 됐습니다.')
+  assert.equal(offlineDownloadError(403, 'policy_disabled', '데이터베이스'), offlineDownloadError(403, 'policy_disabled'))
+})

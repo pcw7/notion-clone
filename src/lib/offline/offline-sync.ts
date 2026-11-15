@@ -14,6 +14,8 @@
  *      넘기면 내리고 보존본을 남긴다(다음에 다시). 서버가 거부하면 연결의 길 그대로 버리고(`onDiscarded`) 그 글을 알린다
  *   5. 서버 판이 컸거나 보냈거나 버린 페이지는 다시 받는다(OF-2 의 라우트) — **새 사본 = 서버 상태 + 아직 못 보낸 편집**. 그 사이 볼 수
  *      없게 됐으면(404 · 정책 403) 지운다
+ *   6. **데이터베이스(OF-4)는 판을 묻지 않고 늘 다시 받는다** — 처음 50행의 글자뿐이라 작고, 칸의 글자가 다른 표의 제목 · 사람의 이름에도
+ *      달려 있어 값싼 판이 없다. 다시 받기가 곧 판정이다 — 볼 수 없게 됐으면(404 · 정책 403) 곧바로 지운다(보존본이 없다 · 읽기만)
  *
  * **보존본은 읽었던 그대로일 때만 지운다**(`replacePendingIf`) — 같은 페이지를 편집기가 열고 있으면 그 연결이 더한 편집이 같은 열쇠에
  * 쓰인다. 뒤에서 보낸 연결이 확인을 받고 지울 때 그것까지 지우면, 탭을 닫았을 때 확인받지 못한 편집이 사라진다.
@@ -46,7 +48,17 @@ import {
   type SyncRequest,
 } from './offline-resync.ts'
 import { deletePendingEdits, listPendingEdits, readPendingEdit, replacePendingIf } from './offline-pending.ts'
-import { openOfflineStore, parseOfflinePayload, type OfflinePageRecord, type OfflineStore } from './offline-store.ts'
+import {
+  isDatabaseRecord,
+  isPageRecord,
+  openOfflineStore,
+  parseOfflineDatabasePayload,
+  parseOfflinePayload,
+  refreshedDatabaseRecord,
+  type OfflineDatabaseRecord,
+  type OfflinePageRecord,
+  type OfflineStore,
+} from './offline-store.ts'
 
 /** 뒤에서 보내기 하나의 시간 상한 — 넘기면 내리고 보존본을 남긴다. */
 const FLUSH_TIMEOUT_MS = 15_000
@@ -169,6 +181,27 @@ async function refreshPage(config: ResyncConfig, store: OfflineStore, record: Of
   return 'refreshed'
 }
 
+/** 데이터베이스를 다시 받는다(OF-4) — 늘(머리말 6). 'gone' 이면 볼 수 없게 됐다(정책 포함). */
+async function refreshDatabase(store: OfflineStore, record: OfflineDatabaseRecord): Promise<'refreshed' | 'gone' | 'failed'> {
+  let res: Response
+  try {
+    res = await fetch(`/api/workspaces/${record.workspaceId}/databases/${record.pageId}/offline`, { cache: 'no-store' })
+  } catch {
+    return 'failed'
+  }
+  if (res.status === 404 || res.status === 403) {
+    // 워크스페이스 게이트의 404 도 `not_found` 다 — 라우트가 없는 서버(배포 중)의 404 로는 지우지 않는다
+    const error = await errorOf(res)
+    return error === 'not_found' || error === 'policy_disabled' ? 'gone' : 'failed'
+  }
+  if (!res.ok) return 'failed'
+  const payload = parseOfflineDatabasePayload(await res.json().catch(() => null))
+  if (payload === null || payload.databaseId !== record.pageId) return 'failed'
+  const now = Date.now()
+  await store.replaceDatabase(record.userId, record.pageId, (current) => refreshedDatabaseRecord(current, payload, now))
+  return 'refreshed'
+}
+
 /** 버린 문서의 글 — 편집기의 "다시 불러왔습니다"와 같은 것(복사할 수 있게). */
 function discardedText(discarded: DiscardedDoc, pageId: string): string {
   try {
@@ -187,9 +220,11 @@ export async function runResync(config: ResyncConfig): Promise<ResyncReport> {
   const store = await openOfflineStore()
   if (store === null) return report()
   try {
-    const records = await store.list(config.userId)
-    if (records.length === 0) return report()
-    const pending = new Set(await listPendingEdits(config.userId))
+    const all = await store.list(config.userId)
+    if (all.length === 0) return report()
+    const records = all.filter(isPageRecord)
+    const databases = all.filter(isDatabaseRecord)
+    const pending = new Set(records.length === 0 ? [] : await listPendingEdits(config.userId))
 
     const statuses = new Map<string, PageStatus>()
     for (const workspaceId of new Set(records.map((r) => r.workspaceId))) {
@@ -230,6 +265,14 @@ export async function runResync(config: ResyncConfig): Promise<ResyncReport> {
       await forget(store, config.userId, refreshing[i].pageId)
       gone += 1
     }
+
+    // 데이터베이스(OF-4) — 늘 다시 받는다 · 볼 수 없게 됐으면 지운다(머리말 6)
+    const databaseResults = await runLimited(databases, CONCURRENCY, (record) => refreshDatabase(store, record))
+    for (const [i, result] of databaseResults.entries()) {
+      if (result.status !== 'fulfilled' || result.value !== 'gone') continue
+      await store.remove(config.userId, databases[i].pageId)
+      gone += 1
+    }
     return report()
   } finally {
     store.close()
@@ -251,7 +294,7 @@ export async function prepareOfflineLogout(users: LogoutUsers, flushAs: ResyncCo
     if (store !== null) {
       try {
         const pending = new Set(await listPendingEdits(flushAs.userId))
-        const targets = (await store.list(flushAs.userId)).filter((r) => pending.has(r.pageId))
+        const targets = (await store.list(flushAs.userId)).filter(isPageRecord).filter((r) => pending.has(r.pageId))
         // 전체로도 상한 — 페이지가 많아도 그만큼만 기다린다(넘긴 연결은 제 시간 상한에 내려간다 · 지운 보존본을 되살리지 않는다)
         await withTimeout(
           runLimited(targets, CONCURRENCY, (record) => flushPage(flushAs, record, LOGOUT_FLUSH_MS)),

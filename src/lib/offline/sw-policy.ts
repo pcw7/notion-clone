@@ -13,7 +13,7 @@
  */
 
 /** 워커의 판 — 캐시 이름에 붙는다. 껍데기 · 규칙을 바꾸면 올린다(앱 배포만으로는 워커가 바뀌지 않는다 — `public/sw.js` 머리). */
-export const SW_VERSION = 'v3'
+export const SW_VERSION = 'v4'
 /** 이 워커의 캐시 이름의 머리 — 넘겨받을 때 이 머리의 옛 판만 지운다. */
 export const CACHE_PREFIX = 'nc-'
 export const STATIC_CACHE = `${CACHE_PREFIX}static-${SW_VERSION}`

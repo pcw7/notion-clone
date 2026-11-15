@@ -17,7 +17,7 @@
  */
 'use strict'
 
-const VERSION = 'v3'
+const VERSION = 'v4'
 const CACHE_PREFIX = 'nc-'
 const STATIC_CACHE = CACHE_PREFIX + 'static-' + VERSION
 const SHELL_CACHE = CACHE_PREFIX + 'shell-' + VERSION
