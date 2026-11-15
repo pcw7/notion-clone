@@ -34,7 +34,6 @@ import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { noAccessState } from '@/lib/permissions/access-request'
 import { pageLockState } from '@/lib/permissions/lock'
 import { getTeamspace } from '@/lib/workspace/teamspace'
-import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
 import { PageTitle } from './page-title'
 import { PageIconControl } from './page-icon-control'
@@ -517,28 +516,8 @@ export async function PageContentBase({
         initialPageIcons={{ ...pageRefs.icons, ...mentionLabels.pageIcons }}
         breadcrumb={trail}
       />
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium text-neutral-500">
-          하위 페이지 {children.length > 0 && children.length}
-        </h2>
-        {children.length > 0 && (
-          <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-            {children.map((c) => (
-              <li key={c.id}>
-                <Link
-                  href={`/w/${workspaceId}/${c.id}`}
-                  className="flex items-center gap-2 px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
-                >
-                  <PageIconView icon={c.icon} fallback />
-                  {c.plainTitle || UNTITLED}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-        <NewPageButton workspaceId={workspaceId} parentPageId={page.id} label="하위 페이지" />
-      </section>
+      {/* 하위 페이지는 본문의 페이지 블록으로만 보인다 — 노션과 같다(만들기는 `/페이지` · 사이드바의 +). 본문 아래의 따로 쓰는 목록은
+          본문에 페이지 블록을 넣을 수 없던 MVP 때의 것이었다 · 하위 페이지를 만들면 서버가 부모 본문에 참조를 넣는다 */}
       </div>
       </PageCoverProvider>
     </Frame>
