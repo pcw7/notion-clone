@@ -95,6 +95,8 @@ import { filterPeopleIds, filterRowIds, liveSorts, readRules } from '@/lib/datab
 import { readLiveTemplate } from '@/lib/database/template'
 import { withReadTransaction } from '@/lib/db/tx'
 import { ExportButton } from '../../export-button'
+import { mayDownloadOffline } from '@/lib/offline/offline-page'
+import { OfflineDatabaseButton } from './offline-database-button'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
 import { GroupedRows } from './grouped-rows'
@@ -281,6 +283,8 @@ export default async function DatabasePage({
   const content = await renderView({
     ctx, workspaceId, databaseId, database, views, view, here, search, m, w, peek: firstOf(peek), renderedAt, lock, widget: null,
   })
+  // 오프라인으로 쓰기(OF-4) — 내보내기 정책이 막은 사람에게는 세우지 않는다(라우트가 다시 묻는다 · 페이지의 스위치와 같다)
+  const offline = await mayDownloadOffline(ctx)
 
   return (
     // 맞은 글자 강조(V-3) — 지금의 검색어를 칸 · 카드 제목에 내려 준다
@@ -313,6 +317,8 @@ export default async function DatabasePage({
           {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). 내보내기 · 공유는 표를 보는 일이다 —
               "만들기만"(모든 행을 볼 수 없다 · 6f-2b-2)에게는 세우지 않는다(누르면 404 다). */}
           {access.canViewAllRows && <ExportButton workspaceId={workspaceId} rootId={databaseId} />}
+          {/* 오프라인으로 쓰기(OF-4) — 첫 뷰의 처음 50행을 읽기 전용으로. "만들기만"이어도 자기가 열 수 있는 행이 온다(같은 행 질의) */}
+          {offline && <OfflineDatabaseButton workspaceId={workspaceId} databaseId={databaseId} userId={ctx.userId} />}
           {/* 공유(6f-1) — 페이지와 같은 패널 · 레벨에 "내용 편집"이 선다 · 웹 게시 절은 없다 */}
           {access.canViewAllRows && <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />}
           {/* 휴지통으로(28번 트랙 T-2 · 정본 [보강 T-1]) — 그 데이터베이스의 "내용 편집" 이 있을 때만(서버가 다시 묻는다). 지우면 놓인 페이지로

@@ -36550,6 +36550,211 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('오프라인 데이터베이스 (OF-4 · F-12-04)')) { try {
+      // 내려받은 데이터베이스는 첫 뷰의 처음 50행을 읽기 전용으로(정본 §3.7 [보강 OF-1] ⑤). 소유자의 개인 표(60행 · 첫 뷰는 점수 ≥ 5 · 점수
+      // 내림차순 · 메모 숨김)를 새 멤버에게 보기로 준다. 그 사람이 데이터베이스 화면의 "오프라인" 에서 내려받고, 네트워크를 끊고(화면 · 워커 둘
+      // 다) 껍데기에 가면 목록에 "데이터베이스" 로 서고, 열면 보이는 열 · 그 뷰의 차례대로 50행 · "처음 50행" 이 선다. 행을 누르면 온라인에서만
+      // 열린다고 말한다. 다시 붙어 앱을 열면 서버에서 바뀐 행을 다시 받고(OF-3), 공유를 거두면 다시 붙을 때 사본이 지워진다.
+      // 끝에 연결 · 브라우저 세션을 되돌리고 이 절이 남긴 IndexedDB 항목을 지운다(워커는 OF-1 처럼 등록한 채 둔다).
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { OFFLINE_DB_NAME, PAGES_STORE, offlinePageKey } = await import(src('offline/offline-store.ts'))
+      const dbMod = await import(src('database/database.ts'))
+      const propMod = await import(src('database/property.ts'))
+      const rowMod = await import(src('database/row.ts'))
+      const viewMod = await import(src('database/view.ts'))
+      const { grantAccess, revokeAccess } = await import(src('permissions/acl.ts'))
+      const must = (r, what) => {
+        if (!r.ok) throw new Error(`${what} 준비 실패: ${r.reason}`)
+        return r.value
+      }
+      const stamp = Date.now()
+      const mate = await joinAs(workspaceId, await createUser(`오프라인 표를 받는 사람 ${stamp}`), 'member')
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+
+      // 소유자의 개인 표 — 60행 · 첫 뷰는 점수 ≥ 5(56행) · 점수 내림차순 · 메모 숨김
+      const dbName = `오프라인 표 ${stamp}`
+      const table = must(await dbMod.createDatabase(ctx, { name: dbName, privateTop: true }), '표')
+      must(await propMod.addProperty(ctx, table.dataSourceId, { name: '점수', type: 'number' }), '점수')
+      must(await propMod.addProperty(ctx, table.dataSourceId, { name: '메모', type: 'rich_text' }), '메모')
+      const schema = must(await propMod.getSchema(ctx, table.dataSourceId), '스키마')
+      const titleProp = schema.properties.find((p) => p.type === 'title')
+      const scoreId = schema.properties.find((p) => p.name === '점수').id
+      const memoId = schema.properties.find((p) => p.name === '메모').id
+      const rowIds = []
+      for (let i = 1; i <= 60; i += 1) {
+        rowIds.push(must(await rowMod.createRow(ctx, table.dataSourceId, { cells: [
+          { propertyId: titleProp.id, value: { type: 'title', title: [textRun(`OF4 일 ${i}`)] } },
+          { propertyId: scoreId, value: { type: 'number', number: i } },
+          { propertyId: memoId, value: { type: 'rich_text', rich_text: [textRun(`숨긴 메모 ${i}`)] } },
+        ] }), `행 ${i}`).id)
+      }
+      must(await viewMod.updateView(ctx, table.defaultViewId, {
+        name: '진행 중',
+        filter: { property_id: scoreId, operator: 'greater_than_or_equal_to', value: 5 },
+        sorts: [{ property_id: scoreId, direction: 'desc' }],
+      }), '첫 뷰')
+      must(await viewMod.setViewColumn(ctx, table.defaultViewId, memoId, { visible: false }), '메모 숨김')
+      if (!(await grantAccess(ctx, table.id, { type: 'user', id: mate.userId }, 'view')).ok) throw new Error('공유하지 못했다')
+      const recordKey = offlinePageKey(mate.userId, table.id)
+      const changedTitle = `OF4 서버에서 바뀐 일 ${stamp}`
+
+      /** 이 절의 사본(IndexedDB) — 데이터베이스 기록은 바이트가 없어 그대로 읽는다. 없는 데이터베이스는 만들지 않는다. */
+      const idb = (key, mode = 'get') => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(OFFLINE_DB_NAME)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve(null)
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(PAGES_STORE)})) { d.close(); return resolve(null) }
+          const s = d.transaction(${JSON.stringify(PAGES_STORE)}, ${JSON.stringify(mode === 'get' ? 'readonly' : 'readwrite')}).objectStore(${JSON.stringify(PAGES_STORE)})
+          const req = ${mode === 'get' ? `s.get(${JSON.stringify(key)})` : `s.delete(${JSON.stringify(key)})`}
+          req.onsuccess = () => { const v = req.result; d.close(); resolve(v === undefined ? null : JSON.parse(JSON.stringify(v))) }
+          req.onerror = () => { d.close(); resolve(null) }
+        }
+      })`)
+      const until = async (probe, ms) => {
+        const end = Date.now() + ms
+        let value = await probe()
+        while (!value && Date.now() < end) {
+          await sleep(250)
+          value = await probe()
+        }
+        return value
+      }
+      const expectedScores = Array.from({ length: 50 }, (_, i) => String(60 - i))
+
+      // 워커 대상에 붙는 길 — 화면을 끊어도 워커의 fetch 는 따로 끊어야 한다(OF-1 · OF-2 와 같다)
+      const version = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const browserWs = new WebSocket(version.webSocketDebuggerUrl)
+      await new Promise((ok, no) => { browserWs.onopen = ok; browserWs.onerror = no })
+      let browserSeq = 0
+      const browserPending = new Map()
+      browserWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)(m); browserPending.delete(m.id) }
+      }
+      const browserSend = (method, params = {}, sessionId = undefined) => new Promise((ok, no) => {
+        const id = ++browserSeq
+        browserPending.set(id, (m) => (m.error ? no(new Error(`${method}: ${m.error.message}`)) : ok(m.result)))
+        browserWs.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+      let swSession = null
+      const setOffline = async (offline) => {
+        await send('Network.emulateNetworkConditions', { offline, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        if (swSession !== null) await browserSend('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }, swSession)
+      }
+      const errorsBefore = pageErrors.length
+      try {
+        await browseAs(mate.token)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
+
+        // 온라인 — 데이터베이스 화면의 "오프라인" 에서 내려받는다
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${table.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        await waitFor(`navigator.serviceWorker.controller?.scriptURL === ${JSON.stringify(`${BASE}/sw.js`)}`, 15000)
+        check('데이터베이스 화면 머리에 "오프라인" 단추가 선다(창을 열기 전에는 스위치를 받지 않는다)',
+          await evaluate(`!!document.querySelector('[data-testid="db-offline-button"]') && document.querySelector('[data-testid="db-offline-panel"]')?.hidden === true`))
+        await clickSelector('[data-testid="db-offline-button"]')
+        const ready = await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'off'`, 15000)
+        check('창을 열면 스위치를 받아 이 기기의 상태(꺼짐)를 읽는다', ready, await evaluate(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state ?? '(없음)'`))
+        await clickSelector('[data-testid="offline-toggle"]')
+        const done = await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'on'
+          && (document.querySelector('[data-testid="offline-status"]')?.textContent ?? '').includes('처음 50행을 내려받았습니다')`, 30000)
+        check('★ 켜면 첫 뷰의 처음 50행을 내려받는다 — 진행 줄이 "처음 50행" 을 말한다', done, await evaluate(`document.querySelector('[data-testid="offline-status"]')?.textContent ?? '(줄 없음)'`))
+        const record = await idb(recordKey)
+        check('★ IndexedDB 에 데이터베이스 사본 — {사용자}:{데이터베이스} · kind database · 까닭 toggled · 보이는 열 · 50행(뷰의 차례) · truncated · 숨긴 메모는 없다',
+          record?.kind === 'database' && record.pageId === table.id && record.workspaceId === workspaceId && JSON.stringify(record.reasons) === '["toggled"]'
+            && record.viewName === '진행 중' && JSON.stringify(record.columns.map((c) => c.id)) === JSON.stringify([titleProp.id, scoreId])
+            && record.rows.length === 50 && record.truncated === true && JSON.stringify(record.rows.map((r) => r.cells[scoreId])) === JSON.stringify(expectedScores)
+            && !JSON.stringify(record).includes('숨긴 메모') && record.bytes > 0,
+          JSON.stringify({ kind: record?.kind, view: record?.viewName, columns: record?.columns, rows: record?.rows?.length, truncated: record?.truncated, first: record?.rows?.[0] }))
+        const route = await fetch(`${BASE}/api/workspaces/${workspaceId}/databases/${table.id}/offline`, { headers: { cookie: `nc_session=${mate.token}` } })
+        check('내려받기 라우트는 private · no-store 로 나간다', route.status === 200 && /private/.test(route.headers.get('cache-control') ?? '') && /no-store/.test(route.headers.get('cache-control') ?? ''),
+          `${route.status} ${route.headers.get('cache-control')}`)
+
+        let swTarget = null
+        for (let i = 0; i < 50 && swTarget === null; i += 1) {
+          const { targetInfos } = await browserSend('Target.getTargets')
+          swTarget = targetInfos.find((t) => t.type === 'service_worker' && t.url === `${BASE}/sw.js`) ?? null
+          if (swTarget === null) await sleep(100)
+        }
+        if (swTarget === null) throw new Error('서비스 워커 대상을 찾지 못했다')
+        swSession = (await browserSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true })).sessionId
+        await browserSend('Network.enable', {}, swSession)
+
+        // 오프라인 — 껍데기의 목록에 데이터베이스로 선다
+        await send('Page.navigate', { url: 'about:blank' })
+        await setOffline(true)
+        await send('Page.navigate', { url: `${BASE}/offline` })
+        const item = `[data-testid="offline-page"][data-page-id="${table.id}"]`
+        const listed = await waitFor(`document.querySelector(${JSON.stringify(item)})?.dataset.kind === 'database'`, 15000)
+        check('★ 네트워크 없이 껍데기에 가면 내려받은 데이터베이스가 목록에 선다 — 이름 · "데이터베이스" 표', listed
+          && (await evaluate(`document.querySelector(${JSON.stringify(item)}).textContent`)).includes(dbName)
+          && (await evaluate(`document.querySelector(${JSON.stringify(item)}).querySelector('[data-testid="offline-page-kind"]')?.textContent ?? ''`)) === '데이터베이스',
+          await evaluate(`document.querySelector('[data-testid="offline-pages"]')?.textContent ?? '(목록 없음)'`))
+        await clickSelector(item)
+        await waitFor(`!!document.querySelector('[data-testid="offline-database-table"] tbody tr')`, 10000)
+        const shown = await evaluate(`(() => {
+          const t = document.querySelector('[data-testid="offline-database-table"]')
+          if (!t) return null
+          return {
+            heads: [...t.querySelectorAll('thead th')].map((h) => h.textContent),
+            rows: [...t.querySelectorAll('tbody tr')].map((r) => [...r.children].map((c) => c.textContent)),
+            title: document.querySelector('[data-testid="offline-database-title"]')?.textContent ?? '',
+            view: document.querySelector('[data-testid="offline-database-view"]')?.textContent ?? '',
+            note: document.querySelector('[data-testid="offline-database-note"]')?.textContent ?? '',
+          }
+        })()`)
+        check('★ 열면 읽기 전용 표 — 이름 · 뷰 이름 · 보이는 열(숨긴 메모 없음) · 50행이 그 뷰의 차례(점수 60 → 11)',
+          shown !== null && shown.title === dbName && shown.view === '진행 중' && JSON.stringify(shown.heads) === JSON.stringify([titleProp.name, '점수'])
+            && shown.rows.length === 50 && JSON.stringify(shown.rows.map((r) => r[1])) === JSON.stringify(expectedScores) && shown.rows[0][0] === 'OF4 일 60',
+          JSON.stringify({ title: shown?.title, view: shown?.view, heads: shown?.heads, count: shown?.rows.length, first: shown?.rows[0], last: shown?.rows.at(-1) }))
+        check('★ "처음 50행" 을 알린다', (shown?.note ?? '').includes('처음 50행'), shown?.note ?? '(없음)')
+        check('표에는 고치는 자리가 없다(입력 · 편집 칸 없음)',
+          await evaluate(`!document.querySelector('[data-testid="offline-database"] input, [data-testid="offline-database"] textarea, [data-testid="offline-database"] [contenteditable="true"]')`))
+        await clickSelector(`[data-testid="offline-database-row"][data-row-id="${rowIds[59]}"]`)
+        const online = await waitFor(`(document.querySelector('[data-testid="offline-database-message"]')?.textContent ?? '') === '행 페이지는 온라인에서 열 수 있습니다.'`, 5000)
+        check('★ 행을 누르면 "행 페이지는 온라인에서 열 수 있습니다" — 껍데기를 떠나지 않는다', online && (await evaluate('location.pathname')) === '/offline',
+          await evaluate(`document.querySelector('[data-testid="offline-database-message"]')?.textContent ?? '(말 없음)'`))
+        check('오프라인 표에서 화면 오류가 나지 않았다', pageErrors.length === errorsBefore, pageErrors.slice(errorsBefore).join(' | '))
+
+        // 그 사이 서버에서 — 맨 위 행의 제목을 바꾼다(공유는 그대로)
+        must(await rowMod.updateCells(ctx, rowIds[59], { cells: [{ propertyId: titleProp.id, value: { type: 'title', title: [textRun(changedTitle)] } }] }), '행 고치기')
+
+        // 다시 붙는다 — 앱의 아무 화면(워크스페이스 홈)을 열면 다시 받는다(OF-3 · 데이터베이스는 늘 다시 받는다)
+        await setOffline(false)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)} && document.readyState === 'complete'`, 15000)
+        const refreshed = await until(async () => {
+          const row = await idb(recordKey)
+          return row !== null && row.rows?.[0]?.title === changedTitle ? row : null
+        }, 30000)
+        check('★ 다시 붙으면 다시 받는다 — 사본이 서버에서 바뀐 행을 담는다(받은 때가 늦어졌다 · 까닭 그대로)',
+          refreshed !== null && refreshed.savedAt > record.savedAt && refreshed.rows[0].cells[titleProp.id] === changedTitle && JSON.stringify(refreshed.reasons) === '["toggled"]',
+          JSON.stringify((await idb(recordKey))?.rows?.[0] ?? null))
+
+        // 공유를 거둔다 — 다시 붙을 때(앱을 열면) 사본을 지우고 알린다
+        if (!(await revokeAccess(ctx, table.id, { type: 'user', id: mate.userId })).ok) throw new Error('공유를 거두지 못했다')
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)} && document.readyState === 'complete'`, 15000)
+        const gone = await until(async () => (await idb(recordKey)) === null, 30000)
+        check('★ 공유를 거두면 다시 붙을 때 데이터베이스 사본을 지운다', gone, JSON.stringify((await idb(recordKey))?.rows?.length ?? null))
+        const notice = await waitFor(`(document.querySelector('[data-testid="offline-resync-notice"]')?.textContent ?? '').includes('권한이 없어져 오프라인 사본 1개를 지웠습니다')`, 15000)
+        check('지웠다고 알린다 — "권한이 없어져 오프라인 사본 1개를 지웠습니다"', notice,
+          await evaluate(`document.querySelector('[data-testid="offline-resync-notice"]')?.textContent ?? '(알림 없음)'`))
+        check('다시 붙기에서 화면 오류가 나지 않았다', pageErrors.length === errorsBefore, pageErrors.slice(errorsBefore).join(' | '))
+      } finally {
+        await setOffline(false).catch(() => undefined)
+        if (swSession !== null) await browserSend('Target.detachFromTarget', { sessionId: swSession }).catch(() => undefined)
+        browserWs.close()
+        // 이 절이 남긴 항목을 지운다 — 앱의 주소에서(about:blank 에서는 다른 저장소다)
+        if (!(await evaluate('location.origin').catch(() => '')).startsWith(BASE)) await send('Page.navigate', { url: `${BASE}/offline` }).catch(() => undefined)
+        await idb(recordKey, 'delete').catch(() => undefined)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' }).catch(() => undefined)
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
