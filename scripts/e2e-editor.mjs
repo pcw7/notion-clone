@@ -11238,8 +11238,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · 요금제 · 감사 로그)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안 · 오프라인) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · 요금제 · 감사 로그)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -11419,7 +11419,7 @@ async function main() {
       const adminGeneral = await htmlAs(GENERAL, admin.token)
       check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
         JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
-          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.emoji', 'workspace.plan']),
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'workspace.general', 'workspace.people', 'workspace.emoji', 'workspace.plan']),
         JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
 
       const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
@@ -36750,6 +36750,318 @@ async function main() {
         // 이 절이 남긴 항목을 지운다 — 앱의 주소에서(about:blank 에서는 다른 저장소다)
         if (!(await evaluate('location.origin').catch(() => '')).startsWith(BASE)) await send('Page.navigate', { url: `${BASE}/offline` }).catch(() => undefined)
         await idb(recordKey, 'delete').catch(() => undefined)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' }).catch(() => undefined)
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('설정 — 오프라인 (OF-5 · F-12-04)')) { try {
+      // 설정 → 오프라인(정본 §3.7 [보강 OF-1] ⑥). Plus 에서 새 멤버가 "즐겨찾기 자동 내려받기"를 켜고 소유자가 보여 준 페이지를 즐겨찾기하면 다시
+      // 붙는 돌기(앱을 열 때 · OF-3)가 까닭 "즐겨찾기"로 받아 두고 네트워크 없이 열린다. 즐겨찾기에서 빼면 다음 돌기가 지운다(직접 받은 것은
+      // "직접"만 남는다). "최근 페이지 자동 내려받기"는 마지막으로 연 10개를 받고, 하나를 더 열면 가장 오래된 것을 지운다. 목록은 크기 · 까닭을
+      // 보이고 찾기 · 지우기 · 모두 지우기(화면 안에서 묻는다)가 된다. 스위치를 끄면 그 까닭이 빠진다. Free 면 스위치가 꺼져 있고 "Plus 요금제부터"
+      // · 원천 라우트는 403 plan_required. 끝에 요금제 · 연결 · 브라우저 세션을 되돌리고 이 절이 남긴 IndexedDB 항목을 지운다(워커는 등록한 채 둔다).
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { OFFLINE_DB_NAME, PAGES_STORE, META_STORE, autoDownloadKey } = await import(src('offline/offline-store.ts'))
+      const { formatBytes } = await import(src('offline/offline-list.ts'))
+      const { setWorkspacePlan } = await import(src('billing/plan.ts'))
+      const { grantAccess } = await import(src('permissions/acl.ts'))
+      const { addFavorite, removeFavorite } = await import(src('nav/recent.ts'))
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      const stamp = Date.now()
+      const planBefore = (await dbQuery(`SELECT plan_code FROM workspace WHERE id = $1`, [workspaceId]))[0]?.plan_code ?? 'business'
+      const mate = await joinAs(workspaceId, await createUser(`자동으로 받는 사람 ${stamp}`), 'member')
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      /** 소유자의 개인 페이지 — 본문을 넣고 이 사람에게 보기를 준다. */
+      const sharedPage = async (label, text) => {
+        const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `${label} ${stamp}`, privateTop: true }) })).json()).page.id
+        await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', text)] })
+        const granted = await grantAccess(ctx, page, { type: 'user', id: mate.userId }, 'view')
+        if (!granted.ok) throw new Error(`공유하지 못했다: ${JSON.stringify(granted)}`)
+        return page
+      }
+      const favText = `즐겨찾기로 받은 본문 ${stamp}`
+      const favPage = await sharedPage('OF5 즐겨찾기 문서', favText)
+      const bothPage = await sharedPage('OF5 직접이자 즐겨찾기', `직접 받은 본문 ${stamp}`)
+      const recentPages = []
+      for (let i = 0; i <= 10; i += 1) recentPages.push(await sharedPage(`OF5 최근 ${String(i).padStart(2, '0')}`, `최근 본문 ${i} ${stamp}`))
+      const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.offline`
+      const prefix = `${mate.userId}:`
+
+      /** 이 사람의 사본들(IndexedDB) — 없는 데이터베이스는 만들지 않는다. */
+      const records = () => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(OFFLINE_DB_NAME)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve([])
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(PAGES_STORE)})) { d.close(); return resolve([]) }
+          const req = d.transaction(${JSON.stringify(PAGES_STORE)}, 'readonly').objectStore(${JSON.stringify(PAGES_STORE)}).getAll(IDBKeyRange.bound(${JSON.stringify(prefix)}, ${JSON.stringify(`${prefix}￿`)}))
+          req.onsuccess = () => { d.close(); resolve(req.result.map((v) => ({ pageId: v.pageId, reasons: [...v.reasons], bytes: v.bytes }))) }
+          req.onerror = () => { d.close(); resolve([]) }
+        }
+      })`)
+      const reasonsOf = async () => Object.fromEntries((await records()).map((r) => [r.pageId, [...r.reasons].sort()]))
+      const metaRow = (key) => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(OFFLINE_DB_NAME)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve(null)
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(META_STORE)})) { d.close(); return resolve(null) }
+          const req = d.transaction(${JSON.stringify(META_STORE)}, 'readonly').objectStore(${JSON.stringify(META_STORE)}).get(${JSON.stringify(key)})
+          req.onsuccess = () => { d.close(); resolve(req.result ?? null) }
+          req.onerror = () => { d.close(); resolve(null) }
+        }
+      })`)
+      const cleanup = () => evaluate(`new Promise((resolve) => {
+        const open = indexedDB.open(${JSON.stringify(OFFLINE_DB_NAME)})
+        open.onupgradeneeded = () => open.transaction.abort()
+        open.onerror = () => resolve(false)
+        open.onsuccess = () => {
+          const d = open.result
+          if (!d.objectStoreNames.contains(${JSON.stringify(PAGES_STORE)})) { d.close(); return resolve(false) }
+          const tx = d.transaction([${JSON.stringify(PAGES_STORE)}, ${JSON.stringify(META_STORE)}], 'readwrite')
+          tx.objectStore(${JSON.stringify(PAGES_STORE)}).delete(IDBKeyRange.bound(${JSON.stringify(prefix)}, ${JSON.stringify(`${prefix}￿`)}))
+          tx.objectStore(${JSON.stringify(META_STORE)}).delete(${JSON.stringify(autoDownloadKey(mate.userId))})
+          tx.oncomplete = () => { d.close(); resolve(true) }
+          tx.onerror = () => { d.close(); resolve(false) }
+        }
+      })`)
+      const until = async (probe, ms) => {
+        const end = Date.now() + ms
+        let value = await probe()
+        while (!value && Date.now() < end) {
+          await sleep(300)
+          value = await probe()
+        }
+        return value
+      }
+      /** 앱의 아무 화면(워크스페이스 홈)을 연다 — 레이아웃이 다시 붙는 돌기를 청한다(OF-3). */
+      const openHome = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)} && document.readyState === 'complete'`, 15000)
+      }
+      const openSettings = async () => {
+        await send('Page.navigate', { url: SETTINGS })
+        return waitFor(`document.querySelector('[data-testid="offline-settings"]')?.dataset.state === 'ready'`, 15000)
+      }
+      const switchState = (which) => evaluate(`(() => { const b = document.querySelector('[data-testid="offline-auto-${which}"]'); return b ? { state: b.dataset.state, disabled: b.disabled } : null })()`)
+      /** 스위치를 누르고 그 돌기가 끝나기를(스위치가 다시 눌릴 수 있기를) 기다린다. */
+      const flip = async (which, to) => {
+        await clickSelector(`[data-testid="offline-auto-${which}"]`)
+        return waitFor(`(() => { const b = document.querySelector('[data-testid="offline-auto-${which}"]'); return b?.dataset.state === ${JSON.stringify(to)} && !b.disabled })()`, 60000)
+      }
+      const statusText = () => evaluate(`document.querySelector('[data-testid="offline-settings-status"]')?.textContent ?? ''`)
+      const listed = () => evaluate(`[...document.querySelectorAll('[data-testid="offline-item"]')].map((li) => ({
+        id: li.dataset.pageId,
+        kind: li.querySelector('[data-testid="offline-item-kind"]')?.textContent ?? '',
+        size: li.querySelector('[data-testid="offline-item-size"]')?.textContent ?? '',
+        reasons: [...li.querySelectorAll('[data-testid="offline-item-reason"]')].map((r) => r.textContent),
+        title: li.querySelector('[data-testid="offline-item-title"]')?.textContent ?? '',
+      }))`)
+      const setSearch = (value) => evaluate(`(() => {
+        const input = document.querySelector('[data-testid="offline-search"]')
+        if (!input) return false
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)})
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+
+      // 워커 대상에 붙는 길 — 화면을 끊어도 워커의 fetch 는 따로 끊어야 한다(OF-1 · OF-2 와 같다)
+      const version = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const browserWs = new WebSocket(version.webSocketDebuggerUrl)
+      await new Promise((ok, no) => { browserWs.onopen = ok; browserWs.onerror = no })
+      let browserSeq = 0
+      const browserPending = new Map()
+      browserWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)(m); browserPending.delete(m.id) }
+      }
+      const browserSend = (method, params = {}, sessionId = undefined) => new Promise((ok, no) => {
+        const id = ++browserSeq
+        browserPending.set(id, (m) => (m.error ? no(new Error(`${method}: ${m.error.message}`)) : ok(m.result)))
+        browserWs.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+      let swSession = null
+      const setOffline = async (offline) => {
+        await send('Network.emulateNetworkConditions', { offline, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        if (swSession !== null) await browserSend('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }, swSession)
+      }
+      const errorsBefore = pageErrors.length
+      try {
+        await setWorkspacePlan(workspaceId, 'plus')
+        await browseAs(mate.token)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
+
+        // 설정 → 오프라인 — 처음엔 비었다 · Plus 라 스위치를 켤 수 있다
+        const ready = await openSettings()
+        await waitFor(`navigator.serviceWorker.controller?.scriptURL === ${JSON.stringify(`${BASE}/sw.js`)}`, 15000)
+        const first = { fav: await switchState('favorites'), recent: await switchState('recent') }
+        check('★ 설정의 내 계정에 "오프라인" 절 — 처음엔 내려받은 것이 없다 · Plus 라 두 스위치가 꺼진 채 눌린다 · 요금제 안내가 없다',
+          ready && (await evaluate(`!!document.querySelector('[data-testid="settings-nav-link"][data-section="account.offline"][aria-current="page"]')`))
+            && (await evaluate(`!!document.querySelector('[data-testid="offline-empty"]')`)) && !(await evaluate(`!!document.querySelector('[data-testid="offline-auto-plan"]')`))
+            && first.fav?.state === 'off' && first.fav.disabled === false && first.recent?.state === 'off' && first.recent.disabled === false,
+          JSON.stringify(first))
+        const plusRoute = await fetch(`${BASE}/api/workspaces/${workspaceId}/offline/auto`, { headers: { cookie: `nc_session=${mate.token}` } })
+        check('원천 라우트(Plus) — 200 · private no-store · 아직 즐겨찾기 · 최근이 없다',
+          plusRoute.status === 200 && /no-store/.test(plusRoute.headers.get('cache-control') ?? '') && JSON.stringify(await plusRoute.json()) === '{"favorites":[],"recent":[]}',
+          String(plusRoute.status))
+
+        // 즐겨찾기 자동 내려받기를 켠다 — 이 기기 · 이 사람의 스위치(meta)
+        const favOn = await flip('favorites', 'on')
+        const stored = await metaRow(autoDownloadKey(mate.userId))
+        check('★ "즐겨찾기 자동 내려받기"를 켜면 이 기기의 meta 에 이 사람의 스위치로 적힌다',
+          favOn && stored?.favorites === true && stored?.recent === false && stored?.userId === mate.userId, JSON.stringify({ favOn, stored, status: await statusText() }))
+
+        // 하나는 직접 내려받고(페이지 메뉴) 즐겨찾기 · 다른 하나는 즐겨찾기만(별 단추)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${bothPage}` })
+        await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+        await clickSelector('[data-testid="page-menu"]')
+        await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'off'`, 15000)
+        await clickSelector('[data-testid="offline-toggle"]')
+        await waitFor(`document.querySelector('[data-testid="offline-toggle"]')?.dataset.state === 'on'
+          && (document.querySelector('[data-testid="offline-status"]')?.textContent ?? '').includes('네트워크 없이')`, 40000)
+        await addFavorite(mate.ctx, bothPage)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${favPage}` })
+        await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+        await clickSelector('button[aria-label="즐겨찾기에 넣기"]')
+        await waitFor(`!!document.querySelector('button[aria-label="즐겨찾기에서 빼기"]')`, 10000)
+
+        // 다시 붙는 돌기 — 앱을 연다
+        await openHome()
+        const favored = await until(async () => {
+          const r = await reasonsOf()
+          return JSON.stringify(r[favPage]) === '["favorited"]' && JSON.stringify(r[bothPage]) === '["favorited","toggled"]' ? r : null
+        }, 30000)
+        check('★ 즐겨찾기하면 다시 붙는 돌기가 받아 둔다 — 까닭 favorited · 직접 받은 것에는 까닭을 더한다(favorited + toggled)', favored !== null, JSON.stringify(await reasonsOf()))
+
+        // 네트워크 없이 — 껍데기에서 연다
+        let swTarget = null
+        for (let i = 0; i < 50 && swTarget === null; i += 1) {
+          const { targetInfos } = await browserSend('Target.getTargets')
+          swTarget = targetInfos.find((t) => t.type === 'service_worker' && t.url === `${BASE}/sw.js`) ?? null
+          if (swTarget === null) await sleep(100)
+        }
+        if (swTarget === null) throw new Error('서비스 워커 대상을 찾지 못했다')
+        swSession = (await browserSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true })).sessionId
+        await browserSend('Network.enable', {}, swSession)
+        await send('Page.navigate', { url: 'about:blank' })
+        await setOffline(true)
+        await send('Page.navigate', { url: `${BASE}/offline` })
+        const item = `[data-testid="offline-page"][data-page-id="${favPage}"]`
+        await waitFor(`!!document.querySelector(${JSON.stringify(item)})`, 15000)
+        await clickSelector(item)
+        const opened = await waitFor(`(document.querySelector('[data-testid="offline-editor"] .blk-editor')?.textContent ?? '').includes(${JSON.stringify(favText)})`, 15000)
+        check('★ 자동으로 받은 페이지가 네트워크 없이 열린다 — 껍데기의 목록에서 고르면 받아 둔 본문', opened,
+          await evaluate(`document.querySelector('[data-testid="offline-open-error"]')?.textContent ?? document.querySelector('[data-testid="offline-pages"]')?.textContent ?? '(목록 없음)'`))
+        await setOffline(false)
+
+        // 즐겨찾기에서 뺀다 — 다음 돌기가 지운다(직접 받은 것은 남는다)
+        await removeFavorite(mate.ctx, favPage)
+        await removeFavorite(mate.ctx, bothPage)
+        await openHome()
+        const unfavored = await until(async () => {
+          const r = await reasonsOf()
+          return !(favPage in r) && JSON.stringify(r[bothPage]) === '["toggled"]' ? r : null
+        }, 30000)
+        check('★ 즐겨찾기에서 빼면 다음 돌기가 지운다 — 직접 내려받은 것은 "직접"만 남는다', unfavored !== null, JSON.stringify(await reasonsOf()))
+
+        // 최근 — 앞서 연 페이지는 오래전으로 · 최근 00 ~ 09 를 차례로 연 것으로(09 가 가장 최근)
+        await dbQuery(`UPDATE recent_visit SET last_visited_at = now() - interval '1 day' WHERE user_id = $1`, [mate.userId])
+        for (let i = 0; i < 10; i += 1) {
+          await dbQuery(
+            `INSERT INTO recent_visit (user_id, workspace_id, block_id, last_visited_at, visit_count) VALUES ($1, $2, $3, now() - make_interval(mins => $4), 1)
+             ON CONFLICT (user_id, block_id) DO UPDATE SET last_visited_at = EXCLUDED.last_visited_at`,
+            [mate.userId, workspaceId, recentPages[i], 30 - i],
+          )
+        }
+        await openSettings()
+        const recentOn = await flip('recent', 'on')
+        const afterOn = await reasonsOf()
+        const recentIds = (r) => Object.entries(r).filter(([, reasons]) => reasons.includes('recent')).map(([id]) => id).sort()
+        check('★ "최근 페이지 자동 내려받기(10개)"를 켜면 마지막으로 연 10개를 받는다(까닭 recent) — 그보다 오래 연 페이지는 받지 않는다',
+          recentOn && JSON.stringify(recentIds(afterOn)) === JSON.stringify(recentPages.slice(0, 10).sort()) && JSON.stringify(afterOn[bothPage]) === '["toggled"]'
+            && (await statusText()).includes('최근 페이지 10개'),
+          JSON.stringify({ recentOn, count: recentIds(afterOn).length, status: await statusText() }))
+
+        // 하나를 더 연다 — 가장 오래된 것(00)이 빠지고 연 것(10)이 들어온다(10개 상한)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${recentPages[10]}` })
+        await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+        const rolled = await until(async () => {
+          const r = await reasonsOf()
+          return recentPages[10] in r && !(recentPages[0] in r) ? r : null
+        }, 30000)
+        check('★ 페이지를 하나 더 열면 다음 돌기가 그것을 받고 가장 오래된 것을 지운다 — 최근은 늘 10개',
+          rolled !== null && JSON.stringify(recentIds(rolled)) === JSON.stringify(recentPages.slice(1, 11).sort()),
+          JSON.stringify({ count: recentIds(await reasonsOf()).length, has10: recentPages[10] in (await reasonsOf()), has0: recentPages[0] in (await reasonsOf()) }))
+
+        // 목록 — 크기 · 까닭 · 종류 · 합계
+        await openSettings()
+        const rows = await listed()
+        const stash = Object.fromEntries((await records()).map((r) => [r.pageId, r]))
+        const row = (id) => rows.find((r) => r.id === id)
+        check('★ 목록 — 11개 · 크기는 사본의 bytes · 까닭 "직접" · "최근" · 종류 "페이지" · 합계',
+          rows.length === 11 && rows.every((r) => r.kind === '페이지' && r.size === formatBytes(stash[r.id]?.bytes ?? -1))
+            && JSON.stringify(row(bothPage)?.reasons) === '["직접"]' && JSON.stringify(row(recentPages[10])?.reasons) === '["최근"]'
+            && (row(recentPages[10])?.title ?? '').includes('OF5 최근 10')
+            && (await evaluate(`document.querySelector('[data-testid="offline-total"]')?.textContent ?? ''`)).startsWith('11개 · '),
+          JSON.stringify(rows.slice(0, 3)))
+
+        // 찾기
+        await setSearch('최근 10')
+        const found = await waitFor(`document.querySelectorAll('[data-testid="offline-item"]').length === 1`, 5000)
+        check('★ 찾기 — 제목의 낱말로 거른다', found && (await listed())[0]?.id === recentPages[10], JSON.stringify((await listed()).map((r) => r.title)))
+        await setSearch('없는 제목 낱말')
+        check('찾는 제목이 없으면 그렇다고 말한다', await waitFor(`!!document.querySelector('[data-testid="offline-no-match"]')`, 5000))
+        await setSearch('')
+        await waitFor(`document.querySelectorAll('[data-testid="offline-item"]').length === 11`, 5000)
+
+        // 하나 지우기
+        await clickSelector(`[data-testid="offline-item"][data-page-id="${recentPages[10]}"] [data-testid="offline-item-remove"]`)
+        const removedOne = await waitFor(`(document.querySelector('[data-testid="offline-settings-status"]')?.textContent ?? '').includes('1개를 이 기기에서 지웠습니다')
+          && !document.querySelector('[data-testid="offline-item"][data-page-id="${recentPages[10]}"]')`, 30000)
+        check('★ 지우기 — 그 사본만 지운다(까닭을 모두 뺀다 · 목록 · IndexedDB 에서 사라진다)', removedOne && !(recentPages[10] in (await reasonsOf())) && (await records()).length === 10,
+          await statusText())
+
+        // 스위치를 끈다 — 그 까닭이 모든 사본에서 빠진다(직접 받은 것만 남는다)
+        const recentOff = await flip('recent', 'off')
+        const afterOff = await reasonsOf()
+        check('★ 최근 자동 내려받기를 끄면 그 까닭을 뺀다 — 최근으로만 받은 사본은 지우고 직접 받은 것은 남는다',
+          recentOff && JSON.stringify(afterOff) === JSON.stringify({ [bothPage]: ['toggled'] }) && (await listed()).length === 1, JSON.stringify(afterOff))
+
+        // 모두 지우기 — 화면 안에서 묻는다(취소하면 그대로)
+        await clickSelector('[data-testid="offline-remove-all"]')
+        const asked = await waitFor(`!!document.querySelector('[data-testid="offline-remove-all-confirm"]')`, 5000)
+        await clickSelector('[data-testid="offline-remove-all-cancel"]')
+        const keptAll = (await records()).length === 1 && !(await evaluate(`!!document.querySelector('[data-testid="offline-remove-all-confirm"]')`))
+        await clickSelector('[data-testid="offline-remove-all"]')
+        await waitFor(`!!document.querySelector('[data-testid="offline-remove-all-yes"]')`, 5000)
+        await clickSelector('[data-testid="offline-remove-all-yes"]')
+        const clearedAll = await waitFor(`!!document.querySelector('[data-testid="offline-empty"]')`, 30000)
+        check('★ 모두 지우기 — 화면 안에서 한 번 묻고(취소하면 그대로) · 확인하면 이 기기의 사본이 모두 없다',
+          asked && keptAll && clearedAll && (await records()).length === 0, JSON.stringify({ asked, keptAll, clearedAll, left: await records(), status: await statusText() }))
+        check('설정 · 자동 내려받기에서 화면 오류가 나지 않았다', pageErrors.length === errorsBefore, pageErrors.slice(errorsBefore).join(' | '))
+
+        // Free — 스위치가 꺼진 채 눌리지 않고 "Plus 요금제부터" · 원천 라우트는 plan_required
+        await setWorkspacePlan(workspaceId, 'free')
+        await openSettings()
+        const free = { fav: await switchState('favorites'), recent: await switchState('recent') }
+        const note = await evaluate(`document.querySelector('[data-testid="offline-auto-plan"]')?.textContent ?? ''`)
+        const freeRoute = await fetch(`${BASE}/api/workspaces/${workspaceId}/offline/auto`, { headers: { cookie: `nc_session=${mate.token}` } })
+        const freeBody = await freeRoute.json().catch(() => null)
+        check('★ Free 면 자동 내려받기 스위치가 꺼진 채 눌리지 않고 "Plus 요금제부터" — 원천 라우트는 403 plan_required',
+          free.fav?.state === 'off' && free.fav.disabled === true && free.recent?.state === 'off' && free.recent.disabled === true && note.includes('Plus 요금제부터')
+            && freeRoute.status === 403 && freeBody?.error === 'plan_required',
+          JSON.stringify({ free, note, route: freeRoute.status, error: freeBody?.error }))
+      } finally {
+        await setWorkspacePlan(workspaceId, planBefore).catch(() => undefined)
+        await setOffline(false).catch(() => undefined)
+        if (swSession !== null) await browserSend('Target.detachFromTarget', { sessionId: swSession }).catch(() => undefined)
+        browserWs.close()
+        // 이 절이 남긴 항목을 지운다 — 앱의 주소에서(about:blank 에서는 다른 저장소다)
+        if (!(await evaluate('location.origin').catch(() => '')).startsWith(BASE)) await send('Page.navigate', { url: `${BASE}/offline` }).catch(() => undefined)
+        await cleanup().catch(() => undefined)
         await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' }).catch(() => undefined)
         await browseAs(session)
       }

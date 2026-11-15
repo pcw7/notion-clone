@@ -11,7 +11,10 @@
  *   - **데이터베이스도 같은 `pages` 에**(OF-4 · ⑤) — `kind: 'database'` 인 기록 · 열쇠는 `{사용자}:{데이터베이스}`(블록 id 라 페이지와 겹치지
  *     않는다). 값은 첫 뷰의 이름 · 보이는 열 · 처음 50행의 보이는 글자(읽기만). `kind` 가 없는 기록은 페이지다(OF-2 · OF-3 이 쓴 기록 그대로)
  *   - **`meta`** — 마지막으로 앱을 연 사람의 id. 오프라인 껍데기는 세션이 없으므로 이것으로 그 사람의 목록만 보인다(앱의 화면이 열릴
- *     때마다 쓴다 — `offline-user-mark.tsx`). 로그아웃하면 모두 지우는 것은 ④(OF-3)
+ *     때마다 쓴다 — `offline-user-mark.tsx`). 로그아웃하면 모두 지우는 것은 ④(OF-3). 자동 내려받기 스위치(OF-5 · ⑥)도 여기 — 이 기기 ·
+ *     이 사람마다(`auto-download:{사용자}`)
+ *   - **못 보낸 편집이 남은 사본은 까닭이 비어도 남는다**(OF-5 · ⑥) — 자동 까닭을 빼거나 설정에서 지울 때(`withReasonChange`). 다시 붙어
+ *     보낸 뒤에 지운다(`offline-auto.ts`). 페이지 메뉴의 스위치를 끄는 길(`release`)은 OF-2 그대로다
  *   - **못 열면 null** — 시크릿 창 · 저장소 차단에서 `indexedDB.open()` 은 던지거나 실패한다. 보존본과 달리 메모리로 내려앉지 않는다 —
  *     탭을 닫으면 사라지는 사본은 오프라인에 쓸모가 없다. 화면은 "이 브라우저에서는 오프라인으로 저장할 수 없다"고 말한다
  *
@@ -31,6 +34,23 @@ export const LAST_USER_KEY = 'last-user'
 
 /** 남기는 까닭 — 스위치(`toggled`) · 자동 내려받기(OF-5 — 즐겨찾기 · 최근). */
 export type OfflineReason = 'toggled' | 'favorited' | 'recent'
+export const OFFLINE_REASONS: readonly OfflineReason[] = ['toggled', 'favorited', 'recent']
+
+/** 자동 내려받기 스위치(OF-5) — 이 기기 · 이 사람마다. 없으면 둘 다 꺼짐. */
+export type AutoDownloadSettings = { readonly favorites: boolean; readonly recent: boolean }
+export const AUTO_DOWNLOAD_OFF: AutoDownloadSettings = { favorites: false, recent: false }
+
+/** `meta` 의 열쇠 — 그 사람의 자동 내려받기 스위치. */
+export function autoDownloadKey(userId: string): string {
+  return `auto-download:${userId}`
+}
+
+/** 저장된 스위치를 읽는다 — 모양이 아니면 꺼짐. */
+export function readAutoDownload(row: unknown): AutoDownloadSettings {
+  if (typeof row !== 'object' || row === null) return AUTO_DOWNLOAD_OFF
+  const { favorites, recent } = row as { favorites?: unknown; recent?: unknown }
+  return { favorites: favorites === true, recent: recent === true }
+}
 
 /** 서버가 내려 준 페이지 하나(`GET …/pages/{id}/offline` · `offline-page.ts`). */
 export type OfflinePagePayload = {
@@ -58,7 +78,7 @@ export type OfflinePageRecord = {
   readonly state: Uint8Array
   /** 받은 서버 판(`doc_update` 의 마지막 seq). 오프라인 편집은 이것을 바꾸지 않는다 — 서버에 쌓인 것이 아니다. */
   readonly seq: string
-  /** 비면 기록이 없다 — 빈 집합인 기록은 저장하지 않는다. */
+  /** 비면 기록이 없다 — 못 보낸 편집이 남은 사본만 빈 채로 남는다(보낸 뒤 지운다 · OF-5). */
   readonly reasons: readonly OfflineReason[]
   /** 받은 때(ms). */
   readonly savedAt: number
@@ -176,6 +196,21 @@ export function withoutReason<R extends OfflineRecord>(record: R, reason: Offlin
   return reasons.length === 0 ? null : { ...record, reasons }
 }
 
+/** 까닭을 더하고 뺀다(OF-5) — 고칠 것이 무엇이었든 지금 기록 위에서. */
+export type ReasonChange = { readonly add: readonly OfflineReason[]; readonly drop: readonly OfflineReason[] }
+
+/**
+ * 까닭을 바꾼 기록 — 비면 null(지운다 · F-12-04 의 GC). **못 보낸 편집이 있으면(`unsent`) 빈 채로 남긴다** — 다시 붙어 보낸 뒤 지운다
+ * (정본 ⑥ · ④ 의 로그아웃 규칙과 같다). 바뀐 것이 없으면 그 기록 그대로.
+ */
+export function withReasonChange<R extends OfflineRecord>(record: R, change: ReasonChange, unsent: boolean): R | null {
+  const kept = record.reasons.filter((r) => !change.drop.includes(r))
+  const reasons = [...kept, ...change.add.filter((r, i) => !kept.includes(r) && change.add.indexOf(r) === i)]
+  if (reasons.length === 0) return unsent ? (record.reasons.length === 0 ? record : { ...record, reasons }) : null
+  const same = reasons.length === record.reasons.length && reasons.every((r, i) => r === record.reasons[i])
+  return same ? record : { ...record, reasons }
+}
+
 const isStringRecord = (value: unknown): value is Record<string, string> =>
   isRecord(value) && Object.values(value).every((v) => typeof v === 'string')
 
@@ -255,6 +290,8 @@ export type OfflineStore = {
   put(record: OfflineRecord): Promise<void>
   /** 까닭 하나를 뺀다 — 비면 지운다. 남은 기록(없으면 null)을 돌려준다. 페이지 · 데이터베이스 모두. */
   release(userId: string, pageId: string, reason: OfflineReason): Promise<OfflineRecord | null>
+  /** 까닭을 더하고 뺀다(OF-5 · `withReasonChange`) — 한 트랜잭션. 남은 기록(지웠거나 없으면 null)을 돌려준다. */
+  changeReasons(userId: string, pageId: string, change: ReasonChange, unsent: boolean): Promise<OfflineRecord | null>
   /** 오프라인 편집을 더한 상태로 바꾼다 — 그 사이 지운 기록(또는 데이터베이스)이면 아무것도 하지 않는다. */
   updateState(userId: string, pageId: string, state: Uint8Array): Promise<void>
   /**
@@ -265,7 +302,7 @@ export type OfflineStore = {
   replaceDatabase(userId: string, databaseId: string, change: (current: OfflineDatabaseRecord) => OfflineDatabaseRecord): Promise<OfflineDatabaseRecord | null>
   /** 사본 하나를 지운다(볼 수 없게 된 페이지 · 데이터베이스 · OF-3). 남기는 까닭과 상관없이. */
   remove(userId: string, pageId: string): Promise<void>
-  /** 이 사람의 사본을 모두 지운다(로그아웃 · OF-3). 마지막 사용자 표시도 그 사람이면 지운다. 지운 수를 돌려준다. */
+  /** 이 사람의 사본을 모두 지운다(로그아웃 · OF-3). 마지막 사용자 표시도 그 사람이면 지운다 · 자동 내려받기 스위치도(OF-5). 지운 수를 돌려준다. */
   clear(userId: string): Promise<number>
   /** 이 사람의 사본(페이지 · 데이터베이스) — 받은 때의 역순. */
   list(userId: string): Promise<OfflineRecord[]>
@@ -273,6 +310,9 @@ export type OfflineStore = {
   count(userId: string): Promise<number>
   lastUser(): Promise<string | null>
   markUser(userId: string): Promise<void>
+  /** 이 사람의 자동 내려받기 스위치(OF-5) — 없으면 둘 다 꺼짐. */
+  autoDownload(userId: string): Promise<AutoDownloadSettings>
+  setAutoDownload(userId: string, settings: AutoDownloadSettings): Promise<void>
   close(): void
 }
 
@@ -349,6 +389,17 @@ function indexedDbStore(db: IDBDatabase): OfflineStore {
     release(userId, pageId, reason) {
       return modify(offlinePageKey(userId, pageId), (current) => withoutReason(current, reason))
     },
+    async changeReasons(userId, pageId, change, unsent) {
+      let unchanged: OfflineRecord | null = null
+      const next = await modify(offlinePageKey(userId, pageId), (current) => {
+        const changed = withReasonChange(current, change, unsent)
+        if (changed !== current) return changed
+        // 바뀐 것이 없으면 쓰지 않는다
+        unchanged = current
+        return undefined
+      })
+      return next ?? unchanged
+    },
     async updateState(userId, pageId, state) {
       await modify(offlinePageKey(userId, pageId), (current) => (isPageRecord(current) ? withState(current, state) : undefined))
     },
@@ -370,6 +421,7 @@ function indexedDbStore(db: IDBDatabase): OfflineStore {
       const marks = meta('readwrite')
       const row: unknown = await request(marks.get(LAST_USER_KEY))
       if (isRecord(row) && row.userId === userId) await request(marks.delete(LAST_USER_KEY))
+      await request(marks.delete(autoDownloadKey(userId)))
       return count
     },
     async list(userId) {
@@ -389,6 +441,12 @@ function indexedDbStore(db: IDBDatabase): OfflineStore {
     },
     async markUser(userId) {
       await request(meta('readwrite').put({ key: LAST_USER_KEY, userId }))
+    },
+    async autoDownload(userId) {
+      return readAutoDownload(await request(meta('readonly').get(autoDownloadKey(userId))))
+    },
+    async setAutoDownload(userId, settings) {
+      await request(meta('readwrite').put({ key: autoDownloadKey(userId), userId, favorites: settings.favorites, recent: settings.recent }))
     },
     close() {
       db.close()

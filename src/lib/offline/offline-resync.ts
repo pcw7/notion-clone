@@ -7,6 +7,7 @@
  *   - **계획** — 사본마다: 서버가 `gone` 이라 하면 지운다(사본 · 보존본 — 보안 · 보낼 곳이 없다) · 보존본이 있으면 보낸다(그 뒤 다시 받는다 —
  *     보낸 것으로 서버 판이 바뀐다) · 서버 판이 더 크면 다시 받는다 · 아니면 그대로. 답을 받지 못한 사본은 건드리지 않는다(다음에 다시)
  *   - **한 번에 하나 · 몰리면 한 번** — 앱을 열 때와 `online` 마다 부르지만 도는 것은 늘 하나다. 기다리는 동안 다시 부르면 한 번만 더 돈다
+ *   - 자동 내려받기(OF-5)의 계획은 `offline-auto.ts` — 돌기의 끝에 맞춘다
  */
 
 import type { OfflinePageRecord } from './offline-store.ts'
@@ -180,13 +181,20 @@ export function unsentEditsWarning(count: number): string {
 
 // ── 숨은 틀과 주고받는 말(`offline-sync-frame.ts` · `offline-sync-client.ts`) ─────
 
-export type ResyncConfig = { readonly userId: string; readonly collabUrl: string }
+export type ResyncConfig = {
+  readonly userId: string
+  readonly collabUrl: string
+  /** 자동 내려받기(OF-5)를 맞출 워크스페이스 — 지금 연 곳. 없으면 원천을 묻지 않는다(끈 스위치의 까닭 빼기 · 빈 사본 지우기는 한다). */
+  readonly workspaceId?: string
+}
 
 /** 앱의 화면 → 틀. `id` 로 답을 짝짓는다. */
 export type SyncRequest =
   | { readonly id: number; readonly kind: 'resync'; readonly config: ResyncConfig }
   | { readonly id: number; readonly kind: 'prepare-logout'; readonly users: readonly string[]; readonly flushAs: ResyncConfig | null }
   | { readonly id: number; readonly kind: 'discard'; readonly users: readonly string[] }
+  /** 설정의 지우기 · 모두 지우기(OF-5) — 까닭을 모두 뺀다(못 보낸 편집이 있는 사본은 남긴다). */
+  | { readonly id: number; readonly kind: 'remove'; readonly config: ResyncConfig; readonly pageIds: readonly string[] | 'all' }
 
-/** 틀 → 앱의 화면. `resync` 는 `ResyncReport` · `prepare-logout` 은 물을 말(없으면 null) · `discard` 는 null. */
+/** 틀 → 앱의 화면. `resync` 는 `ResyncReport` · `prepare-logout` 은 물을 말(없으면 null) · `discard` 는 null · `remove` 는 `RemoveReport`. */
 export type SyncReply = { readonly id: number; readonly ok: true; readonly value: unknown } | { readonly id: number; readonly ok: false; readonly error: string }

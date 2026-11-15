@@ -37,6 +37,8 @@ export const SETTING_PANELS = [
   { id: 'account-delete', section: 'account.security', visible: () => true },
   // 이 기기의 고대비 · 움직임 줄이기(10d-2) — 누구나. 계정의 설정 표가 아니라 이 브라우저의 쿠키다(`settings/device-preferences.ts`).
   { id: 'accessibility', section: 'account.preferences', visible: () => true },
+  // 이 기기에 내려받은 것 · 자동 내려받기(OF-5) — 누구나. 목록 · 스위치는 이 브라우저의 IndexedDB 다 · 자동 내려받기의 요금제는 패널이 말한다.
+  { id: 'offline', section: 'account.offline', visible: () => true },
   { id: 'members', section: 'workspace.people', visible: (ctx: SessionContext) => canListMembers(ctx.role) },
   { id: 'invites', section: 'workspace.people', visible: (ctx: SessionContext) => canInvite(ctx.role) },
   { id: 'guests', section: 'workspace.people', visible: (ctx: SessionContext) => canManageGuests(ctx.role) },
