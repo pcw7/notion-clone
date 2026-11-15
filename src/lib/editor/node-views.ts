@@ -118,7 +118,15 @@ function todoNodeView(node: PmNode, view: EditorView, getPos: () => number | und
     event.preventDefault()
   })
   box.addEventListener('click', (event) => {
+    // 브라우저가 스스로 체크를 바꾸지 않게 막는다 — 읽기 전용 · 제안 모드처럼 편집이 막히면 화면만 바뀐다. 그런데 막은 클릭은
+    // **처리기가 끝난 뒤** 브라우저가 체크를 되돌린다 — 그 사이 dispatch 로 `update` 가 새 값을 걸어도 지워져 저장된 값과 화면이
+    // 어긋났다(체크하면 곧바로 풀려 보였다 · 새로 고치면 체크). 그래서 되돌림이 끝난 뒤 문서의 값으로 다시 맞춘다.
     event.preventDefault()
+    setTimeout(() => {
+      const at = getPos()
+      const now = at === undefined ? null : view.state.doc.nodeAt(at)
+      if (now?.type.name === 'to_do') box.checked = Boolean((now.attrs.props as { checked?: boolean })?.checked)
+    }, 0)
     // 읽기 전용이면 쓰지 않는다 — 읽기 전용 연결의 편집은 서버가 거부하고 편집기가 본문을 버리고 다시 연다(오류 배너). 노드 뷰는
     // 편집 가능 여부가 바뀌어도 다시 만들어지지 않으므로 누르는 순간에 묻는다(8a-2 가 찾은 옛 구멍).
     if (!view.editable) return
