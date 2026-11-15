@@ -38,10 +38,17 @@ type PageMenuApi = {
 }
 
 const PageMenuContext = createContext<PageMenuApi | null>(null)
+/** 목록이 열렸는가 — 열 때에야 받는 부품(오프라인 스위치 · OF-2)이 묻는다. API 와 따로 둔다: 열고 닫을 때 API 를 쓰는 부품을 다시 그리지 않게. */
+const PageMenuOpenContext = createContext(false)
 
 /** 메뉴 안이면 그 API · 아니면 null(상단 바 · 데이터베이스 화면 그대로). */
 export function usePageMenu(): PageMenuApi | null {
   return useContext(PageMenuContext)
+}
+
+/** 메뉴의 목록이 열려 있는가(메뉴 밖이면 false). */
+export function usePageMenuOpen(): boolean {
+  return useContext(PageMenuOpenContext)
 }
 
 export function PageMenu({ children }: { children: ReactNode }) {
@@ -139,7 +146,9 @@ export function PageMenu({ children }: { children: ReactNode }) {
         }`}
       >
         <PageMenuContext.Provider value={api}>
-          <div className={`flex flex-col ${held ? 'invisible' : ''}`}>{children}</div>
+          <PageMenuOpenContext.Provider value={open}>
+            <div className={`flex flex-col ${held ? 'invisible' : ''}`}>{children}</div>
+          </PageMenuOpenContext.Provider>
         </PageMenuContext.Provider>
       </div>
     </div>

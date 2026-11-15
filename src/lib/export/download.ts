@@ -90,6 +90,15 @@ export function canExportWorkspace(ctx: SessionContext): boolean {
   return ctx.role === 'owner'
 }
 
+/**
+ * 보안 정책(6e-1 · 정본 [보강] 보안 정책 ①)이 이 사람의 내보내기를 두는가 — 끄면 소유자만. 내용을 기기로 꺼내는 다른 길(오프라인
+ * 내려받기 · OF-2)도 이 함수 하나로 묻는다.
+ */
+export async function exportPolicyAllows(ctx: SessionContext): Promise<boolean> {
+  if (ctx.role === 'owner') return true
+  return (await withReadTransaction((tx) => readSecurityPolicyIn(tx, ctx.workspaceId))).allowExport
+}
+
 export async function prepareExport(
   ctx: SessionContext,
   scope: ExportScopeInput,
@@ -97,10 +106,7 @@ export async function prepareExport(
 ): Promise<PrepareResult> {
   // 스냅샷을 읽기 전에 막는다 — 거부될 요청에 워크스페이스 전체를 읽지 않는다.
   if (scope.kind === 'workspace' && !canExportWorkspace(ctx)) return { ok: false, reason: 'forbidden' }
-  // 보안 정책(6e-1 · 정본 [보강] 보안 정책 ①) — 끄면 소유자만
-  if (ctx.role !== 'owner' && !(await withReadTransaction((tx) => readSecurityPolicyIn(tx, ctx.workspaceId))).allowExport) {
-    return { ok: false, reason: 'policy_disabled' }
-  }
+  if (!(await exportPolicyAllows(ctx))) return { ok: false, reason: 'policy_disabled' }
 
   const snapshot = await readExportSnapshot(
     ctx,
