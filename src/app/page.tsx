@@ -3,6 +3,8 @@ import Link from '@/app/link'
 import { redirect } from 'next/navigation'
 
 import { getCurrentUser } from '@/lib/auth/current-user'
+import { collabServerUrl } from '@/lib/collab/collab-url'
+import { LogoutButton } from './logout-guard'
 import { roleLabel } from '@/lib/settings/registry'
 import { listWorkspacesForUser } from '@/lib/workspace/list'
 import { CreateWorkspaceForm } from './create-workspace-form'
@@ -58,14 +60,8 @@ export default async function Home() {
         </section>
       )}
 
-      <form action="/api/auth/logout" method="post" className="mt-4">
-        <button
-          type="submit"
-          className="rounded-md border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700"
-        >
-          로그아웃
-        </button>
-      </form>
+      {/* 로그아웃 전에 이 기기의 오프라인 사본 · 남은 편집을 지운다(OF-3 — 남은 편집은 먼저 보내 보고, 남으면 묻는다) */}
+      <LogoutButton userId={user.userId} collabUrl={collabServerUrl()} />
     </main>
   )
 }

@@ -11,13 +11,16 @@
  *   · **함께 로그인한 다른 계정들(8j-3)** — 계정마다 이메일 · 상태 · 그 워크스페이스. 고르면 계정을 바꾸고(`switch-account`) 그리로 간다 —
  *     쿠키가 바뀌므로 문서째 옮긴다. 2단계 인증이 남았으면 둘째 단계로 · 끝났으면 "다시 로그인"(로그인 화면의 더하기) · 계정마다 로그아웃
  *   · 아래에 모든 워크스페이스(처음 화면) · 다른 계정 더하기 · 로그아웃(지금 계정) · 모든 계정에서 로그아웃(다른 계정이 있을 때)
+ *   · **로그아웃은 그 사람의 오프라인 사본 · 남은 편집을 먼저 지운다**(OF-3 · `app/logout-guard.tsx`) — 지금 계정의 남은 편집은 보내 보고,
+ *     그래도 남으면 메뉴 안에서 "보내지 못한 편집이 사라집니다"로 묻는다
  *   · 밖을 누르거나 Esc 면 닫힌다(Esc 는 이름 버튼으로 초점을 돌린다) · 고르면 닫힌다
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import Link from '@/app/link'
 import { useRouter } from 'next/navigation'
 
+import { useLogoutGuard, type LogoutGuardTarget } from '@/app/logout-guard'
 import { addAccountHref } from '@/lib/auth/account-set'
 import type { AccountState } from '@/lib/auth/accounts'
 import { roleLabel } from '@/lib/settings/registry'
@@ -41,12 +44,18 @@ export function WorkspaceSwitcher({
   workspaceId,
   workspaceName,
   email,
+  userId = null,
+  collabUrl = null,
   workspaces,
   otherAccounts = [],
 }: {
   workspaceId: string
   workspaceName: string
   email: string
+  /** 지금 계정(OF-3 — 로그아웃할 때 이 사람의 오프라인 사본 · 남은 편집을 지운다). 모르면 지우지 않는다. */
+  userId?: string | null
+  /** 남은 편집을 먼저 보내 볼 협업 서버 주소(OF-3). */
+  collabUrl?: string | null
   workspaces: readonly SwitcherWorkspace[]
   /** 이 브라우저에 함께 로그인한 다른 계정들(8j-3) — 서버가 쿠키에서 읽어 준다. 토큰은 없다. */
   otherAccounts?: readonly SwitcherOtherAccount[]
@@ -57,6 +66,15 @@ export function WorkspaceSwitcher({
   const [error, setError] = useState<string | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const logout = useLogoutGuard()
+  const flushAs = userId !== null && collabUrl !== null ? { userId, collabUrl } : null
+
+  /** 폼으로 보내는 로그아웃 — 지우고(남으면 묻고) 그 폼을 그대로 보낸다. */
+  const guardedSubmit = (users: LogoutGuardTarget['users']) => (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = event.currentTarget
+    logout.guard({ users, flushAs }, () => form.submit())
+  }
 
   useEffect(() => {
     if (!open) return
@@ -201,8 +219,9 @@ export function WorkspaceSwitcher({
                     role="menuitem"
                     data-testid="switcher-account-logout"
                     title={`${account.email} 에서 로그아웃`}
-                    disabled={busy}
-                    onClick={() => void signOutOther(account.userId)}
+                    disabled={busy || logout.checking}
+                    // 다른 계정의 남은 편집은 보내지 않는다(이 탭의 세션이 그 사람의 것이 아니다) — 남았으면 묻는다
+                    onClick={() => logout.guard({ users: [account.userId], flushAs: null }, () => void signOutOther(account.userId))}
                     className="rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
                   >
                     로그아웃
@@ -281,19 +300,20 @@ export function WorkspaceSwitcher({
           >
             다른 계정 더하기
           </Link>
-          <form action="/api/auth/logout" method="post">
-            <button type="submit" role="menuitem" data-testid="switcher-logout" className={`${ITEM} text-neutral-500`}>
+          <form action="/api/auth/logout" method="post" onSubmit={guardedSubmit(userId === null ? [] : [userId])}>
+            <button type="submit" role="menuitem" data-testid="switcher-logout" disabled={logout.checking} className={`${ITEM} text-neutral-500 disabled:opacity-40`}>
               {otherAccounts.length > 0 ? `${email} 에서 로그아웃` : '로그아웃'}
             </button>
           </form>
           {otherAccounts.length > 0 && (
-            <form action="/api/auth/logout" method="post">
+            <form action="/api/auth/logout" method="post" onSubmit={guardedSubmit([...(userId === null ? [] : [userId]), ...otherAccounts.map((a) => a.userId)])}>
               <input type="hidden" name="scope" value="all" />
-              <button type="submit" role="menuitem" data-testid="switcher-logout-all" className={`${ITEM} text-neutral-500`}>
+              <button type="submit" role="menuitem" data-testid="switcher-logout-all" disabled={logout.checking} className={`${ITEM} text-neutral-500 disabled:opacity-40`}>
                 모든 계정에서 로그아웃
               </button>
             </form>
           )}
+          {logout.prompt}
         </div>
       )}
     </div>

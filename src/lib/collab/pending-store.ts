@@ -33,7 +33,8 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
   })
 }
 
-function openDatabase(): Promise<IDBDatabase> {
+/** 보존본 데이터베이스를 연다(없으면 만든다) — 사람 하나의 보존본을 다루는 쪽(`offline/offline-pending.ts` · OF-3)도 이것으로 연다. */
+export function openPendingDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     let open: IDBOpenDBRequest
     try {
@@ -74,7 +75,7 @@ function indexedDbStore(db: IDBDatabase): PendingEditStore {
 export async function openPendingEditStore(): Promise<PendingEditStore> {
   if (typeof indexedDB === 'undefined') return memoryPendingEditStore()
   try {
-    return indexedDbStore(await openDatabase())
+    return indexedDbStore(await openPendingDatabase())
   } catch {
     return memoryPendingEditStore()
   }

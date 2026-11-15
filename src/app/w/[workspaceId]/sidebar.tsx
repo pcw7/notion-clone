@@ -107,6 +107,8 @@ export function Sidebar({
   workspaceId,
   workspaceName = '',
   email = '',
+  userId = null,
+  collabUrl = null,
   workspaces = [],
   otherAccounts = [],
   tree,
@@ -127,6 +129,9 @@ export function Sidebar({
   workspaceName?: string
   /** 스위처(8j-1)의 머리 — 이 계정의 이메일. */
   email?: string
+  /** 스위처의 로그아웃(OF-3) — 이 계정의 내려받은 사본 · 남은 편집을 지운다(남은 편집은 먼저 보내 본다 — 협업 서버 주소). */
+  userId?: string | null
+  collabUrl?: string | null
   /** 스위처(8j-1)의 목록 — 이 계정의 워크스페이스(만든 순서). 서버가 준다 · 권한의 근거가 아니다. */
   workspaces?: readonly SwitcherWorkspace[]
   /** 스위처(8j-3)의 다른 계정들 — 이 브라우저에 함께 로그인한 계정과 그 워크스페이스. 토큰은 없다. */
@@ -408,6 +413,8 @@ export function Sidebar({
           workspaceId={workspaceId}
           workspaceName={workspaceName}
           email={email}
+          userId={userId}
+          collabUrl={collabUrl}
           workspaces={workspaces}
           otherAccounts={otherAccounts}
         />

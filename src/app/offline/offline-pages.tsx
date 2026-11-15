@@ -6,11 +6,15 @@
  * 껍데기는 세션이 없는 정적 화면이다 — 목록은 브라우저에서 IndexedDB 로만 읽는다(서버가 그리는 것은 "불러오는 중"뿐 · API 를 부르지 않는다).
  * 누구의 목록인가는 마지막으로 앱을 연 사람의 id 로 정한다(`offline-store.ts` 의 `meta`). 편집기는 고를 때 지연 로드한다 — 껍데기의 첫 JS 는
  * 작게 두고, 그 청크는 내려받을 때 앱이 이 화면을 숨은 틀로 열어 받아 둔다(`#warm` · `lib/offline/offline-warm.ts`).
+ *
+ * 다시 붙기 · 로그아웃(OF-3)의 일도 이 화면이 숨은 틀(`#sync`)로 열려 한다 — 앱이 넘긴 일을 받아 하고 답한다(`lib/offline/offline-sync-frame.ts`).
  */
 
 import { useEffect, useState, type ComponentType } from 'react'
 
+import type { SyncReply, SyncRequest } from '@/lib/offline/offline-resync'
 import { openOfflineStore, type OfflinePageRecord } from '@/lib/offline/offline-store'
+import { isFrameMessage, isSyncFrame, SYNC_READY, SYNC_REPLY, SYNC_REQUEST } from '@/lib/offline/offline-sync-frame'
 import { isWarmFrame, WARM_MESSAGE, type WarmReply } from '@/lib/offline/offline-warm'
 
 type EditorComponent = ComponentType<{ record: OfflinePageRecord; onClose: () => void }>
@@ -36,6 +40,22 @@ export function OfflinePages() {
   const [opened, setOpened] = useState<Opened>({ kind: 'none' })
 
   useEffect(() => {
+    // 일하는 틀이면(OF-3 · `#sync`) 앱이 넘긴 일을 하고 답한다 — 다시 붙기 · 로그아웃. 일의 코드는 편집기 청크에 함께 있다(같은
+    // `import()` — 새 청크 묶음을 만들지 않는다 · `offline-editor.tsx`). 목록은 그리지 않는다
+    if (isSyncFrame(window.location.hash, window.parent !== window)) {
+      const origin = window.location.origin
+      const onMessage = (event: MessageEvent): void => {
+        if (event.origin !== origin || event.source !== window.parent || !isFrameMessage(event.data, SYNC_REQUEST)) return
+        const request = event.data.body as SyncRequest
+        void import('./offline-editor')
+          .then((m) => m.handleSyncRequest(request))
+          .catch((error: unknown): SyncReply => ({ id: request.id, ok: false, error: String(error) }))
+          .then((reply) => window.parent.postMessage({ type: SYNC_REPLY, body: reply }, origin))
+      }
+      window.addEventListener('message', onMessage)
+      window.parent.postMessage({ type: SYNC_READY }, origin)
+      return () => window.removeEventListener('message', onMessage)
+    }
     // 받아 두기 틀이면 편집기 청크를 받고 앱에 답한다(목록은 그대로 그린다 — 보이지 않는다)
     if (isWarmFrame(window.location.hash, window.parent !== window)) {
       const reply = (ok: boolean): void => window.parent.postMessage({ type: WARM_MESSAGE, ok } satisfies WarmReply, window.location.origin)

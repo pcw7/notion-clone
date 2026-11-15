@@ -8,7 +8,8 @@
  *
  *   - **로컬 Y.Doc 에 묶는다** — 받은 상태 + 보존본(`lib/offline/offline-doc.ts`). 바인딩은 페이지 화면과 같다
  *     (`createCollabEditorState` — 같은 스키마 파사드 · 같은 편집 플러그인 · y-prosemirror 의 되돌리기). 협업 연결 · API 는 없다
- *   - **친 편집은 보존본에** — 연결된 채 그 페이지를 열면 연결이 보내고 서버의 확인 답을 받은 뒤 지운다(6c · 6d). 사본도 친 것을 담는다
+ *   - **친 편집은 보존본에** — 다시 연결되어 앱을 열면 뒤에서 그 페이지의 연결을 열어 보내고(OF-3 · `lib/offline/offline-sync.ts`), 연결된 채
+ *     그 페이지를 열어도 보낸다. 서버의 확인 답을 받은 뒤 지운다(6c · 6d). 사본도 친 것을 담는다
  *   - **네트워크가 필요한 것은 하지 않는다** — 노드 뷰의 의존성은 버전 미리보기의 것(`readOnlyEditorDeps` — 누르기 · 올리기 · 옮겨 가기는
  *     아무것도 하지 않는다)에 오프라인의 말을 얹었다. 임베드 · 버튼 · 데이터베이스는 그리기만 하고(누를 수 없다 · 표는 그리지 않는다),
  *     슬래시 · 멘션 · 이모지의 고르개는 페이지 화면의 것이라 여기엔 없다. 공유 · 권한 · 코멘트도 없다
@@ -25,6 +26,13 @@ import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { readOnlyEditorDeps } from '@/lib/editor/read-only-deps'
 import { openOfflineDoc, trackOfflineEdits } from '@/lib/offline/offline-doc'
 import { openOfflineStore, type OfflinePageRecord } from '@/lib/offline/offline-store'
+
+/**
+ * 다시 붙기 · 로그아웃의 일(OF-3) — 일하는 틀(`#sync`)이 **이 청크와 같은 `import()`** 로 받는다. 따로 지연 로드하면 새 청크 묶음이
+ * 페이지 화면이 이미 싣는 모듈(협업 연결 · yjs)을 함께 써 그 화면의 첫 청크가 잘게 쪼개졌다(+3.5KB · `lib/offline/offline-sync-frame.ts`).
+ * 이 청크는 그것들을 이미 싣는다.
+ */
+export { handleSyncRequest } from '@/lib/offline/offline-sync'
 
 const OFFLINE_UPLOAD = '오프라인에서는 올릴 수 없습니다.'
 
@@ -118,7 +126,7 @@ export function OfflineEditor({ record, onClose }: { record: OfflinePageRecord; 
           {phase.kind === 'failed' && '이 페이지를 열지 못했습니다.'}
           {phase.kind === 'ready' &&
             (phase.durable
-              ? '고친 내용은 이 기기에 저장됩니다 — 연결된 채 이 페이지를 열면 보냅니다.'
+              ? '고친 내용은 이 기기에 저장됩니다 — 다시 연결되어 앱을 열면 보냅니다.'
               : '이 브라우저에서는 고친 내용을 저장할 수 없습니다 — 탭을 닫으면 사라집니다.')}
         </p>
         <div className="relative -ml-16 pl-16">
