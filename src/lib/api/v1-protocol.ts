@@ -85,6 +85,58 @@ export function retryAfterSeconds(resetSeconds: number): number {
   return Number.isFinite(resetSeconds) ? Math.max(1, Math.ceil(resetSeconds)) : API_RATE_RULE.windowSeconds
 }
 
+/**
+ * 노션의 id — 대시가 있든(8-4-4-4-12) 없든(32자리 hex) 받는다(09 F-09-01 *"요청 시 대시 유무 모두 허용"*). 우리의 모양(소문자 · 대시)으로 ·
+ * 아니면 null(400 `validation_error` — 모양이 틀린 것은 "없다" 가 아니다).
+ */
+export function parseApiId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const m = /^([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})$/i.exec(raw.trim())
+  return m === null ? null : `${m[1]}-${m[2]}-${m[3]}-${m[4]}-${m[5]}`.toLowerCase()
+}
+
+/** 값을 오류 글에 싣는 모양 — 노션처럼 백틱 안의 JSON · 길면 자른다. */
+export function shownValue(value: unknown): string {
+  let text: string
+  try {
+    text = value === undefined ? 'undefined' : (JSON.stringify(value) ?? String(value))
+  } catch {
+    text = typeof value
+  }
+  return `\`${text.length > 80 ? `${text.slice(0, 77)}...` : text}\``
+}
+
+/** 경로의 id 가 모양이 아니다 — 노션의 글 그대로(`path failed validation: …`). */
+export function invalidPathIdMessage(name: string, raw: unknown): string {
+  return `path failed validation: path.${name} should be a valid uuid, instead was ${shownValue(raw)}.`
+}
+
+/** 목록의 상한 — `page_size` 100(정본 ④ · 노션의 상한 그대로). 없으면 100. */
+export const API_MAX_PAGE_SIZE = 100
+
+/** `page_size` 질의 값 — 1~100 의 정수. 없으면 100 · 틀리면 null(400 `validation_error`). */
+export function parsePageSize(raw: string | null): number | null {
+  if (raw === null || raw === '') return API_MAX_PAGE_SIZE
+  if (!/^\d{1,4}$/.test(raw)) return null
+  const n = Number(raw)
+  return n >= 1 && n <= API_MAX_PAGE_SIZE ? n : null
+}
+
+/**
+ * 커서 — 노션처럼 속을 보이지 않는 글자다. 속은 목록 안의 자리(0 부터)다 — 목록이 그 사이 바뀌면 건너뛰거나 겹칠 수 있다(노션의 커서도
+ * 스냅숏이 아니다). `start_cursor` 를 읽어 자리로 · 모양이 아니면 null(400 `validation_error`).
+ */
+export function encodeCursor(offset: number): string {
+  return Buffer.from(`o:${offset}`, 'utf8').toString('base64url')
+}
+
+export function decodeCursor(raw: string | null): number | null {
+  if (raw === null || raw === '') return 0
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(raw)) return null
+  const m = /^o:(\d{1,9})$/.exec(Buffer.from(raw, 'base64url').toString('utf8'))
+  return m === null ? null : Number(m[1])
+}
+
 /** 오류마다 같은 글 — 노션의 말투. */
 export const API_MESSAGES = {
   unauthorized: 'API token is invalid.',

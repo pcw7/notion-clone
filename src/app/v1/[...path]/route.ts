@@ -6,10 +6,9 @@
  * 연다 — 정적인 주소가 이 잡이보다 먼저다.
  */
 
-import { v1Fail, v1Route } from '@/lib/api/v1'
-import { API_MESSAGES } from '@/lib/api/v1-protocol'
+import { v1InvalidUrl, v1Route } from '@/lib/api/v1'
 
-const unknownUrl = v1Route(async () => v1Fail(400, 'invalid_request_url', API_MESSAGES.invalidUrl))
+const unknownUrl = v1Route(v1InvalidUrl)
 
 export const GET = unknownUrl
 export const POST = unknownUrl

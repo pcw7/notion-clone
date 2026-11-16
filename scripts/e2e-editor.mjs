@@ -37163,7 +37163,7 @@ async function main() {
             && cookieOnly.body?.request_id === cookieOnly.requestId,
           JSON.stringify(cookieOnly))
         const noVersion = await me({ authorization: `Bearer ${token}` })
-        const unknownUrl = await me({ authorization: `Bearer ${token}`, 'notion-version': VERSION }, '/v1/pages/nope')
+        const unknownUrl = await me({ authorization: `Bearer ${token}`, 'notion-version': VERSION }, '/v1/nope')
         check('Notion-Version 이 없으면 400 missing_version · 아직 없는 주소는 400 invalid_request_url(HTML 404 가 아니다)',
           noVersion.status === 400 && noVersion.body?.code === 'missing_version' && unknownUrl.status === 400 && unknownUrl.body?.code === 'invalid_request_url',
           JSON.stringify([noVersion, unknownUrl]))
@@ -37202,6 +37202,122 @@ async function main() {
           !(await has('[data-testid="api-token-create"]')) && (await has('[data-testid="api-token-guest-note"]'))
             && guestPost.status === 403 && guestBody?.error === 'forbidden',
           JSON.stringify({ status: guestPost.status, guestBody }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('공개 API — 페이지 (API-2 · F-09-01)')) { try {
+      // 공개 API 의 페이지(정본 §3.1 [보강 API-1] ③ ⑤ · 투영 규칙). 새 멤버가 설정의 토큰 라우트로 토큰을 만들고, 그 토큰(Bearer +
+      // Notion-Version)으로 자기 개인 페이지 밑에 페이지 하나 · 자기 개인 표에 행 하나를 만들고 읽고 칸을 고치고 휴지통에 넣었다 되살린다.
+      // 앱 화면이 그 변화를 보인다 — 사이드바의 제목 · 표의 칸. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을
+      // 소유자로 되돌린다.
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const pageMod = await import(src('block/page.ts'))
+      const dbMod = await import(src('database/database.ts'))
+      const propMod = await import(src('database/property.ts'))
+      const must = (r, what) => {
+        if (!r.ok) throw new Error(`${what} 준비 실패: ${r.reason}`)
+        return r.value
+      }
+      const stamp = Date.now()
+      const VERSION = '2025-09-03'
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`API 페이지의 사람 ${stamp}`), 'member')
+
+      // 토큰 — 설정 화면이 부르는 라우트(로그인 세션)로
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-2 e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const v1 = async (method, path, body) => {
+        const res = await fetch(`${BASE}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${apiToken}`, 'notion-version': VERSION, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const plain = (runs) => (Array.isArray(runs) ? runs.map((r) => r.plain_text).join('') : null)
+
+      // 그 사람의 개인 페이지 · 개인 표(점수)
+      const parent = await pageMod.createPage(mate.ctx, { title: [textRun(`API 부모 ${stamp}`)], privateTop: true })
+      const table = must(await dbMod.createDatabase(mate.ctx, { name: `API 표 ${stamp}`, privateTop: true }), '표')
+      must(await propMod.addProperty(mate.ctx, table.dataSourceId, { name: '점수', type: 'number' }), '점수')
+      const pageTitle = `API 로 만든 페이지 ${stamp}`
+      const rowTitle = `API 로 만든 행 ${stamp}`
+
+      const sidebarHas = (text) =>
+        `(document.querySelector('[data-testid="sidebar-private"]')?.textContent ?? '').includes(${JSON.stringify(text)})`
+
+      try {
+        const page = await v1('POST', '/v1/pages', {
+          parent: { page_id: parent.id },
+          properties: { title: { title: [{ text: { content: pageTitle } }] } },
+          icon: { type: 'emoji', emoji: '🚀' },
+        })
+        check('★ POST /v1/pages(page_id) — 200 페이지 객체 · 부모 page_id · 제목 · 아이콘 · 만든 사람은 토큰의 사람',
+          page.status === 200 && page.body?.object === 'page' && page.body?.parent?.type === 'page_id' && page.body?.parent?.page_id === parent.id
+            && plain(page.body?.properties?.title?.title) === pageTitle && page.body?.icon?.emoji === '🚀'
+            && page.body?.created_by?.id === mate.userId && page.body?.in_trash === false
+            && String(page.body?.url).endsWith(`/w/${workspaceId}/${page.body?.id}`),
+          JSON.stringify(page).slice(0, 600))
+        const pageId = page.body?.id
+
+        const row = await v1('POST', '/v1/pages', {
+          parent: { data_source_id: table.dataSourceId },
+          properties: { title: { title: [{ text: { content: rowTitle } }] }, 점수: { number: 3 } },
+        })
+        const titleName = Object.entries(row.body?.properties ?? {}).find(([, v]) => v?.type === 'title')?.[0]
+        check('★ POST /v1/pages(data_source_id) — 200 행 · 부모 data_source_id + database_id · 제목 속성 id 는 title · 점수 3',
+          row.status === 200 && row.body?.parent?.type === 'data_source_id' && row.body?.parent?.data_source_id === table.dataSourceId
+            && row.body?.parent?.database_id === table.id && row.body?.properties?.[titleName]?.id === 'title'
+            && plain(row.body?.properties?.[titleName]?.title) === rowTitle && row.body?.properties?.['점수']?.number === 3,
+          JSON.stringify(row).slice(0, 600))
+        const rowId = row.body?.id
+
+        const read = await v1('GET', `/v1/pages/${String(pageId).replace(/-/g, '')}`)
+        const item = await v1('GET', `/v1/pages/${pageId}/properties/title?page_size=1`)
+        check('GET /v1/pages/{id} — 대시 없는 id 로도 같은 페이지 · property item 은 쪽으로 나눈 목록',
+          read.status === 200 && read.body?.id === pageId && plain(read.body?.properties?.title?.title) === pageTitle
+            && item.status === 200 && item.body?.object === 'list' && item.body?.type === 'property_item'
+            && item.body?.results?.[0]?.title?.plain_text === pageTitle && item.body?.has_more === false,
+          JSON.stringify([read.status, item.body]).slice(0, 600))
+
+        const patched = await v1('PATCH', `/v1/pages/${rowId}`, { properties: { 점수: { number: 42 } } })
+        const bad = await v1('PATCH', `/v1/pages/${rowId}`, { properties: { 없는속성: { number: 1 } } })
+        check('★ PATCH 속성 — 점수 42 · 고친 사람은 토큰의 사람 · 모르는 속성은 400 validation_error(노션의 오류 모양)',
+          patched.status === 200 && patched.body?.properties?.['점수']?.number === 42 && patched.body?.last_edited_by?.id === mate.userId
+            && bad.status === 400 && bad.body?.object === 'error' && bad.body?.code === 'validation_error'
+            && String(bad.body?.message).includes('없는속성 is not a property that exists'),
+          JSON.stringify([patched.body?.properties?.['점수'], bad.body]))
+
+        // 앱의 화면 — 사이드바의 제목 · 표의 칸
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        const inSidebar = await waitFor(sidebarHas(pageTitle), 15000)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${table.id}` })
+        const rowSel = `[data-row-id="${rowId}"]`
+        const inTable = await waitFor(`(() => { const t = document.querySelector('${rowSel}')?.textContent ?? ''
+          return t.includes(${JSON.stringify(rowTitle)}) && t.includes('42') })()`, 15000)
+        check('★ 앱의 화면이 API 의 쓰기를 보인다 — 사이드바에 만든 페이지의 제목 · 표에 만든 행과 고친 점수 42',
+          inSidebar && inTable,
+          JSON.stringify({ inSidebar, inTable, row: await evaluate(`document.querySelector('${rowSel}')?.textContent ?? null`) }))
+
+        // 휴지통 · 되살리기
+        const trashed = await v1('PATCH', `/v1/pages/${pageId}`, { in_trash: true })
+        const whileTrashed = await v1('GET', `/v1/pages/${pageId}`)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-private"]')`, 15000)
+        const goneFromSidebar = await waitFor(`!${sidebarHas(pageTitle)}`, 10000)
+        const restored = await v1('PATCH', `/v1/pages/${pageId}`, { in_trash: false })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        const backInSidebar = await waitFor(sidebarHas(pageTitle), 15000)
+        check('★ PATCH in_trash — true 면 휴지통(읽으면 in_trash: true · 사이드바에서 빠진다) · false 면 되살아나 사이드바에 다시 선다',
+          trashed.status === 200 && trashed.body?.in_trash === true && whileTrashed.body?.in_trash === true && goneFromSidebar
+            && restored.status === 200 && restored.body?.in_trash === false && backInSidebar,
+          JSON.stringify({ trashed: trashed.status, whileTrashed: whileTrashed.body?.in_trash, goneFromSidebar, restored: restored.status, backInSidebar }))
       } finally {
         await browseAs(session)
       }
