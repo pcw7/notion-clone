@@ -37323,6 +37323,94 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 블록 (API-3 · F-09-01)')) { try {
+      // 공개 API 의 블록(정본 §3.1 [보강 API-1] ③ ④ ⑤ · 판결 X-1 · V-5). 새 멤버가 토큰을 만들고 자기 개인 페이지를 **편집기로 열어 둔 채**
+      // API 로 블록을 붙이고 · 할 일의 체크를 켜고 · 블록 하나를 지운다. 본문 쓰기는 서버 명령의 본문 세션(출처 api)이라 협업 서버의 커밋 신호로
+      // 열린 편집기에 새로고침 없이 나타나야 한다(창의 표지가 그대로 — 다시 불러오지 않았다). 끝에 자식을 읽어 편집기와 견준다. 자기 데이터를
+      // 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const pageMod = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const VERSION = '2025-09-03'
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`API 블록의 사람 ${stamp}`), 'member')
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-3 e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const v1 = async (method, path, body) => {
+        const res = await fetch(`${BASE}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${apiToken}`, 'notion-version': VERSION, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const rt = (content, annotations) => [{ type: 'text', text: { content }, ...(annotations ? { annotations } : {}) }]
+      const plain = (b) => (b?.[b?.type]?.rich_text ?? []).map((r) => r.plain_text).join('')
+      const inEditor = (id) => `!!document.querySelector('.blk-editor [data-block-id="${id}"]')`
+      const textIn = (id) => evaluate(`document.querySelector('.blk-editor [data-block-id="${id}"]')?.textContent ?? null`)
+      const page = await pageMod.createPage(mate.ctx, { title: [textRun(`API 블록 ${stamp}`)], privateTop: true })
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page.id}` })
+        const opened = await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+        // 다시 불러오면 사라지는 표지 — 끝까지 남아 있으면 새로고침 없이 받은 것이다
+        await evaluate(`window.__api3Mark = ${stamp}`)
+        check('전제 — 개인 페이지를 편집기로 열었고 고칠 수 있다(협업 연결)', opened)
+
+        const appended = await v1('PATCH', `/v1/blocks/${page.id}/children`, {
+          children: [
+            { type: 'heading_2', heading_2: { rich_text: rt(`API 머리 ${stamp}`) } },
+            { type: 'paragraph', paragraph: { rich_text: rt('API 가 쓴 굵은 문단', { bold: true }) } },
+            { type: 'to_do', to_do: { rich_text: rt('API 할 일'), checked: false } },
+            { type: 'toggle', toggle: { rich_text: rt('API 토글'), children: [{ type: 'paragraph', paragraph: { rich_text: rt('토글 안') } }] } },
+          ],
+        })
+        const ids = (appended.body?.results ?? []).map((b) => b.id)
+        const [headId, paraId, todoId, toggleId] = ids
+        check('★ PATCH /v1/blocks/{page}/children — 200 노션의 목록 · 붙인 맨 위 블록 넷 · 부모는 page_id · 만든 사람은 토큰의 사람',
+          appended.status === 200 && appended.body?.object === 'list' && appended.body?.type === 'block' && ids.length === 4
+            && appended.body.results.every((b) => b.parent?.page_id === page.id && b.created_by?.id === mate.userId)
+            && appended.body.results[3]?.has_children === true,
+          JSON.stringify(appended).slice(0, 600))
+        const live = await waitFor(`${ids.map(inEditor).join(' && ')} && window.__api3Mark === ${stamp}`, 15000)
+        check('★ 열린 편집기에 새로고침 없이 나타난다 — 머리 · 굵은 문단 · 할 일 · 토글(커밋 신호)',
+          live && String(await textIn(headId)).includes(`API 머리 ${stamp}`) && String(await textIn(paraId)).includes('API 가 쓴 굵은 문단')
+            && String(await textIn(toggleId)).includes('API 토글'),
+          JSON.stringify({ live, head: await textIn(headId), para: await textIn(paraId) }))
+
+        const box = `.blk-editor [data-block-id="${todoId}"] input.blk-checkbox`
+        const before = await evaluate(`document.querySelector('${box}')?.checked ?? null`)
+        const patched = await v1('PATCH', `/v1/blocks/${todoId}`, { to_do: { checked: true } })
+        const ticked = await waitFor(`document.querySelector('${box}')?.checked === true && window.__api3Mark === ${stamp}`, 10000)
+        check('★ PATCH /v1/blocks/{to_do} — checked 를 켜면 열린 편집기의 체크박스가 켜진다 · 글은 그대로',
+          before === false && patched.status === 200 && patched.body?.to_do?.checked === true && plain(patched.body) === 'API 할 일' && ticked,
+          JSON.stringify({ before, status: patched.status, body: patched.body?.to_do, ticked }))
+
+        const deleted = await v1('DELETE', `/v1/blocks/${paraId}`)
+        const gone = await waitFor(`!${inEditor(paraId)} && ${inEditor(headId)} && window.__api3Mark === ${stamp}`, 10000)
+        check('★ DELETE /v1/blocks/{id} — 지운 블록을 in_trash: true 로 돌려주고 열린 편집기에서 사라진다',
+          deleted.status === 200 && deleted.body?.id === paraId && deleted.body?.in_trash === true && gone,
+          JSON.stringify({ status: deleted.status, in_trash: deleted.body?.in_trash, gone }))
+
+        const read = await v1('GET', `/v1/blocks/${page.id}/children?page_size=10`)
+        const inner = await v1('GET', `/v1/blocks/${toggleId}/children`)
+        const rest = [headId, todoId, toggleId]
+        const editorOrder = (await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((e) => e.getAttribute('data-block-id'))`))
+          .filter((id) => rest.includes(id))
+        check('★ GET children — 남은 셋이 편집기와 같은 차례 · 할 일은 checked · 토글의 자식은 그 안의 문단',
+          read.status === 200 && JSON.stringify((read.body?.results ?? []).map((b) => b.id)) === JSON.stringify(rest)
+            && JSON.stringify(editorOrder) === JSON.stringify(rest)
+            && read.body.results[1]?.to_do?.checked === true && read.body.results[2]?.has_children === true && read.body?.has_more === false
+            && inner.status === 200 && plain(inner.body?.results?.[0]) === '토글 안' && inner.body.results[0]?.parent?.block_id === toggleId,
+          JSON.stringify({ api: (read.body?.results ?? []).map((b) => [b.type, plain(b)]), editorOrder, inner: inner.body?.results?.[0]?.type }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
