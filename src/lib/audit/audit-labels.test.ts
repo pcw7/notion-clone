@@ -28,6 +28,8 @@ test('종류마다 이름이 있고 겹치지 않는다', () => {
 test('세부 한 줄 — 종류마다', () => {
   assert.equal(auditDetail(row('account.login', { authMethod: 'password', newAccount: true })), 'password · 새 계정')
   assert.equal(auditDetail(row('account.security_changed', { change: 'mfa_enabled' })), '2단계 인증을 켰다')
+  assert.equal(auditDetail(row('account.security_changed', { change: 'api_token_created', name: '배포 스크립트' })), 'API 토큰을 만들었다 · 배포 스크립트', 'API-1')
+  assert.equal(auditDetail(row('account.security_changed', { change: 'api_token_revoked', name: '배포 스크립트' })), 'API 토큰을 폐기했다 · 배포 스크립트')
   assert.equal(auditDetail(row('workspace.member_invited', { email: 'a@b.c', role: 'member', renewed: true })), 'a@b.c · 멤버 · 다시 보냄')
   assert.equal(auditDetail(row('workspace.member_joined', { role: 'guest', via: 'access_request' })), '게스트 · 접근 요청 허락')
   assert.equal(auditDetail(row('workspace.member_role_changed', { from: 'guest', to: 'member' })), '게스트 → 멤버')

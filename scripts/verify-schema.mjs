@@ -85,6 +85,8 @@ const EXPECTED_TABLES = [
   'custom_emoji',
   // 제안 메타 SG-2조각 (0140)
   'suggestion',
+  // 공개 API 의 개인 토큰 API-1 (0145)
+  'api_token',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -5901,6 +5903,65 @@ try {
     if (ent.length === 4 && ent.every((r) => r.kind === 'boolean') && byPlan.free === false && byPlan.plus === true && byPlan.business === true && byPlan.enterprise === true) {
       ok('★ 엔타이틀먼트 offline.auto_download — Plus · Business · Enterprise 만 true')
     } else fail(`엔타이틀먼트 offline.auto_download 가 요금제와 맞지 않는다 — ${JSON.stringify(ent)}`)
+  }
+
+  {
+    // 공개 API 의 개인 토큰(0145 · API-1 · §3.1 [보강 API-1] ①) — 이름 1~100자 · 해시는 sha256 hex · 끝 4자 · 시각의 차례 · 해시 유일 ·
+    // 멤버십 행을 가리킨다 · 살아 있는 토큰의 부분 인덱스
+    for (const name of ['ck_api_token_name', 'ck_api_token_hash', 'ck_api_token_last4', 'ck_api_token_expires', 'ck_api_token_revoked', 'ck_api_token_last_used', 'uq_api_token_hash', 'fk_api_token_member']) {
+      const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = 'api_token'::regclass`, [name])).rowCount
+      if (has === 1) ok(`${name} 이 있다`)
+      else fail(`${name} 이 없다`)
+    }
+    const live = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_api_token_live'`)).rows[0]
+    if (live && /WHERE \(revoked_at IS NULL\)/.test(live.indexdef)) ok('ix_api_token_live — 살아 있는 토큰만의 부분 인덱스')
+    else fail(`ix_api_token_live 가 부분 인덱스가 아니다 — ${live?.indexdef ?? '없다'}`)
+
+    await client.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1, $2, 'member', 'active') ON CONFLICT (workspace_id, user_id) DO NOTHING`,
+      [wsId, userId],
+    )
+    const hex = (n) => n.toString(16).padStart(64, '0')
+    const insertToken = `INSERT INTO api_token (id, user_id, workspace_id, name, token_hash, last4, created_at, last_used_at, expires_at, revoked_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+    const tok = (over = {}) => {
+      const t = { ws: wsId, user: userId, name: '배포 스크립트', hash: hex(Math.floor(Math.random() * 1e15)), last4: 'Ab9z', created: '2026-11-16T00:00:00Z', used: null, expires: null, revoked: null, ...over }
+      return [randomUUID(), t.user, t.ws, t.name, t.hash, t.last4, t.created, t.used, t.expires, t.revoked]
+    }
+    const okHash = hex(0xa11)
+    await client.query(insertToken, tok({ hash: okHash, used: '2026-11-16T00:01:00Z', expires: '2027-11-16T00:00:00Z' }))
+    await client.query(insertToken, tok({ name: '가'.repeat(100), expires: null, revoked: '2026-11-16T00:00:00Z' }))
+    ok('api_token 정상 삽입 (이름 100자 · 만료 없음 · 같은 순간의 폐기)')
+
+    const rejectsBy = async (label, sql, params, ...names) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (names.includes(e.constraint)) ok(`${label} — ${e.constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${names.join(' | ')} 가 아니라 ${e.constraint ?? e.code} (${String(e.message).split('\n')[0]})`)
+      }
+    }
+    await rejectsBy('★ 토큰 이름이 비었다', insertToken, tok({ name: '' }), 'ck_api_token_name')
+    await rejectsBy('★ 토큰 이름 101자', insertToken, tok({ name: '가'.repeat(101) }), 'ck_api_token_name')
+    await rejectsBy('토큰 이름의 앞뒤 공백', insertToken, tok({ name: ' 스크립트 ' }), 'ck_api_token_name')
+    await rejectsBy('★ 해시가 sha256 hex 가 아니다(평문을 넣는 실수)', insertToken, tok({ hash: `ntn_${'a'.repeat(46)}` }), 'ck_api_token_hash')
+    await rejectsBy('해시가 대문자 hex', insertToken, tok({ hash: hex(7).toUpperCase().replace(/^0/, 'A') }), 'ck_api_token_hash')
+    await rejectsBy('해시가 63자', insertToken, tok({ hash: hex(7).slice(1) }), 'ck_api_token_hash')
+    await rejectsBy('★ 끝 4자가 넷이 아니다', insertToken, tok({ last4: 'ab9' }), 'ck_api_token_last4')
+    await rejectsBy('끝 4자에 base62 밖의 글자', insertToken, tok({ last4: 'ab-9' }), 'ck_api_token_last4')
+    await rejectsBy('★ 만든 시각보다 앞선 만료', insertToken, tok({ expires: '2026-11-15T00:00:00Z' }), 'ck_api_token_expires')
+    await rejectsBy('만든 순간의 만료', insertToken, tok({ expires: '2026-11-16T00:00:00Z' }), 'ck_api_token_expires')
+    await rejectsBy('★ 만든 시각보다 앞선 폐기', insertToken, tok({ revoked: '2026-11-15T23:59:59Z' }), 'ck_api_token_revoked')
+    await rejectsBy('★ 만든 시각보다 앞선 마지막 사용', insertToken, tok({ used: '2026-11-15T23:59:59Z' }), 'ck_api_token_last_used')
+    await rejectsBy('★ 같은 해시 두 번', insertToken, tok({ hash: okHash }), 'uq_api_token_hash')
+    // 그 워크스페이스의 멤버십 행이 없는 사람 — 사람 · 워크스페이스는 있다(복합 FK 만이 막는다)
+    const strangerWs = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '토큰의 남', 'local', now())`, [strangerWs])
+    await rejectsBy('★ 멤버였던 적 없는 워크스페이스의 토큰', insertToken, tok({ ws: strangerWs }), 'fk_api_token_member')
   }
 
   await client.query('ROLLBACK')

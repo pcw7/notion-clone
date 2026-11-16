@@ -12,6 +12,7 @@
  *   weak_password · current_required  400   입력이 정책 · 문에 맞지 않는다
  *   wrong_password                    403   지금 비밀번호가 틀렸다
  *   no_password · mfa_enabled         409   지금 상태가 허락하지 않는다
+ *   session_required                  403   로그인 세션이 아니다(위임 · API 토큰 — 이 라우트는 쿠키만 받는다)
  */
 
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
@@ -25,6 +26,7 @@ const STATUS: Readonly<Record<PasswordFailure, number>> = {
   wrong_password: 403,
   no_password: 409,
   mfa_enabled: 409,
+  session_required: 403,
 }
 
 const bodyOf = (parsed: unknown) =>

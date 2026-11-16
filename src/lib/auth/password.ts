@@ -18,7 +18,7 @@
 
 import { randomUUID } from 'node:crypto'
 
-import type { SessionContext } from './session-context.ts'
+import { isLoginSession, type SessionContext } from './session-context.ts'
 import { recordAuditIn } from '../audit/audit.ts'
 import { query, queryMaybe } from '../db/pool.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
@@ -48,6 +48,8 @@ export type PasswordFailure =
   | 'no_password'
   /** 2단계 인증이 켜져 있어 지울 수 없다(8i-2). */
   | 'mfa_enabled'
+  /** 로그인 세션이 아니다 — 위임 · API 토큰의 컨텍스트(세션에 매인 명령 · API-1 ②). */
+  | 'session_required'
 
 export type PasswordResult<T = { readonly revokedSessions: number }> =
   | { readonly ok: true; readonly value: T }
@@ -106,6 +108,7 @@ export async function setPassword(
   ctx: SessionContext,
   input: { readonly newPassword: unknown; readonly currentPassword?: unknown },
 ): Promise<PasswordResult> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   if (!isAcceptablePassword(input.newPassword)) return fail('weak_password')
   const newHash = await hashPassword(input.newPassword)
 
@@ -141,6 +144,7 @@ export async function removePassword(
   ctx: SessionContext,
   input: { readonly currentPassword?: unknown },
 ): Promise<PasswordResult<null>> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   return withCommandTransaction(async (tx) => {
     await tx.query(`SELECT 1 FROM "user" WHERE id = $1 FOR UPDATE`, [ctx.userId])
     const stored = await storedHash(tx, ctx.userId)

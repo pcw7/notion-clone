@@ -6,6 +6,7 @@
  * 기능의 라우트로 보내고, 끝나면 서버가 이 화면을 다시 그린다(멤버 목록이 함께 바뀐다).
  */
 
+import { canCreateApiToken, listApiTokens } from '@/lib/api/api-token'
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import { listWorkspaceAudit } from '@/lib/audit/audit'
@@ -31,6 +32,7 @@ import { PendingInviteList } from '../pending-invite-list'
 import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
 import { AccountDeletePanel } from './account-delete-panel'
 import { AccessibilityPanel } from './accessibility-panel'
+import { ApiTokenPanel } from './api-token-panel'
 import { AuditPanel } from './audit-panel'
 import { EmojiPanel } from './emoji-panel'
 import { MfaPanel } from './mfa-panel'
@@ -90,6 +92,11 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
           autoAllowed={await entitlement(ctx.workspaceId, 'offline.auto_download')}
         />
       )
+    case 'api-tokens': {
+      // 내 API 토큰(API-1) — 목록은 여기서 읽는다(값은 없다 · 다시 볼 수 없다). 만들기 · 폐기는 라우트가 다시 판정한다.
+      const tokens = await listApiTokens(ctx)
+      return <ApiTokenPanel workspaceId={ctx.workspaceId} initial={tokens.ok ? [...tokens.value] : []} canCreate={canCreateApiToken(ctx)} />
+    }
     case 'site':
       // 사이트 주소(6c-2) — 지금 주소는 여기서 읽는다. 정하는 것은 소유자만(패널 목록이 걸렀다 — 명령이 다시 묻는다).
       return <SitePanel workspaceId={ctx.workspaceId} initialName={await readSiteDomain(ctx)} />

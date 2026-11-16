@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'node:crypto'
 
-import type { SessionContext } from '../auth/session-context.ts'
+import { isLoginSession, loginSessionIdOf, type SessionContext } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 
@@ -77,7 +77,7 @@ export async function recordAuditIn(tx: Tx, event: AuditEvent): Promise<void> {
   )
 }
 
-/** 세션으로 한 워크스페이스 범위의 일 — 행위자 · IP 는 그 세션의 것(위임이면 IP 없음). */
+/** 세션으로 한 워크스페이스 범위의 일 — 행위자 · IP 는 그 세션의 것(위임 · API 토큰이면 IP 없음). */
 export function recordForContextIn(
   tx: Tx,
   ctx: SessionContext,
@@ -88,7 +88,7 @@ export function recordForContextIn(
     type,
     workspaceId: ctx.workspaceId,
     actorUserId: ctx.userId,
-    sessionId: ctx.delegation === undefined ? ctx.sessionId : null,
+    sessionId: loginSessionIdOf(ctx),
     ...extra,
   })
 }
@@ -96,7 +96,7 @@ export function recordForContextIn(
 // ── 읽기 ──────────────────────────────────────────────────────────────
 
 export type AuditReadFailure =
-  /** owner 가 아니다(위임 컨텍스트도). */
+  /** owner 가 아니다(위임 · API 토큰 컨텍스트도). */
   | 'forbidden'
   /** 이 워크스페이스의 요금제가 감사 로그를 읽게 하지 않는다(`audit.log` — Enterprise 만 · 6d-2). 쌓는 것은 그대로다. */
   | 'plan_required'
@@ -108,7 +108,7 @@ export const AUDIT_CSV_MAX = 10_000
 
 /** 감사 로그를 볼 수 있는 역할인가 — 설정의 절이 설지 정한다(요금제는 패널이 따로 말한다). 판정은 `listWorkspaceAudit` 가 다시 한다. */
 export function canReadAudit(ctx: SessionContext): boolean {
-  return ctx.role === 'owner' && ctx.delegation === undefined
+  return ctx.role === 'owner' && isLoginSession(ctx)
 }
 
 /**

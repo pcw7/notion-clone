@@ -27,7 +27,7 @@
 
 import { randomBytes } from 'node:crypto'
 
-import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { isLoginSession, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { query } from '../db/pool.ts'
 import { mayInviteGuestsIn } from './security-policy.ts'
@@ -100,6 +100,8 @@ export async function inviteGuestToPage(
   rawEmail: unknown,
   rawLevel: unknown,
 ): Promise<GuestInviteResult> {
+  // 사람을 들이는 일 — 로그인 세션만(위임 · API 토큰은 아니다 · API-1 ②)
+  if (!isLoginSession(ctx)) return fail('forbidden')
   const email = normalizeGuestEmail(rawEmail)
   if (email === null) return fail('invalid_email')
   if (!isGuestLevel(rawLevel)) return fail('invalid_level')
@@ -339,7 +341,7 @@ async function membershipChanged(tx: Tx, ctx: SessionContext, userId: string): P
  * 들어간 수다.
  */
 export async function promoteGuest(ctx: SessionContext, userId: string): Promise<GuestManageResult<{ teamspaces: number }>> {
-  if (!canManageGuests(ctx.role)) return refuse('forbidden')
+  if (!isLoginSession(ctx) || !canManageGuests(ctx.role)) return refuse('forbidden')
   return withCommandTransaction(async (tx) => {
     if (!(await lockGuest(tx, ctx, userId))) return refuse('not_found')
     await tx.query(
@@ -360,7 +362,7 @@ export async function promoteGuest(ctx: SessionContext, userId: string): Promise
  * 페이지 수다. 열어 둔 편집기는 멤버십 행의 트리거(0016)가 협업 서버에 알려 닫힌다.
  */
 export async function removeGuest(ctx: SessionContext, userId: string): Promise<GuestManageResult<{ pages: number }>> {
-  if (!canManageGuests(ctx.role)) return refuse('forbidden')
+  if (!isLoginSession(ctx) || !canManageGuests(ctx.role)) return refuse('forbidden')
   return withCommandTransaction(async (tx) => {
     if (!(await lockGuest(tx, ctx, userId))) return refuse('not_found')
     const dropped = await dropGrantsOf(tx, ctx, { type: 'user', id: userId })

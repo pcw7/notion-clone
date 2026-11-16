@@ -15,7 +15,7 @@
  *   · 게스트로 내리기는 이 명령이 아니다(⑥ · 다음 조각)
  */
 
-import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { isLoginSession, loginSessionIdOf, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { recordAuditIn, recordForContextIn } from '../audit/audit.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import { DEFAULT_TEAMSPACE_ROLES, joinDefaultTeamspaces, lastOwnedTeamspaces } from './teamspace.ts'
@@ -23,7 +23,7 @@ import { DEFAULT_TEAMSPACE_ROLES, joinDefaultTeamspaces, lastOwnedTeamspaces } f
 import { canManageMembers, isMemberRole, mayManage, type MemberRole } from './member-rules.ts'
 
 export type MemberManageFailure =
-  /** 멤버를 다룰 역할이 아니거나, owner 만 할 수 있는 일이다(①). */
+  /** 멤버를 다룰 역할이 아니거나, owner 만 할 수 있는 일이다(①). 로그인 세션이 아닌 컨텍스트(위임 · API 토큰 — API-1 ②)도. */
   | 'forbidden'
   /** 이 워크스페이스의 활성 · 게스트 아닌 사람이 아니다 — 떠난 · 초대만 받은 · 멈춘 사람 · 게스트 · 모르는 사람. */
   | 'not_found'
@@ -93,7 +93,7 @@ export async function changeMemberRole(
   role: unknown,
 ): Promise<MemberManageResult<{ readonly from: MemberRole; readonly to: MemberRole; readonly teamspaces: number }>> {
   if (!isMemberRole(role)) return refuse('invalid_role')
-  if (!canManageMembers(ctx.role)) return refuse('forbidden')
+  if (!isLoginSession(ctx) || !canManageMembers(ctx.role)) return refuse('forbidden')
   return withCommandTransaction(async (tx) => {
     const owners = await lockOwners(tx, ctx.workspaceId)
     const actor = await actorRole(tx, ctx)
@@ -121,7 +121,7 @@ export async function removeMember(
   ctx: SessionContext,
   userId: string,
 ): Promise<MemberManageResult<{ readonly role: MemberRole }>> {
-  if (!canManageMembers(ctx.role)) return refuse('forbidden')
+  if (!isLoginSession(ctx) || !canManageMembers(ctx.role)) return refuse('forbidden')
   if (userId === ctx.userId) return refuse('self')
   return withCommandTransaction(async (tx) => {
     const owners = await lockOwners(tx, ctx.workspaceId)
@@ -139,6 +139,7 @@ export async function removeMember(
  * `left: true`.
  */
 export async function leaveWorkspace(ctx: SessionContext): Promise<MemberManageResult<{ readonly role: MemberRole }>> {
+  if (!isLoginSession(ctx)) return refuse('forbidden')
   return withCommandTransaction(async (tx) => {
     const owners = await lockOwners(tx, ctx.workspaceId)
     const role = await lockTarget(tx, ctx.workspaceId, ctx.userId)
@@ -153,7 +154,7 @@ export type RetireActor = { readonly workspaceId: string; readonly userId: strin
 const auditActorOf = (ctx: SessionContext): RetireActor => ({
   workspaceId: ctx.workspaceId,
   userId: ctx.userId,
-  sessionId: ctx.delegation === undefined ? ctx.sessionId : null,
+  sessionId: loginSessionIdOf(ctx),
 })
 
 /**
