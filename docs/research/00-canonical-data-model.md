@@ -2622,6 +2622,11 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > files 속성은 `{name, type:'file_upload', file_upload:{id}}`(그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
 > 만든다 — 옵션 만들기는 구조 고치기 권한이라 칸 쓰기에 섞지 않는다) · 잠긴 페이지 쓰기는 400 `validation_error` · 내보내기 정책이 꺼지면 쓰기도
 > 막는다(쓰기 응답도 페이지 내용을 돌려준다) · `public_url` 은 게시를 관리할 수 있는 사람에게만 · `children` 은 API-3 부터(그 전에는 빈 배열만).
+> ⑦ **[API-3] 블록에서 노션과 다르게 둔 것** — 읽기는 Y.Doc 의 원문(제안 마크 밖 · 투영이 밀린 참여자 편집도 보인다) · 쓰기는 본문 세션
+> 하나(경로 ② · 출처 `api` · 열린 편집기에 곧바로 간다) · **지운 본문 블록은 되살릴 수 없다**(Y.Doc 에서 빠진다 — 버전 기록으로 되돌린다 ·
+> `in_trash:false` 는 페이지만) · 그 안의 하위 페이지는 휴지통으로(편집기에서 지울 때와 같다) · 토글 헤딩 · 이모지가 아닌 콜아웃 아이콘 ·
+> `link_to_page` · `synced_block` · `pdf` · `audio` · `template` 쓰기는 400 · 버튼 · 출처 없는 미디어는 `unsupported` 로 읽는다 · 올린 파일은
+> `file_upload {id}`(⑥과 같다) · 붙일 자리는 `after` 와 `position` 을 둘 다 받는다 · 잠긴 · 휴지통의 페이지에 쓰면 400.
 
 **정본 상수**
 

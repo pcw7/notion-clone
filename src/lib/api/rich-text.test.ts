@@ -79,6 +79,15 @@ test('★ 되돌리기 — 내보낸 것을 그대로 다시 보내면 같은 �
   assert.deepEqual(back.runs, runs)
 })
 
+test('★ 받기 — 2000자 조각 여럿으로 보낸 긴 글(노션의 방식)을 받는다 · 같은 서식은 합친 뒤 2000자 단위로 다시 쪼갠다(API-3)', () => {
+  const long = '가'.repeat(3000)
+  const r = parseApiRichText([{ text: { content: long.slice(0, 2000) } }, { text: { content: long.slice(2000) } }], 'p')
+  assert.ok(r.ok, r.ok ? '' : r.message)
+  if (!r.ok) return
+  assert.deepEqual(r.runs.map((x) => x.plain_text.length), [2000, 1000])
+  assert.equal(r.runs.map((x) => x.plain_text).join(''), long)
+})
+
 test('★ 거부 — 자리를 영어로 말한다', () => {
   const cases: [unknown, RegExp][] = [
     ['글', /^p should be an array, instead was `"글"`\.$/],

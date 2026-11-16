@@ -16,7 +16,8 @@
  * capability 부족"*) · 모양이 틀린 id · 본문 400 `validation_error` · 잠긴 페이지는 400 `validation_error`(노션이 휴지통의 블록을 고칠 때 주는
  * 자리 — 상태 때문에 고칠 수 없다는 뜻이 같다) · 동시 쓰기의 충돌은 409 `conflict_error`.
  *
- * `children` 은 받지 않는다 — 노션의 블록 JSON 을 우리 블록으로 옮기는 길은 API-3(블록)의 일이다. 빈 배열만 받고 그 밖은 400 이다.
+ * `children`(API-3) — 블록 JSON 을 우리 블록으로(`block-json.ts` — 블록 API 와 같은 변환 · 같은 상한) 옮겨 **같은 명령 트랜잭션에서** 새 페이지의
+ * 본문 세션으로 쓴다(경로 ② · 출처 `api` · `block-body.ts`). 블록이 거부되면 페이지도 생기지 않는다.
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -31,9 +32,12 @@ import { MAX_LINKS_PER_REQUEST, linkRowsIn } from '../database/relation.ts'
 import { createRowIn, isRowFailure, openDataSource, trashRow, updateCellsIn, type RowCell } from '../database/row.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { exportPolicyAllows } from '../export/download.ts'
+import type { EditorBlock } from '../editor/document.ts'
 import { asBlockId } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
+import { newApiBlockId, uploadIssueIn, writeNewPageBodyIn } from './block-body.ts'
+import { parseApiChildren, type UploadRef } from './block-json.ts'
 import { loadPageIn, readApiOptions, readApiPage, readApiProperties, readPropertyItem, visibleRelationIn } from './page-object.ts'
 import { TITLE_PROPERTY_ID, findProperty, parsePropertyWrite, type ApiProperty, type ApiWrite } from './property-values.ts'
 import type { ApiLinks } from './rich-text.ts'
@@ -43,19 +47,17 @@ import { API_MAX_PAGE_SIZE, decodeCursor, invalidPathIdMessage, parseApiId, pars
 // ── 답 ────────────────────────────────────────────────────────────────
 
 const RESTRICTED_MESSAGE = "Given the bearer token used, the client doesn't have permission to perform this operation."
-const POLICY_MESSAGE = 'The workspace security policy disables export for members, so only workspace owners can use the pages API.'
-const LOCKED_MESSAGE = "Can't edit page that is locked. Unlock the page in the app before editing."
+const POLICY_MESSAGE = 'The workspace security policy disables export for members, so only workspace owners can use the pages and blocks API.'
+export const LOCKED_MESSAGE = "Can't edit page that is locked. Unlock the page in the app before editing."
 const TRASHED_MESSAGE = "Can't edit page that is in trash. Restore it first by setting in_trash to false."
 const CONFLICT_MESSAGE = 'Conflict occurred while saving. Please try again.'
-const CHILDREN_MESSAGE =
-  'body failed validation: body.children is not supported yet — block content arrives with the blocks API (API-3). Create the page without children.'
 
 const notFound = (kind: 'page' | 'data source' | 'database', id: string): V1Reply =>
   v1Fail(404, 'object_not_found', `Could not find ${kind} with ID: ${id}.`)
-const restricted = (): V1Reply => v1Fail(403, 'restricted_resource', RESTRICTED_MESSAGE)
-const invalid = (message: string): V1Reply => v1Fail(400, 'validation_error', message)
-const bodyInvalid = (clause: string): V1Reply => invalid(`body failed validation: ${clause}`)
-const conflict = (): V1Reply => v1Fail(409, 'conflict_error', CONFLICT_MESSAGE)
+export const restricted = (): V1Reply => v1Fail(403, 'restricted_resource', RESTRICTED_MESSAGE)
+export const invalid = (message: string): V1Reply => v1Fail(400, 'validation_error', message)
+export const bodyInvalid = (clause: string): V1Reply => invalid(`body failed validation: ${clause}`)
+export const conflict = (): V1Reply => v1Fail(409, 'conflict_error', CONFLICT_MESSAGE)
 
 /** 앱의 주소 — 설정한 공개 주소(`NEXT_PUBLIC_APP_URL` — 초대 링크 · 자동화와 같은 값), 없으면 요청의 출처. */
 export function apiLinks(ctx: SessionContext, request: Request): ApiLinks {
@@ -63,23 +65,23 @@ export function apiLinks(ctx: SessionContext, request: Request): ApiLinks {
   return { origin, pageUrl: (pageId) => `${origin}/w/${ctx.workspaceId}/${pageId}` }
 }
 
-/** 내보내기 정책(정본 [보강] 보안 정책 ① · [보강 API-1] ⑤) — 끄면 소유자만. */
-async function policyBlock(ctx: SessionContext): Promise<V1Reply | null> {
+/** 내보내기 정책(정본 [보강] 보안 정책 ① · [보강 API-1] ⑤) — 끄면 소유자만. 블록 API 도 같은 게이트다(내용을 돌려준다). */
+export async function policyBlock(ctx: SessionContext): Promise<V1Reply | null> {
   return (await exportPolicyAllows(ctx)) ? null : v1Fail(403, 'restricted_resource', POLICY_MESSAGE)
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
+export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
 /** 받지 않는 키 — 노션의 말투(`should be not present`). */
-function unexpectedKey(body: Record<string, unknown>, allowed: readonly string[]): V1Reply | null {
+export function unexpectedKey(body: Record<string, unknown>, allowed: readonly string[]): V1Reply | null {
   const extra = Object.keys(body).find((k) => !allowed.includes(k))
   return extra === undefined ? null : bodyInvalid(`body.${extra} should be not present, instead was ${shownValue(body[extra])}.`)
 }
 
 /** 동시 쓰기의 충돌 — 직렬화 실패 · 교착 · 같은 자리의 키(형제 순서) · 잠금 대기 실패. */
-function isConflict(e: unknown): boolean {
+export function isConflict(e: unknown): boolean {
   const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined
   return code === '40001' || code === '40P01' || code === '23505' || code === '55P03'
 }
@@ -106,7 +108,7 @@ function pageErrorReply(e: PageError, id: string): V1Reply {
   }
 }
 
-function trashErrorReply(e: TrashError, id: string): V1Reply {
+export function trashErrorReply(e: TrashError, id: string): V1Reply {
   switch (e.code) {
     case 'not_found':
       return notFound('page', id)
@@ -122,7 +124,7 @@ function trashErrorReply(e: TrashError, id: string): V1Reply {
 type RowLikeFailure = { readonly reason: string; readonly issues?: readonly { readonly path: string }[] }
 
 /** 행 · 연결 명령의 거부 → 노션의 답. `properties` 로 칸의 이름을 찾는다(오류 글에 싣는다). */
-function rowFailureReply(failure: RowLikeFailure, id: string, properties: readonly ApiProperty[], fallbackName?: string): V1Reply {
+export function rowFailureReply(failure: RowLikeFailure, id: string, properties: readonly ApiProperty[], fallbackName?: string): V1Reply {
   switch (failure.reason) {
     case 'not_found':
       return notFound('page', id)
@@ -282,6 +284,17 @@ async function applyRelationsIn(tx: Tx, ctx: SessionContext, rowId: string, writ
   return null
 }
 
+/** 받은 `children` — 새 페이지의 본문(API-3). 올린 파일은 이 워크스페이스의 것이어야 한다. */
+type NewBody = { readonly blocks: readonly EditorBlock[]; readonly uploads: readonly UploadRef[] }
+
+/** 새 페이지의 본문을 같은 트랜잭션에서 쓴다 — 거부면 그 답(트랜잭션째 되돌린다). */
+async function writeNewBodyIn(tx: Tx, ctx: SessionContext, pageId: string, body: NewBody): Promise<V1Reply | null> {
+  const upload = await uploadIssueIn(tx, ctx, body.uploads)
+  if (upload !== null) return bodyInvalid(upload)
+  const wrote = await writeNewPageBodyIn(tx, ctx, pageId, body.blocks)
+  return wrote === null ? null : invalid(wrote)
+}
+
 /** 페이지 밑에 — 부모를 볼 수 없으면 404, 볼 수만 있으면 403(만들 수 없다), 그다음은 `createPageIn` 의 판정. */
 async function createUnderPage(
   ctx: SessionContext,
@@ -289,6 +302,7 @@ async function createUnderPage(
   properties: unknown,
   icon: PageIcon | null | undefined,
   cover: PageCover | null | undefined,
+  body: NewBody,
 ): Promise<Step> {
   const plan = planWrites(properties, TITLE_ONLY, new Map())
   if (!plan.ok) return stepFail(plan.reply)
@@ -300,6 +314,8 @@ async function createUnderPage(
       if (!can(caps, 'create_child')) return stepFail(restricted())
       const page = await createPageIn(tx, ctx, { parentPageId: asBlockId(parentId), title })
       await applyLookIn(tx, ctx, page.id, icon, cover)
+      const wrote = await writeNewBodyIn(tx, ctx, page.id, body)
+      if (wrote !== null) return stepFail(wrote)
       return { ok: true, id: page.id }
     }),
   )
@@ -312,6 +328,7 @@ async function createRowUnder(
   properties: unknown,
   icon: PageIcon | null | undefined,
   cover: PageCover | null | undefined,
+  body: NewBody,
 ): Promise<Step> {
   return runCommand(dataSourceId, () =>
     withCommandTransaction(async (tx): Promise<Step> => {
@@ -325,6 +342,8 @@ async function createRowUnder(
       const linked = await applyRelationsIn(tx, ctx, made.value.id, plan.value, schema)
       if (linked !== null) return stepFail(linked)
       await applyLookIn(tx, ctx, made.value.id, icon, cover)
+      const wrote = await writeNewBodyIn(tx, ctx, made.value.id, body)
+      if (wrote !== null) return stepFail(wrote)
       return { ok: true, id: made.value.id }
     }),
   )
@@ -352,7 +371,10 @@ export const createApiPage: V1Handler = async ({ ctx, body, request }) => {
 
   const parent = parseParent(body.parent)
   if (!parent.ok) return parent.reply
-  if (body.children !== undefined && !(Array.isArray(body.children) && body.children.length === 0)) return invalid(CHILDREN_MESSAGE)
+  // 본문 — 블록 API 와 같은 변환 · 같은 상한(페이지 본문의 맨 위)
+  const children = body.children === undefined ? null : parseApiChildren(body.children, 'body.children', 'page', newApiBlockId)
+  if (children !== null && !children.ok) return bodyInvalid(children.message)
+  const newBody: NewBody = children === null ? { blocks: [], uploads: [] } : { blocks: children.blocks, uploads: children.uploads }
   const icon = body.icon === undefined ? undefined : parseIcon(body.icon)
   if (icon !== undefined && !icon.ok) return icon.reply
   const cover = body.cover === undefined ? undefined : parseCover(body.cover)
@@ -360,7 +382,7 @@ export const createApiPage: V1Handler = async ({ ctx, body, request }) => {
 
   let created: Step
   if (parent.value.kind === 'page_id') {
-    created = await createUnderPage(ctx, parent.value.id, body.properties, icon?.value, cover?.value)
+    created = await createUnderPage(ctx, parent.value.id, body.properties, icon?.value, cover?.value, newBody)
   } else {
     let dataSourceId = parent.value.id
     if (parent.value.kind === 'database_id') {
@@ -372,7 +394,7 @@ export const createApiPage: V1Handler = async ({ ctx, body, request }) => {
       }
       dataSourceId = sources.value[0].id
     }
-    created = await createRowUnder(ctx, dataSourceId, body.properties, icon?.value, cover?.value)
+    created = await createRowUnder(ctx, dataSourceId, body.properties, icon?.value, cover?.value, newBody)
   }
   if (!created.ok) return created.reply
   const page = await readApiPage(ctx, created.id, apiLinks(ctx, request))

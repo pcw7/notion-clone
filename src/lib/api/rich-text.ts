@@ -28,6 +28,7 @@ import {
   type Annotations,
   type RichTextRun,
 } from '../contracts/rich-text.ts'
+import { canonicalizeRuns } from '../editor/rich-text-ops.ts'
 import { parseApiId, shownValue } from './v1-protocol.ts'
 
 /** 노션의 rich text 객체(응답). */
@@ -172,7 +173,9 @@ export function parseApiRichText(raw: unknown, path: string): RichTextParse {
 
     return bad(`${at}.type should be "text", "mention" or "equation", instead was ${shownValue(item.type)}.`)
   }
-  const normalized = normalizeRichText(runs)
+  // 합친 뒤 2000자 단위로 다시 쪼갠다(`canonicalizeRuns`) — 노션은 긴 글을 2000자 조각 여럿으로 보내라고 한다. 합치기만 하면 같은
+  // 서식의 조각들이 2000자를 넘는 런 하나가 되어 아래 검사가 거부했다(API-3 이 찾았다).
+  const normalized = canonicalizeRuns(normalizeRichText(runs))
   // 마지막 방어 — 위에서 만든 런이 계약을 어기면 우리의 잘못이다(던지지 않고 거부한다)
   const issues = validateRichText(normalized, path)
   return issues.length === 0 ? { ok: true, runs: normalized } : bad(`${issues[0].path} is invalid.`)

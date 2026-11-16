@@ -11,7 +11,7 @@
  *   ★ 행 단위 권한 — 끊고 뺀 행은 404 · 다른 행의 relation 에서도 빠진다
  *   ★ 내보내기 정책을 끄면 멤버는 403 restricted_resource · 소유자는 그대로
  *   ★ property item — 제목 조각 · relation 을 쪽으로(page_size · start_cursor · has_more · next_url) · 페이지 객체의 relation 은 25 + has_more
- *   ★ POST — 페이지 밑 · 데이터 소스 · database_id(소스 하나만) · 거부(모르는 속성 · 없는 옵션 · 읽기 전용 · children · 워크스페이스 부모) ·
+ *   ★ POST — 페이지 밑 · 데이터 소스 · database_id(소스 하나만) · 거부(모르는 속성 · 없는 옵션 · 읽기 전용 · 받지 않는 children · 워크스페이스 부모) ·
  *     볼 수만 있는 사람 403 · 볼 수 없으면 404 · 쓰기의 출처는 api · 행위자는 토큰의 사람
  *   ★ PATCH — 칸 · 제목 · 아이콘 · 커버 · 휴지통 · 되살리기 · 휴지통에서 고치기 거부 · 잠긴 페이지 400 · 볼 수만 있는 사람 403
  */
@@ -461,7 +461,9 @@ describe('POST /v1/pages', () => {
     assertError(await postPage(member, { parent: { data_source_id: fx.ds }, properties: { 종류: { select: { name: '없는 옵션' } } } }), 400, 'validation_error', /is not an option/)
     assertError(await postPage(member, { parent: { data_source_id: fx.ds }, properties: { 두배: { formula: { number: 1 } } } }), 400, 'validation_error', /formula property and cannot be updated/)
     assertError(await postPage(member, { parent: { data_source_id: fx.ds }, properties: { 담당: { people: [{ id: '0d6c2a52-8b6e-4b57-9a4b-6a1f0c6f0f00' }] } } }), 400, 'validation_error', /담당/)
-    assertError(await postPage(member, { parent: { data_source_id: fx.ds }, children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [] } }] }), 400, 'validation_error', /children is not supported yet/)
+    // children(API-3) — 받지 않는 블록 · 다른 워크스페이스의 파일이면 행도 생기지 않는다(같은 트랜잭션)
+    assertError(await postPage(member, { parent: { data_source_id: fx.ds }, children: [{ type: 'link_to_page', link_to_page: { page_id: fx.targets[0] } }] }), 400, 'validation_error', /"link_to_page" is not supported/)
+    assertError(await postPage(member, { parent: { data_source_id: fx.ds }, children: [{ type: 'image', image: { file_upload: { id: '0d6c2a52-8b6e-4b57-9a4b-6a1f0c6f0f00' } } }] }), 400, 'validation_error', /uploaded to this workspace/)
     assertError(await postPage(member, { parent: { workspace: true }, properties: title('최상위') }), 400, 'validation_error', /top of the workspace/)
     assertError(await postPage(member, { parent: { data_source_id: fx.ds }, template: { type: 'none' } }), 400, 'validation_error', /body\.template should be not present/)
     assertError(await postPage(member, { parent: { data_source_id: 'nope' } }), 400, 'validation_error', /parent\.data_source_id should be a valid uuid/)
