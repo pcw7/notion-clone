@@ -2618,6 +2618,10 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 읽기도 소유자만(4y 가 이미 적어 둔 게이트) · 잠긴 페이지는 쓰기 거부.
 > 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-5 검색 · 코멘트 · 사용자 →
 > API-6 개발자 문서 · SDK 호환 검사.
+> ⑥ **[API-2] 페이지에서 노션과 다르게 둔 것** — 올린 파일의 아이콘 · 커버와 내장 커버는 `null`(짧게 사는 파일 주소를 만드는 길이 없다 — 뒤로) ·
+> files 속성은 `{name, type:'file_upload', file_upload:{id}}`(그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
+> 만든다 — 옵션 만들기는 구조 고치기 권한이라 칸 쓰기에 섞지 않는다) · 잠긴 페이지 쓰기는 400 `validation_error` · 내보내기 정책이 꺼지면 쓰기도
+> 막는다(쓰기 응답도 페이지 내용을 돌려준다) · `public_url` 은 게시를 관리할 수 있는 사람에게만 · `children` 은 API-3 부터(그 전에는 빈 배열만).
 
 **정본 상수**
 

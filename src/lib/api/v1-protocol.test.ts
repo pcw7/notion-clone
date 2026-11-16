@@ -9,13 +9,46 @@ import assert from 'node:assert/strict'
 
 import {
   API_MAX_BODY_BYTES,
+  API_MAX_PAGE_SIZE,
   API_RATE_RULE,
   NOTION_VERSION,
   apiErrorBody,
   bearerToken,
   checkNotionVersion,
+  decodeCursor,
+  encodeCursor,
+  invalidPathIdMessage,
+  parseApiId,
+  parsePageSize,
   retryAfterSeconds,
 } from './v1-protocol.ts'
+
+test('★ id — 대시가 있든 없든 받아 우리 모양(소문자 · 대시)으로 · 그 밖은 null (API-2)', () => {
+  const id = '1f2e3d4c-5b6a-4789-8abc-def012345678'
+  assert.equal(parseApiId(id), id)
+  assert.equal(parseApiId(id.replace(/-/g, '')), id)
+  assert.equal(parseApiId(id.toUpperCase()), id)
+  assert.equal(parseApiId(` ${id} `), id)
+  for (const bad of [null, undefined, 3, '', 'nope', `${id}0`, id.slice(1), '1f2e-3d4c5b6a-4789-8abc-def012345678', 'zf2e3d4c-5b6a-4789-8abc-def012345678']) {
+    assert.equal(parseApiId(bad), null, String(bad))
+  }
+  assert.equal(invalidPathIdMessage('page_id', 'nope'), 'path failed validation: path.page_id should be a valid uuid, instead was `"nope"`.')
+})
+
+test('★ 쪽 나누기 — page_size 1~100(없으면 100) · 커서는 속을 보이지 않고 되돌려진다 · 틀린 것은 null (API-2)', () => {
+  assert.equal(parsePageSize(null), API_MAX_PAGE_SIZE)
+  assert.equal(parsePageSize(''), API_MAX_PAGE_SIZE)
+  assert.equal(parsePageSize('1'), 1)
+  assert.equal(parsePageSize('100'), 100)
+  for (const bad of ['0', '101', '-1', '2.5', 'ten', '99999']) assert.equal(parsePageSize(bad), null, bad)
+  assert.equal(decodeCursor(null), 0)
+  for (const offset of [0, 1, 25, 1000]) {
+    const cursor = encodeCursor(offset)
+    assert.match(cursor, /^[A-Za-z0-9_-]+$/)
+    assert.equal(decodeCursor(cursor), offset)
+  }
+  for (const bad of ['!!', 'abc', Buffer.from('x:3').toString('base64url'), 'a'.repeat(40)]) assert.equal(decodeCursor(bad), null, bad)
+})
 
 test('★ Bearer — 방식 이름은 대소문자 무관 · 다른 방식 · 빈 값 · 토큰 안의 공백은 null', () => {
   assert.equal(bearerToken('Bearer ntn_abc'), 'ntn_abc')

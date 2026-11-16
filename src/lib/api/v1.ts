@@ -52,6 +52,9 @@ export type V1Request = {
 
 export type V1Handler = (input: V1Request) => Promise<V1Reply>
 
+/** 없는 주소 · 받지 않는 메서드 — 노션처럼 400 `invalid_request_url`(Next 의 405 · HTML 404 를 API 에 내지 않는다). */
+export const v1InvalidUrl: V1Handler = async () => v1Fail(400, 'invalid_request_url', API_MESSAGES.invalidUrl)
+
 /** Next 라우트 핸들러의 모양 — 두 번째 인자는 `{ params }`. */
 export type V1RouteHandler = (request: Request, routeContext?: { readonly params?: Promise<unknown> }) => Promise<Response>
 

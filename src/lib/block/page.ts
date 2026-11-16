@@ -683,12 +683,24 @@ export async function renamePage(
   pageId: BlockId,
   title: readonly RichTextRun[],
 ): Promise<PageDetail> {
-  const normalized = assertValidTitle(title)
-
   // 트랜잭션으로 감싼 이유는 검색 색인이다(F-07-06). 제목을 고치고 색인을 별도
   // 커넥션으로 쓰면 "제목은 바뀌었는데 검색은 옛 제목으로만 찾히는" 상태가
   // 남는다. 같은 트랜잭션이면 그 틈이 없다.
-  return withTransaction(async (tx) => {
+  return withTransaction((tx) => renamePageIn(tx, ctx, pageId, title))
+}
+
+/**
+ * 같은 일을 **주어진 트랜잭션 안에서** 한다 — 공개 API 의 쓰기(API-2 · `api/pages.ts`)가 제목 · 아이콘 · 커버를 한 트랜잭션에 묶는다
+ * (`createPageIn` 과 같은 까닭).
+ */
+export async function renamePageIn(
+  tx: Tx,
+  ctx: SessionContext,
+  pageId: BlockId,
+  title: readonly RichTextRun[],
+): Promise<PageDetail> {
+  const normalized = assertValidTitle(title)
+  {
     // 대상 행을 먼저 잠그고 권한 · 잠금을 묻는다 — 잠그는 명령(`setPageLock`)과 같은 행에 줄을 선다.
     const target = await tx.queryMaybe<{ id: string }>(
       `SELECT id FROM block
@@ -728,7 +740,7 @@ export async function renamePage(
     await recordCoalescedActivity(tx, ctx, { pageId, type: 'block.updated' })
 
     return detail
-  })
+  }
 }
 
 // ── 아이콘 ────────────────────────────────────────────────────────────
@@ -749,12 +761,17 @@ export async function renamePage(
  * 이모지여야 한다(`invalid_icon`) — 파일 참조는 이모지가 쥐므로 옮기지 않는다.
  */
 export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: PageIcon | null): Promise<PageIcon | null> {
+  return withTransaction((tx) => setPageIconIn(tx, ctx, pageId, icon))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`renamePageIn` 과 같은 까닭 — 공개 API 의 쓰기). */
+export async function setPageIconIn(tx: Tx, ctx: SessionContext, pageId: BlockId, icon: PageIcon | null): Promise<PageIcon | null> {
   const parsed = parsePageIconInput(icon)
   if (parsed === undefined) {
     throw new PageError('invalid_icon', '아이콘은 이모지 한 글자 · 올린 이미지 · http(s) 이미지 주소 · 커스텀 이모지여야 합니다.')
   }
 
-  return withTransaction(async (tx) => {
+  {
     // 대상 행을 먼저 잠그고 권한 · 잠금을 묻는다 — 잠그는 명령(`setPageLock`)과 같은 행에 줄을 선다.
     const target = await tx.queryMaybe<{ format: Record<string, unknown> | null }>(
       `SELECT format FROM block
@@ -788,7 +805,7 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
     )
     await moveIconFileReference(tx, ctx, current, parsed)
     return parsed
-  })
+  }
 }
 
 // ── 커버 ────────────────────────────────────────────────────────────
@@ -802,12 +819,17 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
  * 커버가 바뀌면 위치(PC-3)는 지운다 — 다른 그림의 위치는 뜻이 없다(새 커버는 가운데부터).
  */
 export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: PageCover | null): Promise<PageCover | null> {
+  return withTransaction((tx) => setPageCoverIn(tx, ctx, pageId, cover))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`renamePageIn` 과 같은 까닭 — 공개 API 의 쓰기). */
+export async function setPageCoverIn(tx: Tx, ctx: SessionContext, pageId: BlockId, cover: PageCover | null): Promise<PageCover | null> {
   const parsed = parsePageCoverInput(cover)
   if (parsed === undefined) {
     throw new PageError('invalid_cover', '커버는 내장 커버 · http(s) 이미지 주소 · 올린 이미지여야 합니다.')
   }
 
-  return withTransaction(async (tx) => {
+  {
     const target = await tx.queryMaybe<{ format: Record<string, unknown> | null }>(
       `SELECT format FROM block
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
@@ -837,7 +859,7 @@ export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: 
     )
     await moveFileReference(tx, ctx, coverFileId(current), coverFileId(parsed))
     return parsed
-  })
+  }
 }
 
 /**
