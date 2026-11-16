@@ -4,6 +4,7 @@
  *   invalid_code · invalid_label          400  입력이 맞지 않는다
  *   not_found                             404  그런 수단 · 등록이 없다(남의 것 · 30분이 지났다 · 꺼져 있다)
  *   password_required · too_many_methods  409  지금 상태가 허락하지 않는다(비밀번호를 먼저 · TOTP 는 둘까지)
+ *   session_required                      403  로그인 세션이 아니다(위임 · API 토큰 — 이 라우트는 쿠키만 받으므로 지키는 것은 명령이다)
  */
 
 import type { MfaFailure } from '@/lib/auth/mfa'
@@ -14,6 +15,7 @@ export const MFA_STATUS: Readonly<Record<MfaFailure, number>> = {
   not_found: 404,
   password_required: 409,
   too_many_methods: 409,
+  session_required: 403,
 }
 
 export const mfaFailure = (reason: MfaFailure): Response => Response.json({ error: reason }, { status: MFA_STATUS[reason] })

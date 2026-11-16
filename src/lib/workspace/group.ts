@@ -39,7 +39,8 @@
 
 import { randomUUID } from 'node:crypto'
 
-import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+// 그룹을 바꾸는 명령은 로그인 세션만 — 위임 · API 토큰은 사람을 다루지 않는다(API-1 ②)
+import { isLoginSession, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf } from '../permissions/acl.ts'
 import { dropGroupFromTeamspaces } from './teamspace.ts'
@@ -179,7 +180,7 @@ export async function createGroup(
   ctx: SessionContext,
   rawName: unknown,
 ): Promise<UserGroupResult<{ id: string; name: string }>> {
-  if (!canManageGroups(ctx.role)) return fail('forbidden')
+  if (!isLoginSession(ctx) || !canManageGroups(ctx.role)) return fail('forbidden')
   const name = normalizeGroupName(rawName)
   if (name === null) return fail('invalid_name')
 
@@ -198,7 +199,7 @@ export async function createGroup(
 }
 
 export async function renameGroup(ctx: SessionContext, groupId: string, rawName: unknown): Promise<UserGroupResult> {
-  if (!canManageGroups(ctx.role)) return fail('forbidden')
+  if (!isLoginSession(ctx) || !canManageGroups(ctx.role)) return fail('forbidden')
   const name = normalizeGroupName(rawName)
   if (name === null) return fail('invalid_name')
 
@@ -225,7 +226,7 @@ export async function renameGroup(ctx: SessionContext, groupId: string, rawName:
  * @returns 부여를 거둔 페이지 · 데이터베이스의 수. 볼 수 없는 페이지도 센다 — 지우는 사람은 워크스페이스 관리자다.
  */
 export async function deleteGroup(ctx: SessionContext, groupId: string): Promise<UserGroupResult<{ nodes: number }>> {
-  if (!canManageGroups(ctx.role)) return fail('forbidden')
+  if (!isLoginSession(ctx) || !canManageGroups(ctx.role)) return fail('forbidden')
 
   return withCommandTransaction(async (tx) => {
     const group = await lockGroup(tx, ctx, groupId)
@@ -251,7 +252,7 @@ export async function deleteGroup(ctx: SessionContext, groupId: string): Promise
  * 빠졌던 사람이면 그 행이 살아난다(M1).
  */
 export async function addGroupMember(ctx: SessionContext, groupId: string, userId: string): Promise<UserGroupResult> {
-  if (!canManageGroups(ctx.role)) return fail('forbidden')
+  if (!isLoginSession(ctx) || !canManageGroups(ctx.role)) return fail('forbidden')
 
   return withCommandTransaction(async (tx) => {
     const group = await lockGroup(tx, ctx, groupId)
@@ -278,7 +279,7 @@ export async function addGroupMember(ctx: SessionContext, groupId: string, userI
 
 /** 그룹에서 뺀다 — 행은 남긴다(`removed_at`). 그룹에 없는 사람이면 아무것도 바꾸지 않는다. */
 export async function removeGroupMember(ctx: SessionContext, groupId: string, userId: string): Promise<UserGroupResult> {
-  if (!canManageGroups(ctx.role)) return fail('forbidden')
+  if (!isLoginSession(ctx) || !canManageGroups(ctx.role)) return fail('forbidden')
 
   return withCommandTransaction(async (tx) => {
     const group = await lockGroup(tx, ctx, groupId)

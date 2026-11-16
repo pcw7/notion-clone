@@ -34,6 +34,9 @@ const SECURITY_CHANGE: Readonly<Record<string, string>> = {
   mfa_disabled: '2단계 인증을 껐다',
   mfa_method_removed: '2단계 인증 수단을 뺐다',
   mfa_backup_codes_regenerated: '백업 코드를 새로 만들었다',
+  // 공개 API 의 개인 토큰(API-1) — 이 워크스페이스의 범위로 쌓는다 · 이름을 함께 보인다
+  api_token_created: 'API 토큰을 만들었다',
+  api_token_revoked: 'API 토큰을 폐기했다',
 }
 
 const PRINCIPAL: Readonly<Record<string, string>> = {
@@ -71,8 +74,10 @@ export function auditDetail(row: Pick<AuditRow, 'type' | 'metadata' | 'setting'>
   switch (row.type) {
     case 'account.login':
       return `${str(m.authMethod)}${m.newAccount === true ? ' · 새 계정' : ''}`
-    case 'account.security_changed':
-      return pick(SECURITY_CHANGE, m.change) ?? str(m.change)
+    case 'account.security_changed': {
+      const label = pick(SECURITY_CHANGE, m.change) ?? str(m.change)
+      return typeof m.name === 'string' && m.name !== '' ? `${label} · ${m.name}` : label
+    }
     case 'workspace.member_invited':
       return `${str(m.email)} · ${pick(ROLE, m.role) ?? str(m.role)}${m.renewed === true ? ' · 다시 보냄' : ''}`
     case 'workspace.member_joined':

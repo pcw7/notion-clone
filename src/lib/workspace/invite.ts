@@ -15,7 +15,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
-import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { isLoginSession, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { isUuid } from '../ids.ts'
 import { queryMaybe } from '../db/pool.ts'
 import { roleMayInviteGuestsIn } from './security-policy.ts'
@@ -475,7 +475,8 @@ export type RevokeInviteResult =
  * 같다).
  */
 export async function revokeInvite(ctx: SessionContext, inviteId: string): Promise<RevokeInviteResult> {
-  if (!canInvite(ctx.role)) return { ok: false, reason: 'forbidden' }
+  // 로그인 세션만 — 위임 · API 토큰은 사람을 다루지 않는다(API-1 ②)
+  if (!isLoginSession(ctx) || !canInvite(ctx.role)) return { ok: false, reason: 'forbidden' }
   if (!isUuid(inviteId)) return { ok: false, reason: 'not_found' }
   const row = await queryMaybe<{ email: string | null }>(
     `UPDATE workspace_invite

@@ -74,6 +74,8 @@ export const SETTING_GROUPS = [
       { id: 'account.security', label: '보안' },
       // 오프라인(OF-5 · F-12-04) — 이 기기에 내려받은 것 · 자동 내려받기. 누구에게나(패널 하나로 선다 · 이 브라우저의 값이다).
       { id: 'account.offline', label: '오프라인' },
+      // API 토큰(API-1 · F-09-02) — 이 워크스페이스의 내 개인 토큰. 누구에게나 서되(목록 · 폐기) 만들기는 게스트가 아닌 사람만(패널 하나로 선다).
+      { id: 'account.api', label: 'API 토큰' },
     ],
   },
   {

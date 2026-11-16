@@ -11278,7 +11278,7 @@ async function main() {
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
       check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안 · 오프라인) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · 요금제 · 감사 로그)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'account.api', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -11458,7 +11458,7 @@ async function main() {
       const adminGeneral = await htmlAs(GENERAL, admin.token)
       check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
         JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
-          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'workspace.general', 'workspace.people', 'workspace.emoji', 'workspace.plan']),
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'account.api', 'workspace.general', 'workspace.people', 'workspace.emoji', 'workspace.plan']),
         JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
 
       const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
@@ -37102,6 +37102,107 @@ async function main() {
         if (!(await evaluate('location.origin').catch(() => '')).startsWith(BASE)) await send('Page.navigate', { url: `${BASE}/offline` }).catch(() => undefined)
         await cleanup().catch(() => undefined)
         await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' }).catch(() => undefined)
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('API 토큰 (API-1 · F-09-02)')) { try {
+      // 설정 → 내 계정 → API 토큰(정본 §3.1 [보강 API-1] ① ~ ④). 새 멤버가 화면에서 토큰을 만들면 값이 한 번 보이고, 그 값으로
+      // `GET /v1/users/me`(Bearer + Notion-Version)가 그 사람의 person 객체를 준다. 같은 요청을 세션 쿠키만으로 보내면 401(쿠키를 보지
+      // 않는다 · CSRF). 닫거나 다시 열면 값은 어디에도 없다. 화면에서 폐기하면 같은 토큰이 곧바로 401. 게스트에게는 만들기가 없다(서버도
+      // 403). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`API 토큰의 사람 ${stamp}`), 'member')
+      const guest = await joinAs(workspaceId, await createUser(`API 토큰의 손님 ${stamp}`), 'guest')
+      const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.api`
+      const VERSION = '2025-09-03'
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const rows = () => evaluate(`document.querySelectorAll('[data-testid="api-token-row"]').length`)
+      const me = async (headers, path = '/v1/users/me') => {
+        const res = await fetch(`${BASE}${path}`, { headers })
+        return { status: res.status, body: await res.json().catch(() => null), requestId: res.headers.get('x-request-id'), cache: res.headers.get('cache-control') }
+      }
+      const tokenName = `e2e 스크립트 ${stamp}`
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: SETTINGS })
+        await waitFor(`!!document.querySelector('[data-testid="api-token-panel"]')`, 15000)
+        check('설정 → 내 계정 → API 토큰 — 아직 토큰이 없다고 말하고 만들기 칸이 선다',
+          (await has('[data-testid="api-token-empty"]')) && (await has('[data-testid="api-token-create"]')),
+          String(await textOf('[data-testid="api-token-panel"]')))
+
+        // 하이드레이션 전에 친 글자는 상태에 닿지 않는다 — 만들기 버튼이 살아날 때까지 다시 친다
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector('[data-testid="api-token-name"]')
+          await evaluate(`(() => { const el = document.querySelector('[data-testid="api-token-name"]'); el?.focus(); el?.select() })()`)
+          await typeText(tokenName)
+          if (await waitFor(`document.querySelector('[data-testid="api-token-create"]')?.disabled === false`, 1500)) break
+        }
+        await clickSelector('[data-testid="api-token-create"]')
+        await waitFor(`!!document.querySelector('[data-testid="api-token-value"]')`, 10000)
+        const token = String(await textOf('[data-testid="api-token-value"]') ?? '')
+        const createdText = String(await textOf('[data-testid="api-token-created"]') ?? '')
+        check('★ 만들면 값을 한 번 보인다 — ntn_ + 46자 · "다시 볼 수 없습니다" · 목록에 이름과 끝 4자',
+          /^ntn_[0-9A-Za-z]{46}$/.test(token) && createdText.includes('다시 볼 수 없습니다') && (await rows()) === 1
+            && String(await textOf('[data-testid="api-token-row-name"]')) === tokenName
+            && String(await textOf('[data-testid="api-token-row-mask"]')) === `ntn_…${token.slice(-4)}`,
+          JSON.stringify({ token: token.slice(0, 8), createdText }))
+
+        const ok = await me({ authorization: `Bearer ${token}`, 'notion-version': VERSION })
+        check('★ GET /v1/users/me — Bearer + Notion-Version 이면 200 · 그 사람의 person 객체 · no-store · request id',
+          ok.status === 200 && ok.body?.object === 'user' && ok.body?.type === 'person' && ok.body?.id === mate.userId
+            && ok.body?.name === `API 토큰의 사람 ${stamp}` && ok.body?.person?.email === mate.email && ok.cache === 'no-store'
+            && /^[0-9a-f-]{36}$/.test(String(ok.requestId)),
+          JSON.stringify(ok))
+        const cookieOnly = await me({ cookie: `nc_session=${mate.token}`, 'notion-version': VERSION })
+        check('★ 같은 요청을 세션 쿠키만으로 보내면 401 unauthorized — /v1 은 쿠키를 보지 않는다(노션의 오류 모양)',
+          cookieOnly.status === 401 && cookieOnly.body?.object === 'error' && cookieOnly.body?.code === 'unauthorized'
+            && cookieOnly.body?.request_id === cookieOnly.requestId,
+          JSON.stringify(cookieOnly))
+        const noVersion = await me({ authorization: `Bearer ${token}` })
+        const unknownUrl = await me({ authorization: `Bearer ${token}`, 'notion-version': VERSION }, '/v1/pages/nope')
+        check('Notion-Version 이 없으면 400 missing_version · 아직 없는 주소는 400 invalid_request_url(HTML 404 가 아니다)',
+          noVersion.status === 400 && noVersion.body?.code === 'missing_version' && unknownUrl.status === 400 && unknownUrl.body?.code === 'invalid_request_url',
+          JSON.stringify([noVersion, unknownUrl]))
+
+        await clickSelector('[data-testid="api-token-dismiss"]')
+        await waitFor(`!document.querySelector('[data-testid="api-token-value"]')`, 5000)
+        await send('Page.navigate', { url: SETTINGS })
+        await waitFor(`document.querySelectorAll('[data-testid="api-token-row"]').length === 1`, 15000)
+        const html = String(await evaluate('document.documentElement.outerHTML'))
+        check('★ 닫거나 다시 열면 값은 어디에도 없다 — 목록은 끝 4자만 · 마지막 사용이 적혔다',
+          !html.includes(token.slice(4)) && !(await has('[data-testid="api-token-value"]'))
+            && !String(await textOf('[data-testid="api-token-row-used"]')).includes('쓴 적 없음'),
+          String(await textOf('[data-testid="api-token-row-used"]')))
+
+        // 폐기 — 화면 안에서 묻고(window.confirm 이 아니다) 곧바로 듣는다
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector('[data-testid="api-token-revoke"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="api-token-revoke-confirm"]')`, 1500)) break
+        }
+        await clickSelector('[data-testid="api-token-revoke-confirm"]')
+        await waitFor(`(document.querySelector('[data-testid="api-token-notice"]')?.textContent ?? '').includes('폐기했습니다')`, 10000)
+        const revoked = await me({ authorization: `Bearer ${token}`, 'notion-version': VERSION })
+        check('★ 화면에서 폐기하면 목록에서 빠지고 같은 토큰은 곧바로 401',
+          (await rows()) === 0 && (await has('[data-testid="api-token-empty"]')) && revoked.status === 401 && revoked.body?.code === 'unauthorized',
+          JSON.stringify(revoked))
+
+        // 게스트 — 만들기가 없다 · 서버도 거부한다
+        await browseAs(guest.token)
+        await send('Page.navigate', { url: SETTINGS })
+        await waitFor(`!!document.querySelector('[data-testid="api-token-panel"]')`, 15000)
+        const guestPost = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+          method: 'POST', headers: { ...json, cookie: `nc_session=${guest.token}` }, body: JSON.stringify({ name: '손님의 토큰' }),
+        })
+        const guestBody = await guestPost.json().catch(() => null)
+        check('★ 게스트에게는 만들기 버튼이 없고 "만들 수 없습니다"라고 말한다 — 서버도 403 forbidden',
+          !(await has('[data-testid="api-token-create"]')) && (await has('[data-testid="api-token-guest-note"]'))
+            && guestPost.status === 403 && guestBody?.error === 'forbidden',
+          JSON.stringify({ status: guestPost.status, guestBody }))
+      } finally {
         await browseAs(session)
       }
     } catch (thrown) { await sectionThrew(thrown) } }

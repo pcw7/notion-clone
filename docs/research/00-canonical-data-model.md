@@ -2592,6 +2592,33 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 | `parent_type='data_source'` | `{"type":"data_source_id", ...}` |
 | `parent_type='teamspace'` 또는 `'workspace'` | `{"type":"workspace","workspace":true}` |
 
+**[보강 API-1] 공개 API — 개인 토큰 · 노션 API 호환** ⟨53번 트랙 · 09 F-09-01 · F-09-02 · F-09-05 · F-09-16 · F-09-17 · 2026-11-16 사용자 결정 /
+마이그레이션 0145~⟩
+
+> 2026-10-22 에 보류했던 것을 2026-11-16 에 풀었다 — 사용자가 **개인 토큰**과 **노션 API 호환**을 골랐다(통합 봇은 하지 않는다).
+>
+> ① **개인 토큰** — 사람이 설정 → 내 계정 → "API 토큰" 에서 만든다. **한 워크스페이스에 묶이고 만든 사람의 권한 그대로** 움직인다(볼 수 있는 것만
+> 보고 고칠 수 있는 것만 고친다). 멤버 이상만 만든다(게스트는 아니다). 저장은 해시만 — `api_token`(id · user_id · workspace_id · name · token_hash ·
+> last4 · created_at · last_used_at · expires_at NULL · revoked_at NULL) · 값은 만들 때 한 번만 보인다(`ntn_` 로 시작) · 사람마다 워크스페이스마다
+> 살아 있는 것 20개 · 폐기는 곧바로 듣는다. 만료는 고른다(7 · 30 · 90 · 180일 · 1년(기본) · 없음). 게스트로 내려간 사람 · 지워졌거나 멈춘 사람의 토큰은
+> 듣지 않는다 · **SSO 를 강제한 워크스페이스에서는 소유자의 토큰만** 듣는다(토큰은 SSO 를 거치지 않는다 — 세션의 SSO 예외와 같은 사람). 만들기 ·
+> 폐기는 감사 로그(`account.security_changed` — 값 대신 토큰 id · 이름).
+> ② **발급자는 그대로 둘이다**(CLAUDE.md 권한 규칙) — `resolveSessionContext` 가 세션 쿠키 대신 토큰도 받는다(같은 0단계 게이트 `can_enter_workspace` ·
+> 비활성 멤버 · 지운 워크스페이스 · 지운 계정은 그대로 거부). 그 컨텍스트에는 토큰에서 왔다는 표시가 붙고 **세션에 매인 명령**(비밀번호 · 2단계 인증 ·
+> 계정 삭제 · 세션 · 토큰 관리 · 멤버 · 요금제)은 거부한다 — 위임 컨텍스트(`ctx.delegation`)와 같은 자리다.
+> ③ **모양은 노션 API `2025-09-03`**(데이터 소스 판 — 위 투영 규칙과 같다). 주소는 앱 출처의 `/v1/...` · `Authorization: Bearer <토큰>` · `Notion-Version`
+> 헤더는 받아 확인한다(없으면 400 `missing_version`). 오류는 노션 모양 `{object:'error', status, code, message, request_id}` · 코드는 노션 것
+> (`unauthorized` · `restricted_resource` · `object_not_found` · `rate_limited` · `validation_error` · `invalid_request` · `conflict_error` ·
+> `internal_server_error`). **볼 수 없는 것은 404 `object_not_found`**(있는지 새지 않는다 — 앱의 404 와 같다). 우리에게 없는 기능(동기 블록 · 파일
+> 올리기 API 등)은 400 `validation_error` 로 "지원하지 않는다" 를 말한다.
+> ④ **제한** — 토큰마다 평균 초당 3번(노션과 같다 · 짧은 몰림은 받는다) · 넘으면 429 `rate_limited` + `Retry-After`. 요청 본문 500KB · 한 번에 블록
+> 1000개 · 목록은 `page_size` 100 · `start_cursor` / `next_cursor` / `has_more`(노션의 상한 그대로).
+> ⑤ **쓰기 · 읽기의 규칙은 앱과 같다** — 쓰기는 출처 `api`(`doc_update.origin` · 활동의 행위자는 그 사람 · 데이터베이스 자동화는 사람의 편집처럼 깨운다) ·
+> 본문 쓰기는 서버 명령의 본문 세션(경로 ②) · 행을 읽는 길은 `rowsAccessIn` / `restrictedRowsSql`(행 단위 권한) · 내보내기 정책(`allow_export`)을 끄면
+> 읽기도 소유자만(4y 가 이미 적어 둔 게이트) · 잠긴 페이지는 쓰기 거부.
+> 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-5 검색 · 코멘트 · 사용자 →
+> API-6 개발자 문서 · SDK 호환 검사.
+
 **정본 상수**
 
 | 상수 | 값 | 근거 |

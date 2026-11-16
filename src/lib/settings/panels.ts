@@ -39,6 +39,8 @@ export const SETTING_PANELS = [
   { id: 'accessibility', section: 'account.preferences', visible: () => true },
   // 이 기기에 내려받은 것 · 자동 내려받기(OF-5) — 누구나. 목록 · 스위치는 이 브라우저의 IndexedDB 다 · 자동 내려받기의 요금제는 패널이 말한다.
   { id: 'offline', section: 'account.offline', visible: () => true },
+  // 내 API 토큰(API-1) — 누구나 본다(목록 · 폐기). 만들기 버튼은 게스트에게 서지 않는다(`canCreateApiToken` — 명령이 다시 판정한다).
+  { id: 'api-tokens', section: 'account.api', visible: () => true },
   { id: 'members', section: 'workspace.people', visible: (ctx: SessionContext) => canListMembers(ctx.role) },
   { id: 'invites', section: 'workspace.people', visible: (ctx: SessionContext) => canInvite(ctx.role) },
   { id: 'guests', section: 'workspace.people', visible: (ctx: SessionContext) => canManageGuests(ctx.role) },

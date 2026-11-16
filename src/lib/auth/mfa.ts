@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from './session-context.ts'
 import { recordAuditIn } from '../audit/audit.ts'
-import { hashSessionToken } from './session-context.ts'
+import { hashSessionToken, isLoginSession } from './session-context.ts'
 import { queryMaybe } from '../db/pool.ts'
 import { withCommandTransaction, withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { sealTotpSecret, unsealTotpSecret } from './mfa-seal.ts'
@@ -70,6 +70,8 @@ export type MfaFailure =
   | 'invalid_code'
   /** 이름이 비었거나 길다. */
   | 'invalid_label'
+  /** 로그인 세션이 아니다 — 위임 · API 토큰의 컨텍스트(세션에 매인 명령 · API-1 ②). */
+  | 'session_required'
 
 export type MfaResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: MfaFailure }
 
@@ -180,6 +182,7 @@ export async function startTotpEnrollment(
   ctx: SessionContext,
   input: { readonly label?: unknown },
 ): Promise<MfaResult<{ readonly methodId: string; readonly secret: string; readonly uri: string }>> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   const label = normalizeLabel(input.label)
   if (label === null) return fail('invalid_label')
   return withCommandTransaction(async (tx) => {
@@ -218,6 +221,7 @@ export async function confirmTotpEnrollment(
   methodId: string,
   code: unknown,
 ): Promise<MfaResult<{ readonly backupCodes: readonly string[] | null }>> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   return withCommandTransaction(async (tx) => {
     await lockUser(tx, ctx.userId)
     const pending = await tx.queryMaybe<{ totp_secret: Buffer }>(
@@ -249,6 +253,7 @@ export async function removeMfaMethod(
   methodId: string,
   code: unknown,
 ): Promise<MfaResult<{ readonly disabled: boolean }>> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   return withCommandTransaction(async (tx) => {
     await lockUser(tx, ctx.userId)
     const methods = await confirmedMethods(tx, ctx.userId)
@@ -268,6 +273,7 @@ export async function removeMfaMethod(
  * 이미 둘째 단계를 지났다). 만들 때와 같은 다듬기지만 빈 이름은 기본값으로 메우지 않는다(`invalid_label`). 확정된 자기 수단만 · 기록을 남기지 않는다.
  */
 export async function renameMfaMethod(ctx: SessionContext, methodId: string, raw: unknown): Promise<MfaResult<{ readonly label: string }>> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   if (typeof raw !== 'string' || raw.trim() === '') return fail('invalid_label')
   const label = normalizeLabel(raw)
   if (label === null) return fail('invalid_label')
@@ -284,6 +290,7 @@ export async function renameMfaMethod(ctx: SessionContext, methodId: string, raw
 
 /** 백업 코드를 새로 받는다 — 지금 코드로. 옛 묶음은 지운다. */
 export async function regenerateBackupCodes(ctx: SessionContext, code: unknown): Promise<MfaResult<{ readonly backupCodes: readonly string[] }>> {
+  if (!isLoginSession(ctx)) return fail('session_required')
   return withCommandTransaction(async (tx) => {
     await lockUser(tx, ctx.userId)
     if ((await confirmedMethods(tx, ctx.userId)).length === 0) return fail('not_found')

@@ -140,14 +140,15 @@ describe('④ 거부는 아무것도 쓰지 않는다', () => {
 })
 
 describe('⑤ 패널', () => {
-  test('★ 그 기능의 판정 그대로 — 비밀번호 · 접근성(10d-2 — 이 기기의 값) · 오프라인(OF-5 — 이 기기의 사본)은 누구나 · 소유자 아홉(삭제 — AD-1 · 감사 로그 — 6d-2 · 이모지 — 7c-2b · 사이트 — 6c-2) · 멤버 관리자 다섯(내보내기 · 감사 로그 없음) · 멤버 셋(목록 · 그룹 · 이모지) · 나가기는 게스트 아닌 멤버(10o-3) · 게스트는 비밀번호뿐', async (t) => {
+  test('★ 그 기능의 판정 그대로 — 비밀번호 · 접근성(10d-2 — 이 기기의 값) · 오프라인(OF-5 — 이 기기의 사본) · API 토큰(API-1 — 만들기는 패널이 가린다)은 누구나 · 소유자 아홉(삭제 — AD-1 · 감사 로그 — 6d-2 · 이모지 — 7c-2b · 사이트 — 6c-2) · 멤버 관리자 다섯(내보내기 · 감사 로그 없음) · 멤버 셋(목록 · 그룹 · 이모지) · 나가기는 게스트 아닌 멤버(10o-3) · 게스트는 비밀번호뿐', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const admin = await joinAs(fx.workspaceId, await createUser('설정의 멤버 관리자'), 'membership_admin')
     const ids = (who: Actor) => visiblePanels(who.ctx).map((panel) => panel.id)
-    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'account-delete', 'accessibility', 'offline', 'members', 'invites', 'guests', 'groups', 'export', 'leave', 'delete', 'plan', 'emoji', 'site', 'audit'])
-    assert.deepEqual(ids(admin), ['password', 'mfa', 'account-delete', 'accessibility', 'offline', 'members', 'invites', 'guests', 'groups', 'leave', 'plan', 'emoji'])
-    assert.deepEqual(ids(member), ['password', 'mfa', 'account-delete', 'accessibility', 'offline', 'members', 'groups', 'leave', 'emoji'])
-    assert.deepEqual(ids(guest), ['password', 'mfa', 'account-delete', 'accessibility', 'offline'])
+    const mine = ['password', 'mfa', 'account-delete', 'accessibility', 'offline', 'api-tokens']
+    assert.deepEqual(ids(fx.owner), [...mine, 'members', 'invites', 'guests', 'groups', 'export', 'leave', 'delete', 'plan', 'emoji', 'site', 'audit'])
+    assert.deepEqual(ids(admin), [...mine, 'members', 'invites', 'guests', 'groups', 'leave', 'plan', 'emoji'])
+    assert.deepEqual(ids(member), [...mine, 'members', 'groups', 'leave', 'emoji'])
+    assert.deepEqual(ids(guest), mine)
   })
 })
 

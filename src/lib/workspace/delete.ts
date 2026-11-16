@@ -8,12 +8,12 @@
  *   · 되살리기는 운영자 명령(`npm run workspace:restore`)의 몸이다 — HTTP 로 열지 않는다.
  */
 
-import type { SessionContext } from '../auth/session-context.ts'
+import { isLoginSession, loginSessionIdOf, type SessionContext } from '../auth/session-context.ts'
 import { recordAuditIn } from '../audit/audit.ts'
 import { withCommandTransaction, withTransaction, type Tx } from '../db/tx.ts'
 
 export type DeleteWorkspaceFailure =
-  /** owner 가 아니다(위임 컨텍스트도). */
+  /** owner 가 아니다(위임 · API 토큰 컨텍스트도). */
   | 'forbidden'
   /** 확인으로 친 이름이 워크스페이스 이름과 다르다. */
   | 'name_mismatch'
@@ -22,9 +22,9 @@ export type DeleteWorkspaceFailure =
 
 export type DeleteWorkspaceResult = { readonly ok: true } | { readonly ok: false; readonly reason: DeleteWorkspaceFailure }
 
-/** 지울 수 있는 역할인가 — owner 만(위임 컨텍스트 아님). 설정의 위험 구역이 설지 정한다. 판정은 `deleteWorkspace` 가 다시 한다. */
+/** 지울 수 있는 역할인가 — owner 만(위임 · API 토큰 컨텍스트 아님). 설정의 위험 구역이 설지 정한다. 판정은 `deleteWorkspace` 가 다시 한다. */
 export function canDeleteWorkspace(ctx: SessionContext): boolean {
-  return ctx.role === 'owner' && ctx.delegation === undefined
+  return ctx.role === 'owner' && isLoginSession(ctx)
 }
 
 export async function deleteWorkspace(ctx: SessionContext, input: { readonly confirmName: unknown }): Promise<DeleteWorkspaceResult> {
@@ -42,7 +42,7 @@ export async function deleteWorkspace(ctx: SessionContext, input: { readonly con
     if (row === null) return { ok: false, reason: 'not_found' }
     if (row.role !== 'owner' || row.status !== 'active') return { ok: false, reason: 'forbidden' }
     if (typeof input.confirmName !== 'string' || input.confirmName !== row.name) return { ok: false, reason: 'name_mismatch' }
-    await markWorkspaceDeletedIn(tx, { workspaceId: ctx.workspaceId, userId: ctx.userId, sessionId: ctx.delegation === undefined ? ctx.sessionId : null }, row.name)
+    await markWorkspaceDeletedIn(tx, { workspaceId: ctx.workspaceId, userId: ctx.userId, sessionId: loginSessionIdOf(ctx) }, row.name)
     return { ok: true }
   })
 }
