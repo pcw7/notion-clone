@@ -28,6 +28,9 @@ test('★ ② 값 — 참거짓 · 무제한 · 일 · 명', () => {
   assert.equal(formatEntitlement('history.days', 7), '7일')
   assert.equal(formatEntitlement('guests.max', 10), '10명')
   assert.equal(formatEntitlement('import.max_bytes', 5242880), '5 MB')
+  // AI 한도(AI-1) — 횟수 · 해당 없는 0 은 줄표
+  assert.equal(formatEntitlement('ai.monthly_responses', 1000), '1,000회')
+  assert.equal(formatEntitlement('ai.trial_responses', 0), '—')
   assert.equal(formatEntitlement('charts.max', 1), '1')
   assert.equal(formatEntitlement('ai.credits', { monthly: 100 }), '{"monthly":100}')
 })

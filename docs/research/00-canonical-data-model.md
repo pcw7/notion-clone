@@ -6924,6 +6924,11 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >   model, input_tokens, output_tokens, page_id NULL, created_at, finished_at)`(status CHECK 넷 · feature 는 닫힌 목록 — 한 행이 사용량 화면 ·
 >   감사(F-10-25)의 원장) · `ai_grant(id, workspace_id, responses > 0, reason, granted_at, expires_at NULL)` · `ai_daily_usage(day PK,
 >   responses ≥ 0)`. CHECK 마다 verify-schema 의 거부 프로브.
+>   **AI-1 구현에서 `ai_usage` 에 두 열을 더했다**(2026-11-17 · 0146): `quota`(plan · trial · grant — 어느 몫에서 셌는가) · `grant_id NULL`
+>   (보충에서 셌을 때만 · `(quota = 'grant') = (grant_id IS NOT NULL)` · 같은 워크스페이스의 보충만 — 복합 FK). 까닭: 창 · 월은 요금제 몫에서
+>   센 것만, 체험은 체험에서 센 것만, 보충은 그 보충에서 센 것만 세야 몫마다의 쓴 양 · 보충마다의 남은 수 · 만료를 행에서 바로 셀 수 있다
+>   (이것 없이는 원장을 처음부터 다시 돌려야 어느 응답이 어느 몫이었는지 안다). 해당 없는 요금제의 한도는 0 이다(Free · Plus 의 창 · 월 ·
+>   Business · Enterprise 의 체험) — 창은 월 몫을 조이는 것이라 월이 0 이면 쓰이지 않는다. 게스트는 AI 를 쓰지 않는다(그 사람 판정).
 > ⑧ **조각(54번 트랙)** — AI-1 기반(연결부 · 게이트 · 스위치 · 사용량 화면 · 운영자 명령 · 가짜 공급자) → AI-2 빈 줄에서 묻기(F-10-01 · F-10-09
 > 스트리밍 · 멈추기) → AI-3 선택한 글 고치기(F-10-02) → AI-4 페이지 번역(F-10-03) → AI-5 AI 블록(F-10-04) → AI-6 AI 채팅 · 개인 지시
 > (F-10-17 · F-10-22) → AI-7 모델 고르기 · 사용량 분석(F-10-26 · F-10-25).

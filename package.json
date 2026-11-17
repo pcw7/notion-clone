@@ -30,6 +30,7 @@
     "db:verify:schema": "node scripts/verify-schema.mjs",
     "workspace:restore": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/workspace-restore.mjs",
     "plan:set": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/set-plan.mjs",
+    "ai:grant": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/ai-grant.mjs",
     "test": "node --test \"src/**/*.test.ts\"",
     "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs",
     "e2e:affected": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-affected.mjs",

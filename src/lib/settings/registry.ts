@@ -89,6 +89,8 @@ export const SETTING_GROUPS = [
       { id: 'workspace.emoji', label: '이모지' },
       // 사이트 주소(6c-2 · F-13-08) — 소유자에게만(패널 하나로 선다).
       { id: 'workspace.sites', label: '사이트' },
+      // AI(AI-1 · F-10-12) — 스위치(소유자만 바꾼다) · 쓴 양 · 공급자. 게스트가 아닌 사람에게(패널 하나로 선다).
+      { id: 'workspace.ai', label: 'AI' },
       // 요금제(8k-3) — 지금 요금제 · 한도와 쓴 양 · 비교. 소유자 · 멤버 관리자에게만(패널 하나로 선다).
       { id: 'workspace.plan', label: '요금제' },
       // 감사 로그(6d-2 · F-11-12) — 소유자에게만(패널 하나로 선다 · 요금제는 패널이 말한다).

@@ -14,6 +14,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { canSeeAiSettings } from '../ai/usage.ts'
 import { canReadAudit } from '../audit/audit.ts'
 import { canSeePlan } from '../billing/overview.ts'
 import { canSeeEmojiLibrary } from '../emoji/custom-emoji.ts'
@@ -56,6 +57,8 @@ export const SETTING_PANELS = [
   { id: 'emoji', section: 'workspace.emoji', visible: (ctx: SessionContext) => canSeeEmojiLibrary(ctx.role) },
   // 사이트 주소(6c-2) — 소유자. 판정 · 쓰기는 `publish/site.ts` 의 `setSiteDomain` 이 다시 한다.
   { id: 'site', section: 'workspace.sites', visible: (ctx: SessionContext) => canManageSiteDomain(ctx) },
+  // AI(AI-1) — 게스트가 아닌 사람. 스위치는 소유자만(패널이 가리고 `setAiEnabled` 가 다시 판정한다).
+  { id: 'ai', section: 'workspace.ai', visible: (ctx: SessionContext) => canSeeAiSettings(ctx) },
   // 감사 로그(6d-2) — 소유자. 요금제(Enterprise)가 아니면 패널이 그렇다고 말한다. 판정은 `listWorkspaceAudit` 가 다시 한다.
   { id: 'audit', section: 'workspace.audit', visible: (ctx: SessionContext) => canReadAudit(ctx) },
 ] as const satisfies readonly {
