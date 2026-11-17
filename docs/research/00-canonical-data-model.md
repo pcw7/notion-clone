@@ -6896,6 +6896,38 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > 굴리면 캐럿으로 끌려 돌아온다. 넓은 화면 · 마우스에서는 하지 않는다(창 크기 · 확대를 키보드로 오해하지 않는다)
 > ⓒ 키보드 위의 서식 줄(노션 모바일의 키보드 상단 툴바)은 두지 않는다 — 글자를 고르면 서는 서식 툴바가 있다
 
+> **[보강 AI-1] AI 1차 — 공급자 · 비용 게이트 · 스위치** (2026-11-17 사용자와 정했다 · 10 F-10-12 · F-10-09 · F-10-26 · F-10-25 · 절대 제약 1 · 2)
+>
+> ① **공급자는 OpenAI 호환 Chat Completions 하나** — 서버 환경 `AI_BASE_URL` · `AI_API_KEY` · `AI_MODEL` 세 줄로 정한다. 기본은 **Groq 의
+> 무료 등급**, OpenRouter · Gemini(둘 다 OpenAI 호환 주소)는 설정만 바꿔 쓴다. **외부 AI 는 무료 등급만 · 카드를 등록하지 않는다**(CLAUDE.md
+> 절대 제약 1 의 예외 — 돈이 나갈 길이 없다). 공급자 SDK 를 의존성으로 두지 않는다(`fetch` + SSE). 키가 없으면 AI 는 꺼진 것과 같다
+> (`ai_unavailable` — 화면은 "운영자가 AI 를 설정하지 않았습니다"). 시험 · CI 는 진짜 공급자를 부르지 않는다(같은 모양의 가짜 서버).
+> ② **세는 단위는 "응답" 하나**(공급자 호출 하나 — 스트리밍 포함) — 노션의 응답 기반 한도와 같고, 무료 등급도 요청 수가 먼저 걸린다. 토큰은
+> 기록만 한다(F-10-25). 한 응답의 출력 상한 `AI_MAX_OUTPUT_TOKENS` · 보내는 글의 상한 `AI_MAX_INPUT_CHARS`.
+> ③ **한도는 노션처럼 — 요금제 권리(`entitlement`)의 데이터** — `ai.trial_responses`(워크스페이스 평생 · Free · Plus 20) ·
+> `ai.monthly_responses`(UTC 달력 달 · Business 1,000 · Enterprise 3,000 · Free · Plus 0) · `ai.window_responses`(지난 6시간 · Business 100 ·
+> Enterprise 300). 다 쓰면 **운영자 보충**(`ai_grant` — 응답 수 · 만료 · 까닭 · `npm run ai:grant` — 노션의 크레딧 자리 · 결제 없음)을 쓴다.
+> 그 위에 **앱 전체의 하루 상한** `AI_DAILY_CAP`(UTC 날 · 공급자 무료 한도보다 낮게 · 기본 900) — 모든 워크스페이스가 한 무료 한도를 나눠
+> 쓰므로 공급자가 먼저 거부하기 전에 우리가 멈춘다.
+> ④ **게이트(F-10-12 · 절대 제약 2)는 호출 전에 · 한 트랜잭션에서 예약한다** — 스위치 → 그 기능의 권한(그 사람이 볼 수 있는 것만) → 앱 전체
+> 하루 → 6시간 창 → 월 → 체험 → 보충 차례로 보고 모자라면 거부한다(`ai_limit_reached` + 어느 한도 · 언제 풀리는지). 통과하면 `ai_usage` 행을
+> `reserved` 로 넣는 것이 곧 셈이다(워크스페이스의 AI 행과 그날의 전체 카운터 행을 잠가 동시 요청이 같은 잔량을 두 번 쓰지 못한다). 끝나면
+> `completed`(토큰 기록) · 공급자가 실패하면 `failed`(셈에서 빠진다 — 응답을 받지 못했다) · 사람이 멈추면 `stopped`(셈에 든다). 끝나지 않은
+> `reserved` 도 센다(닫힌 쪽으로 실패한다). 한도는 응답 단위로 예약하므로 스트림 중에 한도를 넘지 않는다 — 출력 상한에 닿으면 스트림을
+> 끊고 부분 응답을 남긴다. **자동 충전 · 초과 과금 · 나중 청구는 없다.**
+> ⑤ **스위치는 기본 끔** — `workspace_ai_setting.enabled`(소유자만 켜고 끈다 · 감사 기록). 켤 때 "페이지의 글이 외부 AI 서비스(이름)로 보내지고,
+> 무료 등급은 그 서비스의 정책을 따른다" 를 보인다. 꺼져 있으면 AI 입구는 "워크스페이스 소유자가 AI 를 켜야 합니다" 를 보인다.
+> ⑥ **보내는 범위** — 그 기능이 필요한 것만(선택한 글 · 그 페이지의 원문 — 제안 마크 밖 · 그 사람이 볼 수 있는 것만 — `SessionContext` +
+> `can`). AI 가 쓴 글은 사람이 받아들일 때 그 사람의 편집으로 본문에 든다(편집기 · 출처 `editor`) — AI 가 서버에서 본문을 직접 쓰는 길(번역 ·
+> AI 블록 새로 고침)이 생길 때 `doc_update.origin` 에 `ai` 를 더한다.
+> ⑦ **표** — `workspace_ai_setting(workspace_id PK, enabled, changed_by, changed_at)` · `ai_usage(id, workspace_id, user_id, feature, status,
+>   model, input_tokens, output_tokens, page_id NULL, created_at, finished_at)`(status CHECK 넷 · feature 는 닫힌 목록 — 한 행이 사용량 화면 ·
+>   감사(F-10-25)의 원장) · `ai_grant(id, workspace_id, responses > 0, reason, granted_at, expires_at NULL)` · `ai_daily_usage(day PK,
+>   responses ≥ 0)`. CHECK 마다 verify-schema 의 거부 프로브.
+> ⑧ **조각(54번 트랙)** — AI-1 기반(연결부 · 게이트 · 스위치 · 사용량 화면 · 운영자 명령 · 가짜 공급자) → AI-2 빈 줄에서 묻기(F-10-01 · F-10-09
+> 스트리밍 · 멈추기) → AI-3 선택한 글 고치기(F-10-02) → AI-4 페이지 번역(F-10-03) → AI-5 AI 블록(F-10-04) → AI-6 AI 채팅 · 개인 지시
+> (F-10-17 · F-10-22) → AI-7 모델 고르기 · 사용량 분석(F-10-26 · F-10-25).
+
 ### 3.11 알고리즘 정본
 
 **유효 권한 `effective()`**

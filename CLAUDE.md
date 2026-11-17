@@ -42,6 +42,9 @@
   - **MinIO 사용 금지.** AGPLv3인 데다 2026-04-25 리포지토리 아카이브(개발 중단). 자체 호스팅이 필요하면 SeaweedFS(Apache-2.0), 기본은 Cloudflare R2.
   - **Tiptap Cloud 사용 안 함.** 에디터 라이브러리는 MIT라 문제없다. 협업 서버는 Hocuspocus(MIT) 자체 호스팅.
   - **Tiptap Tracked Changes(유료) 사용 안 함.** 제안 편집은 판결 U-2대로 Y.Doc 안의 자체 mark 3종으로 구현한다.
+  - **AI 공급자 — 외부 서비스의 무료 등급만 쓴다(2026-11-17 사용자와 정한 예외).** 카드를 등록하지 않아 돈이 나갈 길이 없고, OpenAI 호환
+    연결부 하나로 갈아 끼울 수 있게 만든다(기본 Groq · OpenRouter · Gemini 는 설정만 바꿔). 유료 등급 · 선불 충전은 여전히 금지 —
+    정본 §3.10 [보강 AI-1].
   - **컨테이너 런타임은 WSL2 Ubuntu 안의 Docker Engine (`docker.io`, Apache-2.0).** Docker Desktop은 개인·교육·비영리 OSS·소규모 사업자(250명 미만 AND 연매출 $10M 미만)만 무료인 **조건부** 무료다. Rancher Desktop(Apache-2.0)을 먼저 시도했으나 이 환경에서 Windows↔WSL 브리지가 깨져 포기했다(아래 "알려진 문제"). Ubuntu 안에 직접 설치하면 그 브리지 자체를 안 거친다.
 
 ### 2. LLM 토큰은 하드 캡 — 초과 시 자동 결제 없이 차단한다
