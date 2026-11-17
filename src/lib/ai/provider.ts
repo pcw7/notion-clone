@@ -85,7 +85,7 @@ export type ChatStreamEvent =
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>
 
-/** 공급자에 보내는 본문 — 모델 · 메시지 · 스트리밍 · 출력 상한(· 사용량을 달라는 요청). */
+/** 공급자에 보내는 본문 — 모델 · 메시지 · 스트리밍 · 출력 상한(· 사용량을 달라는 요청 · 설정했으면 추론의 세기). */
 export function chatRequestBody(config: AiConfig, messages: readonly ChatMessage[]): Record<string, unknown> {
   return {
     model: config.model,
@@ -93,6 +93,8 @@ export function chatRequestBody(config: AiConfig, messages: readonly ChatMessage
     stream: true,
     max_tokens: config.maxOutputTokens,
     ...(config.streamUsage ? { stream_options: { include_usage: true } } : {}),
+    // 받지 않는 공급자가 있다 — 설정했을 때만 싣는다(AI-2 · `AI_REASONING_EFFORT`)
+    ...(config.reasoningEffort === null ? {} : { reasoning_effort: config.reasoningEffort }),
   }
 }
 

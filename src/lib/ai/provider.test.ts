@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 
 import { FAKE_AI_KEY, FAKE_AI_MODEL, FAKE_AI_SECRET_BODY, fakeAnswer, startFakeAiProvider, type FakeAiProvider } from '../testing/fake-ai-provider.ts'
 import type { AiConfig } from './config.ts'
-import { AiProviderError, openChatStream, parseProviderDuration, retryAfterSeconds, type ChatStreamEvent } from './provider.ts'
+import { AiProviderError, chatRequestBody, openChatStream, parseProviderDuration, retryAfterSeconds, type ChatStreamEvent } from './provider.ts'
 
 let fake: FakeAiProvider
 let config: AiConfig
@@ -23,7 +23,7 @@ before(async () => {
   process.env.AI_BASE_URL = fake.baseUrl
   process.env.AI_API_KEY = FAKE_AI_KEY
   process.env.AI_MODEL = FAKE_AI_MODEL
-  config = { baseUrl: fake.baseUrl, apiKey: FAKE_AI_KEY, model: FAKE_AI_MODEL, maxOutputTokens: 64, maxInputChars: 1000, dailyCap: 10, timeoutMs: 10_000, streamUsage: true }
+  config = { baseUrl: fake.baseUrl, apiKey: FAKE_AI_KEY, model: FAKE_AI_MODEL, maxOutputTokens: 64, maxInputChars: 1000, dailyCap: 10, timeoutMs: 10_000, streamUsage: true, reasoningEffort: null }
 })
 
 after(async () => {
@@ -60,6 +60,14 @@ test('★ ① 스트리밍 — 조각이 차례대로 · 사용량 · 끝난 까
     { model: req.body.model, stream: req.body.stream, max_tokens: req.body.max_tokens, stream_options: req.body.stream_options },
     { model: FAKE_AI_MODEL, stream: true, max_tokens: 64, stream_options: { include_usage: true } },
   )
+  assert.equal('reasoning_effort' in req.body, false, '설정하지 않으면 reasoning_effort 를 싣지 않는다')
+})
+
+test('★ 추론의 세기(AI-2 · AI_REASONING_EFFORT) — 설정하면 reasoning_effort 를 싣고 · 없으면 싣지 않는다', async () => {
+  assert.equal('reasoning_effort' in chatRequestBody(config, user('x')), false)
+  assert.equal(chatRequestBody({ ...config, reasoningEffort: 'low' }, user('x')).reasoning_effort, 'low')
+  await collect(await openChatStream({ ...config, reasoningEffort: 'low' }, user('짧게'), new AbortController().signal))
+  assert.equal(fake.requests.at(-1)!.body.reasoning_effort, 'low', '공급자가 받은 본문에 실렸다')
 })
 
 test('★ ② 실패 — 429 · 500 · 틀린 키 · 도중의 오류 · 공급자의 말이 실리지 않는다', async () => {

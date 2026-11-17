@@ -50,7 +50,7 @@ type SlashCommandBase = {
   readonly label: string
   /** 검색 대상. 한글·영문을 함께 둔다. */
   readonly aliases: readonly string[]
-  readonly group: '기본 블록' | '페이지' | '미디어' | '고급 블록' | '색'
+  readonly group: '기본 블록' | '페이지' | '미디어' | '고급 블록' | '색' | 'AI'
 }
 
 /** 블록 타입 변환. 트랜잭션 하나로 끝난다. */
@@ -113,6 +113,12 @@ export type TableSlashCommand = SlashCommandBase & { readonly kind: 'table'; rea
  */
 export type ColorSlashCommand = SlashCommandBase & { readonly kind: 'color'; readonly id: `color:${Color}`; readonly color: Color }
 
+/**
+ * AI 에게 묻기(AI-2 · F-10-01 — 노션의 `/ai`) — 블록 타입이 아니다. `/쿼리` 를 지우고 그 줄에 입력창을 연다(호출자). AI 가 꺼졌거나 쓸 수
+ * 없어도 늘 목록에 있다 — 열면 까닭을 말한다.
+ */
+export type AiSlashCommand = SlashCommandBase & { readonly kind: 'ai'; readonly id: 'ai' }
+
 export type SlashCommand =
   | BlockSlashCommand
   | PageSlashCommand
@@ -122,6 +128,7 @@ export type SlashCommand =
   | ColumnsSlashCommand
   | TableSlashCommand
   | ColorSlashCommand
+  | AiSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -226,6 +233,11 @@ const COLOR_COMMANDS: readonly ColorSlashCommand[] = COLORS.map((color) => ({
   kind: 'color', id: `color:${color}`, color, label: colorLabel(color), aliases: colorAliases(color), group: '색',
 }))
 
+/** AI 에게 묻기(AI-2) — 고급 블록 뒤 · 색 앞(첫 항목 · Enter 의 기본값을 바꾸지 않고 색은 맨 끝 그대로). "ai" · "ask" · "묻기" 로 찾는다. */
+const AI_COMMAND: AiSlashCommand = {
+  kind: 'ai', id: 'ai', label: 'AI 에게 묻기', aliases: ['ai', 'ask', 'ask ai', '묻기', '에이아이', '인공지능'], group: 'AI',
+}
+
 const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
@@ -248,6 +260,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
   TABLE_COMMAND,
   ...COLUMN_COMMANDS,
+  AI_COMMAND,
   ...COLOR_COMMANDS,
 ]
 

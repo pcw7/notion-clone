@@ -72,6 +72,8 @@ import { VerificationBadge } from './verification-badge'
 import { toVerificationCell } from '@/lib/database/verification-cell'
 import { SCREEN_TITLES, contentTitle } from '@/lib/nav/screen-title'
 import { DocumentTitle } from '../document-title'
+import { readAiConfig } from '@/lib/ai/config'
+import { aiEntryFor } from '@/lib/ai/usage'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -127,7 +129,7 @@ export async function PageContentBase({
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage, subscription, offlineAllowed] = await Promise.all([
+  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage, subscription, offlineAllowed, aiEntry] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -148,6 +150,8 @@ export async function PageContentBase({
     readSubscription(ctx, page.id),
     // 오프라인 내려받기(OF-2) — 내보내기 정책을 따른다(끄면 소유자만). 스위치를 세울지만 정한다 — 라우트가 다시 묻는다
     mayDownloadOffline(ctx),
+    // AI 에게 묻기의 입구(AI-2) — 빈 줄의 안내 · 스페이스 · `/ai` 의 까닭
+    aiEntryFor(ctx, readAiConfig()),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -515,6 +519,8 @@ export async function PageContentBase({
         // 하위 페이지 참조 · 멘션의 아이콘(8c-2) — 둘 다 권한으로 거른 맵에서 왔다(볼 수 있고 아이콘이 있는 것만).
         initialPageIcons={{ ...pageRefs.icons, ...mentionLabels.pageIcons }}
         breadcrumb={trail}
+        // AI 에게 묻기의 입구(AI-2) — 스위치 · 공급자 · 게스트. 판정은 부를 때 게이트가 다시 한다
+        ai={aiEntry}
       />
       {/* 하위 페이지는 본문의 페이지 블록으로만 보인다 — 노션과 같다(만들기는 `/페이지` · 사이드바의 +). 본문 아래의 따로 쓰는 목록은
           본문에 페이지 블록을 넣을 수 없던 MVP 때의 것이었다 · 하위 페이지를 만들면 서버가 부모 본문에 참조를 넣는다 */}

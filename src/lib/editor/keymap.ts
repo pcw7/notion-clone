@@ -36,6 +36,7 @@ import type { Command, EditorState, Transaction } from '@tiptap/pm/state'
 
 import type { BlockType } from '../block/types.ts'
 import type { Color } from '../contracts/rich-text.ts'
+import { aiSpaceCommand } from './ai-trigger.ts'
 import { openBlockMenuCommand } from './block-menu.ts'
 import { moveBlocksCommand } from './block-move.ts'
 import {
@@ -105,6 +106,11 @@ export type EditorKeymapDeps = CommandDeps & {
   openInlineEquation?: (ref: InlineEquationRef) => void
   /** 마지막으로 쓴 색(Phase 2 1e-1) — 없으면 이 브라우저의 기억(`last-color.ts`). 검사가 바꿔 끼운다. */
   lastColor?: () => Color | null
+  /**
+   * 빈 문단의 스페이스 — AI 에게 묻기의 입력창을 연다(AI-2 · F-10-01). 열었으면 true(키를 먹는다) · 열 수 없으면 false(스페이스는 글자다).
+   * 없으면 바인딩이 없다.
+   */
+  openAi?: (blockId: string) => boolean
   /**
    * 되돌리기 · 다시 하기. 없으면 ProseMirror history(Phase 0 편집기). 협업 편집기는 y-prosemirror 의 것을 넘긴다 — 내 편집만
    * 되돌린다(F-05-15 · `collab/collab-editor.ts`).
@@ -202,6 +208,11 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
 
   if (deps.openBlockMenu) {
     bindings['Mod-/'] = openBlockMenuCommand(deps.openBlockMenu)
+  }
+
+  // AI 에게 묻기(AI-2) — 빈 문단의 스페이스. 열지 않으면 키를 넘긴다(글자가 들어간다).
+  if (deps.openAi) {
+    bindings.Space = aiSpaceCommand(deps.openAi)
   }
 
   // 인라인 수식(Phase 2 1b · F-01-20 ②③) — 고른 글자를 수식으로, 고른 것이 없으면 빈 수식을 넣고 입력창.

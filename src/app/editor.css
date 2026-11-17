@@ -1376,6 +1376,18 @@ span.blk-equation {
   pointer-events: none;
 }
 
+/*
+ * 빈 줄의 "스페이스로 AI" 안내(AI-2 · F-10-01) — AI 를 쓸 수 있을 때만 캐럿이 있는 빈 문단에 `data-ai-hint` 가 선다(`ai-trigger.ts`). 편집기에
+ * 포커스가 있을 때만 · 글자가 아니다(캐럿을 밀지 않는다 · 화면 읽기 프로그램에는 빈 대체 글자 — 위 코드 자리 표시와 같은 까닭).
+ */
+.blk-editor[contenteditable='true']:focus p[data-ai-hint]::before {
+  content: "AI 에게 물으려면 스페이스, 명령어는 '/'";
+  content: "AI 에게 물으려면 스페이스, 명령어는 '/'" / '';
+  position: absolute;
+  color: #9ca3af;
+  pointer-events: none;
+}
+
 .blk-editor .blk-code-caption {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
@@ -1845,6 +1857,7 @@ span.blk-equation {
     .blk-editor .blk-code-bar button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.055); color: #e5e5e5; }
     .blk-editor .blk-code-caption { color: #a3a3a3; }
     .blk-editor[contenteditable='true'] .blk-code-block[data-empty='true'] pre.blk-code::before { color: #6b7280; }
+    .blk-editor[contenteditable='true']:focus p[data-ai-hint]::before { color: #6b7280; }
     .blk-editor a.blk-toc-link { text-decoration-color: rgba(255, 255, 255, 0.3); }
     .blk-editor a.blk-toc-link:hover { background: rgba(255, 255, 255, 0.055); }
     .blk-editor a.blk-toc-link[aria-current='location'] { color: rgb(82, 156, 202); background: rgba(82, 156, 202, 0.12); }

@@ -17,11 +17,16 @@
  *   event: done    data: {"status":"completed","truncated":bool,"usage":{"inputTokens","outputTokens"}|null,"remaining":n|null,"quota":{…}}
  *   event: error   data: {"error":"ai_provider_failed","reason":"rate_limited|provider_error|timeout|network"}   도중의 실패(셈에서 빠진다)
  *
+ * 묻기(`ask` · AI-2)는 게이트를 지난 뒤 그 페이지의 원문을 읽어 서버가 프롬프트를 짓는다(`ask-context.ts` · `ask-prompt.ts`) — 읽을 수 없는
+ * 페이지면 404 `not_found`(예약은 `failed`).
+ *
  * 출력 상한(`AI_MAX_OUTPUT_TOKENS` — 공급자의 `max_tokens` · 글자 안전망 `maxOutputChars`)에 닿으면 스트림을 끊고 받은 데까지를 남긴다
  * (`truncated: true` · `completed`). 사람이 멈추면(연결을 닫는다 — `request.signal` · 스트림 취소) 공급자 연결도 닫고 `stopped`(셈에 든다).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { readAskPage } from './ask-context.ts'
+import { buildAskMessages, type AskPage } from './ask-prompt.ts'
 import { maxOutputChars, readAiConfig, type AiConfig } from './config.ts'
 import { AiProviderError, openChatStream, type ChatStreamEvent } from './provider.ts'
 import { aiFailureStatus, aiProviderFailureError, aiProviderFailureStatus, parseAiCompleteBody } from './request.ts'
@@ -90,9 +95,29 @@ export async function aiCompleteResponse(
     }
   }
 
+  // 묻기(AI-2) — 프롬프트는 서버가 짓는다: 그 페이지의 원문(볼 수 있는 것만 · 제안 마크 밖)을 읽어 넣을 자리 둘레를 싣는다. 게이트 뒤에
+  // 읽는다(스위치 · 사람 · 권한이 먼저) — 읽지 못하면 그 예약은 셈에서 뺀다(받은 답이 없다)
+  let messages = parsed.value.messages
+  const ask = parsed.value.ask
+  if (ask !== null) {
+    let page: AskPage | null = null
+    try {
+      page = parsed.value.pageId === null ? null : await readAskPage(ctx, parsed.value.pageId)
+    } catch (e) {
+      await finish('failed', null)
+      throw e
+    }
+    if (parsed.value.pageId !== null && page === null) {
+      await finish('failed', null)
+      return Response.json({ ok: false, error: 'not_found' }, { status: aiFailureStatus('not_found') })
+    }
+    const built = buildAskMessages({ question: ask.question, history: ask.history, anchorBlockId: ask.blockId, page }, config.maxInputChars)
+    if (built.ok) messages = built.messages
+  }
+
   let events: AsyncGenerator<ChatStreamEvent, void, undefined>
   try {
-    events = await openChatStream(config, parsed.value.messages, stop.signal, options.fetchImpl)
+    events = await openChatStream(config, messages, stop.signal, options.fetchImpl)
   } catch (e) {
     const failure = failureOf(e)
     await finish(failure.reason === 'aborted' ? 'stopped' : 'failed', null)

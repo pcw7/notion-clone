@@ -84,7 +84,9 @@ import { BlockGutter } from './block-gutter'
 import { TableControls } from './table-controls'
 import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
 import type { DatabaseListItem } from '@/lib/database/database'
+import type { AiEntry } from '@/lib/ai/usage'
 import {
+  AiAskBarLazy,
   ButtonBlockSettingsLazy,
   CodeCaptionEditorLazy,
   CodeLanguageMenuLazy,
@@ -437,6 +439,8 @@ function pageRefIds(view: EditorView): string[] {
 }
 
 /** 상단 바의 접속자 줄 자리(AW-1 · `page-content.tsx` 의 `page-presence-slot`) — 서버에서는 없다. */
+/** AI 입구를 받지 않은 화면(검사 · 미리보기) — 안내 · 스페이스 없음 · `/ai` 는 "운영자가 설정하지 않았다". */
+const AI_OFF: AiEntry = { state: 'unavailable', canManage: false }
 const noSubscription = (): (() => void) => () => {}
 const findPresenceSlot = (): HTMLElement | null => document.getElementById('page-presence-slot')
 const noPresenceSlot = (): HTMLElement | null => null
@@ -453,6 +457,7 @@ export function BodyEditor({
   initialMentionLabels,
   initialPageIcons,
   breadcrumb,
+  ai = AI_OFF,
 }: {
   workspaceId: string
   pageId: string
@@ -474,6 +479,8 @@ export function BodyEditor({
   initialPageIcons: Readonly<Record<string, PageIcon>>
   /** 이 페이지의 경로 — 머리의 breadcrumb 과 같은 줄(`block/breadcrumb.ts`). breadcrumb 블록이 그린다(8b-2). */
   breadcrumb: BreadcrumbTrail
+  /** AI 에게 묻기의 입구(AI-2) — 서버가 그릴 때의 상태(`aiEntryFor`). `ready` 면 빈 줄의 안내 · 스페이스, 아니면 `/ai` 가 까닭을 말한다. */
+  ai?: AiEntry
 }) {
   const router = useRouter()
   const mountRef = useRef<HTMLDivElement | null>(null)
@@ -640,6 +647,37 @@ export function BodyEditor({
     if (!view || (suggestingAuthor(view.state) !== null) === suggesting) return
     view.dispatch(setSuggestionMode(view.state.tr, suggesting ? userId : null))
   }, [suggesting, userId])
+
+  // ── AI 에게 묻기(AI-2 · F-10-01) ─────────────────────────────────────
+  // 입력창은 지연 로드다(`AiAskBarLazy`). 고칠 수 있고 제안 모드가 아닐 때만 연다 — 답은 받아들일 때 그 사람의 편집으로 든다(정본 ⑥).
+  const [aiUi, setAiUi] = useState<{ readonly blockId: string; readonly key: number; readonly view: EditorView; readonly frame: HTMLElement } | null>(null)
+  const aiUiRef = useRef(aiUi)
+  aiUiRef.current = aiUi
+  const aiRef = useRef(ai)
+  aiRef.current = ai
+  // 고칠 수 없게 되면(잠금 · 권한 · 제안 모드) 입력창을 그리지 않는다 — 내려가며 흐르던 응답을 멈춘다
+  const aiOpen = aiUi !== null && editable && !suggesting
+  /** 빈 줄의 안내 — AI 를 쓸 수 있고 · 고칠 수 있고 · 제안 모드가 아니고 · 입력창이 닫혀 있을 때. */
+  const aiHintRef = useRef(false)
+  aiHintRef.current = ai.state === 'ready' && editable && !suggesting && aiUi === null
+  useEffect(() => {
+    // 안내는 데코레이션이다 — 조건이 바뀌면 다시 그리게 한다(빈 트랜잭션)
+    const view = viewRef.current
+    if (view && !view.isDestroyed) view.dispatch(view.state.tr)
+  }, [ai.state, editable, suggesting, aiUi])
+  /** 입력창을 그 줄에 연다 — 스페이스는 `ready` 일 때만(아니면 글자) · `/ai` 는 늘(까닭을 말한다). */
+  const openAi = useCallback((blockId: string, from: 'space' | 'slash'): boolean => {
+    const view = viewRef.current
+    const frame = frameRef.current
+    if (!view || !frame || !editableRef.current || suggestingRef.current) return false
+    if (from === 'space' && aiRef.current.state !== 'ready') return false
+    setAiUi((prev) => ({ blockId, key: (prev?.key ?? 0) + 1, view, frame }))
+    return true
+  }, [])
+  const closeAi = useCallback(() => {
+    setAiUi(null)
+    viewRef.current?.focus()
+  }, [])
 
   // 제안의 카드 · 목록(SG-3) — 마크에 마우스를 올리거나 캐럿이 제안 안에 들어오면 카드 · 메뉴의 "제안 n개" 가 목록을 연다. 둘 다 지연
   // 로드다(`suggestion-card.tsx` · `suggestion-panel.tsx`). 여기는 무엇을 어디에 띄울지와 본문의 제안 수만 쥔다.
@@ -1489,6 +1527,14 @@ export function BodyEditor({
         view.focus()
         return
       }
+      // AI 에게 묻기(AI-2) — `/쿼리` 를 지우고 그 줄에 입력창(꺼져 있어도 연다 — 까닭을 말한다)
+      if (command.kind === 'ai') {
+        const menuState = slashMenuState(view.state)
+        const at = containerAt(view.state.selection.$from)
+        if (menuState.active) view.dispatch(closeSlashMenu(view.state.tr.delete(menuState.from, view.state.selection.head)))
+        if (at !== null) openAi(at.id, 'slash')
+        return
+      }
 
       // `/수식` 은 지금 블록을 수식으로 바꾼다(블록 id 그대로) — 바꾼 뒤 그 입력창을 연다(F-01-20 — 만들면 곧바로 식을 쓴다).
       // `/버튼` 도 같다 — 바꾼 뒤 설정 창을 연다(08 — 액션 없는 빈 버튼이 남지 않게 · 정본 ⑰).
@@ -1500,7 +1546,7 @@ export function BodyEditor({
       if (ran && target !== null && command.id === EQUATION_TYPE) openEquationUi(target)
       if (ran && target !== null && command.id === BUTTON_TYPE) setButtonUi({ blockId: target, label: '' })
     },
-    [createRef, openEquationUi, openLinkPicker],
+    [createRef, openEquationUi, openLinkPicker, openAi],
   )
 
   // ── 코드 블록의 오버레이 (8a-2) ─────────────────────────────────────
@@ -1721,6 +1767,9 @@ export function BodyEditor({
       openInlineEquation: (ref) => openInlineEquationUi(ref),
       // 링크(Ctrl/Cmd+K · 1e-2) — 서식 툴바의 링크 입력칸을 연다. 고른 글자가 없으면 툴바가 없어 아무 일도 없다.
       promptLink: () => setLinkRequest((n) => n + 1),
+      // AI 에게 묻기(AI-2) — 빈 문단의 스페이스 · 빈 줄의 안내
+      openAi: (id) => openAi(id, 'space'),
+      aiHint: () => aiHintRef.current,
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
@@ -1752,6 +1801,8 @@ export function BodyEditor({
       setEquationUi(null)
       // 제안 카드도 옛 편집기의 것이다 — 접는다(목록은 새 편집기로 다시 그린다)
       setSuggestionCard(null)
+      // AI 입력창도 옛 편집기에 매였다 — 접는다(흐르던 응답은 내려가며 멈춘다 · AI-2)
+      setAiUi(null)
       lastDocRef.current = null
       // 하이라이트 플러그인은 **이 Y.Doc** 으로 앵커를 푼다 — 연결이 문서를 버리고 다시 열면 여기서 새 문서로 다시 붙는다.
       const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps, [
@@ -2164,6 +2215,20 @@ export function BodyEditor({
               insertInlineEquationCommand(openInlineEquationUi)(view.state, view.dispatch.bind(view))
               view.focus()
             }}
+          />
+        )}
+
+        {/* AI 에게 묻기(AI-2) — 그 줄 아래 · 프레임 좌표 · 지연 로드. 답은 여기에만 흐른다(문서 밖) */}
+        {aiOpen && aiUi !== null && !aiUi.view.isDestroyed && (
+          <AiAskBarLazy
+            key={aiUi.key}
+            view={aiUi.view}
+            frame={aiUi.frame}
+            workspaceId={workspaceId}
+            pageId={pageId}
+            blockId={aiUi.blockId}
+            entry={ai}
+            onClose={closeAi}
           />
         )}
 

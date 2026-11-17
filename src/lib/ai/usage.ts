@@ -116,6 +116,21 @@ export async function aiQuotaViewFor(workspaceId: string, now: Date = new Date()
   )
 }
 
+/**
+ * 편집기의 AI 입구(AI-2) — 빈 줄의 안내 · 스페이스는 `ready` 일 때만, `/ai` 는 늘 열리고 다른 상태면 까닭을 말한다. 화면 표시용이다 — 판정은
+ * 부를 때 게이트(`reserveAiResponse`)가 다시 한다.
+ */
+export type AiEntryState = 'ready' | 'disabled' | 'unavailable' | 'forbidden'
+export type AiEntry = { readonly state: AiEntryState; readonly canManage: boolean }
+
+export async function aiEntryFor(ctx: SessionContext, config: AiConfig | null): Promise<AiEntry> {
+  const canManage = canManageAi(ctx)
+  if (config === null) return { state: 'unavailable', canManage }
+  if (!canUseAi(ctx)) return { state: 'forbidden', canManage }
+  const enabled = await withReadTransaction((tx) => aiEnabledIn(tx, ctx.workspaceId))
+  return { state: enabled ? 'ready' : 'disabled', canManage }
+}
+
 export type AiSettingsSummary = {
   readonly enabled: boolean
   /** 스위치를 바꿀 수 있는가(소유자). */
