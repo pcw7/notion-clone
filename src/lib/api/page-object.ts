@@ -25,6 +25,7 @@ import { compileLiveFormulas, evaluateRowFormulas } from '../database/formula-sc
 import { readOptionsOf } from '../database/options.ts'
 import { emptyValue, hasOptionRegistry, readRelationConfig, validateCellValue, type CellValue, type SelectOption } from '../database/property-types.ts'
 import { computeRollupsIn } from '../database/rollup.ts'
+import type { RollupPage } from '../database/rollup-functions.ts'
 import { restrictedRowsSql, rowsAccessForDataSource } from '../database/row-access.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
@@ -87,36 +88,50 @@ type PageDbRow = {
   properties_cache: Record<string, unknown> | null
 }
 
-/** 투영 규칙의 부모 — 페이지 밑 · 일반 블록 밑(토글 · 열) · 데이터 소스(데이터베이스 id 를 함께) · 최상위(워크스페이스 · teamspace). */
-function parentOf(row: PageDbRow): Record<string, unknown> {
-  if (row.parent_type === 'data_source') {
-    return { type: 'data_source_id', data_source_id: row.parent_id, database_id: row.database_id }
+/**
+ * 투영 규칙의 부모 — 페이지 밑 · 일반 블록 밑(토글 · 열) · 데이터 소스(데이터베이스 id 를 함께) · 최상위(워크스페이스 · teamspace).
+ * 데이터베이스의 부모(API-4)도 같은 규칙이다.
+ */
+export function apiParentOf(
+  parentType: string,
+  parentId: string,
+  parentBlockType: string | null,
+  databaseId: string | null = null,
+): Record<string, unknown> {
+  if (parentType === 'data_source') {
+    return { type: 'data_source_id', data_source_id: parentId, database_id: databaseId }
   }
-  if (row.parent_type === 'block') {
-    return row.parent_block_type === 'page' ? { type: 'page_id', page_id: row.parent_id } : { type: 'block_id', block_id: row.parent_id }
+  if (parentType === 'block') {
+    return parentBlockType === 'page' ? { type: 'page_id', page_id: parentId } : { type: 'block_id', block_id: parentId }
   }
   return { type: 'workspace', workspace: true }
 }
 
-/** 페이지 하나 — 볼 수 있는 것만(아니면 null). 휴지통의 페이지도 준다(`in_trash`) · 영구 삭제한 것과 템플릿 행은 없다. */
-export async function loadPageIn(tx: Tx, ctx: SessionContext, pageId: string): Promise<LoadedPage | null> {
-  const row = await tx.queryMaybe<PageDbRow>(
-    `SELECT b.id, b.lifecycle::text AS lifecycle, b.parent_type::text AS parent_type, b.parent_id, pb.type::text AS parent_block_type,
+const PAGE_SELECT = `SELECT b.id, b.lifecycle::text AS lifecycle, b.parent_type::text AS parent_type, b.parent_id, pb.type::text AS parent_block_type,
             b.properties, b.format, b.created_at, b.created_by, b.last_edited_at, b.last_edited_by,
             p.data_source_id, ds.owner_database_id AS database_id, p.is_template, p.unique_seq, ds.unique_id_prefix, p.properties_cache
        FROM block b
        LEFT JOIN page p ON p.id = b.id
        LEFT JOIN data_source ds ON ds.id = p.data_source_id
-       LEFT JOIN block pb ON b.parent_type = 'block' AND pb.id = b.parent_id
+       LEFT JOIN block pb ON b.parent_type = 'block' AND pb.id = b.parent_id`
+
+/** 페이지 하나 — 볼 수 있는 것만(아니면 null). 휴지통의 페이지도 준다(`in_trash`) · 영구 삭제한 것과 템플릿 행은 없다. */
+export async function loadPageIn(tx: Tx, ctx: SessionContext, pageId: string): Promise<LoadedPage | null> {
+  const row = await tx.queryMaybe<PageDbRow>(
+    `${PAGE_SELECT}
       WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'page' AND b.lifecycle IN ('live', 'trashed')`,
     [pageId, ctx.workspaceId],
   )
   if (row === null || row.is_template === true) return null
   if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
+  return toLoadedPage(row)
+}
+
+function toLoadedPage(row: PageDbRow): LoadedPage {
   return {
     id: row.id,
     trashed: row.lifecycle === 'trashed',
-    parent: parentOf(row),
+    parent: apiParentOf(row.parent_type, row.parent_id, row.parent_block_type, row.database_id),
     title: readTitle(row.properties),
     icon: pageIconOfFormat(row.format),
     cover: pageCoverOfFormat(row.format),
@@ -185,6 +200,32 @@ export async function visibleRelationIn(
   return { ids: rows.slice(0, limit).map((r) => r.id), hasMore: rows.length > limit }
 }
 
+/**
+ * 한 소스의 행들이 함께 쓰는 재료 — 스키마 · 옵션 · rollup(행들을 한 번에 · 이 사람의 권한으로). 질의의 결과(API-4)는 한 번 모아 행마다 쓴다.
+ */
+export type RowShared = {
+  readonly dataSourceId: string
+  readonly schema: readonly ApiProperty[]
+  readonly options: ReadonlyMap<string, readonly SelectOption[]>
+  readonly rollups: RollupPage | null
+}
+
+export async function rowSharedIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  schema: readonly ApiProperty[],
+  rowIds: readonly string[],
+): Promise<RowShared> {
+  const options = await readApiOptions(tx, schema)
+  let rollups: RollupPage | null = null
+  if (schema.some((p) => p.type === 'rollup') && rowIds.length > 0) {
+    const computed = await computeRollupsIn(tx, ctx, dataSourceId, rowIds)
+    if (computed.ok) rollups = computed.value
+  }
+  return { dataSourceId, schema, options, rollups }
+}
+
 /** 한 행의 값의 재료 — 이 사람의 권한으로(머리말). */
 async function rowValuesIn(
   tx: Tx,
@@ -194,16 +235,24 @@ async function rowValuesIn(
   properties: readonly ApiProperty[],
   now: Date,
 ): Promise<RowValues> {
-  const options = await readApiOptions(tx, properties)
+  return rowValuesFrom(tx, ctx, page, row, await rowSharedIn(tx, ctx, row.dataSourceId, properties, [page.id]), now)
+}
+
+async function rowValuesFrom(
+  tx: Tx,
+  ctx: SessionContext,
+  page: LoadedPage,
+  row: NonNullable<LoadedPage['row']>,
+  shared: RowShared,
+  now: Date,
+): Promise<RowValues> {
+  const { schema: properties, options } = shared
   const relations = new Map<string, { ids: string[]; hasMore: boolean }>()
   for (const p of properties) {
     if (p.type === 'relation') relations.set(p.id, await visibleRelationIn(tx, ctx, page.id, p, 0, PAGE_RELATION_LIMIT))
   }
-  let rollups: RowValues['rollups'] = null
-  if (properties.some((p) => p.type === 'rollup')) {
-    const computed = await computeRollupsIn(tx, ctx, row.dataSourceId, [page.id])
-    if (computed.ok) rollups = { columns: computed.value.columns, cells: computed.value.values[page.id] ?? {} }
-  }
+  const rollups: RowValues['rollups'] =
+    shared.rollups === null ? null : { columns: shared.rollups.columns, cells: shared.rollups.values[page.id] ?? {} }
   let formulas: RowValues['formulas'] = {}
   if (properties.some((p) => p.type === 'formula')) {
     const typeOf = new Map(properties.map((p) => [p.id, p.type]))
@@ -228,7 +277,7 @@ async function rowValuesIn(
 }
 
 /** 아이콘 — 이모지 · 외부 주소 · 커스텀 이모지(이름과 함께). 올린 파일은 줄 주소가 없어 null(머리말). */
-async function iconToApi(tx: Tx, ctx: SessionContext, icon: PageIcon | null): Promise<unknown> {
+export async function iconToApi(tx: Tx, ctx: SessionContext, icon: PageIcon | null): Promise<unknown> {
   if (icon === null) return null
   switch (icon.type) {
     case 'emoji':
@@ -248,19 +297,33 @@ async function iconToApi(tx: Tx, ctx: SessionContext, icon: PageIcon | null): Pr
 }
 
 /** 커버 — 외부 주소만 노션의 모양이 있다. 내장 커버(그라디언트 · 단색)와 올린 파일은 null(머리말). */
-function coverToApi(cover: PageCover | null): unknown {
+export function coverToApi(cover: PageCover | null): unknown {
   return cover?.type === 'external' ? { type: 'external', external: { url: cover.url } } : null
 }
 
-/** 노션의 페이지 객체(`public_url` 은 부르는 쪽이 채운다). */
-export async function pageObjectIn(tx: Tx, ctx: SessionContext, page: LoadedPage, links: ApiLinks, now: Date): Promise<Record<string, unknown>> {
+/**
+ * 노션의 페이지 객체(`public_url` 은 부르는 쪽이 채운다). `shared` 를 주면 그 소스의 행은 그것을 쓴다(질의의 결과 — 한 번 모은 재료) ·
+ * `only` 를 주면 그 속성들(우리 id)만 싣는다(질의의 `filter_properties`).
+ */
+export async function pageObjectIn(
+  tx: Tx,
+  ctx: SessionContext,
+  page: LoadedPage,
+  links: ApiLinks,
+  now: Date,
+  shared?: RowShared,
+  only?: ReadonlySet<string> | null,
+): Promise<Record<string, unknown>> {
   let properties: Record<string, unknown>
   if (page.row === null) {
     properties = pageTitleToApi(page.title, links)
   } else {
-    const schema = await readApiProperties(tx, page.row.dataSourceId)
-    const values = await rowValuesIn(tx, ctx, page, page.row, schema, now)
-    properties = Object.fromEntries(schema.map((p) => [p.name, propertyValueToApi(p, values, links)]))
+    const batch = shared !== undefined && shared.dataSourceId === page.row.dataSourceId
+      ? shared
+      : await rowSharedIn(tx, ctx, page.row.dataSourceId, await readApiProperties(tx, page.row.dataSourceId), [page.id])
+    const values = await rowValuesFrom(tx, ctx, page, page.row, batch, now)
+    const shown = only === undefined || only === null ? batch.schema : batch.schema.filter((p) => only.has(p.id))
+    properties = Object.fromEntries(shown.map((p) => [p.name, propertyValueToApi(p, values, links)]))
   }
   return {
     object: 'page',
@@ -279,8 +342,8 @@ export async function pageObjectIn(tx: Tx, ctx: SessionContext, page: LoadedPage
   }
 }
 
-/** 게시 주소 — 이 페이지 자신의 게시가 켜져 열려 있고(정책 · 운영자 조치 · 만료) 토큰을 받을 수 있는 사람(관리자)에게만. */
-async function publicUrlOf(ctx: SessionContext, pageId: string, links: ApiLinks, now: Date): Promise<string | null> {
+/** 게시 주소 — 이 페이지 자신의 게시가 켜져 열려 있고(정책 · 운영자 조치 · 만료) 토큰을 받을 수 있는 사람(관리자)에게만. 데이터베이스도 같다. */
+export async function publicUrlOf(ctx: SessionContext, pageId: string, links: ApiLinks, now: Date): Promise<string | null> {
   const state = await readPublishState(ctx, pageId)
   if (!state.ok) return null
   const s = state.value
@@ -297,6 +360,45 @@ export async function readApiPage(ctx: SessionContext, pageId: string, links: Ap
   })
   if (read === null) return null
   return read.trashed ? read.json : { ...read.json, public_url: await publicUrlOf(ctx, pageId, links, now) }
+}
+
+/**
+ * 질의의 결과(API-4) — 한 소스의 행들을 그 차례 그대로 페이지 객체로. 행은 행 질의(`queryRows` — 권한 술어가 필터보다 먼저)가 이미 이
+ * 사람의 범위로 골랐다 — 행마다 판정을 다시 하지 않는다(같은 술어다 · `row-access.ts`). 스키마 · 옵션 · rollup 은 한 번 모은다. 게시
+ * 주소는 게시 링크가 있는 행만 묻는다.
+ */
+export async function readApiRowPages(
+  ctx: SessionContext,
+  dataSourceId: string,
+  rowIds: readonly string[],
+  links: ApiLinks,
+  only: ReadonlySet<string> | null,
+): Promise<Record<string, unknown>[]> {
+  if (rowIds.length === 0) return []
+  const now = new Date()
+  const read = await withReadTransaction(async (tx) => {
+    const rows = await tx.query<PageDbRow>(
+      `${PAGE_SELECT}
+        WHERE b.id = ANY($1::uuid[]) AND b.workspace_id = $2 AND b.type = 'page' AND b.lifecycle IN ('live', 'trashed')
+          AND p.data_source_id = $3`,
+      [[...rowIds], ctx.workspaceId, dataSourceId],
+    )
+    const byId = new Map(rows.filter((r) => r.is_template !== true).map((r) => [r.id, toLoadedPage(r)]))
+    const pages = rowIds.map((id) => byId.get(id)).filter((p): p is LoadedPage => p !== undefined)
+    const shared = await rowSharedIn(tx, ctx, dataSourceId, await readApiProperties(tx, dataSourceId), pages.map((p) => p.id))
+    const published = await tx.query<{ node_id: string }>(
+      `SELECT node_id FROM public_link WHERE node_id = ANY($1::uuid[]) AND enabled`,
+      [pages.filter((p) => !p.trashed).map((p) => p.id)],
+    )
+    const out: { id: string; json: Record<string, unknown> }[] = []
+    for (const page of pages) out.push({ id: page.id, json: await pageObjectIn(tx, ctx, page, links, now, shared, only) })
+    return { out, published: new Set(published.map((r) => r.node_id)) }
+  })
+  const result: Record<string, unknown>[] = []
+  for (const { id, json } of read.out) {
+    result.push(read.published.has(id) ? { ...json, public_url: await publicUrlOf(ctx, id, links, now) } : json)
+  }
+  return result
 }
 
 // ── property item ─────────────────────────────────────────────────────

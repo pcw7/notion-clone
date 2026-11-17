@@ -2616,7 +2616,8 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > ⑤ **쓰기 · 읽기의 규칙은 앱과 같다** — 쓰기는 출처 `api`(`doc_update.origin` · 활동의 행위자는 그 사람 · 데이터베이스 자동화는 사람의 편집처럼 깨운다) ·
 > 본문 쓰기는 서버 명령의 본문 세션(경로 ②) · 행을 읽는 길은 `rowsAccessIn` / `restrictedRowsSql`(행 단위 권한) · 내보내기 정책(`allow_export`)을 끄면
 > 읽기도 소유자만(4y 가 이미 적어 둔 게이트) · 잠긴 페이지는 쓰기 거부.
-> 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-5 검색 · 코멘트 · 사용자 →
+> 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-4b 데이터베이스 · 데이터 소스 만들기 · 고치기 →
+> API-5 검색 · 코멘트 · 사용자 →
 > API-6 개발자 문서 · SDK 호환 검사.
 > ⑥ **[API-2] 페이지에서 노션과 다르게 둔 것** — 올린 파일의 아이콘 · 커버와 내장 커버는 `null`(짧게 사는 파일 주소를 만드는 길이 없다 — 뒤로) ·
 > files 속성은 `{name, type:'file_upload', file_upload:{id}}`(그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
@@ -2627,6 +2628,16 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > `in_trash:false` 는 페이지만) · 그 안의 하위 페이지는 휴지통으로(편집기에서 지울 때와 같다) · 토글 헤딩 · 이모지가 아닌 콜아웃 아이콘 ·
 > `link_to_page` · `synced_block` · `pdf` · `audio` · `template` 쓰기는 400 · 버튼 · 출처 없는 미디어는 `unsupported` 로 읽는다 · 올린 파일은
 > `file_upload {id}`(⑥과 같다) · 붙일 자리는 `after` 와 `position` 을 둘 다 받는다 · 잠긴 · 휴지통의 페이지에 쓰면 400.
+> ⑧ **[API-4] 데이터 소스 · 질의에서 노션과 다르게 둔 것** — 질의는 앱의 행 질의(`queryRows` — 권한 술어가 필터보다 먼저 · keyset 커서 ·
+> 10,000 상한)를 지난다: 노션의 DSL 을 앱의 필터 트리로 옮길 뿐 SQL 컴파일러를 따로 두지 않는다(`timestamp` 필터 · 정렬은 행 시각의 열쇠
+> `@created_time` · `@last_edited_time` 으로 앱의 필터에 더했다) · **rollup 필터는 400**(값을 저장하지 않는다 — D1) · 장소 · 버튼 필터도 400 ·
+> 사람 · 연결 · 파일 · rollup 으로는 정렬하지 않는다(400) · 선택류의 없는 옵션 이름은 거부하지 않고 아무것도 맞지 않는다 · 상대 날짜의 오늘은
+> UTC(토큰에는 시간대 쿠키가 없다) · `request_status` 는 상한에 닿은 쪽에만 싣는다 · 커서는 질의의 지문에 묶인다(다른 질의의 커서는 400 ·
+> 서명은 하지 않는다 — 권한 술어가 먼저다) · 휴지통의 행은 `in_trash`(옛 이름 `is_archived`)로만 · 데이터 소스 주소에 데이터베이스 id 는 404
+> 에 바른 주소를 붙인다(그 데이터베이스를 열 수 있을 때만) · 소스가 하나뿐인 데이터베이스는 그 소스의 이름이 데이터베이스의 제목(앱의 화면과
+> 같다) · 상태 범주의 이름 · 색은 노션의 것(To-do · In progress · Complete) · 수식의 `expression` 은 앱의 식(`prop("이름")`) · 다른 표의
+> 속성 이름은 그 표를 열 수 있을 때만 · 데이터 소스의 `created_by` · `last_edited_by` 는 싣지 않는다(기록이 없다) · `description` 은 빈 배열 · 구조 고치기
+> (데이터베이스 · 데이터 소스 만들기 · 고치기)는 400 `validation_error`.
 
 **정본 상수**
 

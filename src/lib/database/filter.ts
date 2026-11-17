@@ -125,6 +125,21 @@ export function propertyIdsIn(filter: FilterNode | null | undefined, sorts: read
   return [...ids]
 }
 
+/**
+ * 행 자신의 시각(API-4 · 09 F-09-16 — 노션의 `timestamp` 필터 · 정렬) — 그 타입의 속성이 없어도 만든 · 고친 시각으로 거르고 정렬한다.
+ * 타입 맵에 이 열쇠를 자동 메타 시각으로 얹으면(`withRowTimestamps`) 컴파일러가 속성과 같은 길로 block 의 열을 본다(자동 메타는 속성 id 를
+ * 묶지 않는다). 속성 id(nanoid 21자 · 정본 C-4)와 겹칠 수 없는 모양이다.
+ */
+export const ROW_TIMESTAMP_KEYS = Object.freeze({ created_time: '@created_time', last_edited_time: '@last_edited_time' } as const)
+
+/** 타입 맵에 행 자신의 시각 열쇠를 더한다 — 행 질의(`queryRows`)가 쓴다. 뷰의 저장 경로(`validateFilter`)는 이 열쇠를 모른다. */
+export function withRowTimestamps(types: PropertyTypes): PropertyTypes {
+  const out = new Map(types)
+  out.set(ROW_TIMESTAMP_KEYS.created_time, 'created_time')
+  out.set(ROW_TIMESTAMP_KEYS.last_edited_time, 'last_edited_time')
+  return out
+}
+
 export function isFilterableType(t: unknown): t is FilterableType {
   return isMvpPropertyType(t) || isAutoMetaType(t) || t === 'unique_id' || t === 'relation' || t === 'verification'
 }
