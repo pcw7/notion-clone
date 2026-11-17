@@ -37715,8 +37715,14 @@ async function main() {
             && listed.body?.has_more === false,
           JSON.stringify(results.map((c) => [c.id, plain(c.rich_text)])))
 
-        const users = await v1('GET', '/v1/users')
-        const people = users.body?.results ?? []
+        // 쪽을 따라 모두 — 전체 판에서는 앞 절들이 같은 워크스페이스에 멤버를 많이 만들어 한 쪽(100)에 다 들지 않는다
+        const people = []
+        let users = await v1('GET', '/v1/users?page_size=100')
+        for (let turn = 0; turn < 50; turn++) {
+          people.push(...(users.body?.results ?? []))
+          if (users.status !== 200 || users.body?.has_more !== true) break
+          users = await v1('GET', `/v1/users?page_size=100&start_cursor=${encodeURIComponent(users.body.next_cursor)}`)
+        }
         const self = people.find((u) => u.id === mate.userId)
         check('★ GET /v1/users — 활동 중인 멤버의 person 객체(토큰의 사람 · 멘션한 사람이 든다 · 이메일) · 노션의 user 목록',
           users.status === 200 && users.body?.type === 'user' && self?.type === 'person' && self?.person?.email === mate.email
