@@ -79,6 +79,14 @@ const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
 // 페이지 웹훅의 받는 서버(4e-3) — 앱이 이 host:port 로만 바깥 요청의 검사를 비켜 간다(`OUTBOUND_ALLOW_HOSTS` · net/outbound.ts)
 const HOOK_PORT = Number(process.env.E2E_HOOK_PORT ?? 3102)
+// 가짜 AI 공급자(AI-1) — 판 내내 띄운다. **진짜 공급자를 부르지 않는다**: `.env` 에 진짜 키가 있어도 이 판의 앱 · 이 러너는 세 줄 모두
+// 가짜를 가리킨다(앱은 받은 환경이 `.env` 를 이긴다). 전체 판의 복사본(e2e:full)은 PORT + 3 이라 겹치지 않는다.
+const AI_PORT = Number(process.env.E2E_AI_PORT ?? PORT + 3)
+const { startFakeAiProvider, FAKE_AI_KEY, FAKE_AI_MODEL } = await import(new URL('../src/lib/testing/fake-ai-provider.ts', import.meta.url).href)
+process.env.AI_BASE_URL = `http://127.0.0.1:${AI_PORT}/v1`
+process.env.AI_API_KEY = FAKE_AI_KEY
+process.env.AI_MODEL = FAKE_AI_MODEL
+process.env.AI_DAILY_CAP = '100000000' // 앱 전체 하루 카운터는 개발 DB 의 다른 판 · 시험과 함께 쓴다 — 이 판에서 막히지 않게
 const BASE = `http://localhost:${PORT}`
 const COLLAB_URL = `ws://localhost:${COLLAB_PORT}`
 const HEADFUL = process.env.E2E_HEADFUL === '1'
@@ -567,6 +575,8 @@ async function main() {
   console.log(`브라우저: ${executable}`)
   console.log(`서버: ${BASE}`)
 
+  // 앱보다 먼저 — 앱은 AI_BASE_URL 로 이것만 부른다
+  const fakeAi = await startFakeAiProvider({ port: AI_PORT })
   const server = startServer()
   let collab = startCollabServer()
   let browser = null
@@ -11277,8 +11287,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안 · 오프라인) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · 요금제 · 감사 로그)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'account.api', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안 · 오프라인) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · AI · 요금제 · 감사 로그)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'account.api', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.ai', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -11458,7 +11468,7 @@ async function main() {
       const adminGeneral = await htmlAs(GENERAL, admin.token)
       check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
         JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
-          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'account.api', 'workspace.general', 'workspace.people', 'workspace.emoji', 'workspace.plan']),
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'account.offline', 'account.api', 'workspace.general', 'workspace.people', 'workspace.emoji', 'workspace.ai', 'workspace.plan']),
         JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
 
       const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
@@ -37936,6 +37946,144 @@ async function main() {
         JSON.stringify({ diffTitle: shown.diffTitle, diffItems: shown.diffItems, curl: shown.curl, publicOrigin }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('AI 기반 — 스위치 · 한도 · 스트리밍 (AI-1 · F-10-12)')) { try {
+      // 설정 → 워크스페이스 → AI(정본 §3.10 [보강 AI-1]). 이 절이 만든 Free 워크스페이스(체험 20)에서 진행한다. 공급자는 러너가 띄운 가짜
+      // (127.0.0.1:AI_PORT) — 진짜를 부르지 않는다. 기본 끔이라 부르면 403 → 소유자가 켜면(알림에 host · 감사 한 줄) 응답이 SSE 로 흐르고
+      // 끝 사건에 사용량 · 남은 수, 설정의 쓴 양이 오른다. 멤버는 스위치가 없고 PUT 은 403. 멈추면 stopped(셈에 든다) · 공급자의 429 는
+      // 503 ai_busy(셈에서 빠진다). 체험을 다 쓰면 429 ai_limit_reached · 운영자 보충 하나로 한 번 더 · 그 뒤 다시 429. 끝에 브라우저 세션을 되돌린다.
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { createSseParser } = await import(src('ai/sse.ts'))
+      const { grantAiResponses } = await import(src('ai/usage.ts'))
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 기반 ${stamp}` }) })).json()).workspaceId
+      const mate = await joinAs(ws, await createUser(`AI 의 멤버 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const AI = `${BASE}/w/${ws}/settings?s=workspace.ai`
+      const host = `127.0.0.1:${AI_PORT}`
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const trialLine = () => textOf('[data-testid="ai-usage"] li[data-line="trial"]')
+      /** 응답 하나 — rawFetch 로(덮어쓴 fetch 는 본문을 미리 끝까지 읽어 스트림 · 멈추기를 볼 수 없다). */
+      const complete = (headers, body, init = {}) =>
+        rawFetch(`${BASE}/api/workspaces/${ws}/ai/complete`, { method: 'POST', headers, body: JSON.stringify(body), ...init })
+      const sse = async (res) => {
+        const p = createSseParser()
+        return [...p.push(await res.text()), ...p.end()]
+      }
+      const openPanel = async () => {
+        await send('Page.navigate', { url: AI })
+        return waitFor(`!!document.querySelector('[data-testid="ai-panel"]')`, 15000)
+      }
+
+      try {
+        const off = await complete(asBoss, { feature: 'ask', prompt: '켜기 전' })
+        const offBody = await off.json()
+        check('★ 기본 끔 — 켜기 전에 부르면 403 ai_disabled', off.status === 403 && offBody.error === 'ai_disabled', JSON.stringify([off.status, offBody]))
+
+        await browseAs(boss.token)
+        await openPanel()
+        const nav = await evaluate(`[...document.querySelectorAll('[data-testid="settings-nav-link"]')].map((a) => a.dataset.section)`)
+        check('★ 소유자의 내비에 "AI" 절 — 사이트 다음 · 요금제 앞 · 제목 AI',
+          nav.indexOf('workspace.ai') > 0 && nav.indexOf('workspace.ai') === nav.indexOf('workspace.sites') + 1
+            && nav.indexOf('workspace.plan') === nav.indexOf('workspace.ai') + 1 && (await textOf('[data-testid="settings-title"]')) === 'AI',
+          JSON.stringify(nav))
+        const disclosure = String(await textOf('[data-testid="ai-disclosure"]'))
+        check('★ 스위치는 꺼져 있고 알림이 글이 가는 곳(공급자의 host)과 무료 등급의 정책을 말한다 · 체험 0 / 20회',
+          (await evaluate(`document.querySelector('[data-testid="ai-switch"]')?.checked`)) === false
+            && disclosure.includes(host) && disclosure.includes('페이지의 글') && disclosure.includes('무료 등급')
+            && (await trialLine()) === '체험 0 / 20회 (다시 채워지지 않습니다)',
+          JSON.stringify([disclosure, await trialLine()]))
+
+        await clickSelector('[data-testid="ai-switch"]')
+        const on = await waitFor(`document.querySelector('[data-testid="ai-panel"]')?.dataset.enabled === 'true'`, 10000)
+        const audit = await dbQuery(`SELECT value_before, value_after, actor_user_id FROM audit_event WHERE workspace_id = $1 AND setting_key = 'ai.enabled'`, [ws])
+        check('★ 소유자가 켠다 — 스위치가 켜지고 감사 한 줄(ai.enabled false → true · 소유자)',
+          on && audit.length === 1 && audit[0].value_before === false && audit[0].value_after === true && audit[0].actor_user_id === boss.userId,
+          JSON.stringify(audit))
+
+        const prompt = `노션 AI 처럼 ${stamp}`
+        const res = await complete(asBoss, { feature: 'ask', prompt })
+        const events = await sse(res)
+        const pieces = events.filter((e) => e.event === 'delta').map((e) => JSON.parse(e.data).text)
+        const done = events.at(-1)
+        const doneData = done?.event === 'done' ? JSON.parse(done.data) : null
+        check('★ 부르면 SSE 로 글이 조각조각 흐르고 끝 사건에 사용량 · 남은 수(19)',
+          res.status === 200 && (res.headers.get('content-type') ?? '').startsWith('text/event-stream') && pieces.length >= 2
+            && pieces.join('') === `가짜 답: ${prompt}` && doneData?.status === 'completed' && doneData.remaining === 19
+            && doneData.usage?.outputTokens === pieces.length,
+          JSON.stringify({ status: res.status, pieces, done }))
+        const seen = fakeAi.requests.at(-1)
+        check('공급자가 받은 것 — 가짜 키 · 가짜 모델 · 출력 상한(진짜 공급자를 부르지 않았다)',
+          seen?.authorization === `Bearer ${FAKE_AI_KEY}` && seen.body.model === FAKE_AI_MODEL && seen.body.stream === true && typeof seen.body.max_tokens === 'number',
+          JSON.stringify(seen?.body ?? null))
+        await openPanel()
+        check('★ 설정의 쓴 양이 오른다 — 체험 1 / 20회', (await trialLine()) === '체험 1 / 20회 (다시 채워지지 않습니다)', String(await trialLine()))
+
+        await browseAs(mate.token)
+        await openPanel()
+        const mateView = await evaluate(`({
+          sw: !!document.querySelector('[data-testid="ai-switch"]'),
+          state: document.querySelector('[data-testid="ai-state"]')?.textContent ?? '',
+          usage: document.querySelector('[data-testid="ai-usage"] li[data-line="trial"]')?.textContent ?? '',
+        })`)
+        const matePut = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asMate, body: JSON.stringify({ enabled: false }) })
+        check('★ 멤버 — 스위치 없음 · "켜져 있습니다 · 소유자만" · 쓴 양은 본다 · 끄려 하면 403',
+          mateView.sw === false && mateView.state.includes('켜져 있습니다') && mateView.state.includes('소유자만')
+            && mateView.usage.startsWith('체험 1 / 20회') && matePut.status === 403,
+          JSON.stringify([mateView, matePut.status]))
+
+        const stopper = new AbortController()
+        const slow = await complete(asMate, { feature: 'ask', prompt: '[slow] 멈출 답' }, { signal: stopper.signal })
+        const reader = slow.body.getReader()
+        const firstChunk = new TextDecoder().decode((await reader.read()).value)
+        stopper.abort()
+        await reader.cancel().catch(() => undefined)
+        let stopped = ''
+        for (let i = 0; i < 100 && stopped !== 'stopped'; i += 1) {
+          await sleep(50)
+          stopped = (await dbQuery(`SELECT status FROM ai_usage WHERE workspace_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`, [ws, mate.userId]))[0]?.status ?? ''
+        }
+        check('★ 멈추면(연결을 닫는다) 그 응답은 stopped — 셈에 든다', firstChunk.includes('event: delta') && stopped === 'stopped', JSON.stringify([firstChunk.slice(0, 80), stopped]))
+
+        const busy = await complete(asBoss, { feature: 'ask', prompt: '[429] 바쁜 때' })
+        const busyBody = await busy.json()
+        check('★ 공급자가 바쁘면(429) 503 ai_busy · 7초 뒤 · 공급자의 말은 싣지 않는다',
+          busy.status === 503 && busyBody.error === 'ai_busy' && busyBody.retryAfter === 7 && busy.headers.get('retry-after') === '7'
+            && !JSON.stringify(busyBody).includes('sk-live'),
+          JSON.stringify([busy.status, busyBody]))
+
+        // 지금까지 센 것 — 완료 1 · 멈춤 1(바쁨은 빠졌다). 체험 20 을 다 쓰게 18 을 더한다
+        await dbQuery(
+          `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, model, created_at, finished_at)
+           SELECT gen_random_uuid(), $1, $2, 'ask', 'completed', 'trial', 'seed', now(), now() FROM generate_series(1, 18)`,
+          [ws, boss.userId],
+        )
+        const limited = await complete(asBoss, { feature: 'ask', prompt: '한도 뒤' })
+        const limitedBody = await limited.json()
+        check('★ 체험 20 을 다 쓰면 429 ai_limit_reached — 어느 한도(trial) · 풀리지 않는다(null)',
+          limited.status === 429 && limitedBody.error === 'ai_limit_reached' && limitedBody.limit === 'trial' && limitedBody.resetsAt === null,
+          JSON.stringify([limited.status, limitedBody]))
+        const granted = await grantAiResponses(ws, { responses: 1, reason: `e2e ${stamp}` })
+        const viaGrant = await complete(asBoss, { feature: 'ask', prompt: '보충으로' })
+        const viaGrantDone = (await sse(viaGrant)).at(-1)
+        const again = await complete(asBoss, { feature: 'ask', prompt: '보충 뒤' })
+        const againBody = await again.json()
+        check('★ 운영자 보충 하나 — 한 번 더 되고(남은 0) 그 뒤 다시 429',
+          granted.ok && granted.value.balance === 1 && viaGrant.status === 200 && viaGrantDone?.event === 'done'
+            && JSON.parse(viaGrantDone.data).remaining === 0 && again.status === 429 && againBody.limit === 'trial',
+          JSON.stringify([granted, viaGrant.status, viaGrantDone, again.status, againBody]))
+
+        await browseAs(boss.token)
+        await openPanel()
+        check('설정의 쓴 양 — 체험 20 / 20회', (await trialLine()) === '체험 20 / 20회 (다시 채워지지 않습니다)', String(await trialLine()))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
@@ -37948,6 +38096,7 @@ async function main() {
     browser?.kill()
     server.kill()
     collab?.kill()
+    await fakeAi.close().catch(() => undefined)
     if (profile) {
       // 브라우저가 파일을 막 놓는 중일 수 있다. 못 지워도 임시 폴더다.
       await sleep(300)

@@ -6,6 +6,8 @@
  * 기능의 라우트로 보내고, 끝나면 서버가 이 화면을 다시 그린다(멤버 목록이 함께 바뀐다).
  */
 
+import { readAiConfig } from '@/lib/ai/config'
+import { aiSettingsSummary } from '@/lib/ai/usage'
 import { canCreateApiToken, listApiTokens } from '@/lib/api/api-token'
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
@@ -32,6 +34,7 @@ import { PendingInviteList } from '../pending-invite-list'
 import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
 import { AccountDeletePanel } from './account-delete-panel'
 import { AccessibilityPanel } from './accessibility-panel'
+import { AiPanel } from './ai-panel'
 import { ApiTokenPanel } from './api-token-panel'
 import { AuditPanel } from './audit-panel'
 import { EmojiPanel } from './emoji-panel'
@@ -96,6 +99,11 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       // 내 API 토큰(API-1) — 목록은 여기서 읽는다(값은 없다 · 다시 볼 수 없다). 만들기 · 폐기는 라우트가 다시 판정한다.
       const tokens = await listApiTokens(ctx)
       return <ApiTokenPanel workspaceId={ctx.workspaceId} initial={tokens.ok ? [...tokens.value] : []} canCreate={canCreateApiToken(ctx)} />
+    }
+    case 'ai': {
+      // AI(AI-1) — 스위치 · 쓴 양 · 공급자의 host. 게스트면 null(패널 목록이 이미 걸렀다). 스위치는 `PUT /ai` 가 다시 판정한다.
+      const summary = await aiSettingsSummary(ctx, { config: readAiConfig() })
+      return summary === null ? null : <AiPanel workspaceId={ctx.workspaceId} initial={summary} />
     }
     case 'site':
       // 사이트 주소(6c-2) — 지금 주소는 여기서 읽는다. 정하는 것은 소유자만(패널 목록이 걸렀다 — 명령이 다시 묻는다).

@@ -87,6 +87,8 @@ const EXPECTED_TABLES = [
   'suggestion',
   // 공개 API 의 개인 토큰 API-1 (0145)
   'api_token',
+  // AI 1차 기반 AI-1 (0146)
+  'workspace_ai_setting', 'ai_usage', 'ai_grant', 'ai_daily_usage',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -5962,6 +5964,122 @@ try {
     const strangerWs = randomUUID()
     await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '토큰의 남', 'local', now())`, [strangerWs])
     await rejectsBy('★ 멤버였던 적 없는 워크스페이스의 토큰', insertToken, tok({ ws: strangerWs }), 'fk_api_token_member')
+  }
+
+  {
+    // AI 1차 기반(0146 · AI-1 · §3.10 [보강 AI-1] ⑦) — 스위치(기본 끔) · 원장(기능 · 상태 · 몫 · 보충 · 끝) · 보충(> 0 · 까닭 · 만료) ·
+    // 하루 카운터(≥ 0) · 쓴 사람 · 바꾼 사람은 그 워크스페이스의 사람 · 한도의 엔타이틀먼트 셋
+    const AI_CONSTRAINTS = {
+      workspace_ai_setting: ['fk_workspace_ai_setting_member'],
+      ai_grant: ['ck_ai_grant_responses', 'ck_ai_grant_reason', 'ck_ai_grant_expires', 'uq_ai_grant_workspace'],
+      ai_usage: [
+        'ck_ai_usage_feature', 'ck_ai_usage_status', 'ck_ai_usage_quota', 'ck_ai_usage_grant', 'ck_ai_usage_model',
+        'ck_ai_usage_input_tokens', 'ck_ai_usage_output_tokens', 'ck_ai_usage_finished', 'fk_ai_usage_grant', 'fk_ai_usage_member',
+      ],
+      ai_daily_usage: ['ck_ai_daily_usage_responses'],
+    }
+    for (const [table, names] of Object.entries(AI_CONSTRAINTS)) {
+      for (const name of names) {
+        const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass`, [name, table])).rowCount
+        if (has === 1) ok(`${name} 이 있다`)
+        else fail(`${name} 이 ${table} 에 없다`)
+      }
+    }
+    const counted = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_ai_usage_counted'`)).rows[0]
+    if (counted && /WHERE \(status <> 'failed'::text\)/.test(counted.indexdef)) ok('ix_ai_usage_counted — 실패를 뺀 부분 인덱스(몫마다 쓴 양)')
+    else fail(`ix_ai_usage_counted 가 실패를 뺀 부분 인덱스가 아니다 — ${counted?.indexdef ?? '없다'}`)
+
+    const aiEnt = (await client.query(
+      `SELECT e.key, p.code, e.kind, e.value FROM plan_entitlement e JOIN plan p ON p.id = e.plan_id WHERE e.key LIKE 'ai.%' ORDER BY e.key, p.code`,
+    )).rows
+    const aiVal = (key, code) => aiEnt.find((r) => r.key === key && r.code === code)?.value
+    if (aiEnt.length === 12 && aiEnt.every((r) => r.kind === 'limit')
+      && [20, 20, 0, 0].every((v, i) => aiVal('ai.trial_responses', ['free', 'plus', 'business', 'enterprise'][i]) === v)
+      && [0, 0, 1000, 3000].every((v, i) => aiVal('ai.monthly_responses', ['free', 'plus', 'business', 'enterprise'][i]) === v)
+      && [0, 0, 100, 300].every((v, i) => aiVal('ai.window_responses', ['free', 'plus', 'business', 'enterprise'][i]) === v)) {
+      ok('★ 엔타이틀먼트 ai.* — 체험 Free · Plus 20 · 월 Business 1,000 · Enterprise 3,000 · 창 100 · 300')
+    } else fail(`엔타이틀먼트 ai.* 가 요금제와 맞지 않는다 — ${JSON.stringify(aiEnt)}`)
+
+    await client.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1, $2, 'owner', 'active') ON CONFLICT (workspace_id, user_id) DO NOTHING`,
+      [wsId, userId],
+    )
+    const aiStranger = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, 'AI 의 남', 'local', now())`, [aiStranger])
+
+    // 스위치 — 기본 끔
+    await client.query(`INSERT INTO workspace_ai_setting (workspace_id, changed_by) VALUES ($1, $2)`, [wsId, userId])
+    const enabledDefault = (await client.query(`SELECT enabled FROM workspace_ai_setting WHERE workspace_id = $1`, [wsId])).rows[0]?.enabled
+    if (enabledDefault === false) ok('★ workspace_ai_setting.enabled 기본값 false(기본 끔)')
+    else fail(`workspace_ai_setting.enabled 기본값이 false 가 아니다 — ${enabledDefault}`)
+
+    const rejectsBy = async (label, sql, params, ...names) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (names.includes(e.constraint)) ok(`${label} — ${e.constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${names.join(' | ')} 가 아니라 ${e.constraint ?? e.code} (${String(e.message).split('\n')[0]})`)
+      }
+    }
+    await rejectsBy('★ 그 워크스페이스의 사람이 아닌 사람이 스위치를 바꿨다', `INSERT INTO workspace_ai_setting (workspace_id, changed_by) VALUES ($1, $2)`, [aiStranger, userId], 'fk_workspace_ai_setting_member')
+
+    // 보충
+    const insertGrant = `INSERT INTO ai_grant (id, workspace_id, responses, reason, granted_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)`
+    const grant = (over = {}) => {
+      const g = { id: randomUUID(), ws: wsId, n: 5, reason: '운영자 보충', at: '2031-01-01T00:00:00Z', exp: null, ...over }
+      return [g.id, g.ws, g.n, g.reason, g.at, g.exp]
+    }
+    const okGrant = randomUUID()
+    const strangerGrant = randomUUID()
+    await client.query(insertGrant, grant({ id: okGrant, exp: '2031-02-01T00:00:00Z' }))
+    await client.query(insertGrant, grant({ n: 1000000, reason: '가'.repeat(200) }))
+    await client.query(insertGrant, grant({ id: strangerGrant, ws: aiStranger }))
+    ok('ai_grant 정상 삽입 (만료 · 100만 · 까닭 200자 · 만료 없음)')
+    await rejectsBy('★ 보충 0회', insertGrant, grant({ n: 0 }), 'ck_ai_grant_responses')
+    await rejectsBy('보충 음수', insertGrant, grant({ n: -3 }), 'ck_ai_grant_responses')
+    await rejectsBy('보충 100만 초과', insertGrant, grant({ n: 1000001 }), 'ck_ai_grant_responses')
+    await rejectsBy('★ 보충의 까닭이 비었다', insertGrant, grant({ reason: '' }), 'ck_ai_grant_reason')
+    await rejectsBy('보충의 까닭 앞뒤 공백', insertGrant, grant({ reason: ' 보충 ' }), 'ck_ai_grant_reason')
+    await rejectsBy('보충의 까닭 201자', insertGrant, grant({ reason: '가'.repeat(201) }), 'ck_ai_grant_reason')
+    await rejectsBy('★ 준 시각보다 앞선 만료', insertGrant, grant({ exp: '2030-12-31T00:00:00Z' }), 'ck_ai_grant_expires')
+    await rejectsBy('준 순간의 만료', insertGrant, grant({ exp: '2031-01-01T00:00:00Z' }), 'ck_ai_grant_expires')
+
+    // 원장
+    const insertUsage = `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, grant_id, model, input_tokens, output_tokens, page_id, created_at, finished_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+    const usageRow = (over = {}) => {
+      const u = { ws: wsId, user: userId, feature: 'ask', status: 'completed', quota: 'trial', grant: null, model: 'fake-model', inT: 1, outT: 2, page: null,
+        created: '2031-01-01T00:00:00Z', finished: '2031-01-01T00:00:05Z', ...over }
+      return [randomUUID(), u.ws, u.user, u.feature, u.status, u.quota, u.grant, u.model, u.inT, u.outT, u.page, u.created, u.finished]
+    }
+    for (const feature of ['ask', 'edit', 'translate', 'block', 'chat']) await client.query(insertUsage, usageRow({ feature }))
+    await client.query(insertUsage, usageRow({ status: 'reserved', finished: null, inT: null, outT: null }))
+    await client.query(insertUsage, usageRow({ status: 'stopped', quota: 'plan', finished: '2031-01-01T00:00:00Z' }))
+    await client.query(insertUsage, usageRow({ status: 'failed', quota: 'grant', grant: okGrant }))
+    ok('ai_usage 정상 삽입 (기능 다섯 · 예약 · 같은 순간의 멈춤 · 보충의 실패)')
+    await rejectsBy('★ 모르는 기능', insertUsage, usageRow({ feature: 'summarize' }), 'ck_ai_usage_feature')
+    await rejectsBy('★ 모르는 상태', insertUsage, usageRow({ status: 'pending' }), 'ck_ai_usage_status')
+    await rejectsBy('★ 모르는 몫(크레딧 과금)', insertUsage, usageRow({ quota: 'credit' }), 'ck_ai_usage_quota')
+    await rejectsBy('★ 보충에서 셌는데 보충이 없다', insertUsage, usageRow({ quota: 'grant', grant: null }), 'ck_ai_usage_grant')
+    await rejectsBy('체험에서 셌는데 보충을 가리킨다', insertUsage, usageRow({ quota: 'trial', grant: okGrant }), 'ck_ai_usage_grant')
+    await rejectsBy('★ 모델이 비었다', insertUsage, usageRow({ model: '' }), 'ck_ai_usage_model')
+    await rejectsBy('모델 201자', insertUsage, usageRow({ model: 'm'.repeat(201) }), 'ck_ai_usage_model')
+    await rejectsBy('★ 입력 토큰 음수', insertUsage, usageRow({ inT: -1 }), 'ck_ai_usage_input_tokens')
+    await rejectsBy('★ 출력 토큰 음수', insertUsage, usageRow({ outT: -1 }), 'ck_ai_usage_output_tokens')
+    await rejectsBy('★ 예약인데 끝났다', insertUsage, usageRow({ status: 'reserved' }), 'ck_ai_usage_finished')
+    await rejectsBy('★ 끝났는데 끝난 시각이 없다', insertUsage, usageRow({ status: 'completed', finished: null }), 'ck_ai_usage_finished')
+    await rejectsBy('끝이 시작보다 앞선다', insertUsage, usageRow({ finished: '2030-12-31T23:59:59Z' }), 'ck_ai_usage_finished')
+    await rejectsBy('★ 다른 워크스페이스의 보충을 썼다', insertUsage, usageRow({ quota: 'grant', grant: strangerGrant }), 'fk_ai_usage_grant')
+    await rejectsBy('★ 그 워크스페이스의 사람이 아닌 사람이 썼다', insertUsage, usageRow({ ws: aiStranger }), 'fk_ai_usage_member')
+
+    // 하루 카운터
+    await rejectsBy('★ 하루 카운터 음수', `INSERT INTO ai_daily_usage (day, responses) VALUES ('2999-01-01', -1)`, [], 'ck_ai_daily_usage_responses')
+    await client.query(`INSERT INTO ai_daily_usage (day, responses) VALUES ('2999-01-02', 0) ON CONFLICT (day) DO NOTHING`)
+    await rejectsBy('하루 카운터를 0 밑으로 돌려준다', `UPDATE ai_daily_usage SET responses = responses - 1 WHERE day = '2999-01-02' AND responses = 0`, [], 'ck_ai_daily_usage_responses')
   }
 
   await client.query('ROLLBACK')

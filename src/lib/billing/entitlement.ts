@@ -45,6 +45,12 @@ export const ENTITLEMENTS = {
   'database.verification': 'boolean',
   /** 즐겨찾기 · 최근 페이지를 이 기기에 자동으로 내려받는가(F-12-04 · OF-5) — Plus · Business · Enterprise. 직접 내려받기는 무관하다. */
   'offline.auto_download': 'boolean',
+  /** AI 체험 응답 수 — 워크스페이스 평생(F-10-12 · AI-1) — Free · Plus 20 · Business · Enterprise 0(요금제 몫이 있다). */
+  'ai.trial_responses': 'limit',
+  /** AI 응답 수 — UTC 달력 달(AI-1) — Business 1,000 · Enterprise 3,000 · Free · Plus 0(요금제 몫이 없다). */
+  'ai.monthly_responses': 'limit',
+  /** AI 응답 수 — 지난 6시간(AI-1) — Business 100 · Enterprise 300. 월 몫을 조인다(월이 0 이면 쓰이지 않는다). */
+  'ai.window_responses': 'limit',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

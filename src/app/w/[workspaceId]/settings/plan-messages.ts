@@ -34,6 +34,12 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '공개 링크의 만료'
     case 'offline.auto_download':
       return '오프라인 자동 내려받기'
+    case 'ai.trial_responses':
+      return 'AI 체험 응답'
+    case 'ai.monthly_responses':
+      return 'AI 응답 (매달)'
+    case 'ai.window_responses':
+      return 'AI 응답 (6시간마다)'
     default:
       return key
   }
@@ -47,6 +53,7 @@ export function formatEntitlement(key: EntitlementKey | string, value: unknown):
     if (key === 'history.days') return `${value}일`
     if (key === 'guests.max') return `${value}명`
     if (key === 'import.max_bytes') return `${Math.round(value / 1024 / 1024)} MB`
+    if (typeof key === 'string' && key.startsWith('ai.')) return value === 0 ? '—' : `${value.toLocaleString('ko-KR')}회`
     return String(value)
   }
   return JSON.stringify(value)

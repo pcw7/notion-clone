@@ -158,6 +158,9 @@ test('★ ⑥ 개요 — 소유자 · 멤버 관리자만 · 가격 순 · 값�
     'publish.link_expiry': [false, true, true, true],
     'database.verification': [false, false, true, true],
     'offline.auto_download': [false, true, true, true],
+    'ai.trial_responses': [20, 20, 0, 0],
+    'ai.monthly_responses': [0, 0, 1000, 3000],
+    'ai.window_responses': [0, 0, 100, 300],
   })
   assert.equal(overview.usage.guests, 2, '활성 게스트 하나 + 대기 초대 하나')
 
