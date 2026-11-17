@@ -25,6 +25,7 @@ export const SCREEN_TITLES = {
   workspaces: '워크스페이스',
   noAccess: '접근 요청',
   offline: '오프라인',
+  developers: 'API 문서',
 } as const
 
 /** 틀을 씌운 전체 제목 — 브라우저에서 탭 제목을 쓸 때(10d-7b · `DocumentTitle`) · 틀이 닿지 않는 루트 구간의 화면. */

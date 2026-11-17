@@ -103,7 +103,13 @@ export function ApiTokenPanel({ workspaceId, initial, canCreate }: { workspaceId
   return (
     <section data-testid="api-token-panel" className="mt-6 flex flex-col gap-3">
       <h2 className="text-sm font-medium">API 토큰</h2>
-      <p className="text-xs text-neutral-500">{API_TOKEN_PANEL_NOTE}</p>
+      <p className="text-xs text-neutral-500">
+        {API_TOKEN_PANEL_NOTE}{' '}
+        {/* 개발자 문서(API-6 · F-09-15) — 로그인 없이 여는 공개 화면 */}
+        <a href="/developers" data-testid="api-token-docs-link" className="underline underline-offset-2">
+          API 문서
+        </a>
+      </p>
 
       {canCreate ? (
         <form

@@ -93,7 +93,7 @@ async function call(who: Caller, route: keyof typeof ROUTES, method: string, pat
   return { status: res.status, body: await res.json() }
 }
 
-const getPage = (who: Caller, id: string) => call(who, 'getPage', 'GET', `/v1/pages/${id}`, { page_id: id })
+const getPage = (who: Caller, id: string, search = '') => call(who, 'getPage', 'GET', `/v1/pages/${id}${search}`, { page_id: id })
 const patchPage = (who: Caller, id: string, body: unknown) => call(who, 'patchPage', 'PATCH', `/v1/pages/${id}`, { page_id: id }, body)
 const postPage = (who: Caller, body: unknown) => call(who, 'postPage', 'POST', '/v1/pages', {}, body)
 const getProperty = (who: Caller, id: string, propertyId: string, search = '') =>
@@ -324,6 +324,35 @@ describe('GET /v1/pages/{id}', () => {
       await withTransaction((tx) => writeExportPolicyIn(tx, ws, true))
     }
     assert.equal((await getPage(member, page.id)).status, 200)
+  })
+
+  test('★ filter_properties(API-6 — SDK 의 pages.retrieve 가 보낸다) — 고른 속성만 · 이름 · id · title · 두 모양 · 모르는 것은 400', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member } = await workspace('속성 고르기')
+    const table = must(await createDatabase(owner.ctx, { name: '고르기 표' }), '표')
+    must(await addProperty(owner.ctx, table.dataSourceId, { name: '점수', type: 'number' }), '점수')
+    must(await addProperty(owner.ctx, table.dataSourceId, { name: '메모', type: 'rich_text' }), '메모')
+    const schema = must(await getSchema(owner.ctx, table.dataSourceId), '스키마')
+    const memoId = schema.properties.find((p) => p.name === '메모')!.id
+    const titleName = schema.properties.find((p) => p.type === 'title')!.name
+    const row = must(await createRow(owner.ctx, table.dataSourceId, {}), '행').id
+    const keys = (r: Reply) => Object.keys((dig(r.body, 'properties') ?? {}) as object).sort()
+
+    const one = await getPage(member, row, `?filter_properties=${encodeURIComponent('점수')}`)
+    assert.equal(one.status, 200, JSON.stringify(one.body))
+    assert.deepEqual(keys(one), ['점수'])
+    assert.equal(dig(one.body, 'object'), 'page', '객체의 나머지는 그대로')
+    const two = await getPage(member, row, `?filter_properties=title&filter_properties=${memoId}`)
+    assert.deepEqual(keys(two), [titleName, '메모'].sort(), '제목은 title 로 · 다른 것은 id 로')
+    const bracket = await getPage(member, row, `?${encodeURIComponent('filter_properties[]')}=${encodeURIComponent('메모')}`)
+    assert.deepEqual(keys(bracket), ['메모'])
+    assert.equal((await getPage(member, row)).status, 200)
+    assert.equal(keys(await getPage(member, row)).length, 3, '주지 않으면 모두')
+    assertError(await getPage(member, row, '?filter_properties=nope'), 400, 'validation_error', /Could not find property with name or id: nope/)
+
+    const plain = await createPage(owner.ctx, { title: [textRun('보통 페이지')] })
+    assert.deepEqual(keys(await getPage(member, plain.id, '?filter_properties=title')), ['title'])
+    assertError(await getPage(member, plain.id, `?filter_properties=${encodeURIComponent('점수')}`), 400, 'validation_error')
   })
 })
 

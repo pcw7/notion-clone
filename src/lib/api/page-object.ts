@@ -32,8 +32,10 @@ import { can } from '../permissions/levels.ts'
 import { readPublishState } from '../publish/public-link.ts'
 import {
   apiPropertyId,
+  findProperty,
   findPropertyById,
   pageTitleToApi,
+  TITLE_PROPERTY_ID,
   propertyValueToApi,
   userRef,
   type ApiProperty,
@@ -353,13 +355,54 @@ export async function publicUrlOf(ctx: SessionContext, pageId: string, links: Ap
 
 /** `GET /v1/pages/{id}` 의 몸체 — 볼 수 없으면 null. */
 export async function readApiPage(ctx: SessionContext, pageId: string, links: ApiLinks): Promise<Record<string, unknown> | null> {
+  const read = await readApiPageOnly(ctx, pageId, links, [])
+  return read !== null && 'json' in read ? read.json : null
+}
+
+/**
+ * `filter_properties`(API-6 — SDK 가 `pages.retrieve` 에 그대로 보낸다) — 이름 · id · `title` 을 실을 속성(우리 id)으로. 질의의 것과 같은
+ * 규칙이다(`findProperty`). 모르는 것이 있으면 그 글자(400). 행이 아닌 페이지의 속성은 제목 하나라 `title` 만 안다.
+ */
+export async function pickPropertiesIn(
+  tx: Tx,
+  page: LoadedPage,
+  keys: readonly string[],
+): Promise<{ readonly ok: true; readonly only: ReadonlySet<string> } | { readonly ok: false; readonly key: string }> {
+  if (page.row === null) {
+    const unknown = keys.find((k) => k !== TITLE_PROPERTY_ID)
+    return unknown === undefined ? { ok: true, only: new Set() } : { ok: false, key: unknown }
+  }
+  const properties = await readApiProperties(tx, page.row.dataSourceId)
+  const only = new Set<string>()
+  for (const key of keys) {
+    const property = findProperty(properties, key)
+    if (property === null) return { ok: false, key }
+    only.add(property.id)
+  }
+  return { ok: true, only }
+}
+
+/** 페이지 객체 — `filterProperties` 가 있으면 그 속성만(행). 볼 수 없으면 null · 모르는 속성이면 `{ unknownProperty }`. */
+export async function readApiPageOnly(
+  ctx: SessionContext,
+  pageId: string,
+  links: ApiLinks,
+  filterProperties: readonly string[],
+): Promise<{ readonly json: Record<string, unknown> } | { readonly unknownProperty: string } | null> {
   const now = new Date()
   const read = await withReadTransaction(async (tx) => {
     const page = await loadPageIn(tx, ctx, pageId)
-    return page === null ? null : { trashed: page.trashed, json: await pageObjectIn(tx, ctx, page, links, now) }
+    if (page === null) return null
+    let only: ReadonlySet<string> | null = null
+    if (filterProperties.length > 0) {
+      const picked = await pickPropertiesIn(tx, page, filterProperties)
+      if (!picked.ok) return { unknownProperty: picked.key }
+      only = picked.only
+    }
+    return { trashed: page.trashed, json: await pageObjectIn(tx, ctx, page, links, now, undefined, only) }
   })
-  if (read === null) return null
-  return read.trashed ? read.json : { ...read.json, public_url: await publicUrlOf(ctx, pageId, links, now) }
+  if (read === null || 'unknownProperty' in read) return read
+  return { json: read.trashed ? read.json : { ...read.json, public_url: await publicUrlOf(ctx, pageId, links, now) } }
 }
 
 /**
