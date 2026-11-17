@@ -8,6 +8,8 @@
  * 오류의 `message` 는 **영어**다 — 노션의 말투 그대로(노션 SDK · 스크립트가 그 글을 그대로 보인다). 코드는 노션의 것만 쓴다.
  */
 
+import { createHash } from 'node:crypto'
+
 import type { RateLimitRule } from '../rate-limit.ts'
 
 /** 받는 단 하나의 `Notion-Version` — 데이터 소스 판(정본 ③). */
@@ -135,6 +137,22 @@ export function decodeCursor(raw: string | null): number | null {
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(raw)) return null
   const m = /^o:(\d{1,9})$/.exec(Buffer.from(raw, 'base64url').toString('utf8'))
   return m === null ? null : Number(m[1])
+}
+
+/** 목록의 지문 — 커서를 그 목록(블록 id · `'users'`)에 묶는다(API-5). 서명이 아니다 — 권한은 읽을 때 다시 본다. */
+const bindingOf = (binding: string): string => createHash('sha256').update(binding).digest('hex').slice(0, 12)
+
+/** 묶인 커서(API-5 — 코멘트 · 사용자 목록) — 속은 목록의 지문과 자리. 다른 목록의 커서는 받지 않는다(API-4 의 질의 커서와 같은 태도). */
+export function encodeBoundCursor(binding: string, offset: number): string {
+  return Buffer.from(`b:${bindingOf(binding)}:${offset}`, 'utf8').toString('base64url')
+}
+
+/** 묶인 커서를 자리로 — 없으면 0 · 모양이 아니거나 다른 목록의 것이면 null(400 `validation_error`). */
+export function decodeBoundCursor(binding: string, raw: string | null): number | null {
+  if (raw === null || raw === '') return 0
+  if (!/^[A-Za-z0-9_-]{1,48}$/.test(raw)) return null
+  const m = /^b:([0-9a-f]{12}):(\d{1,9})$/.exec(Buffer.from(raw, 'base64url').toString('utf8'))
+  return m === null || m[1] !== bindingOf(binding) ? null : Number(m[2])
 }
 
 /** 오류마다 같은 글 — 노션의 말투. */

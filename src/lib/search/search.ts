@@ -169,6 +169,13 @@ export type SearchInput = {
    * 여기서 — 틀린 값은 버린다).
    */
   readonly filters?: Parameters<typeof normalizeSearchFilters>[0]
+  /**
+   * 검색어 없이 모두(공개 API 의 `query` 생략 · API-5) — 빈 검색어를 짧다고 하지 않고 볼 수 있는 것을 모두 찾는다. 필터로만의 검색과 같은 길
+   * (같은 권한 · 휴지통 · 템플릿 술어)이다. 검색어가 있으면 뜻이 없다.
+   */
+  readonly matchAll?: boolean
+  /** 노드의 종류만(공개 API 의 `filter.value` · API-5) — 후처리가 아니라 같은 `WHERE` 에(쪽이 줄지 않는다). 없으면 둘 다. */
+  readonly kind?: SearchHit['kind'] | null
 }
 
 export type SearchOutcome =
@@ -299,7 +306,7 @@ type Narrow = { readonly sql: string; readonly params: readonly string[] }
  * 팀스페이스는 **루트 블록의 부모**다(0028 머리말 — 아래 페이지는 칸을 따로 갖지 않는다). 루트는 `ancestor_ids[1]`, 없으면 자기다. 고를 수
  * 있는가(멤버인가 · 요금제)는 질의 전에 명령이 본다.
  */
-function narrowOf(filters: SearchFilters, me: string, first: number): Narrow {
+function narrowOf(filters: SearchFilters, me: string, first: number, kind: SearchHit['kind'] | null): Narrow {
   const params: string[] = []
   const param = (value: string): string => {
     params.push(value)
@@ -307,6 +314,8 @@ function narrowOf(filters: SearchFilters, me: string, first: number): Narrow {
   }
   const person = (value: string | null): string | null => (value === SEARCH_ME ? me : value)
   const lines: string[] = []
+  // 종류(API-5) — 값은 고정된 둘 중 하나다(사용자 값이 질의에 들어가지 않는다)
+  if (kind !== null) lines.push(kind === 'database' ? `AND s.type = 'database'` : `AND s.type = 'page'`)
   const createdBy = person(filters.createdBy)
   if (createdBy !== null) lines.push(`AND s.created_by = ${param(createdBy)}`)
   const editedBy = person(filters.editedBy)
@@ -483,8 +492,9 @@ export async function searchPages(
   const min = minQueryLength(script)
   const parsed = parseQuery(query)
   const filters = input.filters === undefined ? NO_SEARCH_FILTERS : normalizeSearchFilters(input.filters)
-  // 검색어 없이 필터로만(10a-1 · 정본 ③) — 빈 검색어에 좁히는 필터가 있을 때만. 짧은 검색어는 여전히 짧다
-  const filterOnly = query === '' && narrowsWithoutQuery(filters)
+  // 검색어 없이 필터로만(10a-1 · 정본 ③) — 빈 검색어에 좁히는 필터가 있을 때만(공개 API 는 모두 — `matchAll`). 짧은 검색어는 여전히 짧다
+  const filterOnly = query === '' && (input.matchAll === true || narrowsWithoutQuery(filters))
+  const kind = input.kind ?? null
 
   // 길이 미달은 질의하지 않는다. 빈 문자열도 여기서 걸린다 —
   // `likequery('')` 가 NULL 을 돌려주므로(실측) SQL 까지 가면 조용히 0건이 되고,
@@ -515,7 +525,7 @@ export async function searchPages(
     // 한 건 더 읽어 "다음 페이지가 있는가"를 판단한다. 전체 개수를 세지 않는다 —
     // F-07-01: *"결과 상한이 존재하고 완전 열거는 보장되지 않는다."*
     const cursorKey = keyFromCursor(sort, cursor?.sortKey)
-    const narrow = narrowOf(filters, ctx.userId, FIRST_QUERY_PARAM + axis.params.length)
+    const narrow = narrowOf(filters, ctx.userId, FIRST_QUERY_PARAM + axis.params.length, kind)
     const rows = await tx.query<HitRow>(buildSql(axis, sort, narrow), [
       ctx.workspaceId,
       scopes,
@@ -535,7 +545,7 @@ export async function searchPages(
     let fuzzy = false
     let found = rows
     if (target !== null) {
-      const fuzzyNarrow = narrowOf(filters, ctx.userId, 5)
+      const fuzzyNarrow = narrowOf(filters, ctx.userId, 5, kind)
       found = await tx.query<HitRow>(buildFuzzySql(fuzzyNarrow), [ctx.workspaceId, scopes, target, limit, ...fuzzyNarrow.params])
       fuzzy = found.length > 0
     }
