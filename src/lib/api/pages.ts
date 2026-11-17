@@ -38,7 +38,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { newApiBlockId, uploadIssueIn, writeNewPageBodyIn } from './block-body.ts'
 import { parseApiChildren, type UploadRef } from './block-json.ts'
-import { loadPageIn, readApiOptions, readApiPage, readApiProperties, readPropertyItem, visibleRelationIn } from './page-object.ts'
+import { loadPageIn, readApiOptions, readApiPage, readApiPageOnly, readApiProperties, readPropertyItem, visibleRelationIn } from './page-object.ts'
 import { TITLE_PROPERTY_ID, findProperty, parsePropertyWrite, type ApiProperty, type ApiWrite } from './property-values.ts'
 import type { ApiLinks } from './rich-text.ts'
 import { v1Fail, v1Ok, type V1Handler, type V1Reply } from './v1.ts'
@@ -360,8 +360,13 @@ export const retrievePage: V1Handler = async ({ ctx, params, request }) => {
   if (id === null) return invalid(invalidPathIdMessage('page_id', params.page_id))
   const blocked = await policyBlock(ctx)
   if (blocked !== null) return blocked
-  const page = await readApiPage(ctx, id, apiLinks(ctx, request))
-  return page === null ? notFound('page', id) : v1Ok(page)
+  // 고른 속성만(API-6 — SDK 의 `filter_properties`) · 질의와 같은 두 모양을 받는다
+  const query = new URL(request.url).searchParams
+  const wanted = [...query.getAll('filter_properties'), ...query.getAll('filter_properties[]')]
+  const page = await readApiPageOnly(ctx, id, apiLinks(ctx, request), wanted)
+  if (page === null) return notFound('page', id)
+  if ('unknownProperty' in page) return invalid(`query failed validation: filter_properties — Could not find property with name or id: ${page.unknownProperty}`)
+  return v1Ok(page.json)
 }
 
 /** `POST /v1/pages` — 페이지 밑(`page_id`) · 데이터 소스(`data_source_id`) · 소스가 하나인 데이터베이스(`database_id`). */

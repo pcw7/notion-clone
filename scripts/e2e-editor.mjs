@@ -37717,6 +37717,219 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — SDK 호환 (API-6 · F-09-15)')) { try {
+      // 노션의 공식 SDK(`@notionhq/client` — devDependency · 판은 package.json)를 이 앱에 그대로 물린다(정본 §3.1 [보강 API-1] ③ ④ · 09 F-09-15).
+      // baseUrl 만 바꾼 Client 로 사용자 · 페이지 · 블록 · 데이터베이스 · 데이터 소스 · 질의 · 검색 · 코멘트를 돌고, SDK 의 쪽 넘기기 도우미
+      // (iteratePaginatedAPI · collectPaginatedAPI · collectAllDataSourceRows)가 우리 커서로 여러 쪽을 넘기는지, 오류가 SDK 의 APIResponseError
+      // 코드로 갈리는지 본다. 요청 제한(5초에 15번)에 걸리면 SDK 가 Retry-After 를 따라 다시 보낸다 — 그것도 호환의 일부다. 브라우저는 쓰지
+      // 않는다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const sdkMod = await import('@notionhq/client')
+      const sdk = sdkMod.default ?? sdkMod
+      const { APIErrorCode, APIResponseError, collectAllDataSourceRows, collectPaginatedAPI, iteratePaginatedAPI } = sdk
+      const { isFullBlock, isFullComment, isFullDatabase, isFullDataSource, isFullPage, isFullUser } = sdk
+      const pageMod = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const VERSION = '2025-09-03'
+      const mate = await joinAs(workspaceId, await createUser(`SDK 의 사람 ${stamp}`), 'member')
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-6 SDK e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const client = (options = {}) =>
+        new sdk.Client({ auth: apiToken, baseUrl: BASE, notionVersion: VERSION, logLevel: sdk.LogLevel.ERROR, ...options })
+      const notion = client()
+      const rt = (content) => [{ type: 'text', text: { content } }]
+      const plain = (runs) => (Array.isArray(runs) ? runs.map((r) => r.plain_text).join('') : null)
+      const caught = async (fn) => {
+        try {
+          await fn()
+          return null
+        } catch (e) {
+          return e
+        }
+      }
+
+      // 사용자
+      const me = await notion.users.me({})
+      check('★ SDK users.me — 토큰의 사람(person · isFullUser)',
+        me.object === 'user' && me.id === mate.userId && me.type === 'person' && isFullUser(me), JSON.stringify(me))
+      const people = await collectPaginatedAPI(notion.users.list, { page_size: 1 })
+      check('★ SDK users.list + collectPaginatedAPI(page_size 1) — 쪽을 넘겨 모두(나 · 소유자 · 겹침 없이)',
+        people.some((u) => u.id === mate.userId) && people.some((u) => u.id === ctx.userId) && new Set(people.map((u) => u.id)).size === people.length,
+        JSON.stringify(people.map((u) => u.id)))
+
+      // 페이지
+      const parent = await pageMod.createPage(mate.ctx, { title: [textRun(`SDK 부모 ${stamp}`)], privateTop: true })
+      const title = `SDK 페이지 ${stamp}`
+      const page = await notion.pages.create({
+        parent: { page_id: parent.id },
+        properties: { title: { title: rt(title) } },
+        children: [{ paragraph: { rich_text: rt('첫 문단') } }],
+      })
+      check('★ SDK pages.create(page_id · children) — isFullPage · 부모 page_id',
+        isFullPage(page) && page.parent?.type === 'page_id' && page.parent?.page_id === parent.id, JSON.stringify(page).slice(0, 400))
+      const read = await notion.pages.retrieve({ page_id: page.id })
+      const updated = await notion.pages.update({ page_id: page.id, icon: { type: 'emoji', emoji: '🧪' }, properties: { title: { title: rt(`${title} 고침`) } } })
+      const item = await notion.pages.properties.retrieve({ page_id: page.id, property_id: 'title' })
+      check('★ SDK pages.retrieve · pages.update(아이콘 · 제목) · pages.properties.retrieve(title — property_item 목록)',
+        plain(read.properties?.title?.title) === title && updated.icon?.emoji === '🧪' && plain(updated.properties?.title?.title) === `${title} 고침`
+          && item.object === 'list' && item.type === 'property_item' && item.results?.[0]?.title?.plain_text === `${title} 고침`,
+        JSON.stringify({ read: read.properties, item }).slice(0, 400))
+
+      // 블록
+      const appended = await notion.blocks.children.append({
+        block_id: page.id,
+        children: [
+          { object: 'block', type: 'heading_2', heading_2: { rich_text: rt('머리') } },
+          { to_do: { rich_text: rt('할 일'), checked: false } },
+          { bulleted_list_item: { rich_text: rt('지울 것') } },
+        ],
+      })
+      const [, todo, bullet] = appended.results ?? []
+      const children = await collectPaginatedAPI(notion.blocks.children.list, { block_id: page.id, page_size: 2 })
+      check('★ SDK blocks.children.append(셋) · blocks.children.list + collectPaginatedAPI(page_size 2 — 두 쪽) — 넷을 차례로',
+        appended.results?.length === 3 && appended.results.every(isFullBlock)
+          && JSON.stringify(children.map((b) => b.type)) === JSON.stringify(['paragraph', 'heading_2', 'to_do', 'bulleted_list_item']),
+        JSON.stringify(children.map((b) => b.type)))
+      const checked = await notion.blocks.update({ block_id: todo.id, to_do: { checked: true } })
+      const deleted = await notion.blocks.delete({ block_id: bullet.id })
+      const left = await collectPaginatedAPI(notion.blocks.children.list, { block_id: page.id })
+      check('★ SDK blocks.update(할 일의 체크) · blocks.delete — 지운 블록은 목록에서 빠진다',
+        checked.to_do?.checked === true && plain(checked.to_do?.rich_text) === '할 일' && deleted.id === bullet.id
+          && left.length === 3 && !left.some((b) => b.id === bullet.id),
+        JSON.stringify({ checked: checked.to_do, deleted: deleted.id, left: left.map((b) => b.type) }))
+
+      // 데이터베이스 · 데이터 소스 · 질의
+      const dbTitle = `SDK 표 ${stamp}`
+      const db = await notion.databases.create({
+        parent: { type: 'page_id', page_id: page.id },
+        title: rt(dbTitle),
+        initial_data_source: {
+          properties: { 이름: { title: {} }, 점수: { number: {} }, 단계: { select: { options: [{ name: '대기', color: 'gray' }, { name: '완료', color: 'green' }] } } },
+        },
+      })
+      const dsId = db.data_sources?.[0]?.id
+      const dbRead = await notion.databases.retrieve({ database_id: db.id })
+      const ds = await notion.dataSources.retrieve({ data_source_id: dsId })
+      check('★ SDK databases.create(인라인) · databases.retrieve · dataSources.retrieve — isFullDatabase · isFullDataSource · 스키마',
+        isFullDatabase(db) && db.is_inline === true && typeof dsId === 'string' && plain(dbRead.title) === dbTitle && dbRead.data_sources?.[0]?.id === dsId
+          && isFullDataSource(ds) && ds.properties?.['점수']?.type === 'number' && ds.properties?.['단계']?.type === 'select' && ds.properties?.['이름']?.type === 'title',
+        JSON.stringify({ db: db.id, ds: ds.properties }).slice(0, 400))
+
+      const scores = [5, 2, 9, 7, 1, 7, 4]
+      const rows = []
+      for (const [i, score] of scores.entries()) {
+        rows.push(await notion.pages.create({
+          parent: { data_source_id: dsId },
+          properties: { 이름: { title: rt(`행 ${i}`) }, 점수: { number: score }, 단계: { select: { name: i % 2 === 0 ? '대기' : '완료' } } },
+        }))
+      }
+      check('★ SDK pages.create(data_source_id · 속성) — 행 일곱 · 숫자 · 선택',
+        rows.length === 7 && rows.every((r) => r.parent?.type === 'data_source_id' && r.parent?.data_source_id === dsId)
+          && rows[2].properties?.['점수']?.number === 9 && rows[1].properties?.['단계']?.select?.name === '완료',
+        JSON.stringify(rows[1]).slice(0, 400))
+
+      const query = {
+        data_source_id: dsId,
+        filter: { property: '점수', number: { greater_than_or_equal_to: 4 } },
+        sorts: [{ property: '점수', direction: 'descending' }, { timestamp: 'created_time', direction: 'ascending' }],
+        page_size: 2,
+      }
+      const walked = []
+      for await (const row of iteratePaginatedAPI(notion.dataSources.query, query)) walked.push(row)
+      const collected = await collectPaginatedAPI(notion.dataSources.query, query)
+      const expected = [rows[2], rows[3], rows[5], rows[0], rows[6]].map((r) => r.id)
+      check('★ SDK dataSources.query 필터 + 정렬 + iteratePaginatedAPI · collectPaginatedAPI(page_size 2 — 세 쪽) — 9 · 7 · 7 · 5 · 4',
+        JSON.stringify(walked.map((r) => r.id)) === JSON.stringify(expected) && JSON.stringify(collected.map((r) => r.id)) === JSON.stringify(expected)
+          && walked.every(isFullPage),
+        JSON.stringify({ walked: walked.map((r) => r.properties?.['점수']?.number) }))
+      const all = await collectAllDataSourceRows(notion, { data_source_id: dsId, page_size: 3 })
+      const picked = await notion.pages.retrieve({ page_id: rows[0].id, filter_properties: [ds.properties['점수'].id] })
+      check('SDK collectAllDataSourceRows(created_time 정렬 · 세 쪽) — 일곱 · pages.retrieve 의 filter_properties — 고른 속성만',
+        all.length === 7 && new Set(all.map((r) => r.id)).size === 7 && JSON.stringify(Object.keys(picked.properties ?? {})) === JSON.stringify(['점수']),
+        JSON.stringify({ all: all.length, picked: Object.keys(picked.properties ?? {}) }))
+
+      // 검색 · 코멘트
+      const found = await notion.search({ query: title, filter: { property: 'object', value: 'page' } })
+      const comment = await notion.comments.create({ parent: { page_id: page.id }, rich_text: rt(`SDK 코멘트 ${stamp}`) })
+      const reply = await notion.comments.create({ discussion_id: comment.discussion_id, rich_text: rt('SDK 답글') })
+      const listed = await collectPaginatedAPI(notion.comments.list, { block_id: page.id, page_size: 1 })
+      check('★ SDK search(제목) · comments.create(스레드 · 답글) · comments.list + collectPaginatedAPI(page_size 1) — 둘 · 같은 스레드',
+        found.object === 'list' && found.results.some((r) => r.id === page.id)
+          && isFullComment(comment) && reply.discussion_id === comment.discussion_id && listed.length === 2
+          && listed.every((c) => c.discussion_id === comment.discussion_id) && plain(listed[1].rich_text) === 'SDK 답글',
+        JSON.stringify({ found: found.results?.map((r) => r.id), listed: listed.map((c) => plain(c.rich_text)) }))
+
+      // 오류 — SDK 의 APIResponseError · 코드
+      const missing = await caught(() => notion.pages.retrieve({ page_id: '00000000-0000-4000-8000-000000000000' }))
+      const bad = await caught(() => notion.pages.update({ page_id: rows[0].id, properties: { 없는속성: { number: 1 } } }))
+      check('★ SDK 오류 — 없는 페이지는 object_not_found(404 · request_id) · 모르는 속성은 validation_error(400)',
+        APIResponseError.isAPIResponseError(missing) && missing.code === APIErrorCode.ObjectNotFound && missing.status === 404 && typeof missing.request_id === 'string'
+          && APIResponseError.isAPIResponseError(bad) && bad.code === APIErrorCode.ValidationError && bad.status === 400,
+        JSON.stringify([missing?.code ?? String(missing), bad?.code ?? String(bad)]))
+      const shared = await pageMod.createPage(ctx, { title: [textRun(`SDK 공유 ${stamp}`)] })
+      const ownerSays = await createDiscussion(ctx, { pageId: shared.id, richText: [textRun('소유자의 코멘트')] })
+      if (!ownerSays.ok) throw new Error(`소유자의 코멘트를 달지 못했다: ${ownerSays.reason}`)
+      const theirs = await caught(() => notion.comments.update({ comment_id: ownerSays.commentId, rich_text: rt('남의 것') }))
+      check('★ SDK 오류 — 볼 수 있는 남의 코멘트를 고치면 restricted_resource(403)',
+        APIResponseError.isAPIResponseError(theirs) && theirs.code === APIErrorCode.RestrictedResource && theirs.status === 403,
+        String(theirs?.code ?? theirs))
+      const once = client({ retry: false })
+      const burst = await Promise.all(Array.from({ length: 20 }, () => caught(() => once.users.me({}))))
+      const limited = burst.find((e) => e !== null)
+      const recovered = await notion.users.me({})
+      check('★ SDK 오류 — 몰아 부르면 rate_limited(429 · Retry-After) · 재시도하는 Client 는 그만큼 기다렸다 지난다',
+        APIResponseError.isAPIResponseError(limited) && limited.code === APIErrorCode.RateLimited && limited.status === 429
+          && Number(limited.headers?.get?.('retry-after')) >= 1 && recovered.id === mate.userId,
+        String(limited?.code ?? limited))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('개발자 문서 (API-6 · F-09-15)')) { try {
+      // 개발자 문서(정본 §3.1 [보강 API-1] · 09 F-09-15) — 로그인 없이 열리는 공개 화면. 주소 표의 줄이 `/v1` 라우트 파일이 여는 것과 하나도
+      // 다르지 않은지(단위 시험과 같은 셈을 화면에서) · "노션과 다른 점" 절 · 예제의 주소가 이 앱의 공개 주소인지 본다. 설정 → 내 계정 →
+      // API 토큰의 "API 문서" 링크를 누르면 이 화면으로 간다. 브라우저 세션은 소유자 그대로다.
+      const { routeFileToPath, routeHandlers } = await import(new URL('../src/lib/api/endpoints.ts', import.meta.url).href)
+      const appDir = join(ROOT, 'src', 'app')
+      const routeFiles = (dir) => readdirSync(dir, { withFileTypes: true })
+        .flatMap((e) => (e.isDirectory() ? routeFiles(join(dir, e.name)) : e.name === 'route.ts' ? [join(dir, e.name)] : []))
+      const served = routeFiles(join(appDir, 'v1')).flatMap((file) => {
+        const path = routeFileToPath(file.slice(appDir.length + 1))
+        return path === null ? [] : routeHandlers(readFileSync(file, 'utf8')).map((r) => `${r.method} ${path}`)
+      }).sort()
+      const publicOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? BASE).origin
+
+      const anon = await fetch(`${BASE}/developers`, { redirect: 'manual' })
+      const anonHtml = await anon.text()
+      check('★ 로그인 없이 열린다 — 200 · 옮기지 않는다 · "API 문서"',
+        anon.status === 200 && anonHtml.includes('data-testid="developer-docs"') && anonHtml.includes('노션과 다른 점'),
+        `${anon.status} ${anon.headers.get('location') ?? ''}`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=account.api` })
+      await waitFor(`!!document.querySelector('[data-testid="api-token-docs-link"]')`, 15000)
+      await clickSelector('[data-testid="api-token-docs-link"]')
+      const opened = await waitFor(`location.pathname === '/developers' && !!document.querySelector('[data-testid="developer-docs"]')`, 15000)
+      check('★ 설정 → 내 계정 → API 토큰의 "API 문서" 링크가 문서를 연다', opened, String(await evaluate('location.href')))
+
+      const shown = await evaluate(`JSON.stringify({
+        title: document.title,
+        rows: [...document.querySelectorAll('[data-testid="api-endpoint-row"]')].map((tr) => tr.dataset.method + ' ' + tr.dataset.path).sort(),
+        diffTitle: document.querySelector('[data-testid="developer-docs-differences"] h2')?.textContent ?? null,
+        diffItems: document.querySelectorAll('[data-testid="developer-docs-differences"] li').length,
+        curl: document.querySelector('pre[aria-label="curl 예제"]')?.textContent ?? '',
+        sdk: document.querySelector('pre[aria-label="SDK 예제"]')?.textContent ?? '',
+      })`).then((s) => JSON.parse(s))
+      check('★ 제목 "API 문서" · 주소 표의 줄이 /v1 라우트 파일이 여는 것과 같다(메서드 · 주소 — 줄 수 같음)',
+        shown.title === 'API 문서 · notion-clone' && served.length >= 20 && shown.rows.length === served.length
+          && JSON.stringify(shown.rows) === JSON.stringify(served),
+        JSON.stringify({ title: shown.title, rows: shown.rows.length, served: served.length, missing: served.filter((s) => !shown.rows.includes(s)) }))
+      check('★ "노션과 다른 점" 절이 있다 · 예제는 이 앱의 공개 주소 · Bearer · Notion-Version 2025-09-03 · SDK 의 baseUrl',
+        shown.diffTitle === '노션과 다른 점' && shown.diffItems >= 10 && shown.curl.includes(`${publicOrigin}/v1/users/me`)
+          && shown.curl.includes('Authorization: Bearer') && shown.curl.includes('Notion-Version: 2025-09-03')
+          && shown.sdk.includes(`baseUrl: '${publicOrigin}'`) && shown.sdk.includes("notionVersion: '2025-09-03'"),
+        JSON.stringify({ diffTitle: shown.diffTitle, diffItems: shown.diffItems, curl: shown.curl, publicOrigin }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
