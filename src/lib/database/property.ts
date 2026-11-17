@@ -384,6 +384,19 @@ export async function addProperty(
   dataSourceId: string,
   input: AddPropertyInput,
 ): Promise<PropertyResult> {
+  return withCommandTransaction((tx) => addPropertyIn(tx, ctx, dataSourceId, input))
+}
+
+/**
+ * 같은 일을 **주어진 트랜잭션 안에서** 한다 — 공개 API 의 구조 쓰기(API-4b · `api/schema-writes.ts`)가 한 요청의 속성 변경을 한
+ * 트랜잭션에 묶는다(하나라도 거부되면 아무것도 바뀌지 않는다 — 부르는 쪽이 `withCommandTransaction` 이다). 아래의 `…In` 이 모두 같은 까닭이다.
+ */
+export async function addPropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: AddPropertyInput,
+): Promise<PropertyResult> {
   const name = normalizeName(input.name)
   if (name === null) return fail('invalid_name')
 
@@ -406,47 +419,45 @@ export async function addProperty(
     return fail('invalid_name')
   }
 
-  return withCommandTransaction(async (tx) => {
-    const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
-    if (isFailure(ds)) return ds
-    // U1 — DB 의 부분 UNIQUE 도 막지만 그쪽은 23505 를 던질 뿐이다. 이유를 말한다.
-    if (type === 'unique_id' && (await hasLiveUniqueId(tx, dataSourceId))) return fail('unique_id_exists')
+  const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+  if (isFailure(ds)) return ds
+  // U1 — DB 의 부분 UNIQUE 도 막지만 그쪽은 23505 를 던질 뿐이다. 이유를 말한다.
+  if (type === 'unique_id' && (await hasLiveUniqueId(tx, dataSourceId))) return fail('unique_id_exists')
 
-    // 검증 속성(VF-1) — 플랜 · 표에 하나 · 소유자 사람 속성을 같은 트랜잭션에서 잇는다(config 는 받지 않고 여기서 만든다).
-    let verificationConfig: Record<string, unknown> | null = null
-    if (type === 'verification') {
-      if (!(await entitlement(ctx.workspaceId, 'database.verification', tx))) return fail('plan_required')
-      if (await hasLiveVerification(tx, dataSourceId)) return fail('verification_exists')
-      const owner = await ensureVerificationOwner(tx, dataSourceId)
-      if (typeof owner !== 'string') return owner
-      verificationConfig = { owner_property_id: owner }
-    }
+  // 검증 속성(VF-1) — 플랜 · 표에 하나 · 소유자 사람 속성을 같은 트랜잭션에서 잇는다(config 는 받지 않고 여기서 만든다).
+  let verificationConfig: Record<string, unknown> | null = null
+  if (type === 'verification') {
+    if (!(await entitlement(ctx.workspaceId, 'database.verification', tx))) return fail('plan_required')
+    if (await hasLiveVerification(tx, dataSourceId)) return fail('verification_exists')
+    const owner = await ensureVerificationOwner(tx, dataSourceId)
+    if (typeof owner !== 'string') return owner
+    verificationConfig = { owner_property_id: owner }
+  }
 
-    const inserted = await insertPropertyIn(tx, dataSourceId, {
-      name,
-      type,
-      description: input.description ?? null,
-      // status 의 config 는 받지 않는다 — 기본 옵션 id 는 아래에서 만든 옵션에서 나온다.
-      config: verificationConfig ?? (type === 'status' ? {} : (input.config ?? {})),
-    })
-    if (isSchemaFailure(inserted)) return inserted
-    if (type === 'status') await seedStatus(tx, inserted)
-    // 버튼 — 속성마다 automation 하나(액션 0개). 실행 주체 판정이 아니라 기록이다 — 버튼은 누르는 사람으로 실행한다(정본 ③).
-    if (type === 'button') {
-      await tx.query(
-        `INSERT INTO automation (id, workspace_id, kind, host_property_id, created_by) VALUES ($1, $2, 'button_property', $3, $4)`,
-        [randomUUID(), ctx.workspaceId, inserted, ctx.userId],
-      )
-    }
-    if (type === 'unique_id') {
-      // 접두사를 안 보냈으면 그대로 둔다 — 지웠다 다시 더한 ID 프로퍼티가 옛 접두사를 되찾는다(번호와 같은 규칙 · 정본 ⑤).
-      if (prefix !== null && prefix.ok) await setUniqueIdPrefix(tx, dataSourceId, prefix.prefix)
-      await fillUniqueIds(tx, dataSourceId)
-    }
-
-    await bumpSchema(tx, dataSourceId)
-    return { ok: true, value: await readSchema(tx, dataSourceId) } as const
+  const inserted = await insertPropertyIn(tx, dataSourceId, {
+    name,
+    type,
+    description: input.description ?? null,
+    // status 의 config 는 받지 않는다 — 기본 옵션 id 는 아래에서 만든 옵션에서 나온다.
+    config: verificationConfig ?? (type === 'status' ? {} : (input.config ?? {})),
   })
+  if (isSchemaFailure(inserted)) return inserted
+  if (type === 'status') await seedStatus(tx, inserted)
+  // 버튼 — 속성마다 automation 하나(액션 0개). 실행 주체 판정이 아니라 기록이다 — 버튼은 누르는 사람으로 실행한다(정본 ③).
+  if (type === 'button') {
+    await tx.query(
+      `INSERT INTO automation (id, workspace_id, kind, host_property_id, created_by) VALUES ($1, $2, 'button_property', $3, $4)`,
+      [randomUUID(), ctx.workspaceId, inserted, ctx.userId],
+    )
+  }
+  if (type === 'unique_id') {
+    // 접두사를 안 보냈으면 그대로 둔다 — 지웠다 다시 더한 ID 프로퍼티가 옛 접두사를 되찾는다(번호와 같은 규칙 · 정본 ⑤).
+    if (prefix !== null && prefix.ok) await setUniqueIdPrefix(tx, dataSourceId, prefix.prefix)
+    await fillUniqueIds(tx, dataSourceId)
+  }
+
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
 /** 이 표에 살아 있는 검증 속성이 있는가(VF-1 ②). */
@@ -597,6 +608,17 @@ export async function updateProperty(
   propertyId: string,
   input: UpdatePropertyInput,
 ): Promise<PropertyResult> {
+  return withCommandTransaction((tx) => updatePropertyIn(tx, ctx, dataSourceId, propertyId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function updatePropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  input: UpdatePropertyInput,
+): Promise<PropertyResult> {
   const name = input.name === undefined ? undefined : normalizeName(input.name)
   if (input.name !== undefined && name === null) return fail('invalid_name')
   if (
@@ -610,68 +632,66 @@ export async function updateProperty(
   const prefix = input.prefix === undefined ? null : normalizeUniqueIdPrefix(input.prefix)
   if (prefix !== null && !prefix.ok) return fail('invalid_config')
 
-  return withCommandTransaction(async (tx) => {
-    const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
-    if (isFailure(ds)) return ds
+  const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+  if (isFailure(ds)) return ds
 
-    const target = await tx.queryMaybe<{ type: string }>(
-      `SELECT type FROM property
-        WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
-      [propertyId, dataSourceId],
+  const target = await tx.queryMaybe<{ type: string }>(
+    `SELECT type FROM property
+      WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+    [propertyId, dataSourceId],
+  )
+  if (target === null) return fail('not_found')
+
+  // 접두사는 ID 프로퍼티의 설정이다 — 저장은 data source 다(정본 ⑦). 다른 프로퍼티로 보내면 어느 칸의 설정인지 모호하다.
+  if (prefix !== null && target.type !== 'unique_id') return fail('invalid_config')
+
+  // relation · rollup 의 config 는 불변식이 걸린 설정이다(대상 표 · 짝 · 함수와 대상 타입). 통째로 덮어쓰는 이 길로는
+  // 받지 않는다 — 그 모듈의 명령(`relation.ts` · `rollup.ts`)이 검사하며 쓴다.
+  if (input.config !== undefined && !isMvpPropertyType(target.type)) return fail('invalid_config')
+
+  if (target.type === 'status' && input.config !== undefined) {
+    if (!(await isValidStatusConfig(tx, propertyId, input.config))) return fail('invalid_config')
+  }
+  // 기본 옵션(10n-21) — status 만 · 같은 칸을 두 길(config 와 이것)로 함께 쓰지 않는다
+  if (input.defaultOptionId !== undefined) {
+    if (target.type !== 'status' || input.config !== undefined) return fail('invalid_config')
+    if (!(await isValidStatusConfig(tx, propertyId, { default_option_id: input.defaultOptionId }))) return fail('invalid_config')
+  }
+  // status 의 config 는 기본 옵션 하나다(`isValidStatusConfig`) — 통째로 갈아 끼워도 잃는 키가 없다
+  const config = input.defaultOptionId !== undefined ? { default_option_id: input.defaultOptionId } : input.config
+
+  if (name !== undefined) {
+    const dup = await tx.queryMaybe<{ one: number }>(
+      `SELECT 1 AS one FROM property
+        WHERE data_source_id = $1 AND name = $2 AND id <> $3 AND deleted_at IS NULL`,
+      [dataSourceId, name, propertyId],
     )
-    if (target === null) return fail('not_found')
+    if (dup !== null) return fail('duplicate_name')
+  }
 
-    // 접두사는 ID 프로퍼티의 설정이다 — 저장은 data source 다(정본 ⑦). 다른 프로퍼티로 보내면 어느 칸의 설정인지 모호하다.
-    if (prefix !== null && target.type !== 'unique_id') return fail('invalid_config')
+  // 검사를 다 지난 뒤에 쓴다 — 접두사는 data source 의 칸이다.
+  if (prefix !== null && prefix.ok) await setUniqueIdPrefix(tx, dataSourceId, prefix.prefix)
+  await tx.query(
+    `UPDATE property
+        SET name = coalesce($3, name),
+            -- description 은 null 로 **지울 수 있어야** 하므로 coalesce 로
+            -- 접으면 안 된다. "안 보냈다"와 "비워라"를 구분한다.
+            description = CASE WHEN $4::boolean THEN $5 ELSE description END,
+            config = coalesce($6::jsonb, config),
+            updated_at = now()
+      WHERE id = $1 AND data_source_id = $2`,
+    [
+      propertyId,
+      dataSourceId,
+      name ?? null,
+      input.description !== undefined,
+      input.description ?? null,
+      config === undefined ? null : JSON.stringify(config),
+    ],
+  )
 
-    // relation · rollup 의 config 는 불변식이 걸린 설정이다(대상 표 · 짝 · 함수와 대상 타입). 통째로 덮어쓰는 이 길로는
-    // 받지 않는다 — 그 모듈의 명령(`relation.ts` · `rollup.ts`)이 검사하며 쓴다.
-    if (input.config !== undefined && !isMvpPropertyType(target.type)) return fail('invalid_config')
-
-    if (target.type === 'status' && input.config !== undefined) {
-      if (!(await isValidStatusConfig(tx, propertyId, input.config))) return fail('invalid_config')
-    }
-    // 기본 옵션(10n-21) — status 만 · 같은 칸을 두 길(config 와 이것)로 함께 쓰지 않는다
-    if (input.defaultOptionId !== undefined) {
-      if (target.type !== 'status' || input.config !== undefined) return fail('invalid_config')
-      if (!(await isValidStatusConfig(tx, propertyId, { default_option_id: input.defaultOptionId }))) return fail('invalid_config')
-    }
-    // status 의 config 는 기본 옵션 하나다(`isValidStatusConfig`) — 통째로 갈아 끼워도 잃는 키가 없다
-    const config = input.defaultOptionId !== undefined ? { default_option_id: input.defaultOptionId } : input.config
-
-    if (name !== undefined) {
-      const dup = await tx.queryMaybe<{ one: number }>(
-        `SELECT 1 AS one FROM property
-          WHERE data_source_id = $1 AND name = $2 AND id <> $3 AND deleted_at IS NULL`,
-        [dataSourceId, name, propertyId],
-      )
-      if (dup !== null) return fail('duplicate_name')
-    }
-
-    // 검사를 다 지난 뒤에 쓴다 — 접두사는 data source 의 칸이다.
-    if (prefix !== null && prefix.ok) await setUniqueIdPrefix(tx, dataSourceId, prefix.prefix)
-    await tx.query(
-      `UPDATE property
-          SET name = coalesce($3, name),
-              -- description 은 null 로 **지울 수 있어야** 하므로 coalesce 로
-              -- 접으면 안 된다. "안 보냈다"와 "비워라"를 구분한다.
-              description = CASE WHEN $4::boolean THEN $5 ELSE description END,
-              config = coalesce($6::jsonb, config),
-              updated_at = now()
-        WHERE id = $1 AND data_source_id = $2`,
-      [
-        propertyId,
-        dataSourceId,
-        name ?? null,
-        input.description !== undefined,
-        input.description ?? null,
-        config === undefined ? null : JSON.stringify(config),
-      ],
-    )
-
-    await bumpSchema(tx, dataSourceId)
-    return { ok: true, value: await readSchema(tx, dataSourceId) } as const
-  })
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
 // ── 순서 ──────────────────────────────────────────────────────────────
@@ -747,43 +767,52 @@ export async function deleteProperty(
   propertyId: string,
   expectedVersion?: string,
 ): Promise<PropertyResult> {
-  return withCommandTransaction(async (tx) => {
-    const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
-    if (isFailure(ds)) return ds
+  return withCommandTransaction((tx) => deletePropertyIn(tx, ctx, dataSourceId, propertyId, expectedVersion))
+}
 
-    const target = await tx.queryMaybe<{ type: string; config: Record<string, unknown> | null }>(
-      `SELECT type, config FROM property
-        WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
-      [propertyId, dataSourceId],
+/** 같은 일을 주어진 트랜잭션 안에서(`addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function deletePropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  expectedVersion?: string,
+): Promise<PropertyResult> {
+  const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
+  if (isFailure(ds)) return ds
+
+  const target = await tx.queryMaybe<{ type: string; config: Record<string, unknown> | null }>(
+    `SELECT type, config FROM property
+      WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+    [propertyId, dataSourceId],
+  )
+  if (target === null) return fail('not_found')
+  // 하위 항목 짝의 한쪽만 지우면 짝이 깨진다(2b-1) — 지우는 길은 "하위 항목 끄기"다(`sub-items.ts`).
+  if (target.type === 'relation' && target.config !== null && ('sub_items' in target.config || 'dependencies' in target.config)) {
+    return fail('managed_property')
+  }
+  // API 문서 명시: title 은 삭제할 수 없다. DB 의 `ck_property_title_alive` 도
+  // 막지만 그쪽은 CHECK 위반을 던질 뿐이라 이유가 화면에 닿지 않는다.
+  if (target.type === 'title') return fail('title_immutable')
+  // 검증 속성이 가리키는 소유자 속성은 지우지 못한다(VF-1 ②) — 검증 속성을 먼저 지운다. 검증 속성 자신은 지울 수 있다.
+  if (
+    await tx.queryMaybe<{ one: number }>(
+      `SELECT 1 AS one FROM property
+        WHERE data_source_id = $1 AND type = 'verification' AND deleted_at IS NULL AND config ->> 'owner_property_id' = $2`,
+      [dataSourceId, propertyId],
     )
-    if (target === null) return fail('not_found')
-    // 하위 항목 짝의 한쪽만 지우면 짝이 깨진다(2b-1) — 지우는 길은 "하위 항목 끄기"다(`sub-items.ts`).
-    if (target.type === 'relation' && target.config !== null && ('sub_items' in target.config || 'dependencies' in target.config)) {
-      return fail('managed_property')
-    }
-    // API 문서 명시: title 은 삭제할 수 없다. DB 의 `ck_property_title_alive` 도
-    // 막지만 그쪽은 CHECK 위반을 던질 뿐이라 이유가 화면에 닿지 않는다.
-    if (target.type === 'title') return fail('title_immutable')
-    // 검증 속성이 가리키는 소유자 속성은 지우지 못한다(VF-1 ②) — 검증 속성을 먼저 지운다. 검증 속성 자신은 지울 수 있다.
-    if (
-      await tx.queryMaybe<{ one: number }>(
-        `SELECT 1 AS one FROM property
-          WHERE data_source_id = $1 AND type = 'verification' AND deleted_at IS NULL AND config ->> 'owner_property_id' = $2`,
-        [dataSourceId, propertyId],
-      )
-    ) {
-      return fail('owner_linked')
-    }
+  ) {
+    return fail('owner_linked')
+  }
 
-    await tx.query(
-      `UPDATE property SET deleted_at = now(), updated_at = now()
-        WHERE id = $1 AND data_source_id = $2`,
-      [propertyId, dataSourceId],
-    )
+  await tx.query(
+    `UPDATE property SET deleted_at = now(), updated_at = now()
+      WHERE id = $1 AND data_source_id = $2`,
+    [propertyId, dataSourceId],
+  )
 
-    await bumpSchema(tx, dataSourceId)
-    return { ok: true, value: await readSchema(tx, dataSourceId) } as const
-  })
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
 /**
@@ -903,78 +932,87 @@ export async function addSelectOption(
   propertyId: string,
   input: AddSelectOptionInput,
 ): Promise<PropertyResult<SelectOptionResult>> {
+  return withCommandTransaction((tx) => addSelectOptionIn(tx, ctx, dataSourceId, propertyId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function addSelectOptionIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  input: AddSelectOptionInput,
+): Promise<PropertyResult<SelectOptionResult>> {
   const name = normalizeName(input.name)
   if (name === null) return fail('invalid_name')
   if (input.color !== undefined && !isOptionColor(input.color)) return fail('invalid_color')
   if (input.group !== undefined && !isStatusGroupKind(input.group)) return fail('invalid_group')
 
-  return withCommandTransaction(async (tx) => {
-    const ds = await lockSchema(tx, ctx, dataSourceId)
-    if (isFailure(ds)) return ds
+  const ds = await lockSchema(tx, ctx, dataSourceId)
+  if (isFailure(ds)) return ds
 
-    const target = await tx.queryMaybe<{ type: string }>(
-      `SELECT type FROM property
-        WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
-      [propertyId, dataSourceId],
-    )
-    if (target === null) return fail('not_found')
-    // select · status · multi_select 가 같은 레지스트리를 쓴다(0013 머리말 · PT-1)
-    if (!hasOptionRegistry(target.type)) return fail('unsupported_type')
-    // 불변식 SG3: status 옵션은 그룹이 있고, 그 밖의 옵션은 없다. DB 트리거도 막지만 이유를 말해 주는 쪽이 낫다.
-    if (target.type !== 'status' && input.group !== undefined) return fail('invalid_group')
+  const target = await tx.queryMaybe<{ type: string }>(
+    `SELECT type FROM property
+      WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+    [propertyId, dataSourceId],
+  )
+  if (target === null) return fail('not_found')
+  // select · status · multi_select 가 같은 레지스트리를 쓴다(0013 머리말 · PT-1)
+  if (!hasOptionRegistry(target.type)) return fail('unsupported_type')
+  // 불변식 SG3: status 옵션은 그룹이 있고, 그 밖의 옵션은 없다. DB 트리거도 막지만 이유를 말해 주는 쪽이 낫다.
+  if (target.type !== 'status' && input.group !== undefined) return fail('invalid_group')
 
-    const groupKind: StatusGroupKind | null = target.type === 'status' ? (input.group ?? 'todo') : null
-    const group =
-      groupKind === null
-        ? null
-        : await tx.queryOne<{ id: string }>(
-            `SELECT id FROM status_group WHERE property_id = $1 AND kind = $2::status_group_kind`,
-            [propertyId, groupKind],
-          )
+  const groupKind: StatusGroupKind | null = target.type === 'status' ? (input.group ?? 'todo') : null
+  const group =
+    groupKind === null
+      ? null
+      : await tx.queryOne<{ id: string }>(
+          `SELECT id FROM status_group WHERE property_id = $1 AND kind = $2::status_group_kind`,
+          [propertyId, groupKind],
+        )
 
-    const stats = await tx.queryOne<{ n: string; last: string | null }>(
-      `SELECT count(*) AS n, max(order_idx) AS last FROM select_option WHERE property_id = $1`,
-      [propertyId],
-    )
-    // F-03-04 현실적 대안: "색상은 고정 10색 팔레트 라운드로빈". 개수로 돌리므로
-    // 결정적이다 — 무작위면 같은 조작을 두 번 했을 때 테스트가 다른 색을 본다.
-    const color = input.color ?? OPTION_COLORS[Number(stats.n) % OPTION_COLORS.length]
+  const stats = await tx.queryOne<{ n: string; last: string | null }>(
+    `SELECT count(*) AS n, max(order_idx) AS last FROM select_option WHERE property_id = $1`,
+    [propertyId],
+  )
+  // F-03-04 현실적 대안: "색상은 고정 10색 팔레트 라운드로빈". 개수로 돌리므로
+  // 결정적이다 — 무작위면 같은 조작을 두 번 했을 때 테스트가 다른 색을 본다.
+  const color = input.color ?? OPTION_COLORS[Number(stats.n) % OPTION_COLORS.length]
 
-    const inserted = await tx.queryMaybe<{ id: string; name: string; color: string }>(
-      `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
-       VALUES ($1, $2, $3, $4::option_color, $5, $6)
-       ON CONFLICT (property_id, lower(name)) DO NOTHING
-       RETURNING id, name, color::text AS color`,
-      [randomUUID(), propertyId, name, color, group?.id ?? null, orderKeyBetween(stats.last, null)],
-    )
+  const inserted = await tx.queryMaybe<{ id: string; name: string; color: string }>(
+    `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+     VALUES ($1, $2, $3, $4::option_color, $5, $6)
+     ON CONFLICT (property_id, lower(name)) DO NOTHING
+     RETURNING id, name, color::text AS color`,
+    [randomUUID(), propertyId, name, color, group?.id ?? null, orderKeyBetween(stats.last, null)],
+  )
 
-    if (inserted !== null) {
-      return {
-        ok: true,
-        value: {
-          option: toSelectOption({ ...inserted, group_kind: groupKind }),
-          created: true,
-          schemaVersion: await bumpSchema(tx, dataSourceId),
-        },
-      } as const
-    }
-
-    // 같은 이름이 이미 있다 — 그것으로 수렴한다. 바뀐 것이 없으므로 버전을 올리지
-    // 않는다(`moveProperty` 의 자기 앞 이동과 같은 규칙: 올리면 남의 낙관적 잠금을
-    // 헛되게 깨뜨린다).
-    // status 면 있는 옵션의 **그룹도 그대로** 돌려준다 — 요청한 그룹으로 옮기지 않는다(옮기기는 다른 명령이다).
-    const existing = await tx.queryOne<{ id: string; name: string; color: string; group_kind: string | null }>(
-      `SELECT o.id, o.name, o.color::text AS color, g.kind::text AS group_kind
-         FROM select_option o
-         LEFT JOIN status_group g ON g.id = o.group_id
-        WHERE o.property_id = $1 AND lower(o.name) = lower($2)`,
-      [propertyId, name],
-    )
+  if (inserted !== null) {
     return {
       ok: true,
-      value: { option: toSelectOption(existing), created: false, schemaVersion: ds.schema_version },
+      value: {
+        option: toSelectOption({ ...inserted, group_kind: groupKind }),
+        created: true,
+        schemaVersion: await bumpSchema(tx, dataSourceId),
+      },
     } as const
-  })
+  }
+
+  // 같은 이름이 이미 있다 — 그것으로 수렴한다. 바뀐 것이 없으므로 버전을 올리지
+  // 않는다(`moveProperty` 의 자기 앞 이동과 같은 규칙: 올리면 남의 낙관적 잠금을
+  // 헛되게 깨뜨린다).
+  // status 면 있는 옵션의 **그룹도 그대로** 돌려준다 — 요청한 그룹으로 옮기지 않는다(옮기기는 다른 명령이다).
+  const existing = await tx.queryOne<{ id: string; name: string; color: string; group_kind: string | null }>(
+    `SELECT o.id, o.name, o.color::text AS color, g.kind::text AS group_kind
+       FROM select_option o
+       LEFT JOIN status_group g ON g.id = o.group_id
+      WHERE o.property_id = $1 AND lower(o.name) = lower($2)`,
+    [propertyId, name],
+  )
+  return {
+    ok: true,
+    value: { option: toSelectOption(existing), created: false, schemaVersion: ds.schema_version },
+  } as const
 }
 
 // ── 옵션 고치기 · 지우기 (10n-6 · 정본 §3.5 [보강] 옵션 고치기 · 지우기) ─────────────
@@ -1035,6 +1073,18 @@ export async function updateSelectOption(
   optionId: string,
   input: UpdateSelectOptionInput,
 ): Promise<PropertyResult<UpdatedSelectOption>> {
+  return withCommandTransaction((tx) => updateSelectOptionIn(tx, ctx, dataSourceId, propertyId, optionId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function updateSelectOptionIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+  input: UpdateSelectOptionInput,
+): Promise<PropertyResult<UpdatedSelectOption>> {
   if (input.name === undefined && input.color === undefined && input.group === undefined) return fail('invalid_name')
   const name = input.name === undefined ? undefined : normalizeName(input.name)
   if (name === null) return fail('invalid_name')
@@ -1042,51 +1092,49 @@ export async function updateSelectOption(
   if (input.group !== undefined && !isStatusGroupKind(input.group)) return fail('invalid_group')
   if (!isUuid(optionId)) return fail('not_found')
 
-  return withCommandTransaction(async (tx) => {
-    const ds = await lockSchema(tx, ctx, dataSourceId)
-    if (isFailure(ds)) return ds
-    const found = await optionOf(tx, dataSourceId, propertyId, optionId)
-    if (isSchemaFailure(found)) return found
-    const current = found.option
-    // 그룹은 status 옵션에만 있다(SG3) — select 옵션에 주면 거부한다
-    if (input.group !== undefined && found.type !== 'status') return fail('invalid_group')
+  const ds = await lockSchema(tx, ctx, dataSourceId)
+  if (isFailure(ds)) return ds
+  const found = await optionOf(tx, dataSourceId, propertyId, optionId)
+  if (isSchemaFailure(found)) return found
+  const current = found.option
+  // 그룹은 status 옵션에만 있다(SG3) — select 옵션에 주면 거부한다
+  if (input.group !== undefined && found.type !== 'status') return fail('invalid_group')
 
-    const nextName = name ?? current.name
-    const nextColor = (input.color as OptionColor | undefined) ?? current.color
-    const nextGroup = (input.group as StatusGroupKind | undefined) ?? (current.group_kind as StatusGroupKind | null)
-    const regroup = nextGroup !== current.group_kind
-    if (nextName === current.name && nextColor === current.color && !regroup) {
-      return { ok: true, value: { option: toSelectOption(current), schemaVersion: ds.schema_version } } as const
-    }
-    if (nextName.toLowerCase() !== current.name.toLowerCase()) {
-      const taken = await tx.queryMaybe<{ one: number }>(
-        `SELECT 1 AS one FROM select_option WHERE property_id = $1 AND lower(name) = lower($2) AND id <> $3`,
-        [propertyId, nextName, optionId],
-      )
-      if (taken !== null) return fail('duplicate_name')
-    }
-    // 그룹을 바꾸면 새 그룹의 맨 뒤 — 순서 키를 그 속성의 맨 뒤로(목록 · 보드의 열은 그룹 → 순서 키로 읽는다 · 화면의 `insertOption` 과 같은 자리)
-    const placed = regroup
-      ? await (async () => {
-          const group = await tx.queryOne<{ id: string }>(
-            `SELECT id FROM status_group WHERE property_id = $1 AND kind = $2::status_group_kind`,
-            [propertyId, nextGroup],
-          )
-          const last = await tx.queryOne<{ last: string | null }>(`SELECT max(order_idx) AS last FROM select_option WHERE property_id = $1`, [propertyId])
-          return { groupId: group.id, orderIdx: orderKeyBetween(last.last, null) }
-        })()
-      : null
-    const updated = await tx.queryOne<{ id: string; name: string; color: string }>(
-      `UPDATE select_option SET name = $2, color = $3::option_color,
-                               group_id = coalesce($4::uuid, group_id), order_idx = coalesce($5, order_idx)
-        WHERE id = $1 RETURNING id, name, color::text AS color`,
-      [optionId, nextName, nextColor, placed?.groupId ?? null, placed?.orderIdx ?? null],
+  const nextName = name ?? current.name
+  const nextColor = (input.color as OptionColor | undefined) ?? current.color
+  const nextGroup = (input.group as StatusGroupKind | undefined) ?? (current.group_kind as StatusGroupKind | null)
+  const regroup = nextGroup !== current.group_kind
+  if (nextName === current.name && nextColor === current.color && !regroup) {
+    return { ok: true, value: { option: toSelectOption(current), schemaVersion: ds.schema_version } } as const
+  }
+  if (nextName.toLowerCase() !== current.name.toLowerCase()) {
+    const taken = await tx.queryMaybe<{ one: number }>(
+      `SELECT 1 AS one FROM select_option WHERE property_id = $1 AND lower(name) = lower($2) AND id <> $3`,
+      [propertyId, nextName, optionId],
     )
-    return {
-      ok: true,
-      value: { option: toSelectOption({ ...updated, group_kind: nextGroup }), schemaVersion: await bumpSchema(tx, dataSourceId) },
-    } as const
-  })
+    if (taken !== null) return fail('duplicate_name')
+  }
+  // 그룹을 바꾸면 새 그룹의 맨 뒤 — 순서 키를 그 속성의 맨 뒤로(목록 · 보드의 열은 그룹 → 순서 키로 읽는다 · 화면의 `insertOption` 과 같은 자리)
+  const placed = regroup
+    ? await (async () => {
+        const group = await tx.queryOne<{ id: string }>(
+          `SELECT id FROM status_group WHERE property_id = $1 AND kind = $2::status_group_kind`,
+          [propertyId, nextGroup],
+        )
+        const last = await tx.queryOne<{ last: string | null }>(`SELECT max(order_idx) AS last FROM select_option WHERE property_id = $1`, [propertyId])
+        return { groupId: group.id, orderIdx: orderKeyBetween(last.last, null) }
+      })()
+    : null
+  const updated = await tx.queryOne<{ id: string; name: string; color: string }>(
+    `UPDATE select_option SET name = $2, color = $3::option_color,
+                             group_id = coalesce($4::uuid, group_id), order_idx = coalesce($5, order_idx)
+      WHERE id = $1 RETURNING id, name, color::text AS color`,
+    [optionId, nextName, nextColor, placed?.groupId ?? null, placed?.orderIdx ?? null],
+  )
+  return {
+    ok: true,
+    value: { option: toSelectOption({ ...updated, group_kind: nextGroup }), schemaVersion: await bumpSchema(tx, dataSourceId) },
+  } as const
 }
 
 export type DeletedSelectOption = {
@@ -1115,75 +1163,84 @@ export async function deleteSelectOption(
   propertyId: string,
   optionId: string,
 ): Promise<PropertyResult<DeletedSelectOption>> {
+  return withCommandTransaction((tx) => deleteSelectOptionIn(tx, ctx, dataSourceId, propertyId, optionId))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function deleteSelectOptionIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+): Promise<PropertyResult<DeletedSelectOption>> {
   if (!isUuid(optionId)) return fail('not_found')
 
-  return withCommandTransaction(async (tx) => {
-    const ds = await lockSchema(tx, ctx, dataSourceId)
-    if (isFailure(ds)) return ds
-    const found = await optionOf(tx, dataSourceId, propertyId, optionId)
-    if (isSchemaFailure(found)) return found
+  const ds = await lockSchema(tx, ctx, dataSourceId)
+  if (isFailure(ds)) return ds
+  const found = await optionOf(tx, dataSourceId, propertyId, optionId)
+  if (isSchemaFailure(found)) return found
 
-    await tx.query(`DELETE FROM select_option WHERE id = $1`, [optionId])
-    // 다중 선택은 칸을 비우지 않고 그 id 만 뺀다(PT-1 ① — 같은 명령의 다중 갈래). 사이드카(공백으로 이은 id)도 다시 쓴다
-    const cleared =
-      found.type === 'multi_select'
-        ? await tx.query<{ page_id: string }>(
-            `UPDATE page_property_value v
-                SET value = jsonb_build_object('type', 'multi_select', 'multi_select', kept.list),
-                    text_value = kept.ids, updated_at = now()
-               FROM (
-                 SELECT w.page_id,
-                        coalesce(jsonb_agg(e.x ORDER BY e.n) FILTER (WHERE e.x ->> 'id' <> $2), '[]'::jsonb) AS list,
-                        nullif(string_agg(e.x ->> 'id', ' ' ORDER BY e.n) FILTER (WHERE e.x ->> 'id' <> $2), '') AS ids
-                   FROM page_property_value w
-                  CROSS JOIN LATERAL jsonb_array_elements(w.value -> 'multi_select') WITH ORDINALITY e(x, n)
-                  WHERE w.property_id = $1
-                    AND w.value -> 'multi_select' @> jsonb_build_array(jsonb_build_object('id', $2::text))
-                  GROUP BY w.page_id
-               ) kept
-              WHERE v.property_id = $1 AND v.page_id = kept.page_id
-              RETURNING v.page_id`,
-            [propertyId, optionId],
-          )
-        : await tx.query<{ page_id: string }>(
-            `UPDATE page_property_value
-                SET value = $3::jsonb, num_value = NULL, text_value = NULL, date_start = NULL, date_end = NULL, bool_value = NULL,
-                    updated_at = now()
-              WHERE property_id = $1 AND text_value = $2
-              RETURNING page_id`,
-            [propertyId, optionId, JSON.stringify(emptyValue(found.type as MvpPropertyType))],
-          )
-    await tx.query(
-      `DELETE FROM row_position WHERE group_key = $2 AND view_id IN (SELECT id FROM view WHERE data_source_id = $1)`,
-      [dataSourceId, optionId],
+  await tx.query(`DELETE FROM select_option WHERE id = $1`, [optionId])
+  // 다중 선택은 칸을 비우지 않고 그 id 만 뺀다(PT-1 ① — 같은 명령의 다중 갈래). 사이드카(공백으로 이은 id)도 다시 쓴다
+  const cleared =
+    found.type === 'multi_select'
+      ? await tx.query<{ page_id: string }>(
+          `UPDATE page_property_value v
+              SET value = jsonb_build_object('type', 'multi_select', 'multi_select', kept.list),
+                  text_value = kept.ids, updated_at = now()
+             FROM (
+               SELECT w.page_id,
+                      coalesce(jsonb_agg(e.x ORDER BY e.n) FILTER (WHERE e.x ->> 'id' <> $2), '[]'::jsonb) AS list,
+                      nullif(string_agg(e.x ->> 'id', ' ' ORDER BY e.n) FILTER (WHERE e.x ->> 'id' <> $2), '') AS ids
+                 FROM page_property_value w
+                CROSS JOIN LATERAL jsonb_array_elements(w.value -> 'multi_select') WITH ORDINALITY e(x, n)
+                WHERE w.property_id = $1
+                  AND w.value -> 'multi_select' @> jsonb_build_array(jsonb_build_object('id', $2::text))
+                GROUP BY w.page_id
+             ) kept
+            WHERE v.property_id = $1 AND v.page_id = kept.page_id
+            RETURNING v.page_id`,
+          [propertyId, optionId],
+        )
+      : await tx.query<{ page_id: string }>(
+          `UPDATE page_property_value
+              SET value = $3::jsonb, num_value = NULL, text_value = NULL, date_start = NULL, date_end = NULL, bool_value = NULL,
+                  updated_at = now()
+            WHERE property_id = $1 AND text_value = $2
+            RETURNING page_id`,
+          [propertyId, optionId, JSON.stringify(emptyValue(found.type as MvpPropertyType))],
+        )
+  await tx.query(
+    `DELETE FROM row_position WHERE group_key = $2 AND view_id IN (SELECT id FROM view WHERE data_source_id = $1)`,
+    [dataSourceId, optionId],
+  )
+
+  let defaultOptionId: string | null | undefined
+  if (found.type === 'status' && found.config?.default_option_id === optionId) {
+    const next = await tx.queryMaybe<{ id: string }>(
+      `SELECT o.id FROM select_option o
+         LEFT JOIN status_group g ON g.id = o.group_id
+        WHERE o.property_id = $1
+        ORDER BY g.kind NULLS FIRST, o.order_idx, o.id
+        LIMIT 1`,
+      [propertyId],
     )
+    defaultOptionId = next?.id ?? null
+    await tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [
+      propertyId,
+      JSON.stringify({ default_option_id: defaultOptionId }),
+    ])
+  }
 
-    let defaultOptionId: string | null | undefined
-    if (found.type === 'status' && found.config?.default_option_id === optionId) {
-      const next = await tx.queryMaybe<{ id: string }>(
-        `SELECT o.id FROM select_option o
-           LEFT JOIN status_group g ON g.id = o.group_id
-          WHERE o.property_id = $1
-          ORDER BY g.kind NULLS FIRST, o.order_idx, o.id
-          LIMIT 1`,
-        [propertyId],
-      )
-      defaultOptionId = next?.id ?? null
-      await tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [
-        propertyId,
-        JSON.stringify({ default_option_id: defaultOptionId }),
-      ])
-    }
-
-    return {
-      ok: true,
-      value: {
-        clearedCells: cleared.length,
-        ...(defaultOptionId !== undefined ? { defaultOptionId } : {}),
-        schemaVersion: await bumpSchema(tx, dataSourceId),
-      },
-    } as const
-  })
+  return {
+    ok: true,
+    value: {
+      clearedCells: cleared.length,
+      ...(defaultOptionId !== undefined ? { defaultOptionId } : {}),
+      schemaVersion: await bumpSchema(tx, dataSourceId),
+    },
+  } as const
 }
 
 /**

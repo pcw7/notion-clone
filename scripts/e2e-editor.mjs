@@ -37523,6 +37523,102 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 데이터베이스 만들기 · 고치기 (API-4b · F-09-01)')) { try {
+      // 공개 API 의 구조 쓰기(정본 §3.1 [보강 API-1] ③ ⑤ ⑨ · 09 F-09-01). 새 멤버가 토큰을 만들고 자기 개인 페이지를 **편집기로 열어 둔 채**
+      // API 로 그 밑에 인라인 데이터베이스를 만든다(본문 세션 · 출처 api — 열린 편집기에 나타난다). 첫 행을 API-2 로 하나 두고(행이 없으면
+      // 본문의 표가 머리를 그리지 않는다) 데이터 소스를 PATCH 해 속성 이름을 바꾸고 ·
+      // 선택 옵션을 더하고 · 숫자 속성을 더한 뒤, 다시 불러온 본문의 표 머리가 새 이름 · 새 열을 그리는지 본다. 끝에 API-2 로 새 속성을 쓴
+      // 행을 만들고 표에 그 행이 그 값으로 서는지 본다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const pageMod = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const VERSION = '2025-09-03'
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`API 구조의 사람 ${stamp}`), 'member')
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-4b e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const v1 = async (method, path, body) => {
+        const res = await fetch(`${BASE}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${apiToken}`, 'notion-version': VERSION, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const rt = (content) => [{ type: 'text', text: { content } }]
+      const plain = (runs) => (Array.isArray(runs) ? runs.map((r) => r.plain_text).join('') : null)
+      const page = await pageMod.createPage(mate.ctx, { title: [textRun(`API 구조 ${stamp}`)], privateTop: true })
+      const tableName = `API 표 ${stamp}`
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page.id}` })
+        const opened = await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+        check('전제 — 개인 페이지를 편집기로 열었고 고칠 수 있다(협업 연결)', opened)
+
+        const created = await v1('POST', '/v1/databases', {
+          parent: { type: 'page_id', page_id: page.id },
+          title: rt(tableName),
+          initial_data_source: { properties: { '할 일': { title: {} }, 단계: { select: { options: [{ name: '대기', color: 'gray' }] } } } },
+        })
+        const dbId = created.body?.id
+        const dsId = created.body?.data_sources?.[0]?.id
+        check('★ POST /v1/databases — 200 database 객체 · 페이지 밑 · 인라인 · 이름 · 데이터 소스 하나',
+          created.status === 200 && created.body?.object === 'database' && created.body?.parent?.page_id === page.id
+            && created.body?.is_inline === true && plain(created.body?.title) === tableName && typeof dsId === 'string',
+          JSON.stringify(created.body).slice(0, 600))
+
+        const BOX = `[data-block-id="${dbId}"] .blk-database-preview`
+        const headers = () => evaluate(`JSON.stringify([...document.querySelectorAll('${BOX} th')].map((e) => e.textContent))`)
+        check('★ 열린 편집기에 인라인 데이터베이스가 나타난다(본문 세션 — 새로고침 없이)',
+          await waitFor(`document.querySelector('${BOX}')?.dataset.state === 'ready'`, 15000), await headers())
+
+        // 행이 있어야 본문의 표가 머리를 그린다(비면 "비어 있습니다") — 첫 행을 옛 이름의 속성으로
+        const first = await v1('POST', '/v1/pages', {
+          parent: { data_source_id: dsId },
+          properties: { '할 일': { title: rt('API 첫 행') }, 단계: { select: { name: '대기' } } },
+        })
+        if (first.status !== 200) throw new Error(`첫 행을 만들지 못했다: ${first.status} ${first.body?.message}`)
+
+        const patched = await v1('PATCH', `/v1/data_sources/${dsId}`, {
+          properties: { 단계: { name: '진행 단계', select: { options: [{ name: '대기' }, { name: '완료', color: 'green' }] } }, 점수: { number: {} } },
+        })
+        const options = (patched.body?.properties?.['진행 단계']?.select?.options ?? []).map((o) => `${o.name}:${o.color}`)
+        check('★ PATCH /v1/data_sources — 이름 바꾸기 · 옵션 더하기 · 숫자 속성 더하기가 한 요청으로',
+          patched.status === 200 && JSON.stringify(options) === JSON.stringify(['대기:gray', '완료:green'])
+            && patched.body?.properties?.['점수']?.type === 'number' && patched.body?.properties?.['단계'] === undefined,
+          JSON.stringify(patched.body).slice(0, 600))
+
+        // 다시 불러온 문서의 표를 기다린다 — 이동 직후에는 옛 문서의 표가 아직 'ready' 다(새 열 셋으로 가른다)
+        await evaluate(`window.__api4bMark = ${stamp}`)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page.id}` })
+        await waitFor(`window.__api4bMark !== ${stamp} && document.querySelector('${BOX}')?.dataset.state === 'ready'
+          && document.querySelectorAll('${BOX} th').length === 3`, 15000)
+        const seen = JSON.parse(await headers())
+        const firstLine = await evaluate(`document.querySelector('${BOX} tbody tr[data-row-id="${first.body?.id}"]')?.textContent ?? null`)
+        check('★ 본문의 표 머리가 새 이름 · 새 열을 그린다(할 일 · 진행 단계 · 점수) · 첫 행의 옵션은 이름이 바뀐 열에 그대로',
+          JSON.stringify(seen) === JSON.stringify(['할 일', '진행 단계', '점수']) && (firstLine ?? '').includes('대기'),
+          JSON.stringify({ seen, firstLine }))
+
+        const row = await v1('POST', '/v1/pages', {
+          parent: { data_source_id: dsId },
+          properties: { '할 일': { title: rt('API 가 만든 행') }, '진행 단계': { select: { name: '완료' } }, 점수: { number: 7 } },
+        })
+        await evaluate(`window.__api4bMark = ${stamp}`)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page.id}` })
+        await waitFor(`window.__api4bMark !== ${stamp} && document.querySelector('${BOX}')?.dataset.state === 'ready'
+          && document.querySelectorAll('${BOX} tbody tr').length === 2`, 15000)
+        const line = await evaluate(`document.querySelector('${BOX} tbody tr[data-row-id="${row.body?.id}"]')?.textContent ?? null`)
+        check('★ API-2 로 새 속성을 쓴 행이 표에 그 값으로 선다(API 가 만든 행 · 완료 · 7)',
+          row.status === 200 && (line ?? '').includes('API 가 만든 행') && (line ?? '').includes('완료') && (line ?? '').includes('7'),
+          JSON.stringify({ status: row.status, line, error: row.body?.message }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

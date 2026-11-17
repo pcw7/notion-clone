@@ -257,53 +257,64 @@ export async function addDataSource(
   databaseId: string,
   input: { readonly name?: unknown } = {},
 ): Promise<DataSourceResult<AddedDataSource>> {
+  return withCommandTransaction((tx) => addDataSourceIn(tx, ctx, databaseId, input))
+}
+
+/**
+ * 같은 일을 주어진 트랜잭션 안에서 — 공개 API 의 구조 쓰기(API-4b · `api/schema-writes.ts`)가 새 소스와 그 속성들을 한 트랜잭션에 묶는다
+ * (`property.ts` `addPropertyIn` 과 같은 까닭).
+ */
+export async function addDataSourceIn(
+  tx: Tx,
+  ctx: SessionContext,
+  databaseId: string,
+  input: { readonly name?: unknown } = {},
+): Promise<DataSourceResult<AddedDataSource>> {
   const name = input.name === undefined ? DEFAULT_DATA_SOURCE_NAME : normalizeName(input.name)
   if (name === null) return fail('invalid_name')
 
-  return withCommandTransaction(async (tx) => {
-    const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
-    if (isFailure(gate)) return gate
+  const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
+  if (isFailure(gate)) return gate
 
-    // 이름 받기는 **처음으로** 둘째가 생길 때뿐이다 — 부착 행(휴지통의 소스까지)이 하나인 데이터베이스. 살아 있는 것만 세면, 둘 중
-    // 하나를 휴지통에 넣은 뒤 더할 때 이미 보였던(사용자가 고쳤을 수 있는) 첫째의 이름을 덮는다(8e-3a).
-    const { attached } = await tx.queryOne<{ attached: string }>(
-      `SELECT count(*) AS attached FROM database_data_source WHERE database_id = $1`,
-      [databaseId],
-    )
-    const sources = await readDataSources(tx, databaseId)
-    const only = Number(attached) === 1 ? sources[0] : undefined
-    if (only !== undefined && only.owned && gate.title !== '' && gate.title !== only.name) {
-      await tx.query(`UPDATE data_source SET name = $2, updated_at = now() WHERE id = $1`, [only.id, gate.title])
-    }
+  // 이름 받기는 **처음으로** 둘째가 생길 때뿐이다 — 부착 행(휴지통의 소스까지)이 하나인 데이터베이스. 살아 있는 것만 세면, 둘 중
+  // 하나를 휴지통에 넣은 뒤 더할 때 이미 보였던(사용자가 고쳤을 수 있는) 첫째의 이름을 덮는다(8e-3a).
+  const { attached } = await tx.queryOne<{ attached: string }>(
+    `SELECT count(*) AS attached FROM database_data_source WHERE database_id = $1`,
+    [databaseId],
+  )
+  const sources = await readDataSources(tx, databaseId)
+  const only = Number(attached) === 1 ? sources[0] : undefined
+  if (only !== undefined && only.owned && gate.title !== '' && gate.title !== only.name) {
+    await tx.query(`UPDATE data_source SET name = $2, updated_at = now() WHERE id = $1`, [only.id, gate.title])
+  }
 
-    const lastView = await tx.queryMaybe<{ order_idx: string }>(
-      `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
-      [databaseId],
-    )
-    // 끝 키는 휴지통의 소스까지 센다 — 살아 있는 것만 보면 되살린 소스와 같은 키가 생길 수 있다.
-    const lastSource = await tx.queryMaybe<{ order_idx: string }>(
-      `SELECT order_idx FROM database_data_source WHERE database_id = $1 ORDER BY order_idx DESC LIMIT 1`,
-      [databaseId],
-    )
-    const sourceOrder = orderKeyBetween(lastSource?.order_idx ?? null, null)
-    const { dataSourceId, viewId } = await insertOwnedDataSource(tx, {
-      databaseId,
-      name,
-      sourceOrder,
-      viewOrder: orderKeyBetween(lastView?.order_idx ?? null, null),
-    })
-    await tx.query(
-      `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
-      [databaseId, ctx.userId],
-    )
-    return {
-      ok: true,
-      value: {
-        dataSource: { id: dataSourceId, name, owned: true, orderKey: sourceOrder, readable: true, ownerDatabaseId: databaseId },
-        viewId,
-      },
-    } as const
+  const lastView = await tx.queryMaybe<{ order_idx: string }>(
+    `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
+    [databaseId],
+  )
+  // 끝 키는 휴지통의 소스까지 센다 — 살아 있는 것만 보면 되살린 소스와 같은 키가 생길 수 있다.
+  const lastSource = await tx.queryMaybe<{ order_idx: string }>(
+    `SELECT order_idx FROM database_data_source WHERE database_id = $1 ORDER BY order_idx DESC LIMIT 1`,
+    [databaseId],
+  )
+  const sourceOrder = orderKeyBetween(lastSource?.order_idx ?? null, null)
+  const { dataSourceId, viewId } = await insertOwnedDataSource(tx, {
+    databaseId,
+    name,
+    sourceOrder,
+    viewOrder: orderKeyBetween(lastView?.order_idx ?? null, null),
   })
+  await tx.query(
+    `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+    [databaseId, ctx.userId],
+  )
+  return {
+    ok: true,
+    value: {
+      dataSource: { id: dataSourceId, name, owned: true, orderKey: sourceOrder, readable: true, ownerDatabaseId: databaseId },
+      viewId,
+    },
+  } as const
 }
 
 /**
@@ -317,28 +328,36 @@ export async function renameDataSource(
   dataSourceId: string,
   rawName: unknown,
 ): Promise<DataSourceResult<{ readonly id: string; readonly name: string }>> {
+  return withCommandTransaction((tx) => renameDataSourceIn(tx, ctx, dataSourceId, rawName))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addDataSourceIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function renameDataSourceIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  rawName: unknown,
+): Promise<DataSourceResult<{ readonly id: string; readonly name: string }>> {
   const name = normalizeName(rawName)
   if (name === null) return fail('invalid_name')
 
-  return withCommandTransaction(async (tx) => {
-    const source = await tx.queryMaybe<{ owner_database_id: string; name: string }>(
-      `SELECT ds.owner_database_id, ds.name FROM data_source ds JOIN block b ON b.id = ds.owner_database_id
-        WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
-      [dataSourceId, ctx.workspaceId],
-    )
-    if (source === null) return fail('not_found')
-    const gate = await openDatabase(tx, ctx, source.owner_database_id, 'edit_structure')
-    if (isFailure(gate)) return gate
+  const source = await tx.queryMaybe<{ owner_database_id: string; name: string }>(
+    `SELECT ds.owner_database_id, ds.name FROM data_source ds JOIN block b ON b.id = ds.owner_database_id
+      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
+    [dataSourceId, ctx.workspaceId],
+  )
+  if (source === null) return fail('not_found')
+  const gate = await openDatabase(tx, ctx, source.owner_database_id, 'edit_structure')
+  if (isFailure(gate)) return gate
 
-    if (source.name !== name) {
-      await tx.query(`UPDATE data_source SET name = $2, updated_at = now() WHERE id = $1`, [dataSourceId, name])
-      await tx.query(
-        `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
-        [source.owner_database_id, ctx.userId],
-      )
-    }
-    return { ok: true, value: { id: dataSourceId, name } } as const
-  })
+  if (source.name !== name) {
+    await tx.query(`UPDATE data_source SET name = $2, updated_at = now() WHERE id = $1`, [dataSourceId, name])
+    await tx.query(
+      `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+      [source.owner_database_id, ctx.userId],
+    )
+  }
+  return { ok: true, value: { id: dataSourceId, name } } as const
 }
 
 // ── 휴지통 (8e-3a) ─────────────────────────────────────────────────────

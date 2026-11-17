@@ -7,7 +7,7 @@
  * e2e '공개 API — 데이터 소스 · 질의 (API-4 · F-09-16)' 가 본다.
  *
  *   ★ GET 데이터베이스 — 모양 · 제목 · 부모 · 소스가 하나면 그 이름은 제목 · 둘이면 저마다 · 볼 수 없는 원본의 붙인 소스는 빠진다 · 휴지통 ·
- *     페이지 id 는 404 · 데이터 소스 id 는 404 + 바른 주소 · 고치기는 400
+ *     페이지 id 는 404 · 데이터 소스 id 는 404 + 바른 주소 · 옮기기는 400(고치기는 API-4b — `schema-writes.db.test.ts`)
  *   ★ GET 데이터 소스 — 모든 타입의 스키마 · 부모 · database_parent · 스키마의 id 가 property item 과 필터에 그대로 · 데이터베이스 id 는 404 + 바른 주소
  *   ★ 질의 — 타입 계열마다 필터 · and/or 겹침 · 정렬(속성 · timestamp) · 커서로 쪽을 넘긴다(빠짐 · 겹침 없음) · 다른 질의의 커서는 400 ·
  *     filter_properties · 휴지통 행은 in_trash 로만 · rollup 필터는 400
@@ -38,8 +38,9 @@ import { reset } from '../rate-limit.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { writeExportPolicyIn } from '../workspace/security-policy.ts'
 import { createApiToken } from './api-token.ts'
-import { makeQueryDataSource, queryDataSource, retrieveDataSource, retrieveDatabase, unsupportedSchemaWrite } from './data-sources.ts'
+import { makeQueryDataSource, queryDataSource, retrieveDataSource, retrieveDatabase } from './data-sources.ts'
 import { retrievePageProperty } from './pages.ts'
+import { updateApiDatabase } from './schema-writes.ts'
 import { v1Route } from './v1.ts'
 import { API_RATE_NAMESPACE, NOTION_VERSION } from './v1-protocol.ts'
 
@@ -75,7 +76,7 @@ async function withToken(actor: Actor): Promise<Caller> {
 
 const ROUTES = {
   getDatabase: v1Route(retrieveDatabase),
-  patchDatabase: v1Route(unsupportedSchemaWrite),
+  patchDatabase: v1Route(updateApiDatabase),
   getSource: v1Route(retrieveDataSource),
   query: v1Route(queryDataSource),
   queryCapped: v1Route(makeQueryDataSource({ cap: 3 })),
@@ -274,7 +275,7 @@ describe('GET /v1/databases/{id}', () => {
     assertError(await getSource(member, secret.dataSourceId), 404, 'object_not_found', /Could not find data source/)
   })
 
-  test('★ 휴지통 · 400 · 페이지 id 는 404 · 데이터 소스 id 는 404 + 바른 주소 · 볼 수 없으면 404 · 고치기는 400', async (t) => {
+  test('★ 휴지통 · 400 · 페이지 id 는 404 · 데이터 소스 id 는 404 + 바른 주소 · 볼 수 없으면 404 · 옮기기는 400', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { owner, member } = await workspace('데이터베이스 거부')
     const table = must(await createDatabase(owner.ctx, { name: '버릴 표' }), '표')
@@ -285,8 +286,9 @@ describe('GET /v1/databases/{id}', () => {
     assertError(await getDatabase(member, page.id), 404, 'object_not_found', new RegExp(`^Could not find database with ID: ${page.id}\\.$`))
     assertError(await getDatabase(member, table.dataSourceId), 404, 'object_not_found', /This is a data source ID — use \/v1\/data_sources\//)
     assertError(await getDatabase(member, secret.id), 404, 'object_not_found', /^Could not find database with ID: [0-9a-f-]+\.$/)
+    // 고치기는 API-4b(`schema-writes.db.test.ts`) — 옮기기만 받지 않는다
     assertError(
-      await call(owner, 'patchDatabase', 'PATCH', `/v1/databases/${table.id}`, { database_id: table.id }, { title: [] }),
+      await call(owner, 'patchDatabase', 'PATCH', `/v1/databases/${table.id}`, { database_id: table.id }, { parent: { page_id: page.id } }),
       400,
       'validation_error',
       /not supported by this API/,
@@ -355,7 +357,7 @@ describe('GET /v1/data_sources/{id}', () => {
     assert.deepEqual(titles(await query(member, fx.ds, { filter: { property: 'title', title: { equals: 'c 셋' } } })), ['C 셋'])
   })
 
-  test('★ 데이터베이스 id 는 404 + 바른 주소 · 페이지 id 는 그냥 404 · 고치기는 400', async (t) => {
+  test('★ 데이터베이스 id 는 404 + 바른 주소 · 페이지 id 는 그냥 404', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { owner, member } = await workspace('소스 거부')
     const table = must(await createDatabase(owner.ctx, { name: '표' }), '표')

@@ -347,54 +347,64 @@ export async function createInlineDatabase(
     readonly template?: 'wiki'
   },
 ): Promise<DatabaseResult<CreatedDatabase>> {
+  return withCommandTransaction((tx) => createInlineDatabaseIn(tx, ctx, input))
+}
+
+/**
+ * 같은 일을 주어진 트랜잭션 안에서 — 공개 API 의 구조 쓰기(API-4b · `api/schema-writes.ts`)가 새 데이터베이스와 그 아이콘 · 첫 소스의
+ * 속성들을 한 트랜잭션에 묶는다(하나라도 거부되면 아무것도 생기지 않는다 — 부르는 쪽이 `withCommandTransaction` 이다).
+ */
+export async function createInlineDatabaseIn(
+  tx: Tx,
+  ctx: SessionContext,
+  input: Parameters<typeof createInlineDatabase>[1],
+): Promise<DatabaseResult<CreatedDatabase>> {
   let name = normalizeName(input.name)
   if (input.template === 'wiki' && input.linkedDataSourceId === undefined && name === '') name = WIKI_DATABASE_NAME
   // uuid 가 아니면 없는 것과 같이 답한다(존재를 알리지 않는다 · asBlockId 는 던진다)
   if (!isUuid(input.parentPageId)) return { ok: false, reason: 'not_found' }
   if (input.linkedDataSourceId !== undefined && !isUuid(input.linkedDataSourceId)) return { ok: false, reason: 'not_found' }
-  return withCommandTransaction(async (tx) => {
-    // 붙일 소스 — 행을 넣기 **전에** 묻는다(실패하면 아무것도 쓰지 않는다). 원본을 볼 수 없으면 없는 것과 같은 답(정본 ⑪)
-    const linked = input.linkedDataSourceId === undefined ? null : await linkableSource(tx, ctx, input.linkedDataSourceId)
-    if (input.linkedDataSourceId !== undefined && linked === null) return { ok: false, reason: 'not_found' } as const
-    // 이름을 주지 않으면 원본의 이름(정본 [보강 L-1] ① — 그 뒤 그릇의 이름은 그릇의 것)
-    if (linked !== null && name === '') name = linked.displayName
-    let placement: Awaited<ReturnType<typeof lockParentPage>>
-    try {
-      placement = await lockParentPage(tx, ctx, asBlockId(input.parentPageId))
-    } catch (e) {
-      if (e instanceof PageError) return { ok: false, reason: e.code === 'too_deep' ? 'too_deep' : 'not_found' } as const
-      throw e
-    }
-    // 하위 페이지와 같다 — 행을 넣기 **전에** 부모 본문을 연다(명령이 자기가 바꾼 것을 자기가 쓰는 순서 · `body-write.ts` 머리말).
-    const parentBody = await openPageBody(tx, ctx, placement.parentId)
-    const orderKey = await nextSiblingKey(tx, placement.parentId)
-    const id = randomUUID()
-    await tx.query(
-      `INSERT INTO block (
-         id, workspace_id, type,
-         parent_type, parent_id, order_key, ancestor_path, perm_scope_id,
-         properties, format, created_by, created_at, last_edited_by, last_edited_at
-       ) VALUES (
-         $1, $2, 'database',
-         'block', $3, $4, $5, $6,
-         $7::jsonb, '{}'::jsonb, $8, now(), $8, now()
-       )`,
-      [id, ctx.workspaceId, placement.parentId, orderKey, placement.ancestorPath, placement.permScopeId, JSON.stringify({ title: titleFromPlainText(name) }), ctx.userId],
-    )
-    await indexPageTitle(tx, id, name)
-    const value = linked === null
-      ? await insertDatabaseRows(tx, { id, name, isInline: true })
-      : await insertLinkedDatabaseRows(tx, { id, name, dataSourceId: input.linkedDataSourceId!, source: linked })
-    if (input.template === 'wiki' && linked === null) {
-      await applyWikiTemplate(tx, { workspaceId: ctx.workspaceId, databaseId: id, dataSourceId: value.dataSourceId, defaultViewId: value.defaultViewId })
-    }
+  // 붙일 소스 — 행을 넣기 **전에** 묻는다(실패하면 아무것도 쓰지 않는다). 원본을 볼 수 없으면 없는 것과 같은 답(정본 ⑪)
+  const linked = input.linkedDataSourceId === undefined ? null : await linkableSource(tx, ctx, input.linkedDataSourceId)
+  if (input.linkedDataSourceId !== undefined && linked === null) return { ok: false, reason: 'not_found' } as const
+  // 이름을 주지 않으면 원본의 이름(정본 [보강 L-1] ① — 그 뒤 그릇의 이름은 그릇의 것)
+  if (linked !== null && name === '') name = linked.displayName
+  let placement: Awaited<ReturnType<typeof lockParentPage>>
+  try {
+    placement = await lockParentPage(tx, ctx, asBlockId(input.parentPageId))
+  } catch (e) {
+    if (e instanceof PageError) return { ok: false, reason: e.code === 'too_deep' ? 'too_deep' : 'not_found' } as const
+    throw e
+  }
+  // 하위 페이지와 같다 — 행을 넣기 **전에** 부모 본문을 연다(명령이 자기가 바꾼 것을 자기가 쓰는 순서 · `body-write.ts` 머리말).
+  const parentBody = await openPageBody(tx, ctx, placement.parentId)
+  const orderKey = await nextSiblingKey(tx, placement.parentId)
+  const id = randomUUID()
+  await tx.query(
+    `INSERT INTO block (
+       id, workspace_id, type,
+       parent_type, parent_id, order_key, ancestor_path, perm_scope_id,
+       properties, format, created_by, created_at, last_edited_by, last_edited_at
+     ) VALUES (
+       $1, $2, 'database',
+       'block', $3, $4, $5, $6,
+       $7::jsonb, '{}'::jsonb, $8, now(), $8, now()
+     )`,
+    [id, ctx.workspaceId, placement.parentId, orderKey, placement.ancestorPath, placement.permScopeId, JSON.stringify({ title: titleFromPlainText(name) }), ctx.userId],
+  )
+  await indexPageTitle(tx, id, name)
+  const value = linked === null
+    ? await insertDatabaseRows(tx, { id, name, isInline: true })
+    : await insertLinkedDatabaseRows(tx, { id, name, dataSourceId: input.linkedDataSourceId!, source: linked })
+  if (input.template === 'wiki' && linked === null) {
+    await applyWikiTemplate(tx, { workspaceId: ctx.workspaceId, databaseId: id, dataSourceId: value.dataSourceId, defaultViewId: value.defaultViewId })
+  }
 
-    parentBody.change(input.at ? placePageRefAt(id, input.at, 'database') : appendPageRef(null, id, 'database'))
-    const result = await parentBody.finish()
-    if (!result.ok && result.reason === 'page_ref_too_deep') return { ok: false, reason: 'too_deep' } as const
-    if (!result.ok) throw new Error(`본문 투영이 인라인 데이터베이스 생성을 거부했다(${result.reason}): ${placement.parentId}`)
-    return { ok: true, value: { ...value, teamspaceId: null, ownerUserId: null } } as const
-  })
+  parentBody.change(input.at ? placePageRefAt(id, input.at, 'database') : appendPageRef(null, id, 'database'))
+  const result = await parentBody.finish()
+  if (!result.ok && result.reason === 'page_ref_too_deep') return { ok: false, reason: 'too_deep' } as const
+  if (!result.ok) throw new Error(`본문 투영이 인라인 데이터베이스 생성을 거부했다(${result.reason}): ${placement.parentId}`)
+  return { ok: true, value: { ...value, teamspaceId: null, ownerUserId: null } } as const
 }
 
 /**
@@ -417,45 +427,53 @@ export async function renameDatabase(
   databaseId: string,
   rawName: unknown,
 ): Promise<DatabaseResult<DatabaseDetail>> {
+  return withCommandTransaction((tx) => renameDatabaseIn(tx, ctx, databaseId, rawName))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`createInlineDatabaseIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function renameDatabaseIn(
+  tx: Tx,
+  ctx: SessionContext,
+  databaseId: string,
+  rawName: unknown,
+): Promise<DatabaseResult<DatabaseDetail>> {
   if (typeof rawName !== 'string') return { ok: false, reason: 'invalid_name' } as const
   const name = normalizeName(rawName)
 
-  return withCommandTransaction(async (tx) => {
-    const row = await loadDatabase(tx, ctx, databaseId)
-    if (row === null) return { ok: false, reason: 'not_found' } as const
-    const caps = await effectiveCaps(tx, ctx, databaseId)
-    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
-    if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
-    // 이름은 구조다 — 잠긴 데이터베이스는 거부한다(7f-2).
-    if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
+  const row = await loadDatabase(tx, ctx, databaseId)
+  if (row === null) return { ok: false, reason: 'not_found' } as const
+  const caps = await effectiveCaps(tx, ctx, databaseId)
+  if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+  if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+  // 이름은 구조다 — 잠긴 데이터베이스는 거부한다(7f-2).
+  if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
 
-    const title = JSON.stringify(titleFromPlainText(name))
-    await tx.query(
-      `UPDATE block
-          SET properties = jsonb_set(properties, '{title}', $2::jsonb, true),
-              last_edited_by = $3, last_edited_at = now(), version = version + 1
-        WHERE id = $1`,
-      [databaseId, title, ctx.userId],
-    )
-    await tx.query(`UPDATE database SET title_rich = $2::jsonb, updated_at = now() WHERE id = $1`, [
-      databaseId,
-      title,
-    ])
-    await indexPageTitle(tx, databaseId, name)
+  const title = JSON.stringify(titleFromPlainText(name))
+  await tx.query(
+    `UPDATE block
+        SET properties = jsonb_set(properties, '{title}', $2::jsonb, true),
+            last_edited_by = $3, last_edited_at = now(), version = version + 1
+      WHERE id = $1`,
+    [databaseId, title, ctx.userId],
+  )
+  await tx.query(`UPDATE database SET title_rich = $2::jsonb, updated_at = now() WHERE id = $1`, [
+    databaseId,
+    title,
+  ])
+  await indexPageTitle(tx, databaseId, name)
 
-    return {
-      ok: true,
-      value: {
-        id: row.id,
-        name,
-        icon: readPageIcon(row.icon),
-        dataSources: await readDataSources(tx, databaseId, ctx),
-        isInline: row.is_inline,
-        teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
-        ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
-      },
-    } as const
-  })
+  return {
+    ok: true,
+    value: {
+      id: row.id,
+      name,
+      icon: readPageIcon(row.icon),
+      dataSources: await readDataSources(tx, databaseId, ctx),
+      isInline: row.is_inline,
+      teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
+      ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
+    },
+  } as const
 }
 
 /**
@@ -479,38 +497,46 @@ export async function setDatabaseIcon(
   databaseId: string,
   rawIcon: unknown,
 ): Promise<DatabaseResult<PageIcon | null>> {
+  return withCommandTransaction((tx) => setDatabaseIconIn(tx, ctx, databaseId, rawIcon))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`createInlineDatabaseIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function setDatabaseIconIn(
+  tx: Tx,
+  ctx: SessionContext,
+  databaseId: string,
+  rawIcon: unknown,
+): Promise<DatabaseResult<PageIcon | null>> {
   const icon = parsePageIconInput(rawIcon)
   if (icon === undefined) return { ok: false, reason: 'invalid_icon' } as const
 
-  return withCommandTransaction(async (tx) => {
-    const row = await tx.queryMaybe<{ icon: unknown }>(
-      `SELECT d.icon FROM block b JOIN database d ON d.id = b.id
-        WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'database' AND b.lifecycle = 'live'
-        FOR UPDATE OF b`,
-      [databaseId, ctx.workspaceId],
-    )
-    if (row === null) return { ok: false, reason: 'not_found' } as const
-    const caps = await effectiveCaps(tx, ctx, databaseId)
-    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
-    if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
-    if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
+  const row = await tx.queryMaybe<{ icon: unknown }>(
+    `SELECT d.icon FROM block b JOIN database d ON d.id = b.id
+      WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'database' AND b.lifecycle = 'live'
+      FOR UPDATE OF b`,
+    [databaseId, ctx.workspaceId],
+  )
+  if (row === null) return { ok: false, reason: 'not_found' } as const
+  const caps = await effectiveCaps(tx, ctx, databaseId)
+  if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+  if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+  if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
 
-    const current = readPageIcon(row.icon)
-    if (samePageIcon(current, icon)) return { ok: true, value: icon } as const
-    if (icon !== null && !(await isUsableIcon(tx, ctx, icon))) {
-      return { ok: false, reason: 'invalid_icon' } as const
-    }
-    await tx.query(`UPDATE database SET icon = $2::jsonb, updated_at = now() WHERE id = $1`, [
-      databaseId,
-      icon === null ? null : JSON.stringify(pageIconJson(icon)),
-    ])
-    await tx.query(
-      `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
-      [databaseId, ctx.userId],
-    )
-    await moveIconFileReference(tx, ctx, current, icon)
-    return { ok: true, value: icon } as const
-  })
+  const current = readPageIcon(row.icon)
+  if (samePageIcon(current, icon)) return { ok: true, value: icon } as const
+  if (icon !== null && !(await isUsableIcon(tx, ctx, icon))) {
+    return { ok: false, reason: 'invalid_icon' } as const
+  }
+  await tx.query(`UPDATE database SET icon = $2::jsonb, updated_at = now() WHERE id = $1`, [
+    databaseId,
+    icon === null ? null : JSON.stringify(pageIconJson(icon)),
+  ])
+  await tx.query(
+    `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+    [databaseId, ctx.userId],
+  )
+  await moveIconFileReference(tx, ctx, current, icon)
+  return { ok: true, value: icon } as const
 }
 
 /**

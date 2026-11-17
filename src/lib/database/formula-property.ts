@@ -82,34 +82,42 @@ export async function addFormulaProperty(
   dataSourceId: string,
   input: AddFormulaInput,
 ): Promise<PropertyResult<{ readonly schema: SchemaSnapshot; readonly propertyId: string }>> {
+  return withCommandTransaction((tx) => addFormulaPropertyIn(tx, ctx, dataSourceId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`property.ts` `addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function addFormulaPropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: AddFormulaInput,
+): Promise<PropertyResult<{ readonly schema: SchemaSnapshot; readonly propertyId: string }>> {
   const name = normalizePropertyName(input.name)
   if (name === null) return fail('invalid_name')
   if (typeof input.expression !== 'string') return fail('invalid_formula')
   const expression = input.expression
 
-  return withCommandTransaction(async (tx) => {
-    const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
-    if (isSchemaFailure(own)) return own
+  const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+  if (isSchemaFailure(own)) return own
 
-    const compiled = compileFormula(expression, formulaSchemaOf(await readLiveProperties(tx, dataSourceId)))
-    if (!compiled.ok) return { ok: false, reason: 'invalid_formula', formulaError: compiled.error } as const
+  const compiled = compileFormula(expression, formulaSchemaOf(await readLiveProperties(tx, dataSourceId)))
+  if (!compiled.ok) return { ok: false, reason: 'invalid_formula', formulaError: compiled.error } as const
 
-    // 새 수식은 아직 아무도 읽지 않는다 — 순환은 생길 수 없고 깊이만 본다
-    const bad = await formulaGraphProblem(tx, dataSourceId, { id: '\u0000new', dependsOn: compiled.value.dependsOn })
-    if (bad !== null) return fail(bad)
+  // 새 수식은 아직 아무도 읽지 않는다 — 순환은 생길 수 없고 깊이만 본다
+  const bad = await formulaGraphProblem(tx, dataSourceId, { id: '\u0000new', dependsOn: compiled.value.dependsOn })
+  if (bad !== null) return fail(bad)
 
-    const propertyId = await insertPropertyIn(tx, dataSourceId, {
-      name,
-      type: 'formula',
-      description: null,
-      config: { expression: compiled.value.stored, result_type: compiled.value.resultType },
-    })
-    if (isSchemaFailure(propertyId)) return propertyId
-    await writeDependencies(tx, propertyId, compiled.value.dependsOn)
-
-    await bumpSchema(tx, dataSourceId)
-    return { ok: true, value: { schema: await readSchema(tx, dataSourceId), propertyId } } as const
+  const propertyId = await insertPropertyIn(tx, dataSourceId, {
+    name,
+    type: 'formula',
+    description: null,
+    config: { expression: compiled.value.stored, result_type: compiled.value.resultType },
   })
+  if (isSchemaFailure(propertyId)) return propertyId
+  await writeDependencies(tx, propertyId, compiled.value.dependsOn)
+
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: { schema: await readSchema(tx, dataSourceId), propertyId } } as const
 }
 
 /**
@@ -122,32 +130,41 @@ export async function updateFormulaExpression(
   propertyId: string,
   input: { readonly expression: unknown; readonly expectedVersion?: string },
 ): Promise<PropertyResult> {
+  return withCommandTransaction((tx) => updateFormulaExpressionIn(tx, ctx, dataSourceId, propertyId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addFormulaPropertyIn` 과 같은 까닭). */
+export async function updateFormulaExpressionIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  input: { readonly expression: unknown; readonly expectedVersion?: string },
+): Promise<PropertyResult> {
   if (typeof input.expression !== 'string') return fail('invalid_formula')
   const expression = input.expression
-  return withCommandTransaction(async (tx) => {
-    const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
-    if (isSchemaFailure(own)) return own
+  const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+  if (isSchemaFailure(own)) return own
 
-    const properties = await readLiveProperties(tx, dataSourceId)
-    const target = properties.find((p) => p.id === propertyId)
-    if (target === undefined) return fail('not_found')
-    if (target.type !== 'formula') return fail('unsupported_type')
+  const properties = await readLiveProperties(tx, dataSourceId)
+  const target = properties.find((p) => p.id === propertyId)
+  if (target === undefined) return fail('not_found')
+  if (target.type !== 'formula') return fail('unsupported_type')
 
-    const compiled = compileFormula(expression, formulaSchemaOf(properties))
-    if (!compiled.ok) return { ok: false, reason: 'invalid_formula', formulaError: compiled.error } as const
+  const compiled = compileFormula(expression, formulaSchemaOf(properties))
+  if (!compiled.ok) return { ok: false, reason: 'invalid_formula', formulaError: compiled.error } as const
 
-    const bad = await formulaGraphProblem(tx, dataSourceId, { id: propertyId, dependsOn: compiled.value.dependsOn })
-    if (bad !== null) return fail(bad)
+  const bad = await formulaGraphProblem(tx, dataSourceId, { id: propertyId, dependsOn: compiled.value.dependsOn })
+  if (bad !== null) return fail(bad)
 
-    await tx.query(
-      `UPDATE property SET config = jsonb_build_object('expression', $2::text, 'result_type', $3::text), updated_at = now()
-        WHERE id = $1`,
-      [propertyId, compiled.value.stored, compiled.value.resultType],
-    )
-    await writeDependencies(tx, propertyId, compiled.value.dependsOn)
-    await bumpSchema(tx, dataSourceId)
-    return { ok: true, value: await readSchema(tx, dataSourceId) } as const
-  })
+  await tx.query(
+    `UPDATE property SET config = jsonb_build_object('expression', $2::text, 'result_type', $3::text), updated_at = now()
+      WHERE id = $1`,
+    [propertyId, compiled.value.stored, compiled.value.resultType],
+  )
+  await writeDependencies(tx, propertyId, compiled.value.dependsOn)
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
 // ── 읽을 때 계산 ──────────────────────────────────────────────────────

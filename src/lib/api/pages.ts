@@ -155,12 +155,15 @@ export function rowFailureReply(failure: RowLikeFailure, id: string, properties:
 
 // ── 받기 ──────────────────────────────────────────────────────────────
 
-type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reply: V1Reply }
+export type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reply: V1Reply }
 const parsed = <T>(value: T): Parsed<T> => ({ ok: true, value })
 const refused = <T>(reply: V1Reply): Parsed<T> => ({ ok: false, reply })
 
-/** 노션의 아이콘(요청) → 우리 아이콘. `file_upload` 는 이 워크스페이스에 올린 이미지의 id 다(명령이 다시 본다). */
-function parseIcon(raw: unknown): Parsed<PageIcon | null> {
+/**
+ * 노션의 아이콘(요청) → 우리 아이콘. `file_upload` 는 이 워크스페이스에 올린 이미지의 id 다(명령이 다시 본다). 데이터베이스의 아이콘(API-4b)도
+ * 같은 모양이다.
+ */
+export function parseIcon(raw: unknown): Parsed<PageIcon | null> {
   if (raw === null) return parsed(null)
   if (!isObject(raw)) return refused(bodyInvalid(`body.icon should be an object or \`null\`, instead was ${shownValue(raw)}.`))
   const kind = raw.type ?? ['emoji', 'external', 'file_upload', 'custom_emoji', 'file'].find((k) => k in raw)
