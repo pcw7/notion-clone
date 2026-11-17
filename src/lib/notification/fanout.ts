@@ -71,6 +71,8 @@ export type CommentEvent = {
   readonly threadStarterId: string
   /** 앵커가 가리키는 본문 블록(페이지 스레드면 페이지 id). */
   readonly blockId: string
+  /** 이 코멘트에 멘션된 사람들 — 멘션 알림(`notifyMentions`) 하나만 받는다(같은 코멘트로 알림 둘을 보내지 않는다 · 노션과 같다). */
+  readonly mentioned?: readonly string[]
 }
 
 /**
@@ -107,6 +109,8 @@ export async function notifyComment(tx: Tx, ctx: SessionContext, event: CommentE
   }
   // 내가 쓴 글을 나에게 알리지 않는다.
   recipients.delete(ctx.userId)
+  // 멘션된 사람은 멘션 알림으로 받는다
+  for (const userId of event.mentioned ?? []) recipients.delete(userId)
   if (recipients.size === 0) return 0
 
   const groupKey = discussionGroupKey(event.discussionId)
@@ -127,15 +131,21 @@ export type MentionEvent = {
   readonly pageId: string
   /** 멘션이 든 블록 중 하나 — 인박스가 미리보기로 그 블록의 글을 읽는다(복제하지 않는다). */
   readonly blockId: string | null
-  /** 이 투영에서 이 페이지에 처음 멘션된 사람들(`block/link-edges.ts` 가 차분으로 냈다). */
+  /** 이 투영에서 이 페이지에 처음 멘션된 사람들(`block/link-edges.ts` 가 차분으로 냈다). 코멘트면 그 코멘트에 새로 든 사람들. */
   readonly userIds: readonly string[]
+  /**
+   * 코멘트 안의 멘션(API-5 — `comment/discussion.ts`)이면 그 코멘트 · 스레드. 인박스가 미리보기로 그 코멘트의 글을 읽고 그 스레드를 연다
+   * (코멘트 알림과 같은 칸 — 글을 복제하지 않는다).
+   */
+  readonly comment?: { readonly discussionId: string; readonly commentId: string }
 }
 
 /** 한 페이지의 멘션 알림을 조회 시점에 묶는 열쇠 — 스레드가 아니라 페이지 단위다. */
 export const mentionGroupKey = (pageId: string): string => `mention:${pageId}`
 
 /**
- * 본문에 사람 멘션이 새로 생겼을 때의 알림. 투영과 같은 트랜잭션에서(`save-page-body.ts`).
+ * 본문에 사람 멘션이 새로 생겼을 때의 알림. 투영과 같은 트랜잭션에서(`save-page-body.ts`). 코멘트 안의 멘션도 같다 — 코멘트를 쓰는 명령의
+ * 트랜잭션에서(`comment/discussion.ts` · API-5 — 앱 화면과 공개 API 가 같은 명령을 지난다).
  *
  * 받는 사람은 **이 워크스페이스의 살아 있는 멤버**뿐이다 — 편집기가 보낸 id 를 그대로 믿지 않는다. 나간 사람 · 다른
  * 워크스페이스의 uuid 는 edge 에는 남되(노드가 남으니까) 알림은 없다. 뮤트(`none`)는 여기서도 이긴다(N1). 그 페이지를
@@ -160,7 +170,10 @@ export async function notifyMentions(tx: Tx, ctx: SessionContext, event: Mention
     pageId: event.pageId,
     blockId: event.blockId,
     type: 'user.mentioned',
-    payload: event.blockId === null ? {} : { block_id: event.blockId },
+    payload: {
+      ...(event.blockId === null ? {} : { block_id: event.blockId }),
+      ...(event.comment === undefined ? {} : { discussion_id: event.comment.discussionId, comment_id: event.comment.commentId }),
+    },
   })
   const groupKey = mentionGroupKey(event.pageId)
   const viewing = await activeViewersOf(event.pageId, recipients)

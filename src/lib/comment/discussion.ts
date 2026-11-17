@@ -46,6 +46,9 @@
  *     "의도된 원본과의 차이"로 기록했다 — *"해결된 스레드에 달린 답글이 아무에게도 안 보이는 것이 더 나쁜 실패"*
  *   · **마지막 살아 있는 코멘트를 지우면 스레드도 지운다.** 05 F-05-08 이 정책 결정으로 남긴 자리다. 중간 코멘트를
  *     지우면 스레드는 남고 "삭제된 코멘트" 자리가 남지만(맥락), 아무 글도 남지 않은 스레드는 목록에 있을 이유가 없다
+ *
+ * 코멘트 안의 사람 멘션은 **멘션 알림**이다(API-5 · `mentionedUsers` → `notifyMentions` — 본문의 멘션과 같은 팬아웃 · 고칠 때는 새로 든
+ * 사람만). 앱 화면과 공개 API(`api/comments.ts`)가 이 명령을 같이 지난다.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -56,6 +59,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { readBodyState } from '../collab/doc-store.ts'
 import { readBodyYDoc } from '../collab/ydoc.ts'
 import {
+  mentionTarget,
   normalizeRichText,
   textRun,
   toPlainText,
@@ -66,7 +70,7 @@ import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { customEmojiIdOfReaction, customEmojiReactionKey } from '../emoji/custom-emoji-rules.ts'
 import { isUuid } from '../ids.ts'
-import { notifyComment } from '../notification/fanout.ts'
+import { notifyComment, notifyMentions } from '../notification/fanout.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can, type Capability } from '../permissions/levels.ts'
@@ -128,6 +132,19 @@ function checkRichText(raw: unknown): { ok: true; value: RichTextRun[] } | { ok:
     return { ok: false, reason: 'too_long', message: `코멘트가 ${MAX_COMMENT_LENGTH}자를 넘습니다.` }
   }
   return { ok: true, value: normalized }
+}
+
+/**
+ * 코멘트에 멘션된 사람들(API-5) — 나오는 차례 · 겹침 없이. 알림(`notifyMentions`)은 이 워크스페이스의 살아 있는 멤버만 받고 나는 빠진다 —
+ * 그 거르기는 팬아웃이 한다(본문의 멘션과 같은 규칙).
+ */
+export function mentionedUsers(runs: readonly RichTextRun[]): string[] {
+  const out: string[] = []
+  for (const run of runs) {
+    const target = mentionTarget(run)
+    if (target?.kind === 'user' && !out.includes(target.id)) out.push(target.id)
+  }
+  return out
 }
 
 // ── 권한 ──────────────────────────────────────────────────────────────
@@ -254,13 +271,17 @@ export async function createDiscussion(
     // 글을 쓴 사람은 그 스레드의 답글을 받는다(`auto_edited`). 알림은 같은 트랜잭션에서 — 코멘트만 남고 알림이
     // 없는 상태를 만들지 않는다(`notification/fanout.ts`).
     await autoSubscribe(tx, ctx.userId, input.pageId, 'auto_edited', 'replies_and_mentions')
+    // 코멘트 안의 사람 멘션은 멘션 알림이다(API-5 — 본문의 멘션과 같은 팬아웃) · 멘션된 사람은 코멘트 알림을 따로 받지 않는다
+    const mentioned = mentionedUsers(text.value)
     await notifyComment(tx, ctx, {
       pageId: input.pageId,
       discussionId,
       commentId,
       threadStarterId: ctx.userId,
       blockId,
+      mentioned,
     })
+    await notifyMentions(tx, ctx, { pageId: input.pageId, blockId, userIds: mentioned, comment: { discussionId, commentId } })
     return { ok: true, discussionId, commentId } as const
   })
 }
@@ -311,12 +332,20 @@ export async function replyToDiscussion(
       [commentId, discussionId, ctx.userId, JSON.stringify(text.value)],
     )
     await autoSubscribe(tx, ctx.userId, row.page_id, 'auto_edited', 'replies_and_mentions')
+    const mentioned = mentionedUsers(text.value)
     await notifyComment(tx, ctx, {
       pageId: row.page_id,
       discussionId,
       commentId,
       threadStarterId: row.created_by,
       blockId: row.parent_block_id,
+      mentioned,
+    })
+    await notifyMentions(tx, ctx, {
+      pageId: row.page_id,
+      blockId: row.parent_block_id,
+      userIds: mentioned,
+      comment: { discussionId, commentId },
     })
     if (row.resolved) {
       await tx.query(
@@ -360,12 +389,20 @@ export async function setDiscussionResolved(
 
 // ── 코멘트 수정 · 삭제 ────────────────────────────────────────────────
 
-type CommentRow = { id: string; discussion_id: string; page_id: string; created_by: string; deleted_at: Date | null }
+type CommentRow = {
+  id: string
+  discussion_id: string
+  page_id: string
+  parent_block_id: string
+  created_by: string
+  rich_text: unknown
+  deleted_at: Date | null
+}
 
 async function lockComment(tx: Tx, ctx: SessionContext, commentId: string): Promise<CommentRow | null> {
   if (!isUuid(commentId)) return null
   return tx.queryMaybe<CommentRow>(
-    `SELECT c.id, c.discussion_id, c.created_by, c.deleted_at, d.page_id
+    `SELECT c.id, c.discussion_id, c.created_by, c.rich_text, c.deleted_at, d.page_id, d.parent_block_id
        FROM comment c JOIN discussion d ON d.id = c.discussion_id
       WHERE c.id = $1 AND d.workspace_id = $2
       FOR UPDATE OF c`,
@@ -393,6 +430,14 @@ export async function editComment(
       commentId,
       JSON.stringify(text.value),
     ])
+    // 고치며 **새로** 멘션한 사람만 알린다(API-5) — 이미 멘션돼 알림을 받은 사람에게 다시 보내지 않는다
+    const before = new Set(mentionedUsers(readCommentText(row.rich_text)))
+    await notifyMentions(tx, ctx, {
+      pageId: row.page_id,
+      blockId: row.parent_block_id,
+      userIds: mentionedUsers(text.value).filter((id) => !before.has(id)),
+      comment: { discussionId: row.discussion_id, commentId },
+    })
     return { ok: true } as const
   })
 }

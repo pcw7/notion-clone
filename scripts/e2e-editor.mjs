@@ -37619,6 +37619,104 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 검색 · 댓글 · 사용자 (API-5 · F-09-06 · F-09-07)')) { try {
+      // 공개 API 의 검색 · 코멘트 · 사용자(정본 §3.1 [보강 API-1] ③ ④ ⑤ ⑩ · 09 F-09-06 · F-09-07). 새 멤버가 토큰을 만들고 자기 개인 페이지를
+      // 제목으로 찾는다(앱의 검색 — 제목만). 그 페이지를 **브라우저로 열어 둔 채** API 로 코멘트(사람 멘션 포함)를 달고 답글을 단다 — 앱의
+      // 코멘트 패널은 열 때 읽으므로(곧바로 밀어 주지 않는다) 패널을 열어 · 다시 열어 본다. 끝에 코멘트를 다시 읽고 사용자 목록을 읽는다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const pageMod = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const VERSION = '2025-09-03'
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`API 코멘트의 사람 ${stamp}`), 'member')
+      const pal = await joinAs(workspaceId, await createUser(`API 멘션 받는 사람 ${stamp}`), 'member')
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-5 e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const v1 = async (method, path, body) => {
+        const res = await fetch(`${BASE}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${apiToken}`, 'notion-version': VERSION, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const plain = (runs) => (Array.isArray(runs) ? runs.map((r) => r.plain_text).join('') : null)
+      const title = `API 검색 표적 ${stamp}`
+      const page = await pageMod.createPage(mate.ctx, { title: [textRun(title)], privateTop: true })
+      const DIALOG = '[role="dialog"][aria-label="코멘트"]'
+      const THREAD = `${DIALOG} article[aria-label="코멘트 스레드"]`
+      const panelHas = (text) => `(document.querySelector('${DIALOG}')?.textContent ?? '').includes(${JSON.stringify(text)})`
+
+      try {
+        const found = await v1('POST', '/v1/search', { query: title, filter: { property: 'object', value: 'page' } })
+        const hit = (found.body?.results ?? []).find((r) => r.id === page.id)
+        check('★ POST /v1/search — 이 절에서 만든 페이지를 제목으로 찾는다(노션의 페이지 객체 · 종류는 page 만 · 목록 봉투)',
+          found.status === 200 && found.body?.type === 'page_or_data_source' && hit?.object === 'page'
+            && found.body.results.every((r) => r.object === 'page')
+            && plain(Object.values(hit?.properties ?? {}).find((p) => p.type === 'title')?.title) === title,
+          JSON.stringify({ status: found.status, ids: (found.body?.results ?? []).map((r) => r.id), error: found.body?.message }))
+
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page.id}` })
+        check('전제 — 그 페이지를 브라우저로 열었다(코멘트 단추)', await waitFor(`!!document.querySelector('[data-testid="comment-panel-toggle"]')`, 15000))
+
+        const posted = await v1('POST', '/v1/comments', {
+          parent: { page_id: page.id },
+          rich_text: [{ text: { content: `API 코멘트 ${stamp} ` }, annotations: { bold: true } }, { mention: { user: { id: pal.userId } } }],
+        })
+        check('★ POST /v1/comments — 200 노션의 코멘트 객체 · 부모는 page_id · 쓴 사람은 토큰의 사람 · display_name user · 사람 멘션',
+          posted.status === 200 && posted.body?.object === 'comment' && posted.body?.parent?.page_id === page.id
+            && posted.body?.created_by?.id === mate.userId && posted.body?.display_name?.type === 'user'
+            && posted.body?.rich_text?.[1]?.mention?.user?.id === pal.userId,
+          JSON.stringify(posted.body).slice(0, 600))
+
+        // 패널은 열 때 읽는다 — 열어서 본다(하이드레이션 전의 누름은 흘러갈 수 있어 몇 번 누른다)
+        let shown = false
+        for (let tries = 0; tries < 6 && !shown; tries += 1) {
+          if (!(await evaluate(`!!document.querySelector('${DIALOG}')`))) await clickSelector('[data-testid="comment-panel-toggle"]')
+          shown = await waitFor(panelHas(`API 코멘트 ${stamp}`), 3000)
+        }
+        check('★ 앱의 코멘트 패널을 열면 API 로 단 코멘트가 선다(패널은 열 때 읽는다 — 곧바로 밀어 주지 않는다)',
+          shown, await evaluate(`document.querySelector('${DIALOG}')?.textContent ?? '(패널 없음)'`))
+
+        const replied = await v1('POST', '/v1/comments', { discussion_id: posted.body?.discussion_id, rich_text: [{ text: { content: `API 답글 ${stamp}` } }] })
+        await key('Escape')
+        await waitFor(`!document.querySelector('${DIALOG}')`, 5000)
+        let again = false
+        for (let tries = 0; tries < 4 && !again; tries += 1) {
+          if (!(await evaluate(`!!document.querySelector('${DIALOG}')`))) await clickSelector('[data-testid="comment-panel-toggle"]')
+          again = await waitFor(panelHas(`API 답글 ${stamp}`), 3000)
+        }
+        const threads = await evaluate(`[...document.querySelectorAll('${THREAD}')].map((a) => a.textContent)`)
+        check('★ API 로 단 답글 — 같은 스레드 · 패널을 다시 열면 그 스레드 밑에 선다(스레드 하나에 둘)',
+          replied.status === 200 && replied.body?.discussion_id === posted.body?.discussion_id && again
+            && threads.length === 1 && threads[0].includes(`API 코멘트 ${stamp}`) && threads[0].includes(`API 답글 ${stamp}`),
+          JSON.stringify({ status: replied.status, again, threads }))
+
+        const listed = await v1('GET', `/v1/comments?block_id=${page.id}`)
+        const results = listed.body?.results ?? []
+        check('★ GET /v1/comments?block_id={page} — 둘을 단 차례로 · 같은 discussion_id · 노션의 comment 목록',
+          listed.status === 200 && listed.body?.type === 'comment' && results.length === 2
+            && results.every((c) => c.discussion_id === posted.body?.discussion_id)
+            && plain(results[0].rich_text).startsWith(`API 코멘트 ${stamp}`) && plain(results[1].rich_text) === `API 답글 ${stamp}`
+            && listed.body?.has_more === false,
+          JSON.stringify(results.map((c) => [c.id, plain(c.rich_text)])))
+
+        const users = await v1('GET', '/v1/users')
+        const people = users.body?.results ?? []
+        const self = people.find((u) => u.id === mate.userId)
+        check('★ GET /v1/users — 활동 중인 멤버의 person 객체(토큰의 사람 · 멘션한 사람이 든다 · 이메일) · 노션의 user 목록',
+          users.status === 200 && users.body?.type === 'user' && self?.type === 'person' && self?.person?.email === mate.email
+            && people.some((u) => u.id === pal.userId) && people.every((u) => u.object === 'user' && u.type === 'person'),
+          JSON.stringify({ status: users.status, n: people.length, self }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

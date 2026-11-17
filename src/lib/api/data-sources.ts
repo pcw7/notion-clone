@@ -222,6 +222,23 @@ async function dataSourceObjectIn(
   }
 }
 
+/**
+ * 검색의 데이터베이스 결과(API-5) → 그 데이터베이스가 **소유한** 살아 있는 소스의 객체들(부착 순서). 붙인 소스는 원본의 결과로 나온다(노션도
+ * 붙인 데이터베이스를 결과에서 뺀다 — 09 F-09-06). 데이터베이스를 열 수 없으면 빈 배열.
+ */
+export async function dataSourceObjectsOfDatabase(ctx: SessionContext, databaseId: string, links: ApiLinks): Promise<Record<string, unknown>[]> {
+  return withReadTransaction(async (tx) => {
+    if ((await openDatabaseIn(tx, ctx, databaseId, true)) === null) return []
+    const out: Record<string, unknown>[] = []
+    for (const s of await readDataSources(tx, databaseId)) {
+      if (!s.owned) continue
+      const opened = await openSourceIn(tx, ctx, s.id)
+      if (opened !== null) out.push(await dataSourceObjectIn(tx, ctx, opened, links))
+    }
+    return out
+  })
+}
+
 /** 데이터베이스 객체의 답 — 읽기와 구조 쓰기(API-4b)의 응답이 같다. 열 수 없으면 404(id 가 다른 종류면 바른 주소를 붙인다). */
 export async function databaseReply(ctx: SessionContext, id: string, links: ApiLinks): Promise<V1Reply> {
   const read = await withReadTransaction(async (tx) => {

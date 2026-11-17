@@ -15,7 +15,9 @@ import {
   apiErrorBody,
   bearerToken,
   checkNotionVersion,
+  decodeBoundCursor,
   decodeCursor,
+  encodeBoundCursor,
   encodeCursor,
   invalidPathIdMessage,
   parseApiId,
@@ -92,4 +94,16 @@ test('★ 제한의 셈 — 평균 초당 3번 · 몰림은 한 창 안에서 ·
   assert.equal(retryAfterSeconds(-2), 1)
   assert.equal(retryAfterSeconds(Number.NaN), API_RATE_RULE.windowSeconds)
   assert.equal(API_MAX_BODY_BYTES, 500 * 1024)
+})
+
+test('★ 묶인 커서(API-5) — 그 목록에서만 자리로 돌아오고 다른 목록 · 모양이 틀린 것 · 옛 자리 커서는 null · 없으면 0', () => {
+  const c = encodeBoundCursor('comments:a', 37)
+  assert.match(c, /^[A-Za-z0-9_-]+$/)
+  assert.equal(decodeBoundCursor('comments:a', c), 37)
+  assert.equal(decodeBoundCursor('comments:b', c), null, '다른 블록의 커서')
+  assert.equal(decodeBoundCursor('users', c), null)
+  assert.equal(decodeBoundCursor('comments:a', encodeCursor(37)), null, '묶이지 않은 커서')
+  assert.equal(decodeBoundCursor('comments:a', 'not a cursor!'), null)
+  assert.equal(decodeBoundCursor('comments:a', null), 0)
+  assert.equal(decodeBoundCursor('comments:a', ''), 0)
 })
