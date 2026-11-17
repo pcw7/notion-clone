@@ -23,8 +23,6 @@
  *     주소를 푸는 일(경로 · 이름 맞추기)은 부르는 쪽이 한다 — 이 모듈은 주소 문자열만 넘긴다
  */
 
-import { randomUUID } from 'node:crypto'
-
 import { Marked, type Token, type TokenizerExtension, type Tokens } from 'marked'
 
 import { CODE_LANGUAGES, PLAIN_TEXT_LANGUAGE } from '../block/code.ts'
@@ -241,7 +239,8 @@ export function codeLanguageFromFence(info: string | undefined): string | null {
 }
 
 const block = (type: EditorBlock['type'], title: RichTextRun[], extra: Partial<EditorBlock> = {}): EditorBlock => ({
-  id: randomUUID(),
+  // 전역 crypto — 서버(가져오기)와 브라우저(AI 답 넣기 · AI-2) 둘 다에서 돈다
+  id: globalThis.crypto.randomUUID(),
   type,
   title,
   ...extra,
@@ -397,14 +396,17 @@ function blocksOf(tokens: readonly Token[], cx: Convert): EditorBlock[] {
   return out
 }
 
-/** 마크다운 → 본문. 첫 블록이 `# 제목` 이면 제목으로 뺀다. `links` 는 ZIP 안의 상대 주소를 푼다(8m-2b). */
-export function markdownToDoc(source: string, links: ImportLinks | null = null): MarkdownImport {
+/**
+ * 마크다운 → 본문. 첫 블록이 `# 제목` 이면 제목으로 뺀다 — `keepTitle` 이면 빼지 않고 헤딩 블록으로 둔다(AI 답을 본문에 넣을 때 · AI-2).
+ * `links` 는 ZIP 안의 상대 주소를 푼다(8m-2b).
+ */
+export function markdownToDoc(source: string, links: ImportLinks | null = null, options: { readonly keepTitle?: boolean } = {}): MarkdownImport {
   const cx: Convert = { losses: emptyImportLosses(), links, placed: [] }
   const tokens = LEXER.lexer(source.replace(/^﻿/, ''))
   const first = tokens.find((t) => t.type !== 'space')
   let title: string | null = null
   let rest: readonly Token[] = tokens
-  if (first !== undefined && first.type === 'heading' && (first as Tokens.Heading).depth === 1) {
+  if (!options.keepTitle && first !== undefined && first.type === 'heading' && (first as Tokens.Heading).depth === 1) {
     title = (first as Tokens.Heading).text.trim()
     rest = tokens.slice(tokens.indexOf(first) + 1)
   }

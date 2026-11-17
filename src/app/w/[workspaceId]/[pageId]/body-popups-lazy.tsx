@@ -17,3 +17,5 @@ export const ImageAltDialogLazy = dynamic(() => import('./image-alt-dialog').the
 // 제안의 카드 · 목록(SG-3) — 마크에 올리거나 "제안 n개" 를 누른 뒤에야 선다
 export const SuggestionCardLazy = dynamic(() => import('./suggestion-card').then((m) => m.SuggestionCard))
 export const SuggestionPanelLazy = dynamic(() => import('./suggestion-panel').then((m) => m.SuggestionPanel))
+// AI 에게 묻기(AI-2) — 빈 줄의 스페이스 · `/ai` 로 연 뒤에야 받는다(입력창 · 스트림 · 마크다운 변환 · 넣기)
+export const AiAskBarLazy = dynamic(() => import('./ai-ask-bar').then((m) => m.AiAskBar))

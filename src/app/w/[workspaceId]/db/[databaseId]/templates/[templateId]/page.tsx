@@ -62,6 +62,8 @@ import { PageIconControl } from '../../../../[pageId]/page-icon-control'
 import { PageIconView } from '../../../../page-icon-view'
 import { templateTitle } from '@/lib/nav/screen-title'
 import { DocumentTitle } from '../../../../document-title'
+import { readAiConfig } from '@/lib/ai/config'
+import { aiEntryFor } from '@/lib/ai/usage'
 
 export default async function TemplatePage({
   params,
@@ -223,6 +225,7 @@ export default async function TemplatePage({
         initialMentionLabels={mentionLabels}
         initialPageIcons={{ ...pageRefs.icons, ...mentionLabels.pageIcons }}
         breadcrumb={trail}
+        ai={await aiEntryFor(ctx, readAiConfig())}
       />
     </main>
   )

@@ -120,12 +120,18 @@ describe('커맨드 카탈로그', () => {
     assert.equal(filterSlashCommands('wiki')[0]?.kind, 'wiki')
   })
 
-  test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록 → 색이다(색은 맨 끝 — Phase 2 1e-1)', () => {
+  test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록 → AI → 색이다(색은 맨 끝 — Phase 2 1e-1)', () => {
     const groups: string[] = []
     for (const c of SLASH_COMMANDS) {
       if (groups[groups.length - 1] !== c.group) groups.push(c.group)
     }
-    assert.deepEqual(groups, ['기본 블록', '페이지', '미디어', '고급 블록', '색'])
+    assert.deepEqual(groups, ['기본 블록', '페이지', '미디어', '고급 블록', 'AI', '색'])
+  })
+
+  test('★ AI 에게 묻기(AI-2) — 늘 목록에 있다 · /ai · /ask · /묻기 로 찾는다 · 첫 항목이 아니다', () => {
+    for (const q of ['ai', 'AI', 'ask', '묻기', 'AI에게']) assert.ok(filterSlashCommands(q).some((c) => c.kind === 'ai'), q)
+    assert.equal(filterSlashCommands('ai')[0]?.kind, 'ai')
+    assert.notEqual(SLASH_COMMANDS[0]?.kind, 'ai')
   })
 
   test('모든 커맨드에 한글 별칭이 있다', () => {

@@ -48,3 +48,10 @@ test('③ 숫자 — 범위 안의 정수만 · 아니면 기본값(상한을 �
   assert.equal(readAiConfig({ ...base, AI_MAX_OUTPUT_TOKENS: '0' })!.maxOutputTokens, AI_DEFAULTS.maxOutputTokens, '출력 0 은 없다')
   assert.equal(readAiConfig({ ...base, AI_TIMEOUT_MS: '10' })!.timeoutMs, AI_DEFAULTS.timeoutMs, '1초보다 짧은 상한')
 })
+
+test('★ ④ 추론의 세기(AI-2) — low · medium · high 만(대소문자 무시) · 없거나 다른 값이면 null(보내지 않는다)', () => {
+  assert.equal(readAiConfig(base)!.reasoningEffort, null)
+  assert.equal(readAiConfig({ ...base, AI_REASONING_EFFORT: ' LOW ' })!.reasoningEffort, 'low')
+  assert.equal(readAiConfig({ ...base, AI_REASONING_EFFORT: 'high' })!.reasoningEffort, 'high')
+  for (const bad of ['', 'max', 'none', '1']) assert.equal(readAiConfig({ ...base, AI_REASONING_EFFORT: bad })!.reasoningEffort, null, bad)
+})

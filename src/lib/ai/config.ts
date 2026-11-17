@@ -15,7 +15,11 @@
  *   AI_DAILY_CAP          앱 전체의 UTC 하루 응답 수 — 기본 900(공급자 무료 한도보다 낮게 · 0 이면 닫는다)
  *   AI_TIMEOUT_MS         한 응답의 전체 시간 상한 — 기본 60초
  *   AI_STREAM_USAGE       `0` 이면 `stream_options.include_usage` 를 보내지 않는다(받지 않는 공급자) — 기본 보낸다
+ *   AI_REASONING_EFFORT   `low` · `medium` · `high` 면 공급자에 `reasoning_effort` 를 보낸다(AI-2 — 추론 모델은 출력 토큰을 추론에 쓴다 ·
+ *                         Groq 의 gpt-oss 는 `low` 면 짧은 답이 잘리지 않는다). 비었거나 다른 값이면 보내지 않는다(받지 않는 공급자가 있다)
  */
+
+export type AiReasoningEffort = 'low' | 'medium' | 'high'
 
 export type AiConfig = {
   /** 끝의 `/` 를 뗀 주소 — `${baseUrl}/chat/completions` 로 보낸다. */
@@ -27,6 +31,14 @@ export type AiConfig = {
   readonly dailyCap: number
   readonly timeoutMs: number
   readonly streamUsage: boolean
+  /** 공급자에 보낼 `reasoning_effort` — null 이면 보내지 않는다. */
+  readonly reasoningEffort: AiReasoningEffort | null
+}
+
+/** `AI_REASONING_EFFORT` — 셋 중 하나만(대소문자 무시) · 그 밖은 null. */
+export function reasoningEffortOf(raw: string | undefined): AiReasoningEffort | null {
+  const text = (raw ?? '').trim().toLowerCase()
+  return text === 'low' || text === 'medium' || text === 'high' ? text : null
 }
 
 export const AI_DEFAULTS = {
@@ -68,6 +80,7 @@ export function readAiConfig(env: Env = process.env): AiConfig | null {
     dailyCap: intIn(env.AI_DAILY_CAP, 0, 10_000_000, AI_DEFAULTS.dailyCap),
     timeoutMs: intIn(env.AI_TIMEOUT_MS, 1000, 600_000, AI_DEFAULTS.timeoutMs),
     streamUsage: (env.AI_STREAM_USAGE ?? '').trim() !== '0',
+    reasoningEffort: reasoningEffortOf(env.AI_REASONING_EFFORT),
   }
 }
 

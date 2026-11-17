@@ -10,6 +10,8 @@
  *   [midfail]  조각 둘 뒤 스트림 안의 `error`
  *   [long]     2,000자(출력 상한을 볼 때 — `max_tokens` 를 듣지 않는다)
  *   [nodone]   `[DONE]` 없이 닫는다
+ *   [md]       정해 둔 마크다운 답(`FAKE_AI_MARKDOWN` — 헤딩 · 문단 · 글머리표 · 할 일 · AI-2 의 받아들이기) — 0.06초마다 한 조각
+ *   [echo]     받은 메시지들을 JSON 으로 되돌려 준다(서버가 무엇을 보냈는지 — 문맥 · 제안 글 · 자르기를 볼 때)
  *   그 밖      `가짜 답: <질문>` — 세 조각 + (요청했으면) 사용량 조각 + `[DONE]`
  *
  * 키가 `Bearer ${FAKE_AI_KEY}` 가 아니면 401. 받은 요청은 `requests` 에 쌓인다(키 · 본문 · 도중에 끊겼는가).
@@ -39,6 +41,15 @@ export type FakeAiProvider = {
 
 /** 보통의 답 — 질문을 되돌려 준다. */
 export const fakeAnswer = (prompt: string): string => `가짜 답: ${prompt}`
+
+/** `[md]` 의 답 — 블록으로 옮기면 heading_2 · paragraph · bulleted ×2 · paragraph · to_do 다. */
+export const FAKE_AI_MARKDOWN = '## 회의 요약\n\n오늘 정한 것입니다.\n\n- 첫째 안건\n- 둘째 안건\n\n다음 할 일:\n\n- [ ] 다음 회의 잡기\n'
+
+/** 글을 n 조각으로(글자 단위). */
+function piecesOf(text: string, n: number): string[] {
+  const size = Math.ceil(text.length / n)
+  return Array.from({ length: n }, (_, i) => text.slice(i * size, (i + 1) * size)).filter((s) => s !== '')
+}
 
 /** 답을 세 조각으로(가운데에서 한국어 글자가 갈려도 된다 — 조각은 글자 단위다). */
 export function fakeChunks(text: string): string[] {
@@ -106,6 +117,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, record: FakeAiR
     delay = 100
   } else if (prompt.includes('[long]')) {
     pieces = Array.from({ length: 20 }, (_, i) => String(i % 10).repeat(100))
+  } else if (prompt.includes('[md]')) {
+    pieces = piecesOf(FAKE_AI_MARKDOWN, 8)
+    delay = 60
+  } else if (prompt.includes('[echo]')) {
+    pieces = piecesOf(JSON.stringify(record.body.messages ?? null), 3)
   } else {
     pieces = fakeChunks(fakeAnswer(prompt))
   }

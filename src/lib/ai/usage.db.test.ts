@@ -50,6 +50,7 @@ const CONFIG: AiConfig = {
   dailyCap: 1_000_000,
   timeoutMs: 5000,
   streamUsage: true,
+  reasoningEffort: null,
 }
 
 before(async () => {

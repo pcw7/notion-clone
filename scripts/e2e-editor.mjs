@@ -38084,6 +38084,203 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('AI 에게 묻기 — 빈 줄 · 스트리밍 · 멈추기 · 받아들이기 (AI-2 · F-10-01 · F-10-09)')) { try {
+      // 정본 §3.10 [보강 AI-1] ⑤ ⑥ · 10 F-10-01 · F-10-09. 이 절이 만든 Free 워크스페이스(체험 20)의 페이지 하나(첫 줄 · 빈 줄 · 끝 줄)에서 한다.
+      // 공급자는 러너가 띄운 가짜 — `[slow]` 는 10초에 걸쳐 100조각(멈추기) · `[md]` 는 정해 둔 마크다운(헤딩 · 목록 · 할 일). 꺼져 있으면 빈 줄에
+      // 안내가 없고 스페이스는 글자 · `/ai` 는 소유자에게 켜는 길을 말한다. 켜면 안내가 서고 스페이스가 그 줄 아래에 입력창을 연다 — 답은
+      // 미리보기에만 흐르고(편집기 · 서버 본문에 없다) 멈추면 받은 데까지 남는다 · 버리면 그대로 · 받아들이면 블록이 되어 서버에 남고 Ctrl+Z
+      // 한 번에 모두 빠진다. 체험을 다 쓰면 입력창이 어느 한도인지 말하고 다시 단추가 없다. 끝에 브라우저 세션을 되돌린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 묻기의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 묻기 ${stamp}` }) })).json()).workspaceId
+      const resolvedBoss = await resolveSessionContext(boss.token, ws)
+      if (!resolvedBoss.ok) throw new Error(`소유자의 세션을 풀지 못했다: ${resolvedBoss.reason}`)
+      const bossCtx = resolvedBoss.context
+      const page = (await (await fetch(`${BASE}/api/workspaces/${ws}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title: `AI 묻기 ${stamp}` }) })).json()).page.id
+      const [first, anchor, last] = [randomUUID(), randomUUID(), randomUUID()]
+      const para = (id, text) => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
+      const saved = await savePageBody(bossCtx, page, { blocks: [para(first, '첫 줄'), para(anchor, ''), para(last, '끝 줄')] })
+      if (!saved.ok) throw new Error(`본문 준비 실패: ${JSON.stringify(saved)}`)
+
+      const ORIGINAL = ['paragraph:첫 줄', 'paragraph:', 'paragraph:끝 줄']
+      const ACCEPTED = ['paragraph:첫 줄', 'heading_2:회의 요약', 'paragraph:오늘 정한 것입니다.', 'bulleted_list_item:첫째 안건', 'bulleted_list_item:둘째 안건',
+        'paragraph:다음 할 일:', 'to_do:다음 회의 잡기', 'paragraph:끝 줄']
+      const serverShape = async () => (await loadPageBody(bossCtx, page)).doc.blocks.map((b) => `${b.type}:${(b.title ?? []).map((r) => r.text?.content ?? '').join('')}`)
+      const settledServer = async (expected, ms = 8000) => {
+        let shape = []
+        for (const until = Date.now() + ms; Date.now() < until;) {
+          shape = await serverShape()
+          if (JSON.stringify(shape) === JSON.stringify(expected)) break
+          await sleep(150)
+        }
+        return shape
+      }
+      const BAR = '[data-testid="ai-ask-bar"]'
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const editorText = () => evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)
+      const anchorText = () => evaluate(`document.querySelector('[data-block-id="${anchor}"] p')?.textContent ?? null`)
+      const hint = () => evaluate(`(() => {
+        const p = document.querySelector('[data-block-id="${anchor}"] p')
+        return p === null ? null : { attr: p.getAttribute('data-ai-hint'), content: getComputedStyle(p, '::before').content }
+      })()`)
+      /** 진짜 스페이스 — 글자까지 싣는 keyDown(편집기가 먹으면 글자가 들어가지 않는다). */
+      const space = async () => {
+        const base = { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, nativeVirtualKeyCode: 32 }
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', text: ' ', unmodifiedText: ' ', ...base })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+        await sleep(80)
+      }
+      const openPage = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${anchor}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'
+          && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+      }
+      const caretIn = async (id) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] > *:first-child`)
+          await key('End')
+          const inside = await evaluate(`(() => {
+            const n = window.getSelection()?.anchorNode
+            const el = n?.nodeType === 1 ? n : n?.parentElement
+            return document.activeElement === document.querySelector('.blk-editor') && el?.closest('[data-block-id]')?.getAttribute('data-block-id') === '${id}'
+          })()`)
+          if (inside) return true
+          await sleep(200)
+        }
+        return false
+      }
+
+      try {
+        // ① 꺼짐 — 안내 없음 · 스페이스는 글자 · /ai 는 까닭과 켜는 길(소유자)
+        await browseAs(boss.token)
+        await openPage()
+        check('전제 — 빈 줄에 캐럿', await caretIn(anchor))
+        const offHint = await hint()
+        await space()
+        const typedSpace = await anchorText()
+        const barWhenOff = await evaluate(`!!document.querySelector('${BAR}')`)
+        check('★ AI 가 꺼져 있으면 빈 줄에 안내가 없고 스페이스는 글자다(입력창이 열리지 않는다)',
+          offHint?.attr === null && typedSpace === ' ' && !barWhenOff, JSON.stringify({ offHint, typedSpace, barWhenOff }))
+        await key('Backspace')
+        await typeText('/')
+        await typeText('ai')
+        await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+        const firstOption = await textOf('[role="listbox"][aria-label="블록 삽입"] [role="option"]')
+        await key('Enter')
+        const blocked = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'blocked'`, 10000)
+        const reason = await textOf('[data-testid="ai-ask-reason"]')
+        const settingsHref = await evaluate(`document.querySelector('[data-testid="ai-ask-settings-link"]')?.getAttribute('href') ?? null`)
+        check('★ /ai 는 꺼져 있어도 열리고 까닭을 말한다 — "소유자가 켜야 합니다" · 소유자에게 설정 → AI 링크 · /ai 글자는 지워졌다',
+          String(firstOption).startsWith('AI 에게 묻기') && blocked && reason === '워크스페이스 소유자가 AI 를 켜야 합니다.'
+            && settingsHref === `/w/${ws}/settings?s=workspace.ai` && (await anchorText()) === '',
+          JSON.stringify({ firstOption, blocked, reason, settingsHref, anchor: await anchorText() }))
+        await key('Escape')
+        check('Esc 가 까닭의 창을 닫는다', await waitFor(`!document.querySelector('${BAR}')`, 3000))
+
+        // ② 켠다(소유자) — 안내 · 스페이스가 그 줄 아래에 입력창을 연다(글자는 들어가지 않는다)
+        const on = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asBoss, body: JSON.stringify({ enabled: true }) })
+        check('전제 — 소유자가 AI 를 켠다', on.status === 200, String(on.status))
+        await openPage()
+        check('전제 — 빈 줄에 캐럿(켠 뒤)', await caretIn(anchor))
+        const onHint = await hint()
+        check('★ 켜져 있으면 캐럿이 있는 빈 줄에 "스페이스로 AI" 안내가 선다(문서의 글자가 아니다)',
+          onHint?.attr === 'true' && String(onHint.content).includes('스페이스') && (await anchorText()) === '', JSON.stringify(onHint))
+        await space()
+        const opened = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'idle' && document.activeElement?.dataset.testid === 'ai-ask-input'`, 10000)
+        const geometry = await evaluate(`(() => {
+          const bar = document.querySelector('${BAR}')?.getBoundingClientRect()
+          const line = document.querySelector('[data-block-id="${anchor}"] p')?.getBoundingClientRect()
+          return bar && line ? { barTop: bar.top, lineBottom: line.bottom } : null
+        })()`)
+        check('★ 스페이스가 입력창을 그 줄 바로 아래에 연다 — 질문 칸에 포커스 · 줄에 글자가 들어가지 않는다',
+          opened && geometry !== null && geometry.barTop >= geometry.lineBottom - 1 && geometry.barTop - geometry.lineBottom < 40 && (await anchorText()) === '',
+          JSON.stringify({ opened, geometry, anchor: await anchorText() }))
+
+        // ③ 스트리밍 — 미리보기에만 · 멈추기 · 버리기
+        await typeText('[slow] 길게 써 줘')
+        await key('Enter')
+        const streaming = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'streaming'
+          && (document.querySelector('[data-testid="ai-ask-preview"]')?.textContent ?? '').includes('조각2')`, 10000)
+        const midEditor = await editorText()
+        const midServer = await serverShape()
+        check('★ 답은 미리보기에만 흐른다 — 흐르는 동안 편집기 · 서버 본문에 없다(Y.Doc 밖)',
+          streaming && !midEditor.includes('조각') && JSON.stringify(midServer) === JSON.stringify(ORIGINAL),
+          JSON.stringify({ streaming, midEditor: midEditor.slice(0, 120), midServer }))
+        check('흐르는 동안 진행 표시 · 멈추기 단추', (await textOf('[data-testid="ai-ask-progress"]')) === 'AI 가 쓰는 중…' && (await textOf('[data-testid="ai-ask-stop"]')) === '멈추기')
+        await clickSelector('[data-testid="ai-ask-stop"]')
+        const stoppedUi = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'stopped'`, 5000)
+        const partial = String(await textOf('[data-testid="ai-ask-preview"]'))
+        await sleep(400)
+        const later = String(await textOf('[data-testid="ai-ask-preview"]'))
+        let usage = ''
+        for (let i = 0; i < 60 && usage !== 'stopped'; i += 1) {
+          await sleep(100)
+          usage = (await dbQuery(`SELECT status FROM ai_usage WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`, [ws]))[0]?.status ?? ''
+        }
+        check('★ 멈추면 받은 데까지 미리보기에 남는다(더 늘지 않는다) · 서버는 stopped(셈에 든다)',
+          stoppedUi && partial.includes('조각0') && !partial.includes('조각99') && later === partial && usage === 'stopped',
+          JSON.stringify({ stoppedUi, partial: partial.slice(-40), grew: later !== partial, usage }))
+        await clickSelector('[data-testid="ai-ask-discard"]')
+        const discarded = await waitFor(`!document.querySelector('${BAR}')`, 3000)
+        await sleep(300)
+        check('★ 버리기 — 입력창이 닫히고 문서는 그대로(편집기 · 서버)',
+          discarded && !(await editorText()).includes('조각') && JSON.stringify(await serverShape()) === JSON.stringify(ORIGINAL),
+          JSON.stringify(await serverShape()))
+
+        // ④ 받아들이기 — 마크다운이 블록으로 · 서버에 남는다 · Ctrl+Z 한 번에 모두 빠진다
+        check('전제 — 빈 줄에 캐럿(다시)', await caretIn(anchor))
+        await space()
+        await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'idle'`, 5000)
+        await typeText('[md] 회의를 정리해 줘')
+        await key('Enter')
+        const done = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'done'`, 10000)
+        const remaining = await textOf('[data-testid="ai-ask-remaining"]')
+        check('★ 끝나면 받아들이기 · 아래에 넣기 · 다시 · 버리기 · 이어서 묻기 — 남은 응답을 조용히(체험 20 중 18)',
+          done && remaining === '남은 체험 응답 18'
+            && (await evaluate(`['ai-ask-accept', 'ai-ask-below', 'ai-ask-retry', 'ai-ask-discard', 'ai-ask-followup'].every((id) => !!document.querySelector('[data-testid="' + id + '"]'))`)),
+          JSON.stringify({ done, remaining }))
+        const sentMessages = fakeAi.requests.at(-1)?.body.messages ?? []
+        check('★ 서버가 지은 프롬프트 — 지시 · 페이지의 원문(넣을 자리 표시) · 질문 그대로(편집기는 질문 · 자리만 보냈다)',
+          sentMessages.length === 3 && sentMessages[0].role === 'system' && sentMessages[1].content.includes('첫 줄')
+            && sentMessages[1].content.includes('끝 줄') && sentMessages[1].content.includes('(the answer will be inserted here)')
+            && sentMessages[2].content === '[md] 회의를 정리해 줘',
+          JSON.stringify(sentMessages).slice(0, 600))
+        await clickSelector('[data-testid="ai-ask-accept"]')
+        const accepted = await waitFor(`!document.querySelector('${BAR}') && !!document.querySelector('.blk-editor h2') && (document.querySelector('.blk-editor')?.textContent ?? '').includes('다음 회의 잡기')`, 5000)
+        const acceptedServer = await settledServer(ACCEPTED)
+        check('★ 받아들이기 — 빈 줄이 헤딩 · 문단 · 글머리표 · 할 일 블록이 되고 서버 본문에 남는다',
+          accepted && JSON.stringify(acceptedServer) === JSON.stringify(ACCEPTED), JSON.stringify(acceptedServer))
+        await key('z', MOD)
+        const undone = await settledServer(ORIGINAL)
+        check('★ Ctrl+Z 한 번에 넣은 블록이 모두 빠진다(편집기 · 서버)',
+          JSON.stringify(undone) === JSON.stringify(ORIGINAL) && !(await editorText()).includes('회의 요약'), JSON.stringify(undone))
+
+        // ⑤ 한도 — 체험 20 을 다 쓰면 어느 한도인지 · 다시 단추 없음
+        await dbQuery(
+          `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, model, created_at, finished_at)
+           SELECT gen_random_uuid(), $1, $2, 'ask', 'completed', 'trial', 'seed', now(), now() FROM generate_series(1, 18)`,
+          [ws, boss.userId],
+        )
+        check('전제 — 빈 줄에 캐럿(한도)', await caretIn(anchor))
+        await space()
+        await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'idle'`, 5000)
+        await typeText('한도 뒤에 묻기')
+        await key('Enter')
+        const limited = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'error'`, 10000)
+        const limitText = await textOf('[data-testid="ai-ask-error"]')
+        check('★ 체험을 다 쓰면 입력창이 그 한도를 말한다 — 다시 단추가 없다',
+          limited && limitText === '체험 응답을 모두 썼습니다 — 운영자에게 보충을 요청하세요.' && !(await evaluate(`!!document.querySelector('[data-testid="ai-ask-retry"]')`)),
+          JSON.stringify({ limited, limitText }))
+        await key('Escape')
+        check('Esc 가 닫는다 · 문서는 그대로', (await waitFor(`!document.querySelector('${BAR}')`, 3000)) && JSON.stringify(await serverShape()) === JSON.stringify(ORIGINAL))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

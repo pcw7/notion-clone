@@ -52,6 +52,7 @@ import { containerFor, docToPm } from './pm-adapter.ts'
 import { blockSchema } from './schema.ts'
 import type { EditorBlock } from './document.ts'
 import { slashMenuPlugin } from './slash-menu.ts'
+import { aiHintPlugin } from './ai-trigger.ts'
 import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
 import { emojiMenuPlugin } from './emoji-menu.ts'
@@ -73,6 +74,8 @@ export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
   readonly onNotice?: (message: string) => void
   /** 다른 참여자 · 되돌리기가 Y.Doc 에서 가져온 트랜잭션인가 — 제안 모드가 다시 쓰지 않는다(협업 편집기가 준다). */
   readonly isRemoteChange?: (tr: Transaction) => boolean
+  /** 빈 줄에 "스페이스로 AI" 안내를 보일까(AI-2) — AI 를 쓸 수 있고 고칠 수 있을 때만. 없으면 보이지 않는다. */
+  readonly aiHint?: () => boolean
 }
 
 export type CreateEditorOptions = {
@@ -166,6 +169,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     findPlugin(),
     // 편집기 위의 목록 메뉴(10d-3 · F-12-13) — 열려 있으면 루트가 그 목록과 지금 항목을 가리킨다(`combobox-a11y.ts` 머리말).
     comboboxPlugin(),
+    // 빈 줄의 "스페이스로 AI" 안내(AI-2) — 노드 데코레이션의 속성 하나 · 글자는 CSS(`ai-trigger.ts`)
+    aiHintPlugin(() => deps.aiHint?.() ?? false),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
