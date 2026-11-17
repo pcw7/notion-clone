@@ -43,6 +43,7 @@ import {
   compileSorts,
   formulaTypeKey,
   propertyIdsIn,
+  withRowTimestamps,
   ParamBag,
   type FilterNode,
   type PropertyTypes,
@@ -125,6 +126,11 @@ export type QueryRowsInput = {
    * 보는 사람의 오늘(R-1 · `YYYY-MM-DD` — `readViewerToday`) — 상대 날짜 필터가 이것으로 범위를 편다. 주지 않으면 UTC 의 오늘.
    */
   readonly today?: string | null
+  /**
+   * 휴지통의 행만(API-4 · 09 F-09-16 `is_archived` — 공개 API 의 질의). 주지 않으면 살아 있는 행. 권한 · 필터 · 정렬 · 커서는 같다. 수식으로
+   * 거르면 휴지통 행은 마지막으로 채운 캐시 값으로 걸린다(캐시를 채우는 것은 살아 있는 행뿐 — `derived-values.ts`).
+   */
+  readonly trashed?: boolean
 }
 
 export type QueryPage = {
@@ -216,7 +222,8 @@ export async function queryRows(
     const access = await rowsAccessIn(tx, ctx, await effectiveCaps(tx, ctx, ds.container_id))
     if (access === null) return { ok: false, reason: 'not_found' } as const
 
-    const types = await readPropertyTypes(tx, dataSourceId)
+    // 행 자신의 시각(API-4 — 노션의 `timestamp` 필터 · 정렬)도 같은 길로
+    const types = withRowTimestamps(await readPropertyTypes(tx, dataSourceId))
 
     // ── ② 컴파일. `$1` 은 dataSourceId 가 쓰므로 2번부터 발급한다 ──
     const params = new ParamBag(2)
@@ -245,7 +252,7 @@ export async function queryRows(
     const base = [
       'p.data_source_id = $1',
       'p.is_template = false', // 불변식 R1
-      "b.lifecycle = 'live'",
+      input.trashed === true ? "b.lifecycle = 'trashed'" : "b.lifecycle = 'live'",
       accessSql, // 권한이 필터보다 먼저다(F-03-17)
     ].filter((s): s is string => s !== null)
 

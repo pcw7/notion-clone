@@ -37411,6 +37411,118 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 데이터 소스 · 질의 (API-4 · F-09-16)')) { try {
+      // 공개 API 의 데이터베이스 · 데이터 소스 · 질의(정본 §3.1 [보강 API-1] ③ ④ ⑤ ⑧ · 09 F-09-16). 새 멤버가 설정의 토큰 라우트로 토큰을
+      // 만들고, 자기 개인 표(점수 — 같은 점수 둘)의 기본 뷰에 필터(점수 ≥ 4) · 정렬(점수 내림차순)을 건다. 토큰으로 데이터베이스 · 데이터 소스를
+      // 읽고 같은 필터 · 정렬로 질의해 **표 화면과 같은 행 · 같은 차례**인지 견준다(동점의 차례까지 — 둘 다 앱의 행 질의를 지난다). 끝에 커서로
+      // 쪽을 넘긴다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const dbMod = await import(src('database/database.ts'))
+      const propMod = await import(src('database/property.ts'))
+      const rowMod = await import(src('database/row.ts'))
+      const viewMod = await import(src('database/view.ts'))
+      const must = (r, what) => {
+        if (!r.ok) throw new Error(`${what} 준비 실패: ${r.reason}`)
+        return r.value
+      }
+      const stamp = Date.now()
+      const VERSION = '2025-09-03'
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`API 질의의 사람 ${stamp}`), 'member')
+
+      // 토큰 — 설정 화면이 부르는 라우트(로그인 세션)로
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-4 e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const v1 = async (method, path, body) => {
+        const res = await fetch(`${BASE}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${apiToken}`, 'notion-version': VERSION, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const plain = (runs) => (Array.isArray(runs) ? runs.map((r) => r.plain_text).join('') : null)
+
+      // 그 사람의 개인 표 — 점수(같은 점수 둘 · 걸러질 것 둘)
+      const tableName = `API 질의 표 ${stamp}`
+      const table = must(await dbMod.createDatabase(mate.ctx, { name: tableName, privateTop: true }), '표')
+      const dsId = table.dataSourceId
+      must(await propMod.addProperty(mate.ctx, dsId, { name: '점수', type: 'number' }), '점수')
+      const schema = must(await propMod.getSchema(mate.ctx, dsId), '스키마')
+      const titleId = schema.properties.find((p) => p.type === 'title').id
+      const scoreId = schema.properties.find((p) => p.name === '점수').id
+      const rowIds = []
+      for (const [i, score] of [4, 9, 1, 7, 12, 3, 8, 4].entries()) {
+        rowIds.push(must(await rowMod.createRow(mate.ctx, dsId, {
+          cells: [
+            { propertyId: titleId, value: { type: 'title', title: [textRun(`질의 행 ${i}`)] } },
+            { propertyId: scoreId, value: { type: 'number', number: score } },
+          ],
+        }), `행 ${i}`).id)
+      }
+      must(await viewMod.updateView(mate.ctx, table.defaultViewId, {
+        filter: { property_id: scoreId, operator: 'greater_than_or_equal_to', value: 4 },
+        sorts: [{ property_id: scoreId, direction: 'desc' }],
+      }), '뷰의 필터 · 정렬')
+      const body = { filter: { property: '점수', number: { greater_than_or_equal_to: 4 } }, sorts: [{ property: '점수', direction: 'descending' }] }
+
+      try {
+        const db = await v1('GET', `/v1/databases/${table.id.replace(/-/g, '')}`)
+        check('★ GET /v1/databases — database 객체 · 제목 · data_sources 는 하나(그 이름은 데이터베이스의 제목) · 부모 workspace',
+          db.status === 200 && db.body?.object === 'database' && db.body?.id === table.id && plain(db.body?.title) === tableName
+            && JSON.stringify(db.body?.data_sources) === JSON.stringify([{ id: dsId, name: tableName }])
+            && db.body?.parent?.type === 'workspace' && db.body?.in_trash === false,
+          JSON.stringify(db).slice(0, 600))
+
+        const ds = await v1('GET', `/v1/data_sources/${dsId}`)
+        const wrong = await v1('GET', `/v1/data_sources/${table.id}`)
+        check('★ GET /v1/data_sources — 부모 database_id · 점수의 스키마(number · 우리 id) · 제목 id 는 title · 데이터베이스 id 는 404 + 바른 주소',
+          ds.status === 200 && ds.body?.object === 'data_source' && ds.body?.parent?.database_id === table.id
+            && ds.body?.properties?.['점수']?.type === 'number' && ds.body?.properties?.['점수']?.id === scoreId
+            && Object.values(ds.body?.properties ?? {}).some((p) => p?.type === 'title' && p?.id === 'title')
+            && wrong.status === 404 && wrong.body?.code === 'object_not_found' && String(wrong.body?.message).includes('This is a database ID'),
+          JSON.stringify({ ds: ds.body?.properties, wrong: wrong.body }).slice(0, 600))
+
+        const queried = await v1('POST', `/v1/data_sources/${dsId}/query`, body)
+        const apiOrder = (queried.body?.results ?? []).map((p) => p.id)
+
+        // 앱의 화면 — 같은 필터 · 정렬의 표
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${table.id}` })
+        const rowsSel = '[data-testid="db-table"] tr[data-row-id]'
+        await waitFor(`document.querySelectorAll('${rowsSel}').length === 6`, 15000)
+        const shown = await evaluate(`[...document.querySelectorAll('${rowsSel}')].map((tr) => tr.dataset.rowId)`)
+        const expected = [rowIds[4], rowIds[1], rowIds[6], rowIds[3], rowIds[0], rowIds[7]]
+        check('★ 질의(필터 + 정렬)가 표 화면과 같은 행 · 같은 차례 — 점수 12 · 9 · 8 · 7 · 4 · 4(동점은 표의 차례) · 걸러진 1 · 3 은 없다',
+          queried.status === 200 && queried.body?.object === 'list' && queried.body?.type === 'page_or_data_source' && queried.body?.has_more === false
+            && JSON.stringify(apiOrder) === JSON.stringify(shown) && JSON.stringify(apiOrder) === JSON.stringify(expected)
+            && queried.body?.results?.[0]?.properties?.['점수']?.number === 12,
+          JSON.stringify({ status: queried.status, apiOrder, shown, expected }))
+
+        // 커서 — 쪽 크기 4 로 모두
+        const pages = []
+        let cursor = null
+        do {
+          const r = await v1('POST', `/v1/data_sources/${dsId}/query`, { ...body, page_size: 4, ...(cursor === null ? {} : { start_cursor: cursor }) })
+          pages.push({ status: r.status, ids: (r.body?.results ?? []).map((p) => p.id), hasMore: r.body?.has_more, next: r.body?.next_cursor ?? null })
+          cursor = r.body?.next_cursor ?? null
+        } while (cursor !== null && pages.length < 5)
+        const walked = pages.flatMap((p) => p.ids)
+        const stale = await v1('POST', `/v1/data_sources/${dsId}/query`, { ...body, sorts: [{ property: '점수', direction: 'ascending' }], page_size: 4, start_cursor: pages[0]?.next })
+        check('★ 커서로 쪽을 넘긴다 — 4 + 2 · 빠짐 · 겹침 없이 한 번의 질의와 같다 · 다른 질의의 커서는 400 validation_error',
+          pages.length === 2 && pages.every((p) => p.status === 200) && pages[0].ids.length === 4 && pages[0].hasMore === true
+            && pages[1].ids.length === 2 && pages[1].hasMore === false && pages[1].next === null
+            && JSON.stringify(walked) === JSON.stringify(apiOrder) && new Set(walked).size === walked.length
+            && stale.status === 400 && stale.body?.code === 'validation_error',
+          JSON.stringify({ pages: pages.map((p) => [p.ids.length, p.hasMore]), stale: stale.body }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

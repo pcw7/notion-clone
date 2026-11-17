@@ -32,6 +32,8 @@ import {
   operatorsFor,
   validateFilter,
   validateSorts,
+  ROW_TIMESTAMP_KEYS,
+  withRowTimestamps,
   type FilterNode,
 } from './filter.ts'
 
@@ -616,5 +618,33 @@ describe('검증 필터 · 정렬 (VF-2b · 정본 [보강 VF-1] ⑥)', () => {
     const expr = keys[0]!.expr
     assert.ok(expr.includes("THEN '0~'") && expr.includes("THEN '1' ||") && expr.includes("ELSE '0' ||") && expr.includes('IS DISTINCT FROM'), expr)
     assert.equal(validateSorts([{ property_id: 'pVer', direction: 'desc' }], VTYPES).length, 0)
+  })
+})
+
+describe('행 자신의 시각(API-4 · 노션의 timestamp 필터 · 정렬)', () => {
+  const RT = withRowTimestamps(TYPES)
+
+  test('타입 맵에 두 열쇠가 자동 메타 시각으로 얹힌다 — 원래 맵은 그대로', () => {
+    assert.equal(RT.get(ROW_TIMESTAMP_KEYS.created_time), 'created_time')
+    assert.equal(RT.get(ROW_TIMESTAMP_KEYS.last_edited_time), 'last_edited_time')
+    assert.equal(TYPES.has(ROW_TIMESTAMP_KEYS.created_time), false)
+    assert.equal(RT.get('pNum'), 'number')
+  })
+
+  test('★ 거르기 — block 의 열을 보고 열쇠는 SQL 에 들어가지 않는다 · 상대 날짜도', () => {
+    const params = new ParamBag(1)
+    const sql = compileFilter({ property_id: ROW_TIMESTAMP_KEYS.created_time, operator: 'on_or_before', value: '2026-03-01' }, RT, params, noViewer('2026-03-15'))
+    assert.ok(sql?.includes('fb.created_at'), String(sql))
+    assert.deepEqual(params.values, ['2026-03-01'])
+    const week = compileFilter({ property_id: ROW_TIMESTAMP_KEYS.last_edited_time, operator: 'past_week' }, RT, new ParamBag(1), noViewer('2026-03-15'))
+    assert.ok(week?.includes('fb.last_edited_at') && week.includes('BETWEEN'), String(week))
+  })
+
+  test('★ 정렬 — 속성이 없어도 만든 시각으로 · 열쇠 없는 맵에서는 건너뛴다(뷰의 저장 경로는 모른다)', () => {
+    const { keys } = compileSorts([{ property_id: ROW_TIMESTAMP_KEYS.created_time, direction: 'desc' }], RT, new ParamBag(1))
+    assert.equal(keys.length, 1)
+    assert.ok(keys[0]!.expr.includes('fb.created_at'))
+    assert.equal(compileSorts([{ property_id: ROW_TIMESTAMP_KEYS.created_time, direction: 'desc' }], TYPES, new ParamBag(1)).keys.length, 0)
+    assert.equal(validateFilter({ property_id: ROW_TIMESTAMP_KEYS.created_time, operator: 'is_empty' }, TYPES).length, 1)
   })
 })

@@ -52,7 +52,7 @@ export const LOCKED_MESSAGE = "Can't edit page that is locked. Unlock the page i
 const TRASHED_MESSAGE = "Can't edit page that is in trash. Restore it first by setting in_trash to false."
 const CONFLICT_MESSAGE = 'Conflict occurred while saving. Please try again.'
 
-const notFound = (kind: 'page' | 'data source' | 'database', id: string): V1Reply =>
+export const notFound = (kind: 'page' | 'data source' | 'database', id: string): V1Reply =>
   v1Fail(404, 'object_not_found', `Could not find ${kind} with ID: ${id}.`)
 export const restricted = (): V1Reply => v1Fail(403, 'restricted_resource', RESTRICTED_MESSAGE)
 export const invalid = (message: string): V1Reply => v1Fail(400, 'validation_error', message)
