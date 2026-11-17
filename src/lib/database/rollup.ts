@@ -127,6 +127,16 @@ export async function addRollupProperty(
   dataSourceId: string,
   input: AddRollupInput,
 ): Promise<PropertyResult<AddRollupOutcome>> {
+  return withCommandTransaction((tx) => addRollupPropertyIn(tx, ctx, dataSourceId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`property.ts` `addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function addRollupPropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: AddRollupInput,
+): Promise<PropertyResult<AddRollupOutcome>> {
   const name = normalizePropertyName(input.name)
   if (name === null) return propertyFail('invalid_name')
   if (!isRollupFunction(input.function)) return propertyFail('invalid_config')
@@ -134,28 +144,26 @@ export async function addRollupProperty(
     return propertyFail('invalid_target')
   }
 
-  return withCommandTransaction(async (tx) => {
-    const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
-    if (isSchemaFailure(own)) return own
+  const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+  if (isSchemaFailure(own)) return own
 
-    const checked = await checkRollupSetting(tx, ctx, dataSourceId, input.relationPropertyId, input.targetPropertyId, input.function)
-    if (checked !== null) return propertyFail(checked)
+  const checked = await checkRollupSetting(tx, ctx, dataSourceId, input.relationPropertyId, input.targetPropertyId, input.function)
+  if (checked !== null) return propertyFail(checked)
 
-    const propertyId = await insertPropertyIn(tx, dataSourceId, {
-      name,
-      type: 'rollup',
-      description: null,
-      config: {
-        relation_property_id: input.relationPropertyId,
-        target_property_id: input.targetPropertyId,
-        function: input.function,
-      },
-    })
-    if (isSchemaFailure(propertyId)) return propertyId
-
-    await bumpSchema(tx, dataSourceId)
-    return { ok: true, value: { schema: await readSchema(tx, dataSourceId), propertyId } } as const
+  const propertyId = await insertPropertyIn(tx, dataSourceId, {
+    name,
+    type: 'rollup',
+    description: null,
+    config: {
+      relation_property_id: input.relationPropertyId,
+      target_property_id: input.targetPropertyId,
+      function: input.function,
+    },
   })
+  if (isSchemaFailure(propertyId)) return propertyId
+
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: { schema: await readSchema(tx, dataSourceId), propertyId } } as const
 }
 
 /**
@@ -212,6 +220,17 @@ export async function updateRollupProperty(
   propertyId: string,
   input: UpdateRollupInput,
 ): Promise<PropertyResult<SchemaSnapshot>> {
+  return withCommandTransaction((tx) => updateRollupPropertyIn(tx, ctx, dataSourceId, propertyId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`addRollupPropertyIn` 과 같은 까닭). */
+export async function updateRollupPropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  input: UpdateRollupInput,
+): Promise<PropertyResult<SchemaSnapshot>> {
   if (input.function !== undefined && !isRollupFunction(input.function)) return propertyFail('invalid_config')
   if (
     (input.relationPropertyId !== undefined && typeof input.relationPropertyId !== 'string') ||
@@ -220,41 +239,39 @@ export async function updateRollupProperty(
     return propertyFail('invalid_target')
   }
 
-  return withCommandTransaction(async (tx) => {
-    const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
-    if (isSchemaFailure(own)) return own
+  const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+  if (isSchemaFailure(own)) return own
 
-    const row = await tx.queryMaybe<{ config: unknown }>(
-      `SELECT config FROM property WHERE id = $1 AND data_source_id = $2 AND type = 'rollup' AND deleted_at IS NULL`,
-      [propertyId, dataSourceId],
-    )
-    if (row === null) return { ok: false, reason: 'not_found' } as const
-    const current = readRollupConfig(row.config)
-    const next = {
-      relation_property_id: (input.relationPropertyId as string | undefined) ?? current?.relation_property_id ?? '',
-      target_property_id: (input.targetPropertyId as string | undefined) ?? current?.target_property_id ?? '',
-      function: (input.function as RollupFunction | undefined) ?? current?.function ?? DEFAULT_ROLLUP_FUNCTION,
-    }
-    const checked = await checkRollupSetting(tx, ctx, dataSourceId, next.relation_property_id, next.target_property_id, next.function)
-    if (checked !== null) return propertyFail(checked)
+  const row = await tx.queryMaybe<{ config: unknown }>(
+    `SELECT config FROM property WHERE id = $1 AND data_source_id = $2 AND type = 'rollup' AND deleted_at IS NULL`,
+    [propertyId, dataSourceId],
+  )
+  if (row === null) return { ok: false, reason: 'not_found' } as const
+  const current = readRollupConfig(row.config)
+  const next = {
+    relation_property_id: (input.relationPropertyId as string | undefined) ?? current?.relation_property_id ?? '',
+    target_property_id: (input.targetPropertyId as string | undefined) ?? current?.target_property_id ?? '',
+    function: (input.function as RollupFunction | undefined) ?? current?.function ?? DEFAULT_ROLLUP_FUNCTION,
+  }
+  const checked = await checkRollupSetting(tx, ctx, dataSourceId, next.relation_property_id, next.target_property_id, next.function)
+  if (checked !== null) return propertyFail(checked)
 
-    // 이미 그 값이면 쓰지 않는다 — 스키마 판이 헛되이 오르지 않는다
-    if (
-      current !== null &&
-      current.relation_property_id === next.relation_property_id &&
-      current.target_property_id === next.target_property_id &&
-      current.function === next.function
-    ) {
-      return { ok: true, value: await readSchema(tx, dataSourceId) } as const
-    }
-    await tx.query(`UPDATE property SET config = $3::jsonb, updated_at = now() WHERE id = $1 AND data_source_id = $2`, [
-      propertyId,
-      dataSourceId,
-      JSON.stringify(next),
-    ])
-    await bumpSchema(tx, dataSourceId)
+  // 이미 그 값이면 쓰지 않는다 — 스키마 판이 헛되이 오르지 않는다
+  if (
+    current !== null &&
+    current.relation_property_id === next.relation_property_id &&
+    current.target_property_id === next.target_property_id &&
+    current.function === next.function
+  ) {
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
-  })
+  }
+  await tx.query(`UPDATE property SET config = $3::jsonb, updated_at = now() WHERE id = $1 AND data_source_id = $2`, [
+    propertyId,
+    dataSourceId,
+    JSON.stringify(next),
+  ])
+  await bumpSchema(tx, dataSourceId)
+  return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
 // ── 읽을 때 계산 ──────────────────────────────────────────────────────

@@ -98,23 +98,33 @@ export async function setDatabaseLock(ctx: SessionContext, databaseId: string, l
   return setLock(ctx, databaseId, 'database', locked)
 }
 
-async function setLock(ctx: SessionContext, nodeId: string, kind: LockKind, locked: boolean): Promise<LockResult> {
-  return withCommandTransaction(async (tx) => {
-    if (!(await liveNode(tx, ctx, nodeId, kind, true))) return { ok: false, reason: 'not_found' } as const
-    const caps = await effectiveCaps(tx, ctx, nodeId)
-    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
-    if (!can(caps, TOGGLE_CAPABILITY[kind])) return { ok: false, reason: 'forbidden' } as const
+/**
+ * 같은 일을 주어진 트랜잭션 안에서 — 공개 API 의 데이터베이스 고치기(API-4b · `api/schema-writes.ts`)가 푸는 것 · 고치는 것 · 잠그는 것을
+ * 한 트랜잭션에 묶는다(풀고 고친 뒤 잠근다 — 하나라도 거부되면 아무것도 바뀌지 않는다).
+ */
+export async function setDatabaseLockIn(tx: Tx, ctx: SessionContext, databaseId: string, locked: boolean): Promise<LockResult> {
+  return setLockIn(tx, ctx, databaseId, 'database', locked)
+}
 
-    const rows = locked
-      ? await tx.query<{ node_id: string }>(
-          `INSERT INTO node_lock (node_id, kind, locked_by, locked_at) VALUES ($1, $3, $2, now())
-           ON CONFLICT (node_id) DO NOTHING
-           RETURNING node_id`,
-          [nodeId, ctx.userId, kind],
-        )
-      : await tx.query<{ node_id: string }>(`DELETE FROM node_lock WHERE node_id = $1 RETURNING node_id`, [nodeId])
-    return { ok: true, value: { changed: rows.length > 0 } } as const
-  })
+async function setLock(ctx: SessionContext, nodeId: string, kind: LockKind, locked: boolean): Promise<LockResult> {
+  return withCommandTransaction((tx) => setLockIn(tx, ctx, nodeId, kind, locked))
+}
+
+async function setLockIn(tx: Tx, ctx: SessionContext, nodeId: string, kind: LockKind, locked: boolean): Promise<LockResult> {
+  if (!(await liveNode(tx, ctx, nodeId, kind, true))) return { ok: false, reason: 'not_found' } as const
+  const caps = await effectiveCaps(tx, ctx, nodeId)
+  if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+  if (!can(caps, TOGGLE_CAPABILITY[kind])) return { ok: false, reason: 'forbidden' } as const
+
+  const rows = locked
+    ? await tx.query<{ node_id: string }>(
+        `INSERT INTO node_lock (node_id, kind, locked_by, locked_at) VALUES ($1, $3, $2, now())
+         ON CONFLICT (node_id) DO NOTHING
+         RETURNING node_id`,
+        [nodeId, ctx.userId, kind],
+      )
+    : await tx.query<{ node_id: string }>(`DELETE FROM node_lock WHERE node_id = $1 RETURNING node_id`, [nodeId])
+  return { ok: true, value: { changed: rows.length > 0 } } as const
 }
 
 /** 이 워크스페이스의 살아 있는 그 종류의 노드인가 — 잠그는 명령은 행을 잠가 같은 노드의 다른 쓰기와 줄을 세운다. */

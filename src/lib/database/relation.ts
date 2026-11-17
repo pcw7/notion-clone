@@ -133,6 +133,16 @@ export async function addRelationProperty(
   dataSourceId: string,
   input: AddRelationInput,
 ): Promise<PropertyResult<AddRelationOutcome>> {
+  return withCommandTransaction((tx) => addRelationPropertyIn(tx, ctx, dataSourceId, input))
+}
+
+/** 같은 일을 주어진 트랜잭션 안에서(`property.ts` `addPropertyIn` 과 같은 까닭 — 공개 API 의 구조 쓰기). */
+export async function addRelationPropertyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: AddRelationInput,
+): Promise<PropertyResult<AddRelationOutcome>> {
   const name = normalizePropertyName(input.name)
   if (name === null) return propertyFail('invalid_name')
   const inverseName = input.twoWay === undefined ? undefined : normalizePropertyName(input.twoWay.name)
@@ -143,74 +153,72 @@ export async function addRelationProperty(
   const self = targetId === dataSourceId
   const limit = input.limit === 'one' ? { limit: 'one' as const } : {}
 
-  return withCommandTransaction(async (tx) => {
-    // 두 표의 스키마를 잠근다면 id 순서로 — 서로를 가리키는 relation 을 동시에 만드는 두 요청이 교착하지 않게.
-    const lockTargetToo = !self && inverseName !== undefined
-    const first = lockTargetToo && targetId < dataSourceId ? targetId : dataSourceId
-    const locks = new Map<string, Awaited<ReturnType<typeof lockSchema>>>()
-    locks.set(first, await lockSchema(tx, ctx, first, first === dataSourceId ? input.expectedVersion : undefined))
-    if (lockTargetToo) {
-      const second = first === dataSourceId ? targetId : dataSourceId
-      locks.set(second, await lockSchema(tx, ctx, second, second === dataSourceId ? input.expectedVersion : undefined))
+  // 두 표의 스키마를 잠근다면 id 순서로 — 서로를 가리키는 relation 을 동시에 만드는 두 요청이 교착하지 않게.
+  const lockTargetToo = !self && inverseName !== undefined
+  const first = lockTargetToo && targetId < dataSourceId ? targetId : dataSourceId
+  const locks = new Map<string, Awaited<ReturnType<typeof lockSchema>>>()
+  locks.set(first, await lockSchema(tx, ctx, first, first === dataSourceId ? input.expectedVersion : undefined))
+  if (lockTargetToo) {
+    const second = first === dataSourceId ? targetId : dataSourceId
+    locks.set(second, await lockSchema(tx, ctx, second, second === dataSourceId ? input.expectedVersion : undefined))
+  }
+
+  const own = locks.get(dataSourceId)
+  if (isSchemaFailure(own)) return own
+  if (lockTargetToo) {
+    const target = locks.get(targetId)
+    // 대상 표를 못 보면 "없는 대상"과 같은 답이다. 볼 수는 있는데 못 고치면 그때만 forbidden, 잠겼으면 locked(7f-2 — 잠금은
+    // 볼 수 있는 사람에게만 나오는 답이라 존재가 새지 않는다).
+    if (isSchemaFailure(target)) {
+      return !target.ok && (target.reason === 'forbidden' || target.reason === 'locked') ? target : propertyFail('invalid_target')
     }
+  } else if (!self && !(await canViewDataSource(tx, ctx, targetId))) {
+    return propertyFail('invalid_target')
+  }
 
-    const own = locks.get(dataSourceId)
-    if (isSchemaFailure(own)) return own
-    if (lockTargetToo) {
-      const target = locks.get(targetId)
-      // 대상 표를 못 보면 "없는 대상"과 같은 답이다. 볼 수는 있는데 못 고치면 그때만 forbidden, 잠겼으면 locked(7f-2 — 잠금은
-      // 볼 수 있는 사람에게만 나오는 답이라 존재가 새지 않는다).
-      if (isSchemaFailure(target)) {
-        return !target.ok && (target.reason === 'forbidden' || target.reason === 'locked') ? target : propertyFail('invalid_target')
-      }
-    } else if (!self && !(await canViewDataSource(tx, ctx, targetId))) {
-      return propertyFail('invalid_target')
-    }
+  // ★ 쓰기 전에 전부 검사한다. 역방향의 이름이 겹친다는 것을 첫 프로퍼티를 넣은 **뒤에** 알면 반쪽짜리 relation 이
+  //   남는다 — 처음에 그랬고 테스트가 잡았다(그 일이 #103 `withCommandTransaction` 을 낳았다 · HANDOFF §3.3-158).
+  //   지금은 거부를 돌려주면 롤백되지만, 검사를 앞에 두는 것이 먼저다(헛된 쓰기도 없다).
+  const ownNames = self && inverseName !== undefined ? [name, inverseName] : [name]
+  const ownSlot = await checkPropertySlots(tx, dataSourceId, ownNames)
+  if (ownSlot !== null) return ownSlot
+  if (lockTargetToo && inverseName !== undefined) {
+    const targetSlot = await checkPropertySlots(tx, targetId, [inverseName])
+    if (targetSlot !== null) return targetSlot
+  }
 
-    // ★ 쓰기 전에 전부 검사한다. 역방향의 이름이 겹친다는 것을 첫 프로퍼티를 넣은 **뒤에** 알면 반쪽짜리 relation 이
-    //   남는다 — 처음에 그랬고 테스트가 잡았다(그 일이 #103 `withCommandTransaction` 을 낳았다 · HANDOFF §3.3-158).
-    //   지금은 거부를 돌려주면 롤백되지만, 검사를 앞에 두는 것이 먼저다(헛된 쓰기도 없다).
-    const ownNames = self && inverseName !== undefined ? [name, inverseName] : [name]
-    const ownSlot = await checkPropertySlots(tx, dataSourceId, ownNames)
-    if (ownSlot !== null) return ownSlot
-    if (lockTargetToo && inverseName !== undefined) {
-      const targetSlot = await checkPropertySlots(tx, targetId, [inverseName])
-      if (targetSlot !== null) return targetSlot
-    }
+  const propertyId = newPropertyId()
+  // 같은 표 · 역방향 이름 없음 → 자기 자신이 짝이다.
+  const syncedPropertyId = inverseName !== undefined ? newPropertyId() : null
+  const synced = syncedPropertyId ?? (self ? propertyId : null)
 
-    const propertyId = newPropertyId()
-    // 같은 표 · 역방향 이름 없음 → 자기 자신이 짝이다.
-    const syncedPropertyId = inverseName !== undefined ? newPropertyId() : null
-    const synced = syncedPropertyId ?? (self ? propertyId : null)
+  const created = await insertPropertyIn(tx, dataSourceId, {
+    id: propertyId,
+    name,
+    type: 'relation',
+    description: null,
+    config: { target_data_source_id: targetId, ...(synced === null ? {} : { synced_property_id: synced }), ...limit },
+  })
+  if (isSchemaFailure(created)) return created
 
-    const created = await insertPropertyIn(tx, dataSourceId, {
-      id: propertyId,
-      name,
+  if (syncedPropertyId !== null && inverseName !== undefined) {
+    const inverse = await insertPropertyIn(tx, targetId, {
+      id: syncedPropertyId,
+      name: inverseName,
       type: 'relation',
       description: null,
-      config: { target_data_source_id: targetId, ...(synced === null ? {} : { synced_property_id: synced }), ...limit },
+      // 역방향은 제한을 물려받지 않는다 — "한 작업은 프로젝트 하나"여도 프로젝트는 작업을 여럿 갖는다.
+      config: { target_data_source_id: dataSourceId, synced_property_id: propertyId },
     })
-    if (isSchemaFailure(created)) return created
+    if (isSchemaFailure(inverse)) return inverse
+    if (!self) await bumpSchema(tx, targetId)
+  }
 
-    if (syncedPropertyId !== null && inverseName !== undefined) {
-      const inverse = await insertPropertyIn(tx, targetId, {
-        id: syncedPropertyId,
-        name: inverseName,
-        type: 'relation',
-        description: null,
-        // 역방향은 제한을 물려받지 않는다 — "한 작업은 프로젝트 하나"여도 프로젝트는 작업을 여럿 갖는다.
-        config: { target_data_source_id: dataSourceId, synced_property_id: propertyId },
-      })
-      if (isSchemaFailure(inverse)) return inverse
-      if (!self) await bumpSchema(tx, targetId)
-    }
-
-    await bumpSchema(tx, dataSourceId)
-    return {
-      ok: true,
-      value: { schema: await readSchema(tx, dataSourceId), propertyId, syncedPropertyId },
-    } as const
-  })
+  await bumpSchema(tx, dataSourceId)
+  return {
+    ok: true,
+    value: { schema: await readSchema(tx, dataSourceId), propertyId, syncedPropertyId },
+  } as const
 }
 
 /** 이 data_source 를 담은 데이터베이스를 볼 수 있는가. 없거나 다른 워크스페이스면 false. (`rollup.ts` 가 같은 질문을 한다.) */

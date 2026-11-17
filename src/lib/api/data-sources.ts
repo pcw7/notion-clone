@@ -17,7 +17,7 @@
  * `data_sources[].id` 를 쓰라" 를 붙인다(그 데이터베이스를 열 수 있을 때만 — 아니면 그냥 404). 반대도 같다. 페이지 · 블록 id 는 그냥 404.
  *
  * 데이터 소스가 하나뿐인 데이터베이스는 그 소스의 이름이 데이터베이스의 제목이다(앱의 화면과 같다 — `data-source.ts` 머리말 "이름").
- * 구조 고치기(데이터베이스 · 데이터 소스 만들기 · 고치기)는 이 조각에 없다 — 400 `validation_error` 로 "앱에서 고친다" 를 말한다.
+ * 구조 쓰기(데이터베이스 · 데이터 소스 만들기 · 고치기)는 `schema-writes.ts`(API-4b)다 — 응답은 여기의 객체다(`databaseReply` · `dataSourceReply`).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -41,15 +41,9 @@ import { schemaToApi, type SchemaRef } from './schema-object.ts'
 import { v1Fail, v1Ok, type V1Handler, type V1Reply } from './v1.ts'
 import { API_MAX_PAGE_SIZE, invalidPathIdMessage, parseApiId, shownValue } from './v1-protocol.ts'
 
-/** 구조 고치기는 이 조각에 없다(머리말). */
-export const SCHEMA_WRITE_MESSAGE =
-  'Creating or updating databases and data sources is not supported by this API. Change the database structure in the app.'
-
-export const unsupportedSchemaWrite: V1Handler = async () => v1Fail(400, 'validation_error', SCHEMA_WRITE_MESSAGE)
-
 // ── 읽기 ──────────────────────────────────────────────────────────────
 
-type DatabaseRow = {
+export type DatabaseRow = {
   id: string
   lifecycle: string
   parent_type: string
@@ -72,7 +66,7 @@ const DATABASE_SELECT = `SELECT b.id, b.lifecycle::text AS lifecycle, b.parent_t
        LEFT JOIN block pb ON b.parent_type = 'block' AND pb.id = b.parent_id`
 
 /** 데이터베이스 하나 — 표를 열 수 있어야 한다(볼 수 있거나 "만들기만"). 휴지통의 것도 준다(`in_trash`). */
-async function openDatabaseIn(tx: Tx, ctx: SessionContext, databaseId: string, live = false): Promise<DatabaseRow | null> {
+export async function openDatabaseIn(tx: Tx, ctx: SessionContext, databaseId: string, live = false): Promise<DatabaseRow | null> {
   const row = await tx.queryMaybe<DatabaseRow>(
     `${DATABASE_SELECT}
       WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'database' AND b.lifecycle ${live ? "= 'live'" : "IN ('live', 'trashed')"}`,
@@ -86,20 +80,24 @@ type SourceRow = {
   id: string
   name: string
   owner: string
+  lifecycle: string
   created_at: Date
   updated_at: Date
   unique_id_prefix: string | null
 }
 
+export type OpenedSource = { readonly source: SourceRow; readonly database: DatabaseRow }
+
 /**
  * 데이터 소스 하나 — 소스와 주인 데이터베이스가 살아 있고(행 질의의 문과 같다) 주인을 열 수 있어야 한다. 주인 데이터베이스와 함께.
+ * `trashed` 면 휴지통의 소스도 준다(구조 쓰기의 되살리기 · 휴지통에 넣은 뒤의 답 — API-4b).
  */
-async function openSourceIn(tx: Tx, ctx: SessionContext, dataSourceId: string): Promise<{ source: SourceRow; database: DatabaseRow } | null> {
+export async function openSourceIn(tx: Tx, ctx: SessionContext, dataSourceId: string, trashed = false): Promise<OpenedSource | null> {
   const source = await tx.queryMaybe<SourceRow>(
-    `SELECT ds.id, ds.name, ds.owner_database_id AS owner, ds.created_at, ds.updated_at, ds.unique_id_prefix
+    `SELECT ds.id, ds.name, ds.owner_database_id AS owner, ds.lifecycle::text AS lifecycle, ds.created_at, ds.updated_at, ds.unique_id_prefix
        FROM data_source ds
        JOIN block b ON b.id = ds.owner_database_id
-      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
+      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle ${trashed ? "IN ('live', 'trashed')" : "= 'live'"}`,
     [dataSourceId, ctx.workspaceId],
   )
   if (source === null) return null
@@ -108,7 +106,7 @@ async function openSourceIn(tx: Tx, ctx: SessionContext, dataSourceId: string): 
 }
 
 /** id 가 다른 종류일 때의 404 — 열 수 있는 데이터베이스 · 데이터 소스면 바른 주소를 말한다(머리말). */
-async function mistakenIdReply(ctx: SessionContext, kind: 'database' | 'data source', id: string): Promise<V1Reply> {
+export async function mistakenIdReply(ctx: SessionContext, kind: 'database' | 'data source', id: string): Promise<V1Reply> {
   const other = await withReadTransaction(async (tx) =>
     kind === 'data source' ? (await openDatabaseIn(tx, ctx, id, true)) !== null : (await openSourceIn(tx, ctx, id)) !== null,
   )
@@ -197,14 +195,15 @@ async function schemaLookupsIn(tx: Tx, ctx: SessionContext, dataSourceId: string
 async function dataSourceObjectIn(
   tx: Tx,
   ctx: SessionContext,
-  opened: { source: SourceRow; database: DatabaseRow },
+  opened: OpenedSource,
   links: ApiLinks,
 ): Promise<Record<string, unknown>> {
   const { source, database } = opened
   const schema = await readSchema(tx, source.id)
   const lookups = await schemaLookupsIn(tx, ctx, source.id, schema.properties)
   const databaseTitle = readTitle(database.properties)
-  const only = (await readDataSources(tx, database.id)).length === 1
+  const live = await readDataSources(tx, database.id)
+  const only = live.length === 1 && live[0].id === source.id
   const title: RichTextRun[] = only ? databaseTitle : [textRun(source.name)]
   return {
     object: 'data_source',
@@ -218,18 +217,13 @@ async function dataSourceObjectIn(
     description: [],
     // 노션 — 앱에서 단 아이콘은 데이터베이스 · 데이터 소스 둘 다 같은 것을 돌려준다
     icon: await iconToApi(tx, ctx, readPageIcon(database.icon)),
-    in_trash: false,
+    in_trash: source.lifecycle === 'trashed',
     is_inline: database.is_inline,
   }
 }
 
-/** `GET /v1/databases/{database_id}` */
-export const retrieveDatabase: V1Handler = async ({ ctx, params, request }) => {
-  const id = parseApiId(params.database_id)
-  if (id === null) return invalid(invalidPathIdMessage('database_id', params.database_id))
-  const blocked = await policyBlock(ctx)
-  if (blocked !== null) return blocked
-  const links = apiLinks(ctx, request)
+/** 데이터베이스 객체의 답 — 읽기와 구조 쓰기(API-4b)의 응답이 같다. 열 수 없으면 404(id 가 다른 종류면 바른 주소를 붙인다). */
+export async function databaseReply(ctx: SessionContext, id: string, links: ApiLinks): Promise<V1Reply> {
   const read = await withReadTransaction(async (tx) => {
     const row = await openDatabaseIn(tx, ctx, id)
     return row === null ? null : { trashed: row.lifecycle === 'trashed', json: await databaseObjectIn(tx, ctx, row, links) }
@@ -238,18 +232,31 @@ export const retrieveDatabase: V1Handler = async ({ ctx, params, request }) => {
   return v1Ok(read.trashed ? read.json : { ...read.json, public_url: await publicUrlOf(ctx, id, links, new Date()) })
 }
 
+/** 데이터 소스 객체의 답 — `trashed` 면 휴지통의 소스도(구조 쓰기가 휴지통에 넣은 뒤의 답). */
+export async function dataSourceReply(ctx: SessionContext, id: string, links: ApiLinks, trashed = false): Promise<V1Reply> {
+  const json = await withReadTransaction(async (tx) => {
+    const opened = await openSourceIn(tx, ctx, id, trashed)
+    return opened === null ? null : dataSourceObjectIn(tx, ctx, opened, links)
+  })
+  return json === null ? mistakenIdReply(ctx, 'data source', id) : v1Ok(json)
+}
+
+/** `GET /v1/databases/{database_id}` */
+export const retrieveDatabase: V1Handler = async ({ ctx, params, request }) => {
+  const id = parseApiId(params.database_id)
+  if (id === null) return invalid(invalidPathIdMessage('database_id', params.database_id))
+  const blocked = await policyBlock(ctx)
+  if (blocked !== null) return blocked
+  return databaseReply(ctx, id, apiLinks(ctx, request))
+}
+
 /** `GET /v1/data_sources/{data_source_id}` */
 export const retrieveDataSource: V1Handler = async ({ ctx, params, request }) => {
   const id = parseApiId(params.data_source_id)
   if (id === null) return invalid(invalidPathIdMessage('data_source_id', params.data_source_id))
   const blocked = await policyBlock(ctx)
   if (blocked !== null) return blocked
-  const links = apiLinks(ctx, request)
-  const json = await withReadTransaction(async (tx) => {
-    const opened = await openSourceIn(tx, ctx, id)
-    return opened === null ? null : dataSourceObjectIn(tx, ctx, opened, links)
-  })
-  return json === null ? mistakenIdReply(ctx, 'data source', id) : v1Ok(json)
+  return dataSourceReply(ctx, id, apiLinks(ctx, request))
 }
 
 // ── 질의 ──────────────────────────────────────────────────────────────
