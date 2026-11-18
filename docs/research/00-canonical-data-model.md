@@ -6919,7 +6919,7 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > 무료 등급은 그 서비스의 정책을 따른다" 를 보인다. 꺼져 있으면 AI 입구는 "워크스페이스 소유자가 AI 를 켜야 합니다" 를 보인다.
 > ⑥ **보내는 범위** — 그 기능이 필요한 것만(선택한 글 · 그 페이지의 원문 — 제안 마크 밖 · 그 사람이 볼 수 있는 것만 — `SessionContext` +
 > `can`). AI 가 쓴 글은 사람이 받아들일 때 그 사람의 편집으로 본문에 든다(편집기 · 출처 `editor`) — AI 가 서버에서 본문을 직접 쓰는 길(번역 ·
-> AI 블록 새로 고침)이 생길 때 `doc_update.origin` 에 `ai` 를 더한다.
+> AI 블록 새로 고침)이 생길 때 `doc_update.origin` 에 `ai` 를 더한다. **고치기(AI-3)는 편집기가 보낸 고른 글을 그대로 싣는다**(그 사람이 골라 이미 보고 있는 글 · 블록마다 하나 · 글이 아닌 블록은 빼고) — 대신 게이트가 그 페이지를 고칠 수 있는지(`edit_content` · 잠기지 않음 — 아니면 403 `cannot_edit`) 본다(2026-11-18).
 > ⑦ **표** — `workspace_ai_setting(workspace_id PK, enabled, changed_by, changed_at)` · `ai_usage(id, workspace_id, user_id, feature, status,
 >   model, input_tokens, output_tokens, page_id NULL, created_at, finished_at)`(status CHECK 넷 · feature 는 닫힌 목록 — 한 행이 사용량 화면 ·
 >   감사(F-10-25)의 원장) · `ai_grant(id, workspace_id, responses > 0, reason, granted_at, expires_at NULL)` · `ai_daily_usage(day PK,

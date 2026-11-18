@@ -8,9 +8,10 @@
  *   · 스페이스 — 캐럿이 **빈 문단**에 있으면 `open(블록 id)` 를 묻는다. 열 수 없으면(AI 가 꺼졌다 · 고칠 수 없다) false — 스페이스는
  *     여느 때처럼 글자다. 목록 · 헤딩 · 코드 · 표의 칸에서는 묻지 않는다(노션도 빈 텍스트 줄만)
  *   · 안내 — AI 를 쓸 수 있을 때만 캐럿이 있는 빈 문단에 `data-ai-hint` 를 단다(글자는 CSS — 문서에 들지 않는다 · 포커스가 있을 때만 보인다)
+ *   · Ctrl/Cmd+J — 글을 골랐으면 AI 로 고치기의 메뉴를 연다(AI-3 · F-10-02 · 서식 툴바의 AI 단추와 같다). 고른 글이 없으면 키를 넘긴다
  */
 
-import { Plugin, PluginKey, type Command, type EditorState } from '@tiptap/pm/state'
+import { Plugin, PluginKey, TextSelection, type Command, type EditorState } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 
 import { containerAt } from './pm-blocks.ts'
@@ -31,6 +32,11 @@ export function aiSpaceCommand(open: (blockId: string) => boolean): Command {
     const id = emptyParagraphAt(state)
     return id !== null && open(id)
   }
+}
+
+/** 글을 고른 Ctrl/Cmd+J — `open` 이 열었으면 키를 먹는다(AI-3). */
+export function aiEditCommand(open: () => boolean): Command {
+  return (state) => state.selection instanceof TextSelection && !state.selection.empty && open()
 }
 
 export const aiHintKey = new PluginKey('aiHint')

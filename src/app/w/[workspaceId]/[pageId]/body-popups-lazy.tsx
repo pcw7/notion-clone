@@ -19,3 +19,5 @@ export const SuggestionCardLazy = dynamic(() => import('./suggestion-card').then
 export const SuggestionPanelLazy = dynamic(() => import('./suggestion-panel').then((m) => m.SuggestionPanel))
 // AI 에게 묻기(AI-2) — 빈 줄의 스페이스 · `/ai` 로 연 뒤에야 받는다(입력창 · 스트림 · 마크다운 변환 · 넣기)
 export const AiAskBarLazy = dynamic(() => import('./ai-ask-bar').then((m) => m.AiAskBar))
+// AI 로 고치기(AI-3) — 같은 모듈(묻기 창과 한 덩이) · 툴바의 AI 단추 · 글을 고른 Ctrl/Cmd+J 로 연 뒤에야 받는다
+export const AiEditBarLazy = dynamic(() => import('./ai-ask-bar').then((m) => m.AiEditBar))

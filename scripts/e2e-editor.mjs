@@ -733,6 +733,8 @@ async function main() {
       // 서식 제안(SG-5a) — `Mod+B` · `Mod+I`.
       b: [66, 'KeyB'],
       i: [73, 'KeyI'],
+      // AI 로 고치기(AI-3) — 글을 고른 `Mod+J`.
+      j: [74, 'KeyJ'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -38276,6 +38278,217 @@ async function main() {
           JSON.stringify({ limited, limitText }))
         await key('Escape')
         check('Esc 가 닫는다 · 문서는 그대로', (await waitFor(`!document.querySelector('${BAR}')`, 3000)) && JSON.stringify(await serverShape()) === JSON.stringify(ORIGINAL))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('AI 로 고치기 — 선택 · 프리셋 · 바꾸기 · 되돌리기 (AI-3 · F-10-02)')) { try {
+      // 정본 §3.10 [보강 AI-1] ⑥ · 10 F-10-02. 이 절이 만든 Free 워크스페이스(체험 20)의 페이지 하나(문단 · 헤딩 · 글머리표 둘 · 끝 줄)에서 한다.
+      // 공급자는 러너가 띄운 가짜 — 고치기면 고른 글의 줄마다 꼴을 두고 "고친 " 을 붙인다(할 일 뽑기면 `- [ ] 할 일: …`) · 0.12초마다 한 조각.
+      // 꺼져 있으면 툴바의 AI 단추가 까닭과 켜는 길을 말한다. 켜면 단추 · Ctrl+J 가 고른 글 아래에 메뉴를 연다 — 결과는 미리보기에만 흐르고(편집기 ·
+      // 서버 본문에 없다) 바꾸기는 고른 범위만 바꿔 서버에 남고 Ctrl+Z 한 번에 돌아온다. 여러 블록은 종류를 지키며 바뀐다. 할 일 뽑기는 아래에
+      // 할 일 블록으로 넣는다. 바꾸기 전에 고른 글이 바뀌면(같이 쓰는 사람의 편집과 같은 길 — 여기서는 내가 그 사이에 친다) 바꾸지 않고 아래에
+      // 넣기를 권한다. 끝에 브라우저 세션을 되돌린다.
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 고치기의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 고치기 ${stamp}` }) })).json()).workspaceId
+      const resolvedBoss = await resolveSessionContext(boss.token, ws)
+      if (!resolvedBoss.ok) throw new Error(`소유자의 세션을 풀지 못했다: ${resolvedBoss.reason}`)
+      const bossCtx = resolvedBoss.context
+      const page = (await (await fetch(`${BASE}/api/workspaces/${ws}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title: `AI 고치기 ${stamp}` }) })).json()).page.id
+      const [pid, hid, l1, l2, tail] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+      const blk = (id, type, text) => ({ id, type, title: [textRun(text)], properties: {}, format: {}, children: [] })
+      const saved = await savePageBody(bossCtx, page, {
+        blocks: [blk(pid, 'paragraph', '앞 글 바꿀 글 뒤 글'), blk(hid, 'heading_2', '회의 제목'), blk(l1, 'bulleted_list_item', '첫째 안건'),
+          blk(l2, 'bulleted_list_item', '둘째 안건'), blk(tail, 'paragraph', '끝 줄')],
+      })
+      if (!saved.ok) throw new Error(`본문 준비 실패: ${JSON.stringify(saved)}`)
+
+      const ORIGINAL = ['paragraph:앞 글 바꿀 글 뒤 글', 'heading_2:회의 제목', 'bulleted_list_item:첫째 안건', 'bulleted_list_item:둘째 안건', 'paragraph:끝 줄']
+      const serverBlocks = async () => (await loadPageBody(bossCtx, page)).doc.blocks
+      const serverShape = async () => (await serverBlocks()).map((b) => `${b.type}:${(b.title ?? []).map((r) => r.text?.content ?? '').join('')}`)
+      const settledServer = async (expected, ms = 8000) => {
+        let shape = []
+        for (const until = Date.now() + ms; Date.now() < until;) {
+          shape = await serverShape()
+          if (JSON.stringify(shape) === JSON.stringify(expected)) break
+          await sleep(150)
+        }
+        return shape
+      }
+      const BAR = '[data-testid="ai-edit-bar"]'
+      const TOOLBAR = '[role="toolbar"][aria-label="서식"]'
+      const phase = () => evaluate(`document.querySelector('${BAR}')?.dataset.phase ?? null`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const lineText = (id) => evaluate(`document.querySelector('[data-block-id="${id}"] > *:first-child')?.textContent ?? null`)
+      const openPage = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${pid}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'
+          && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+      }
+      const focusEditor = async () => {
+        for (let i = 0; i < 20; i += 1) {
+          await clickSelector(`[data-block-id="${tail}"] p`)
+          if (await waitFor(`document.activeElement?.classList.contains('ProseMirror')`, 500)) return true
+        }
+        return false
+      }
+      /** 글자 [from, to) 를 고른다 — 두 블록에 걸칠 수 있다(브라우저의 선택을 바꾸면 편집기가 selectionchange 로 읽는다). */
+      const selectRange = async (fromId, from, toId, to) => {
+        const ok = await evaluate(`(() => {
+          const point = (id, offset) => {
+            const el = document.querySelector('[data-block-id="' + id + '"] > *:first-child')
+            if (!el) return null
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+            let at = 0
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+              const len = n.textContent.length
+              if (offset <= at + len) return [n, offset - at]
+              at += len
+            }
+            return null
+          }
+          const a = point('${fromId}', ${from})
+          const b = point('${toId}', ${to})
+          if (!a || !b) return false
+          window.getSelection().setBaseAndExtent(a[0], a[1], b[0], b[1])
+          return true
+        })()`)
+        await sleep(150)
+        return ok
+      }
+      /** 고른 뒤 툴바의 AI 단추로 연다. */
+      const openFromToolbar = async () => {
+        if (!(await waitFor(`!!document.querySelector('${TOOLBAR} button[data-ai]')`, 3000))) return false
+        await clickSelector(`${TOOLBAR} button[data-ai]`)
+        return waitFor(`!!document.querySelector('${BAR}')`, 10000)
+      }
+
+      try {
+        // ① 꺼짐 — 툴바 맨 앞의 AI 단추가 까닭과 켜는 길(소유자)을 말한다
+        await browseAs(boss.token)
+        await openPage()
+        check('전제 — 편집기에 포커스', await focusEditor())
+        await selectRange(pid, 4, pid, 8)
+        const firstButton = await evaluate(`document.querySelector('${TOOLBAR} button')?.getAttribute('aria-label') ?? null`)
+        const openedOff = await openFromToolbar()
+        const blocked = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'blocked'`, 5000)
+        const reason = await textOf('[data-testid="ai-edit-reason"]')
+        const href = await evaluate(`document.querySelector('[data-testid="ai-edit-settings-link"]')?.getAttribute('href') ?? null`)
+        check('★ 툴바 맨 앞의 AI 단추 — 꺼져 있으면 까닭("소유자가 켜야 합니다")과 설정 → AI 링크(소유자)',
+          firstButton === 'AI 로 고치기' && openedOff && blocked && reason === '워크스페이스 소유자가 AI 를 켜야 합니다.' && href === `/w/${ws}/settings?s=workspace.ai`,
+          JSON.stringify({ firstButton, openedOff, blocked, reason, href }))
+        await key('Escape')
+        check('Esc 가 까닭의 창을 닫는다 · 문서는 그대로', (await waitFor(`!document.querySelector('${BAR}')`, 3000)) && JSON.stringify(await serverShape()) === JSON.stringify(ORIGINAL))
+
+        // ② 켠다 — 단추가 고른 글 아래에 메뉴(직접 지시 · 프리셋 · 어조 ▸ · 번역 ▸)
+        const on = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asBoss, body: JSON.stringify({ enabled: true }) })
+        check('전제 — 소유자가 AI 를 켠다', on.status === 200, String(on.status))
+        await openPage()
+        check('전제 — 편집기에 포커스(켠 뒤)', await focusEditor())
+        await selectRange(pid, 4, pid, 8)
+        await openFromToolbar()
+        const menu = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'menu' && document.activeElement?.dataset.testid === 'ai-edit-instruction'`, 5000)
+        const items = await evaluate(`[...document.querySelectorAll('[data-testid="ai-edit-item"]')].map((e) => e.textContent)`)
+        const geometry = await evaluate(`(() => {
+          const bar = document.querySelector('${BAR}')?.getBoundingClientRect()
+          const line = document.querySelector('[data-block-id="${pid}"] p')?.getBoundingClientRect()
+          return bar && line ? { barTop: bar.top, lineBottom: line.bottom } : null
+        })()`)
+        check('★ 켜면 AI 단추가 고른 글 바로 아래에 메뉴를 연다 — 직접 지시 칸에 포커스 · 프리셋 열(어조 ▸ · 번역 ▸)',
+          menu && JSON.stringify(items) === JSON.stringify(['글 다듬기', '맞춤법과 문법 고치기', '더 짧게', '더 길게', '어조 바꾸기▸', '쉬운 말로', '요약', '번역▸', '설명', '할 일 뽑기'])
+            && geometry !== null && geometry.barTop >= geometry.lineBottom - 1 && geometry.barTop - geometry.lineBottom < 40,
+          JSON.stringify({ menu, items, geometry }))
+
+        // ③ 더 짧게 — 미리보기에만 흐른다 → 바꾸기는 고른 범위만 · 서버에 남는다 → Ctrl+Z 한 번에 원문
+        await clickSelector('[data-item="shorter"]')
+        const streaming = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'streaming'
+          && /고/.test(document.querySelector('[data-testid="ai-edit-preview"]')?.textContent ?? '')`, 10000)
+        const midLine = await lineText(pid)
+        const midServer = await serverShape()
+        check('★ 결과는 미리보기에만 흐른다 — 흐르는 동안 편집기 · 서버 본문은 그대로(Y.Doc 밖)',
+          streaming && midLine === '앞 글 바꿀 글 뒤 글' && JSON.stringify(midServer) === JSON.stringify(ORIGINAL), JSON.stringify({ streaming, midLine, midServer }))
+        const done = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'done'`, 10000)
+        const preview = await textOf('[data-testid="ai-edit-preview"]')
+        const defaults = await evaluate(`({ replace: document.querySelector('[data-testid="ai-edit-replace"]')?.dataset.default ?? null,
+          below: document.querySelector('[data-testid="ai-edit-below"]')?.dataset.default ?? null })`)
+        const remaining = await textOf('[data-testid="ai-edit-remaining"]')
+        check('★ 끝나면 바꾸기(기본) · 아래에 넣기 · 다시 · 버리기 · 이어서 다듬기 — 고른 글만 보냈다 · 남은 응답(체험 20 중 19)',
+          done && preview === '고친 바꿀 글' && defaults.replace === 'true' && defaults.below === null && remaining === '남은 체험 응답 19'
+            && (await evaluate(`['ai-edit-retry', 'ai-edit-discard', 'ai-edit-followup'].every((id) => !!document.querySelector('[data-testid="' + id + '"]'))`)),
+          JSON.stringify({ done, preview, defaults, remaining }))
+        await clickSelector('[data-testid="ai-edit-replace"]')
+        const replaced = await waitFor(`!document.querySelector('${BAR}') && document.querySelector('[data-block-id="${pid}"] p')?.textContent === '앞 글 고친 바꿀 글 뒤 글'`, 5000)
+        const REPLACED = ['paragraph:앞 글 고친 바꿀 글 뒤 글', ...ORIGINAL.slice(1)]
+        const replacedServer = await settledServer(REPLACED)
+        check('★ 바꾸기 — 고른 범위만 바뀌고(앞뒤 글은 그대로) 서버 본문에 남는다',
+          replaced && JSON.stringify(replacedServer) === JSON.stringify(REPLACED), JSON.stringify(replacedServer))
+        await key('z', MOD)
+        const undone = await settledServer(ORIGINAL)
+        check('★ Ctrl+Z 한 번에 원문이 돌아온다(편집기 · 서버)', JSON.stringify(undone) === JSON.stringify(ORIGINAL) && (await lineText(pid)) === '앞 글 바꿀 글 뒤 글', JSON.stringify(undone))
+
+        // ④ 여러 블록(헤딩 + 글머리표 둘) — Ctrl+J 가 같은 메뉴를 연다 → 글 다듬기 → 바꾸기는 종류를 지킨다
+        check('전제 — 편집기에 포커스(여러 블록)', await focusEditor())
+        await selectRange(hid, 0, l2, 5)
+        await key('j', MOD)
+        const byShortcut = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'menu'`, 5000)
+        check('★ 글을 고른 Ctrl+J 가 같은 메뉴를 연다', byShortcut, String(await phase()))
+        await clickSelector('[data-item="improve"]')
+        await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'done'`, 10000)
+        const sentUser = fakeAi.requests.at(-1)?.body.messages?.[1]?.content ?? ''
+        check('★ 여러 블록은 블록 경계 · 종류를 지켜 보낸다(블록마다 한 줄)',
+          sentUser === 'Selected text:\n<selection>\n## 회의 제목\n\n- 첫째 안건\n- 둘째 안건\n</selection>', JSON.stringify(sentUser))
+        await clickSelector('[data-testid="ai-edit-replace"]')
+        const IMPROVED = ['paragraph:앞 글 바꿀 글 뒤 글', 'heading_2:고친 회의 제목', 'bulleted_list_item:고친 첫째 안건', 'bulleted_list_item:고친 둘째 안건', 'paragraph:끝 줄']
+        const improved = await settledServer(IMPROVED)
+        const keptId = (await serverBlocks())[1]?.id
+        check('★ 여러 블록 바꾸기 — 헤딩은 헤딩 · 글머리표는 글머리표로 · 첫 블록의 id 를 지킨다 · 서버에 남는다',
+          JSON.stringify(improved) === JSON.stringify(IMPROVED) && keptId === hid, JSON.stringify({ improved, keptId }))
+        await key('z', MOD)
+        check('Ctrl+Z 한 번에 여러 블록이 돌아온다', JSON.stringify(await settledServer(ORIGINAL)) === JSON.stringify(ORIGINAL))
+
+        // ⑤ 할 일 뽑기 — 바꾸기 없이 아래에 넣기(기본)가 할 일 블록을 넣는다
+        check('전제 — 편집기에 포커스(할 일)', await focusEditor())
+        await selectRange(l1, 0, l2, 5)
+        await key('j', MOD)
+        await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'menu'`, 5000)
+        await clickSelector('[data-item="action_items"]')
+        const todoDone = await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'done'`, 10000)
+        const todoButtons = await evaluate(`({ replace: !!document.querySelector('[data-testid="ai-edit-replace"]'),
+          below: document.querySelector('[data-testid="ai-edit-below"]')?.dataset.default ?? null })`)
+        await clickSelector('[data-testid="ai-edit-below"]')
+        const TODOS = [...ORIGINAL.slice(0, 4), 'to_do:할 일: 첫째 안건', 'to_do:할 일: 둘째 안건', ORIGINAL[4]]
+        const todos = await settledServer(TODOS)
+        check('★ 할 일 뽑기 — 바꾸기 없이 아래에 넣기(기본)가 고른 글 아래에 할 일 블록을 넣는다',
+          todoDone && !todoButtons.replace && todoButtons.below === 'true' && JSON.stringify(todos) === JSON.stringify(TODOS), JSON.stringify({ todoButtons, todos }))
+        await key('z', MOD)
+        check('Ctrl+Z 한 번에 넣은 할 일이 빠진다', JSON.stringify(await settledServer(ORIGINAL)) === JSON.stringify(ORIGINAL))
+
+        // ⑥ 바꾸기 전에 고른 글이 바뀌면 — 바꾸지 않고 아래에 넣기를 권한다(F-10-02 엣지 케이스)
+        check('전제 — 편집기에 포커스(바뀐 글)', await focusEditor())
+        await selectRange(pid, 4, pid, 8)
+        await key('j', MOD)
+        await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'menu'`, 5000)
+        await clickSelector('[data-item="shorter"]')
+        await waitFor(`document.querySelector('${BAR}')?.dataset.phase === 'done'`, 10000)
+        check('전제 — 편집기에 포커스(그 사이의 편집)', await focusEditor())
+        await selectRange(pid, 5, pid, 5)
+        await typeText('X')
+        const between = await settledServer(['paragraph:앞 글 바X꿀 글 뒤 글', ...ORIGINAL.slice(1)])
+        const stillOpen = (await phase()) === 'done'
+        await clickSelector('[data-testid="ai-edit-replace"]')
+        const refused = await waitFor(`document.querySelector('[data-testid="ai-edit-notice"]')?.textContent?.includes('그사이 바뀌었습니다')
+          && document.querySelector('[data-testid="ai-edit-replace"]')?.disabled === true`, 3000)
+        check('★ 고른 글이 그사이 바뀌면 바꾸지 않는다 — 까닭을 말하고 바꾸기를 끈다(문서는 그대로)',
+          stillOpen && between[0] === 'paragraph:앞 글 바X꿀 글 뒤 글' && refused && (await lineText(pid)) === '앞 글 바X꿀 글 뒤 글',
+          JSON.stringify({ stillOpen, between: between[0], refused, line: await lineText(pid) }))
+        await clickSelector('[data-testid="ai-edit-below"]')
+        const FALLBACK = ['paragraph:앞 글 바X꿀 글 뒤 글', 'paragraph:고친 바꿀 글', ...ORIGINAL.slice(1)]
+        const fallback = await settledServer(FALLBACK)
+        check('★ 대신 아래에 넣기 — 결과가 고른 줄 아래의 새 블록이 된다', JSON.stringify(fallback) === JSON.stringify(FALLBACK), JSON.stringify(fallback))
       } finally {
         await browseAs(session)
       }

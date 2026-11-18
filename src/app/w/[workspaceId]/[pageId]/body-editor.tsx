@@ -87,6 +87,7 @@ import type { DatabaseListItem } from '@/lib/database/database'
 import type { AiEntry } from '@/lib/ai/usage'
 import {
   AiAskBarLazy,
+  AiEditBarLazy,
   ButtonBlockSettingsLazy,
   CodeCaptionEditorLazy,
   CodeLanguageMenuLazy,
@@ -653,6 +654,10 @@ export function BodyEditor({
   const [aiUi, setAiUi] = useState<{ readonly blockId: string; readonly key: number; readonly view: EditorView; readonly frame: HTMLElement } | null>(null)
   const aiUiRef = useRef(aiUi)
   aiUiRef.current = aiUi
+  // AI 로 고치기(AI-3 · F-10-02) — 서식 툴바의 AI 단추 · 글을 고른 Ctrl/Cmd+J. 창은 지연 로드(`AiEditBarLazy`)고 여는 순간의 선택을 읽는다.
+  // 묻기와 같은 조건(고칠 수 있고 제안 모드가 아님) · AI 를 쓸 수 없어도 열어 까닭을 말한다. 묻기 창과 한 번에 하나만
+  const [aiEditUi, setAiEditUi] = useState<{ readonly key: number; readonly view: EditorView; readonly frame: HTMLElement } | null>(null)
+  const aiEditOpen = aiEditUi !== null && editable && !suggesting
   const aiRef = useRef(ai)
   aiRef.current = ai
   // 고칠 수 없게 되면(잠금 · 권한 · 제안 모드) 입력창을 그리지 않는다 — 내려가며 흐르던 응답을 멈춘다
@@ -671,11 +676,24 @@ export function BodyEditor({
     const frame = frameRef.current
     if (!view || !frame || !editableRef.current || suggestingRef.current) return false
     if (from === 'space' && aiRef.current.state !== 'ready') return false
+    setAiEditUi(null)
     setAiUi((prev) => ({ blockId, key: (prev?.key ?? 0) + 1, view, frame }))
     return true
   }, [])
   const closeAi = useCallback(() => {
     setAiUi(null)
+    viewRef.current?.focus()
+  }, [])
+  const openAiEdit = useCallback((): boolean => {
+    const view = viewRef.current
+    const frame = frameRef.current
+    if (!view || !frame || !editableRef.current || suggestingRef.current) return false
+    setAiUi(null)
+    setAiEditUi((prev) => ({ key: (prev?.key ?? 0) + 1, view, frame }))
+    return true
+  }, [])
+  const closeAiEdit = useCallback(() => {
+    setAiEditUi(null)
     viewRef.current?.focus()
   }, [])
 
@@ -1770,6 +1788,8 @@ export function BodyEditor({
       // AI 에게 묻기(AI-2) — 빈 문단의 스페이스 · 빈 줄의 안내
       openAi: (id) => openAi(id, 'space'),
       aiHint: () => aiHintRef.current,
+      // AI 로 고치기(AI-3) — 글을 고른 Ctrl/Cmd+J
+      openAiEdit: () => openAiEdit(),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
@@ -1801,8 +1821,9 @@ export function BodyEditor({
       setEquationUi(null)
       // 제안 카드도 옛 편집기의 것이다 — 접는다(목록은 새 편집기로 다시 그린다)
       setSuggestionCard(null)
-      // AI 입력창도 옛 편집기에 매였다 — 접는다(흐르던 응답은 내려가며 멈춘다 · AI-2)
+      // AI 입력창도 옛 편집기에 매였다 — 접는다(흐르던 응답은 내려가며 멈춘다 · AI-2 · 고치기 창도 · AI-3)
       setAiUi(null)
+      setAiEditUi(null)
       lastDocRef.current = null
       // 하이라이트 플러그인은 **이 Y.Doc** 으로 앵커를 푼다 — 연결이 문서를 버리고 다시 열면 여기서 새 문서로 다시 붙는다.
       const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps, [
@@ -2215,6 +2236,21 @@ export function BodyEditor({
               insertInlineEquationCommand(openInlineEquationUi)(view.state, view.dispatch.bind(view))
               view.focus()
             }}
+            // AI 로 고치기(AI-3) — 맨 앞의 단추. 제안 모드면 없다(답은 그 사람의 편집으로 든다 — 정본 ⑥)
+            onAi={suggesting ? undefined : () => void openAiEdit()}
+          />
+        )}
+
+        {/* AI 로 고치기(AI-3) — 고른 글 아래 · 프레임 좌표 · 지연 로드. 결과는 여기에만 흐른다(문서 밖) */}
+        {aiEditOpen && aiEditUi !== null && !aiEditUi.view.isDestroyed && (
+          <AiEditBarLazy
+            key={aiEditUi.key}
+            view={aiEditUi.view}
+            frame={aiEditUi.frame}
+            workspaceId={workspaceId}
+            pageId={pageId}
+            entry={ai}
+            onClose={closeAiEdit}
           />
         )}
 

@@ -17,9 +17,34 @@
  *
  * `blockId` 는 넣을 자리(문맥의 창이 그 둘레다) · `history` 는 이어서 묻기의 앞선 문답(최근 `ASK_MAX_HISTORY` 개만 싣는다). 지시 + 질문만으로
  * 상한을 넘으면 `input_too_long` — 페이지의 글은 서버가 남은 자리만큼 채운다.
+ *
+ * **고치기(`edit` · AI-3)도 서버가 프롬프트를 짓는다**(`edit-prompt.ts`) — `prompt` · `messages` 를 받지 않는다:
+ *
+ *   { feature: 'edit', pageId: uuid, preset, tone?, language?, instruction?, selection: { inline, blocks: [{ kind, text, depth, language, checked }] },
+ *     followUp?: { result, instruction } }
+ *
+ * 어조는 `tone` 일 때만 · 언어는 `translate` 일 때만 · 지시는 `custom` 일 때만(≤ `EDIT_INSTRUCTION_MAX`) — 다른 프리셋에 오면 모양이 틀린
+ * 것이다. 페이지는 꼭 있어야 한다(그 페이지를 고칠 수 있는지 게이트가 본다). 보이는 글자가 `EDIT_MIN_CHARS` 보다 적으면 `invalid_input` ·
+ * 블록이 `EDIT_MAX_BLOCKS` 를 넘거나 글자 합이 상한을 넘으면 `input_too_long`.
  */
 
 import { ASK_MAX_HISTORY, buildAskMessages, type AskTurn } from './ask-prompt.ts'
+import {
+  EDIT_INSTRUCTION_MAX,
+  EDIT_LANGUAGE_NAME_MAX,
+  EDIT_MAX_BLOCKS,
+  EDIT_MAX_DEPTH,
+  EDIT_MIN_CHARS,
+  buildEditMessages,
+  editSelectionChars,
+  isEditBlockKind,
+  isEditLanguage,
+  isEditPreset,
+  isEditTone,
+  type EditBlock,
+  type EditFollowUp,
+  type EditInput,
+} from './edit-prompt.ts'
 import type { ChatMessage } from './provider.ts'
 import { isAiFeature, type AiFeature } from './quota.ts'
 
@@ -66,6 +91,64 @@ function parseAsk(b: Record<string, unknown>): AskRequest | null {
   return { question: b.prompt, blockId, history: history.slice(-ASK_MAX_HISTORY) }
 }
 
+/** 짧은 지시 — 비지 않고 상한 안. 틀리면 null. */
+const instructionOf = (raw: unknown): string | null =>
+  typeof raw === 'string' && raw.trim() !== '' && raw.trim().length <= EDIT_INSTRUCTION_MAX ? raw.trim() : null
+
+/** 그 프리셋에서만 받는 값 — 다른 프리셋에 오면 틀린 모양(undefined). 없으면 null. */
+function onlyFor<T>(preset: string, owner: string, raw: unknown, parse: (v: unknown) => T | null): T | null | undefined {
+  if (preset !== owner) return raw === undefined || raw === null ? null : undefined
+  return parse(raw) ?? undefined
+}
+
+/** 고른 블록 하나 — 닫힌 종류 · 글 · 깊이 · 코드 언어 · 체크. 틀리면 null. */
+function editBlockOf(raw: unknown): EditBlock | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  if (!isEditBlockKind(r.kind) || typeof r.text !== 'string') return null
+  const depth = r.depth ?? 0
+  if (typeof depth !== 'number' || !Number.isInteger(depth) || depth < 0 || depth > EDIT_MAX_DEPTH) return null
+  const language = r.language ?? null
+  if (language !== null && (typeof language !== 'string' || language.length > EDIT_LANGUAGE_NAME_MAX)) return null
+  const checked = r.checked ?? false
+  if (typeof checked !== 'boolean') return null
+  return { kind: r.kind, text: r.text, depth, language: r.kind === 'code' ? language : null, checked: r.kind === 'to_do' && checked }
+}
+
+/** 고치기의 몸 — 프리셋 · 값 · 고른 글 · 이어서 다듬기. */
+function parseEdit(b: Record<string, unknown>): EditInput | 'invalid_input' | 'input_too_long' {
+  if (b.messages !== undefined || b.prompt !== undefined || !isEditPreset(b.preset)) return 'invalid_input'
+  const tone = onlyFor(b.preset, 'tone', b.tone, (v) => (isEditTone(v) ? v : null))
+  const language = onlyFor(b.preset, 'translate', b.language, (v) => (isEditLanguage(v) ? v : null))
+  const instruction = onlyFor(b.preset, 'custom', b.instruction, instructionOf)
+  if (tone === undefined || language === undefined || instruction === undefined) return 'invalid_input'
+
+  const sel = b.selection
+  if (typeof sel !== 'object' || sel === null || Array.isArray(sel)) return 'invalid_input'
+  const s = sel as Record<string, unknown>
+  if (typeof s.inline !== 'boolean' || !Array.isArray(s.blocks) || s.blocks.length === 0) return 'invalid_input'
+  if (s.inline && s.blocks.length !== 1) return 'invalid_input'
+  if (s.blocks.length > EDIT_MAX_BLOCKS) return 'input_too_long'
+  const blocks: EditBlock[] = []
+  for (const raw of s.blocks) {
+    const block = editBlockOf(raw)
+    if (block === null) return 'invalid_input'
+    blocks.push(block)
+  }
+  const selection = { inline: s.inline, blocks }
+  if (editSelectionChars(selection) < EDIT_MIN_CHARS) return 'invalid_input'
+
+  let followUp: EditFollowUp | null = null
+  if (b.followUp !== undefined && b.followUp !== null) {
+    if (typeof b.followUp !== 'object' || Array.isArray(b.followUp)) return 'invalid_input'
+    const f = b.followUp as Record<string, unknown>
+    const next = instructionOf(f.instruction)
+    if (typeof f.result !== 'string' || f.result.trim() === '' || next === null) return 'invalid_input'
+    followUp = { result: f.result, instruction: next }
+  }
+  return { preset: b.preset, tone, language, instruction, selection, followUp }
+}
+
 export type AiCompleteParse =
   | { readonly ok: true; readonly value: AiCompleteInput }
   | { readonly ok: false; readonly error: 'invalid_input' | 'input_too_long' }
@@ -86,6 +169,16 @@ export function parseAiCompleteBody(body: unknown, maxInputChars: number): AiCom
     const built = buildAskMessages({ question: ask.question, history: ask.history, anchorBlockId: ask.blockId, page: null }, maxInputChars)
     if (!built.ok) return { ok: false, error: built.error }
     return { ok: true, value: { feature: 'ask', messages: built.messages, pageId, ask } }
+  }
+
+  // 고치기(AI-3) — 메시지는 여기서 다 짓는다(서버가 다시 읽을 글이 없다 · 고른 글은 편집기의 것). 그 페이지를 고칠 수 있는지는 게이트가 본다
+  if (b.feature === 'edit') {
+    if (pageId === null) return { ok: false, error: 'invalid_input' }
+    const edit = parseEdit(b)
+    if (typeof edit === 'string') return { ok: false, error: edit }
+    const built = buildEditMessages(edit, maxInputChars)
+    if (!built.ok) return { ok: false, error: built.error }
+    return { ok: true, value: { feature: 'edit', messages: built.messages, pageId, ask: null } }
   }
 
   let messages: ChatMessage[]
@@ -112,13 +205,14 @@ export function parseAiCompleteBody(body: unknown, maxInputChars: number): AiCom
   return { ok: true, value: { feature: b.feature, messages, pageId, ask: null } }
 }
 
-/** 게이트 · 요청의 거부 → HTTP 상태. 한도는 429 · 꺼짐 · 권한 403 · 없는 페이지 404 · 공급자 없음 503. */
+/** 게이트 · 요청의 거부 → HTTP 상태. 한도는 429 · 꺼짐 · 권한 · 고칠 수 없는 페이지 403 · 없는 페이지 404 · 공급자 없음 503. */
 export function aiFailureStatus(error: string): number {
   switch (error) {
     case 'ai_limit_reached':
       return 429
     case 'ai_disabled':
     case 'forbidden':
+    case 'cannot_edit':
       return 403
     case 'not_found':
       return 404
