@@ -11,7 +11,8 @@
  *   · 링크 — 입력칸(지금 링크가 기본값) · Enter 로 걸고 비우면 뗀다 · Esc 로 닫는다 · 받을 수 없는 주소는 이유를 말한다. Ctrl/Cmd+K 도 이
  *     입력칸을 연다(`linkRequest`)
  *   · 수식 — 고른 글자를 인라인 수식으로(`insertInlineEquationCommand` 와 같다 — 입력창이 열린다)
- *   · 버튼은 탭 순서에 두지 않는다 — 키보드 길은 단축키다(Mod-B · I · U · Shift-S · E · K · Shift-E · Shift-H)
+ *   · AI(맨 앞 · AI-3 · F-10-02) — 고른 글을 AI 로 고치는 메뉴(Ctrl/Cmd+J 와 같다). 제안 모드면 없다. AI 를 쓸 수 없으면 메뉴가 까닭을 말한다
+ *   · 버튼은 탭 순서에 두지 않는다 — 키보드 길은 단축키다(Mod-B · I · U · Shift-S · E · K · Shift-E · Shift-H · J)
  */
 
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
@@ -35,6 +36,7 @@ export function FormatToolbar({
   state,
   linkRequest,
   onEquation,
+  onAi,
 }: {
   view: EditorView
   at: FormatToolbarAt
@@ -43,6 +45,8 @@ export function FormatToolbar({
   linkRequest: number
   /** 고른 글자를 인라인 수식으로. */
   onEquation: () => void
+  /** AI 로 고치기의 메뉴를 연다(AI-3) — 없으면 단추가 없다(제안 모드). */
+  onAi?: () => void
 }) {
   const [mode, setMode] = useState<'buttons' | 'colors' | 'link'>('buttons')
   const [linkError, setLinkError] = useState<string | null>(null)
@@ -98,6 +102,14 @@ export function FormatToolbar({
     >
       {mode === 'buttons' && (
         <>
+          {onAi && (
+            <>
+              <button type="button" tabIndex={-1} aria-label="AI 로 고치기" aria-haspopup="menu" title="AI 로 고치기 (Ctrl+J)" className="blk-format-button text-[rgb(144,101,176)] dark:text-[rgb(178,140,214)]" data-ai onClick={onAi}>
+                ✦ AI
+              </button>
+              <span aria-hidden className="blk-format-sep" />
+            </>
+          )}
           {FORMAT_BUTTONS.map((b) => (
             <button
               key={b.mark}

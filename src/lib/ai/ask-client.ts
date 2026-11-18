@@ -26,6 +26,7 @@ export type AskFailure =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'forbidden' }
   | { readonly kind: 'not_found' }
+  | { readonly kind: 'cannot_edit' }
   | { readonly kind: 'too_long' }
   | { readonly kind: 'limit'; readonly limit: string; readonly resetsAt: string | null }
   | { readonly kind: 'busy'; readonly retryAfter: number | null }
@@ -48,6 +49,8 @@ export function askFailureOf(body: unknown): AskFailure {
       return { kind: 'forbidden' }
     case 'not_found':
       return { kind: 'not_found' }
+    case 'cannot_edit':
+      return { kind: 'cannot_edit' }
     case 'input_too_long':
       return { kind: 'too_long' }
     case 'ai_limit_reached':
@@ -85,6 +88,8 @@ export function askFailureMessage(f: AskFailure, now: Date = new Date(), timeZon
       return AI_ASK_FORBIDDEN
     case 'not_found':
       return '이 페이지를 읽을 수 없습니다 — 권한이 바뀌었거나 페이지가 지워졌습니다.'
+    case 'cannot_edit':
+      return '이 페이지를 고칠 수 없습니다 — 편집 권한이 있어야 AI 로 고칠 수 있습니다.'
     case 'too_long':
       return '질문이 너무 깁니다 — 줄여서 다시 물어보세요.'
     case 'limit':
@@ -204,9 +209,21 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>
 /**
  * 묻고 답을 읽는다 — 조각마다 `onDelta`. 멈추면(`signal`) 연결을 닫는다(서버가 stopped 로 적는다). 던지지 않는다.
  */
-export async function streamAsk(
+export function streamAsk(
   workspaceId: string,
   body: AskRequestBody,
+  signal: AbortSignal,
+  onDelta: (text: string) => void,
+  fetchImpl: FetchLike = fetch,
+): Promise<AskOutcome> {
+  const json = { feature: 'ask', prompt: body.question, pageId: body.pageId, blockId: body.blockId, history: body.history }
+  return streamAi(workspaceId, json, signal, onDelta, fetchImpl)
+}
+
+/** 응답 하나를 읽는다 — 몸(JSON)은 기능마다(묻기 · 고치기 AI-3). 거부 · 스트림의 읽기는 같다. 던지지 않는다. */
+export async function streamAi(
+  workspaceId: string,
+  json: Readonly<Record<string, unknown>>,
   signal: AbortSignal,
   onDelta: (text: string) => void,
   fetchImpl: FetchLike = fetch,
@@ -216,7 +233,7 @@ export async function streamAsk(
     res = await fetchImpl(`/api/workspaces/${workspaceId}/ai/complete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ feature: 'ask', prompt: body.question, pageId: body.pageId, blockId: body.blockId, history: body.history }),
+      body: JSON.stringify(json),
       signal,
     })
   } catch {

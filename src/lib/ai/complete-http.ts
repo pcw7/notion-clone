@@ -20,6 +20,9 @@
  * 묻기(`ask` · AI-2)는 게이트를 지난 뒤 그 페이지의 원문을 읽어 서버가 프롬프트를 짓는다(`ask-context.ts` · `ask-prompt.ts`) — 읽을 수 없는
  * 페이지면 404 `not_found`(예약은 `failed`).
  *
+ * 고치기(`edit` · AI-3)는 요청을 읽을 때 프리셋의 고정 틀로 메시지를 다 짓는다(`edit-prompt.ts` — 고른 글은 편집기의 것). 게이트가 그 페이지를
+ * 고칠 수 있는지 본다 — 보기 · 코멘트 · 제안만 · 잠긴 페이지는 403 `cannot_edit`(예약하지 않는다 · 세지 않는다).
+ *
  * 출력 상한(`AI_MAX_OUTPUT_TOKENS` — 공급자의 `max_tokens` · 글자 안전망 `maxOutputChars`)에 닿으면 스트림을 끊고 받은 데까지를 남긴다
  * (`truncated: true` · `completed`). 사람이 멈추면(연결을 닫는다 — `request.signal` · 스트림 취소) 공급자 연결도 닫고 `stopped`(셈에 든다).
  */

@@ -36,7 +36,7 @@ import type { Command, EditorState, Transaction } from '@tiptap/pm/state'
 
 import type { BlockType } from '../block/types.ts'
 import type { Color } from '../contracts/rich-text.ts'
-import { aiSpaceCommand } from './ai-trigger.ts'
+import { aiEditCommand, aiSpaceCommand } from './ai-trigger.ts'
 import { openBlockMenuCommand } from './block-menu.ts'
 import { moveBlocksCommand } from './block-move.ts'
 import {
@@ -111,6 +111,8 @@ export type EditorKeymapDeps = CommandDeps & {
    * 없으면 바인딩이 없다.
    */
   openAi?: (blockId: string) => boolean
+  /** 글을 고른 Ctrl/Cmd+J — AI 로 고치기의 메뉴를 연다(AI-3 · F-10-02). 열었으면 true. 없으면 바인딩이 없다. */
+  openAiEdit?: () => boolean
   /**
    * 되돌리기 · 다시 하기. 없으면 ProseMirror history(Phase 0 편집기). 협업 편집기는 y-prosemirror 의 것을 넘긴다 — 내 편집만
    * 되돌린다(F-05-15 · `collab/collab-editor.ts`).
@@ -213,6 +215,10 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
   // AI 에게 묻기(AI-2) — 빈 문단의 스페이스. 열지 않으면 키를 넘긴다(글자가 들어간다).
   if (deps.openAi) {
     bindings.Space = aiSpaceCommand(deps.openAi)
+  }
+  // AI 로 고치기(AI-3) — 글을 고른 Ctrl/Cmd+J(브라우저의 내려받기 단축키보다 먼저 먹는다)
+  if (deps.openAiEdit) {
+    bindings['Mod-j'] = aiEditCommand(deps.openAiEdit)
   }
 
   // 인라인 수식(Phase 2 1b · F-01-20 ②③) — 고른 글자를 수식으로, 고른 것이 없으면 빈 수식을 넣고 입력창.

@@ -15,41 +15,16 @@
  *   · AI 를 쓸 수 없으면(꺼짐 · 공급자 없음 · 게스트) 까닭만 — 꺼져 있으면 소유자에게 설정 → AI 로 가는 링크
  */
 
-import Link from '@/app/link'
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent } from 'react'
 import type { EditorView } from '@tiptap/pm/view'
 
-import {
-  AI_ASK_DISABLED,
-  AI_ASK_FORBIDDEN,
-  AI_ASK_UNAVAILABLE,
-  askFailureMessage,
-  askReducer,
-  canRetry,
-  initialAskState,
-  remainingText,
-  streamAsk,
-} from '@/lib/ai/ask-client'
+import { askFailureMessage, askReducer, canRetry, initialAskState, remainingText, streamAsk } from '@/lib/ai/ask-client'
 import type { AiEntry } from '@/lib/ai/usage'
 import { aiAnswerBlocks, insertAiBlocksCommand, type AiInsertMode } from '@/lib/editor/ai-insert'
+import { AiBlockedReason, BUTTON, INPUT, PRIMARY, boxBelow, composing, type Box } from './ai-bar-shared'
 
-type Box = { readonly top: number; readonly left: number; readonly width: number }
-
-const BUTTON = 'rounded px-2 py-1 text-sm hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800'
-const PRIMARY = 'rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700 disabled:opacity-40'
-const INPUT =
-  'min-w-0 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-800 outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200'
-
-const composing = (e: KeyboardEvent) => e.nativeEvent.isComposing || e.keyCode === 229
-
-/** 그 줄 바로 아래의 자리(프레임 좌표) — 줄이 없으면(지워졌다) null. */
-function boxBelow(view: EditorView, frame: HTMLElement, blockId: string): Box | null {
-  const line = view.dom.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`)?.firstElementChild ?? null
-  if (line === null) return null
-  const r = line.getBoundingClientRect()
-  const f = frame.getBoundingClientRect()
-  return { top: Math.round(r.bottom - f.top + 4), left: Math.round(r.left - f.left), width: Math.round(Math.max(320, r.width)) }
-}
+// AI 로 고치기(AI-3)의 창 — 같은 지연 로드 모듈로 받는다(`body-popups-lazy.tsx` 의 `AiEditBarLazy`)
+export { AiEditBar } from './ai-edit-bar'
 
 export function AiAskBar({
   view,
@@ -213,21 +188,7 @@ export function AiAskBar({
       style={box === null ? { visibility: 'hidden' } : { top: box.top, left: box.left, width: box.width }}
       className="absolute z-20 flex flex-col gap-2 popover-surface p-2 text-sm text-neutral-800 outline-none dark:text-neutral-200"
     >
-      {!ready && (
-        <div className="flex flex-wrap items-center gap-2">
-          <p data-testid="ai-ask-reason" role="status" className="flex-1">
-            {entry.state === 'disabled' ? AI_ASK_DISABLED : entry.state === 'forbidden' ? AI_ASK_FORBIDDEN : AI_ASK_UNAVAILABLE}
-          </p>
-          {entry.state === 'disabled' && entry.canManage && (
-            <Link data-testid="ai-ask-settings-link" href={`/w/${workspaceId}/settings?s=workspace.ai`} className="text-blue-600 hover:underline dark:text-blue-400">
-              설정 → AI 에서 켜기
-            </Link>
-          )}
-          <button type="button" data-testid="ai-ask-close" className={BUTTON} onClick={onClose}>
-            닫기
-          </button>
-        </div>
-      )}
+      {!ready && <AiBlockedReason entry={entry} workspaceId={workspaceId} testId="ai-ask" onClose={onClose} />}
 
       {ready && state.phase !== 'idle' && (
         <div
