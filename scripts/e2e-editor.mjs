@@ -38494,6 +38494,131 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('AI 번역 — 새 하위 페이지 · 구조 그대로 (AI-4 · F-10-03)')) { try {
+      // 정본 §3.10 [보강 AI-1] ⑨ · 10 F-10-03. 이 절이 만든 Free 워크스페이스(체험 20)의 페이지 하나(헤딩 · 굵은 글 + 링크 · 체크한 할 일 · 코드 ·
+      // 토글 안의 문단 · 긴 문단 둘 — 청크가 둘이 되게)에서 한다. 공급자는 러너가 띄운 가짜 — 번역이면 값마다 `[EN] ` 을 붙인 같은 열쇠의
+      // JSON(표지 그대로) · 0.05초마다 한 조각. "···" → 번역 → English → 확인(쓸 응답 = 청크 수 · 남은 응답) → 진행 토스트 → 번역본을 열기 →
+      // 새 하위 페이지: 제목 "… (English)" · 같은 종류 · 중첩 · 굵게 · 링크 · 체크 그대로 · 코드는 번역하지 않는다. 원본은 그대로(번역본 참조 한
+      // 줄만 끝에 더해진다) · 설정의 쓴 양이 청크 수만큼 오른다. 끝에 브라우저 세션을 되돌린다.
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 번역의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 번역 ${stamp}` }) })).json()).workspaceId
+      const resolvedBoss = await resolveSessionContext(boss.token, ws)
+      if (!resolvedBoss.ok) throw new Error(`소유자의 세션을 풀지 못했다: ${resolvedBoss.reason}`)
+      const bossCtx = resolvedBoss.context
+      const title = `AI 번역 ${stamp}`
+      const page = (await (await fetch(`${BASE}/api/workspaces/${ws}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title }) })).json()).page.id
+      const blk = (type, runs, extra = {}) => ({ id: randomUUID(), type, title: runs, properties: {}, format: {}, children: [], ...extra })
+      const LINK = 'https://example.com/translate-doc'
+      const long = (word) => Array.from({ length: 60 }, (_, i) => `${word} ${i}번째 문장입니다.`).join(' ')
+      const saved = await savePageBody(bossCtx, page, {
+        blocks: [
+          blk('heading_2', [textRun('회의 요약')]),
+          blk('paragraph', [textRun('중요', { bold: true }), textRun(' 내용과 '), { ...textRun('링크'), href: LINK, text: { content: '링크', link: { url: LINK } } }]),
+          blk('to_do', [textRun('끝낸 일')], { properties: { checked: true } }),
+          blk('code', [textRun('const 이름 = 1 // 주석')], { properties: { language: 'javascript' } }),
+          blk('toggle', [textRun('자세히')], { children: [blk('paragraph', [textRun('토글 안의 글')])] }),
+          blk('paragraph', [textRun(long('첫 긴 글'))]),
+          blk('paragraph', [textRun(long('둘째 긴 글'))]),
+        ],
+      })
+      if (!saved.ok) throw new Error(`본문 준비 실패: ${JSON.stringify(saved)}`)
+      const original = (await loadPageBody(bossCtx, page)).doc.blocks
+      const shapeOf = (blocks) => blocks.map((b) => [b.type, b.properties?.checked ?? null, b.properties?.language ?? null, shapeOf(b.children ?? [])])
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const PANEL = '[data-testid="translate-panel"]'
+      const TOAST = '[data-testid="translate-toast"]'
+      const trialLine = () => textOf('[data-testid="ai-usage"] li[data-line="trial"]')
+      const openSettings = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/settings?s=workspace.ai` })
+        await waitFor(`!!document.querySelector('[data-testid="ai-usage"] li[data-line="trial"]')`, 15000)
+      }
+
+      try {
+        const on = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asBoss, body: JSON.stringify({ enabled: true }) })
+        check('전제 — 소유자가 AI 를 켠다', on.status === 200, String(on.status))
+        const est = await (await fetch(`${BASE}/api/workspaces/${ws}/ai/translate?pageId=${page}&language=en`, { headers: asBoss })).json()
+        check('전제 — 미리 보기: 청크 둘(진행을 볼 수 있게) · 체험 20', est.ok === true && est.chunks === 2 && est.remaining === 20, JSON.stringify(est))
+        await browseAs(boss.token)
+        await openSettings()
+        const usageBefore = await trialLine()
+
+        // ① "···" → 번역 → 언어 → 확인(쓸 응답 · 남은 응답)
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/${page}` })
+        await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+        await clickSelector('[data-testid="page-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="page-translate"]') && !document.querySelector('[data-testid="page-menu-list"]').hidden`, 3000)
+        await clickSelector('[data-testid="page-translate"]')
+        const picker = await waitFor(`document.querySelector('${PANEL}')?.dataset.phase === 'pick'`, 10000)
+        const languages = await evaluate(`[...document.querySelectorAll('[data-testid="translate-language"]')].map((b) => b.dataset.language)`)
+        check('★ "···" → 번역 — 언어 피커(고치기의 일곱 언어)', picker && JSON.stringify(languages) === JSON.stringify(['ko', 'en', 'ja', 'zh', 'es', 'fr', 'de']), JSON.stringify({ picker, languages }))
+        await clickSelector('[data-testid="translate-language"][data-language="en"]')
+        const confirm = await waitFor(`document.querySelector('${PANEL}')?.dataset.phase === 'confirm'`, 10000)
+        const cost = await textOf('[data-testid="translate-cost"]')
+        check('★ 확인 — 쓸 응답(청크 수)과 남은 응답을 보인다', confirm && cost === `AI 응답 ${est.chunks}회를 씁니다 · 남은 응답 20회.`, JSON.stringify({ confirm, cost }))
+
+        // ② 번역 → 진행 토스트(글을 모두 적어 둔다 — 조각이 빠르다) → 끝
+        await evaluate(`(() => {
+          window.__translateSeen = []
+          const note = () => {
+            const t = document.querySelector('[data-testid="translate-progress"]')?.textContent
+            if (t && window.__translateSeen.at(-1) !== t) window.__translateSeen.push(t)
+          }
+          new MutationObserver(note).observe(document.body, { subtree: true, childList: true, characterData: true })
+        })()`)
+        await clickSelector('[data-testid="translate-start"]')
+        const finished = await waitFor(`document.querySelector('${TOAST}')?.dataset.phase === 'done'`, 30000)
+        const seen = await evaluate('window.__translateSeen')
+        const result = await textOf('[data-testid="translate-result"]')
+        check('★ 진행 토스트 "번역 중 n/m" → "번역을 마쳤습니다" · 번역본을 열기',
+          finished && seen.includes(`번역 중 0/${est.chunks}`) && seen.includes(`번역 중 1/${est.chunks}`) && result === '번역을 마쳤습니다.'
+            && (await textOf('[data-testid="translate-open"]')) === '번역본을 열기',
+          JSON.stringify({ finished, seen, result }))
+
+        // ③ 번역본 — 원본의 새 하위 페이지 · 같은 구조 · 서식 · 코드 그대로
+        await clickSelector('[data-testid="translate-open"]')
+        const moved = await waitFor(`location.pathname.startsWith('/w/${ws}/') && location.pathname !== '/w/${ws}/${page}'`, 10000)
+        const translated = String(await evaluate('location.pathname')).split('/').pop()
+        await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'
+          && (document.querySelector('input[aria-label="페이지 제목"]')?.value ?? '').endsWith('(English)')`, 15000)
+        const body = (await loadPageBody(bossCtx, translated)).doc.blocks
+        const pageTitle = await evaluate(`document.querySelector('input[aria-label="페이지 제목"]')?.value ?? null`)
+        const textsOf = (blocks) => blocks.map((b) => [(b.title ?? []).map((r) => r.plain_text).join(''), textsOf(b.children ?? [])])
+        check('★ 번역본은 원본의 새 하위 페이지 — 제목 "… (English)" · 같은 종류 · 중첩 · 체크 · 코드 언어 · 글은 번역',
+          moved && pageTitle === `[EN] ${title} (English)` && JSON.stringify(shapeOf(body)) === JSON.stringify(shapeOf(original))
+            && body[0]?.title?.[0]?.plain_text === '[EN] 회의 요약' && textsOf(body)[4]?.[1]?.[0]?.[0] === '[EN] 토글 안의 글',
+          JSON.stringify({ moved, pageTitle, shape: shapeOf(body), texts: textsOf(body).slice(0, 5) }))
+        const [, para, todo, code] = body
+        const dom = await evaluate(`(() => {
+          const q = (id, sel) => document.querySelector('[data-block-id="' + id + '"] ' + sel)
+          return {
+            bold: q('${para.id}', 'strong')?.textContent ?? null,
+            link: q('${para.id}', 'a')?.getAttribute('href') ?? null,
+            line: q('${para.id}', 'p')?.textContent ?? null,
+            checked: q('${todo.id}', 'input.blk-checkbox')?.checked ?? null,
+            code: q('${code.id}', 'pre.blk-code')?.textContent ?? null,
+          }
+        })()`)
+        check('★ 화면 — 굵게 · 링크 주소 그대로 · 체크 그대로 · 코드는 번역하지 않는다',
+          dom.bold === '중요' && dom.link === LINK && dom.line === '[EN] 중요 내용과 링크' && dom.checked === true && (dom.code ?? '').includes('const 이름 = 1 // 주석') && !(dom.code ?? '').includes('[EN]'),
+          JSON.stringify(dom))
+
+        // ④ 원본은 그대로 · 쓴 양은 청크 수만큼
+        const after = (await loadPageBody(bossCtx, page)).doc.blocks
+        check('★ 원본은 그대로 — 블록 · 글 · id 가 같고 번역본의 참조 한 줄만 끝에 더해졌다',
+          JSON.stringify(after.slice(0, -1)) === JSON.stringify(original) && after.at(-1)?.type === 'page' && after.at(-1)?.id === translated,
+          JSON.stringify({ blocks: after.length, last: after.at(-1)?.type }))
+        await openSettings()
+        const usageAfter = await trialLine()
+        check('★ 설정의 쓴 양이 청크 수만큼 오른다',
+          usageBefore === '체험 0 / 20회 (다시 채워지지 않습니다)' && usageAfter === `체험 ${est.chunks} / 20회 (다시 채워지지 않습니다)`, JSON.stringify({ usageBefore, usageAfter }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

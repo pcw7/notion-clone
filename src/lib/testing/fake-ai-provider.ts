@@ -15,6 +15,10 @@
  *   고치기     마지막 user 메시지에 `<selection>` 이 있으면(AI-3) — 고른 글(이어서 다듬기면 `<result>` 의 앞선 결과)의 줄마다 꼴(헤딩 · 목록 ·
  *              할 일 · 인용 · 들여쓰기)을 두고 글 앞에 "고친 " 을 붙인다(코드 울타리 안은 그대로). 지시가 할 일 뽑기면 줄마다 `- [ ] 할 일: …`.
  *              0.12초마다 한 조각 · 여덟 조각(흐르는 동안을 볼 수 있게)
+ *   번역       시스템 프롬프트가 번역 엔진이면(AI-4) — user 의 JSON 값마다 `[EN] ` 같은 언어 머리를 붙여 같은 열쇠의 JSON 으로(표지는
+ *              그대로). 값에 `[dropkey]` 가 있으면 그 열쇠를 빼고 · `[badtag]` 면 꼬리표를 지운다(틀린 표지) · user 에 `[badjson]` 이면 JSON 이
+ *              아닌 말. 0.05초마다 한 조각 · 네 조각(진행을 볼 수 있게)
+ *   [429once]  처음 보는 그 요청만 429 + `Retry-After: 1`(같은 요청을 다시 보내면 답한다 — 바쁨 뒤 다시 시도를 볼 때)
  *   그 밖      `가짜 답: <질문>` — 세 조각 + (요청했으면) 사용량 조각 + `[DONE]`
  *
  * 키가 `Bearer ${FAKE_AI_KEY}` 가 아니면 401. 받은 요청은 `requests` 에 쌓인다(키 · 본문 · 도중에 끊겼는가).
@@ -77,6 +81,39 @@ function editSourceOf(prompt: string): string | null {
   return /<selection>\n([\s\S]*?)\n<\/selection>/.exec(prompt)?.[1] ?? null
 }
 
+/** 번역(AI-4)의 언어 머리 — 프롬프트의 언어 이름 → `[EN] ` 같은 머리. */
+const TRANSLATE_PREFIX: Readonly<Record<string, string>> = {
+  English: 'EN',
+  Korean: 'KO',
+  Japanese: 'JA',
+  'Simplified Chinese': 'ZH',
+  Spanish: 'ES',
+  French: 'FR',
+  German: 'DE',
+}
+
+/** 번역의 답 — 값마다 언어 머리를 붙인 같은 열쇠의 JSON(머리말의 표지). */
+export function fakeTranslateAnswer(user: string, system: string): string {
+  const name = /Translate every value into ([^.\n]+)\./.exec(system)?.[1] ?? 'English'
+  const head = `[${TRANSLATE_PREFIX[name] ?? name}] `
+  if (user.includes('[badjson]')) return '번역할 수 없습니다.'
+  let values: unknown
+  try {
+    values = JSON.parse(user)
+  } catch {
+    return '{}'
+  }
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(typeof values === 'object' && values !== null ? values : {})) {
+    if (typeof value !== 'string' || value.includes('[dropkey]')) continue
+    out[key] = head + (value.includes('[badtag]') ? value.replace(/<\/?t\d+>/g, '') : value)
+  }
+  return JSON.stringify(out)
+}
+
+/** `[429once]` 가 이미 한 번 막은 요청. */
+const refusedOnce = new Set<string>()
+
 function systemTextOf(body: Record<string, unknown>): string {
   const messages = Array.isArray(body.messages) ? body.messages : []
   const m = messages[0] as { role?: unknown; content?: unknown } | undefined
@@ -133,6 +170,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, record: FakeAiR
     '[429]': { 'retry-after': '7', 'x-ratelimit-reset-requests': '1m26.4s' },
     '[500]': {},
   }
+  if (prompt.includes('[429once]') && !refusedOnce.has(prompt)) {
+    refusedOnce.add(prompt)
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' }).end(JSON.stringify({ error: { message: FAKE_AI_SECRET_BODY } }))
+    return
+  }
   for (const [mark, extra] of Object.entries(limitHeaders)) {
     if (prompt.includes(mark)) {
       res.writeHead(mark === '[500]' ? 500 : 429, { 'content-type': 'application/json', ...extra }).end(JSON.stringify({ error: { message: FAKE_AI_SECRET_BODY } }))
@@ -158,6 +200,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, record: FakeAiR
   } else if (prompt.includes('[md]')) {
     pieces = piecesOf(FAKE_AI_MARKDOWN, 8)
     delay = 60
+  } else if (/^You are a translation engine/.test(systemTextOf(record.body))) {
+    pieces = piecesOf(fakeTranslateAnswer(prompt, systemTextOf(record.body)), 4)
+    delay = 50
   } else if (prompt.includes('[echo]')) {
     pieces = piecesOf(JSON.stringify(record.body.messages ?? null), 3)
   } else if (editSourceOf(prompt) !== null) {
