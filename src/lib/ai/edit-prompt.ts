@@ -60,7 +60,8 @@ export const EDIT_LANGUAGE_LABEL: Readonly<Record<EditLanguage, string>> = {
   fr: 'Français',
   de: 'Deutsch',
 }
-const LANGUAGE_NAME: Readonly<Record<EditLanguage, string>> = {
+/** 프롬프트에 쓰는 언어 이름(영어) — 고치기의 번역 · 페이지 번역(AI-4)이 함께 쓴다. */
+export const TARGET_LANGUAGE_NAME: Readonly<Record<EditLanguage, string>> = {
   ko: 'Korean',
   en: 'English',
   ja: 'Japanese',
@@ -237,7 +238,7 @@ export function editSystemPrompt(params: EditParams, selection: EditSelection, f
   const transform = !EDIT_INSERT_FIRST.has(params.preset)
   const lines = [...COMMON_RULES]
 
-  if (params.preset === 'translate' && params.language !== null) lines.push(`Write the answer in ${LANGUAGE_NAME[params.language]}.`)
+  if (params.preset === 'translate' && params.language !== null) lines.push(`Write the answer in ${TARGET_LANGUAGE_NAME[params.language]}.`)
   else lines.push('Write the answer in the same language as the selected text.')
 
   if (code) {
@@ -254,7 +255,7 @@ export function editSystemPrompt(params: EditParams, selection: EditSelection, f
   lines.push(
     TASK[params.preset]
       .replace('{tone}', params.tone === null ? 'different' : TONE_RULE[params.tone])
-      .replace('{language}', params.language === null ? 'English' : LANGUAGE_NAME[params.language]),
+      .replace('{language}', params.language === null ? 'English' : TARGET_LANGUAGE_NAME[params.language]),
   )
   if (followUp) lines.push(FOLLOW_UP_RULE)
   return lines.join('\n')

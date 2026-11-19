@@ -106,8 +106,8 @@ import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
 import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } from './ydoc.ts'
 
-/** 정본 `doc_update.origin` 의 CHECK 값. */
-export const DOC_ORIGINS = ['editor', 'api', 'automation', 'restore', 'import', 'external_sync'] as const
+/** 정본 `doc_update.origin` 의 CHECK 값 — `ai` 는 AI 가 서버에서 쓴 본문(AI-4 번역본 · 0147). */
+export const DOC_ORIGINS = ['editor', 'api', 'automation', 'restore', 'import', 'external_sync', 'ai'] as const
 export type DocOrigin = (typeof DOC_ORIGINS)[number]
 
 /**

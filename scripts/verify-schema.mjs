@@ -6080,6 +6080,13 @@ try {
     await rejectsBy('★ 하루 카운터 음수', `INSERT INTO ai_daily_usage (day, responses) VALUES ('2999-01-01', -1)`, [], 'ck_ai_daily_usage_responses')
     await client.query(`INSERT INTO ai_daily_usage (day, responses) VALUES ('2999-01-02', 0) ON CONFLICT (day) DO NOTHING`)
     await rejectsBy('하루 카운터를 0 밑으로 돌려준다', `UPDATE ai_daily_usage SET responses = responses - 1 WHERE day = '2999-01-02' AND responses = 0`, [], 'ck_ai_daily_usage_responses')
+
+    // 본문 쓰기의 출처 `ai`(0147 · AI-4 번역본 · §3.10 [보강 AI-1] ⑥) — 받고, 모르는 출처는 여전히 거부한다
+    const insertUpdate = `INSERT INTO doc_update (page_id, seq, payload, actor_id, origin, created_at) VALUES ($1, 1, '\\x00'::bytea, $2, $3, now())`
+    await client.query(insertUpdate, [randomUUID(), userId, 'ai'])
+    ok('★ doc_update.origin = ai 정상 삽입(AI 가 서버에서 쓴 본문 · 행위자는 부른 사람)')
+    await rejectsBy('★ 모르는 본문 쓰기 출처', insertUpdate, [randomUUID(), userId, 'robot'], 'doc_update_origin_check')
+    await rejectsBy('출처 대문자 AI', insertUpdate, [randomUUID(), userId, 'AI'], 'doc_update_origin_check')
   }
 
   await client.query('ROLLBACK')
