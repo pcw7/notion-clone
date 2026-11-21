@@ -38619,6 +38619,217 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('AI 블록 — 요약 · 할 일 · 다시 생성 (AI-5 · F-10-04)')) { try {
+      // 정본 §3.10 [보강 AI-1] ⑩ · 10 F-10-04. 이 절이 만든 Free 워크스페이스(체험 20)의 페이지 하나(헤딩 · 결정 문단 · 할 일 · 빈 줄)에서 한다.
+      // 공급자는 러너가 띄운 가짜 — AI 블록이면 원문 줄마다 `- 요약: …` / `- [ ] 할 일: …` · 0.08초마다 한 조각. 빈 줄에서 `/AI요약` → 빈 AI 블록 →
+      // 생성(미리보기에만 흐른다) → 결과(자식)가 편집기 · 서버에 → 본문을 고치면 "바뀌었습니다" → 다시 생성이 간다 → 결과를 손으로 고치면 다시
+      // 생성이 덮어쓰기를 묻는다 → `/AI할일` 은 할 일만(다른 AI 블록의 결과를 읽지 않는다) → 보기만 하는 사람은 결과를 보고 단추는 꺼졌다 →
+      // 공개 API 는 unsupported + has_children. 끝에 브라우저 세션을 되돌린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 블록의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 블록 ${stamp}` }) })).json()).workspaceId
+      const resolvedBoss = await resolveSessionContext(boss.token, ws)
+      if (!resolvedBoss.ok) throw new Error(`소유자의 세션을 풀지 못했다: ${resolvedBoss.reason}`)
+      const bossCtx = resolvedBoss.context
+      const page = (await (await fetch(`${BASE}/api/workspaces/${ws}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title: `AI 블록 ${stamp}` }) })).json()).page.id
+      const [heading, decision, todo, anchor] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+      const blk = (id, type, text, extra = {}) => ({ id, type, title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [], ...extra })
+      const saved = await savePageBody(bossCtx, page, {
+        blocks: [
+          blk(heading, 'heading_2', '주간 회의'),
+          blk(decision, 'paragraph', '결정: 출시는 다음 주 화요일로 한다'),
+          blk(todo, 'to_do', '김 대리가 배포 문서를 정리한다', { properties: { checked: false } }),
+          blk(anchor, 'paragraph', ''),
+        ],
+      })
+      if (!saved.ok) throw new Error(`본문 준비 실패: ${JSON.stringify(saved)}`)
+
+      const findIn = (blocks, id) => {
+        for (const b of blocks) {
+          if (b.id === id) return b
+          const inner = findIn(b.children ?? [], id)
+          if (inner) return inner
+        }
+        return null
+      }
+      const plain = (b) => (b.title ?? []).map((r) => r.plain_text).join('')
+      /** 서버 본문의 그 AI 블록 — 종류 · 자식의 [타입, 글]. */
+      const serverBlock = async (id) => {
+        const b = findIn((await loadPageBody(bossCtx, page)).doc.blocks, id)
+        return b === null ? null : { type: b.type, kind: b.properties?.kind ?? null, generatedAt: b.properties?.generatedAt ?? null, kids: (b.children ?? []).map((c) => [c.type, plain(c)]) }
+      }
+      const settled = async (id, ok, ms = 10000) => {
+        let got = null
+        for (const until = Date.now() + ms; Date.now() < until;) {
+          got = await serverBlock(id)
+          if (got !== null && ok(got)) return { ok: true, got }
+          await sleep(150)
+        }
+        return { ok: false, got }
+      }
+      const inBlock = (id, testid) => `[data-block-id="${id}"] > .blk-ai_block [data-testid="${testid}"]`
+      const visible = (sel) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); return !!el && !el.hidden && el.offsetParent !== null })()`)
+      const resultText = (id) => evaluate(`document.querySelector('[data-block-id="${id}"] > .blk-group')?.textContent ?? ''`)
+      const openPage = async (editable = true) => {
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${heading}"]') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === '${editable}'
+          && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+      }
+      const caretIn = async (id) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] > *:first-child`)
+          await key('End')
+          const inside = await evaluate(`(() => {
+            const n = window.getSelection()?.anchorNode
+            const el = n?.nodeType === 1 ? n : n?.parentElement
+            return document.activeElement === document.querySelector('.blk-editor') && el?.closest('[data-block-id]')?.getAttribute('data-block-id') === '${id}'
+          })()`)
+          if (inside) return true
+          await sleep(200)
+        }
+        return false
+      }
+      const slash = async (query) => {
+        await typeText('/')
+        await typeText(query)
+        await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+        const first = await evaluate(`document.querySelector('[role="listbox"][aria-label="블록 삽입"] [role="option"]')?.textContent ?? null`)
+        await key('Enter')
+        return first
+      }
+
+      try {
+        const on = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asBoss, body: JSON.stringify({ enabled: true }) })
+        check('전제 — 소유자가 AI 를 켠다', on.status === 200, String(on.status))
+        await browseAs(boss.token)
+        await openPage()
+
+        // ① 빈 줄에서 /AI요약 → 빈 AI 블록(같은 자리 · 생성 단추) — 자동으로 만들지 않는다
+        check('전제 — 빈 줄에 캐럿', await caretIn(anchor))
+        const callsBefore = fakeAi.requests.length
+        const firstOption = await slash('ai요약')
+        const inserted = await waitFor(`!!document.querySelector('${inBlock(anchor, 'ai-block-generate')}')`, 10000)
+        const label = await evaluate(`document.querySelector('[data-block-id="${anchor}"] > .blk-ai_block .ai-block-label')?.textContent ?? null`)
+        const empty = await settled(anchor, (g) => g.type === 'ai_block')
+        check('★ /AI요약 — 빈 줄이 빈 AI 블록이 된다(머리 "AI 요약" · "생성" 단추 · 서버에 kind summary · 결과 없음 · 공급자를 부르지 않았다)',
+          String(firstOption).startsWith('AI 요약') && inserted && label === 'AI 요약' && (await evaluate(`document.querySelector('${inBlock(anchor, 'ai-block-generate')}')?.textContent`)) === '생성'
+            && empty.ok && empty.got.kind === 'summary' && empty.got.kids.length === 0 && empty.got.generatedAt === null && fakeAi.requests.length === callsBefore,
+          JSON.stringify({ firstOption, inserted, label, empty }))
+
+        // ② 생성 — 미리보기에만 흐른다 → 결과(자식)가 편집기 · 서버에
+        await evaluate(`(() => {
+          window.__aiBlockSeen = []
+          const note = () => {
+            const head = document.querySelector('[data-block-id="${anchor}"] > .blk-ai_block')
+            const preview = head?.querySelector('[data-testid="ai-block-preview"]')
+            if (head?.dataset.state === 'streaming' && preview && !preview.hidden) {
+              const group = document.querySelector('[data-block-id="${anchor}"] > .blk-group')?.textContent ?? ''
+              window.__aiBlockSeen.push({ preview: preview.textContent, inDoc: group.includes('요약:') })
+            }
+          }
+          new MutationObserver(note).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
+        })()`)
+        await clickSelector(inBlock(anchor, 'ai-block-generate'))
+        const first = await settled(anchor, (g) => g.kids.length === 3)
+        const appeared = await waitFor(`(document.querySelector('[data-block-id="${anchor}"] > .blk-group')?.textContent ?? '').includes('요약: 결정: 출시는 다음 주 화요일로 한다')
+          && document.querySelector('[data-block-id="${anchor}"] > .blk-ai_block')?.dataset.state === 'idle'`, 10000)
+        // 다 받기 전(미리보기가 아직 끝 줄에 닿지 않았다)에는 문서에 없다 — 서버는 다 받은 뒤에 쓴다
+        const seen = (await evaluate('window.__aiBlockSeen')).filter((s) => !s.preview.includes('김 대리가 배포 문서를 정리한다'))
+        check('★ 흐르는 동안 글은 블록 안의 미리보기에만 있다(문서 밖) — 조각이 쌓인다',
+          seen.length >= 2 && seen.some((s) => s.preview.includes('요약:')) && seen.every((s) => !s.inDoc), JSON.stringify(seen.slice(-3)))
+        check('★ 결과가 그 블록의 자식으로 편집기 · 서버에 선다 — 글머리표 셋(헤딩 · 결정 · 할 일의 요약) · 단추는 "다시 생성"',
+          appeared && first.ok && JSON.stringify(first.got.kids) === JSON.stringify([
+            ['bulleted_list_item', '요약: 주간 회의'], ['bulleted_list_item', '요약: 결정: 출시는 다음 주 화요일로 한다'], ['bulleted_list_item', '요약: 김 대리가 배포 문서를 정리한다'],
+          ]) && (await evaluate(`document.querySelector('${inBlock(anchor, 'ai-block-generate')}')?.textContent`)) === '다시 생성'
+            && !(await visible(inBlock(anchor, 'ai-block-stale'))),
+          JSON.stringify({ appeared, first }))
+
+        // ③ 본문을 고치면 "바뀌었습니다 · 업데이트" → 다시 생성이 결과를 간다(손대지 않았으니 묻지 않는다)
+        check('전제 — 결정 문단에 캐럿', await caretIn(decision))
+        await typeText(' 확정')
+        const stale = await waitFor(`(() => { const el = document.querySelector('${inBlock(anchor, 'ai-block-stale')}'); return !!el && !el.hidden })()`, 5000)
+        check('★ 본문을 고치면 AI 블록에 "페이지가 바뀌었습니다 · 업데이트" 가 선다', stale, String(stale))
+        await clickSelector(inBlock(anchor, 'ai-block-generate'))
+        const second = await settled(anchor, (g) => g.kids.some(([, t]) => t === '요약: 결정: 출시는 다음 주 화요일로 한다 확정'))
+        const staleGone = await waitFor(`(() => { const el = document.querySelector('${inBlock(anchor, 'ai-block-stale')}'); return !!el && el.hidden && !document.querySelector('${inBlock(anchor, 'ai-block-confirm')}:not([hidden])') })()`, 8000)
+        check('★ 다시 생성 — 결과를 지금 페이지로 간다 · 바뀜 표시가 사라진다 · 손대지 않은 결과는 묻지 않는다',
+          second.ok && second.got.kids.length === 3 && second.got.generatedAt !== first.got.generatedAt && staleGone, JSON.stringify({ second, staleGone }))
+
+        // ④ 결과를 손으로 고치면 다시 생성이 덮어쓰기를 묻는다 — 취소는 그대로 · 다시 생성은 간다
+        const firstChild = await evaluate(`document.querySelector('[data-block-id="${anchor}"] > .blk-group > [data-block-id]')?.getAttribute('data-block-id') ?? null`)
+        check('전제 — 결과의 첫 줄에 캐럿', firstChild !== null && (await caretIn(firstChild)))
+        await typeText(' 손봄')
+        await waitFor(`(document.querySelector('[data-block-id="${anchor}"] > .blk-group')?.textContent ?? '').includes('손봄')`, 3000)
+        await sleep(400)
+        await clickSelector(inBlock(anchor, 'ai-block-generate'))
+        const asked = await waitFor(`(() => { const el = document.querySelector('${inBlock(anchor, 'ai-block-confirm')}'); return !!el && !el.hidden })()`, 5000)
+        const askText = await evaluate(`document.querySelector('${inBlock(anchor, 'ai-block-confirm')}')?.textContent ?? null`)
+        await clickSelector(inBlock(anchor, 'ai-block-confirm-no'))
+        await sleep(300)
+        const keptAfterCancel = (await resultText(anchor)).includes('손봄')
+        check('★ 결과를 고친 뒤 다시 생성 — "직접 고친 내용이 사라집니다" 를 묻는다 · 취소하면 그대로(부르지 않는다)',
+          asked && String(askText).includes('직접 고친 내용이 사라집니다') && keptAfterCancel, JSON.stringify({ asked, askText, keptAfterCancel }))
+        await clickSelector(inBlock(anchor, 'ai-block-generate'))
+        await waitFor(`(() => { const el = document.querySelector('${inBlock(anchor, 'ai-block-confirm')}'); return !!el && !el.hidden })()`, 5000)
+        await clickSelector(inBlock(anchor, 'ai-block-confirm-yes'))
+        const third = await settled(anchor, (g) => g.kids.length === 3 && g.kids.every(([, t]) => !t.includes('손봄')) && g.generatedAt !== second.got.generatedAt)
+        check('★ 묻고 "다시 생성" 이면 손본 결과를 새 결과로 간다', third.ok && (await waitFor(`!(document.querySelector('[data-block-id="${anchor}"] > .blk-group')?.textContent ?? '').includes('손봄')`, 5000)),
+          JSON.stringify(third))
+
+        // ⑤ /AI할일 — 할 일만 · 다른 AI 블록의 결과를 읽지 않는다
+        const after = await evaluate(`document.querySelector('[data-block-id="${anchor}"]')?.nextElementSibling?.getAttribute('data-block-id') ?? null`)
+        check('전제 — AI 블록 뒤의 빈 줄에 캐럿', after !== null && (await caretIn(after)))
+        const todoOption = await slash('ai할일')
+        await waitFor(`!!document.querySelector('${inBlock(after, 'ai-block-generate')}')`, 10000)
+        await clickSelector(inBlock(after, 'ai-block-generate'))
+        const todos = await settled(after, (g) => g.kids.length === 3)
+        check('★ /AI할일 — 결과는 할 일만 · 원문은 다른 AI 블록의 결과를 빼고 읽었다("요약:" 이 없다)',
+          String(todoOption).startsWith('AI 할 일') && todos.ok && todos.got.kind === 'action_items' && todos.got.kids.every(([type, t]) => type === 'to_do' && t.startsWith('할 일: ') && !t.includes('요약'))
+            && (await waitFor(`document.querySelectorAll('[data-block-id="${after}"] > .blk-group input.blk-checkbox').length === 3`, 5000)),
+          JSON.stringify({ todoOption, todos }))
+        const usage = await dbQuery(`SELECT feature, status FROM ai_usage WHERE workspace_id = $1`, [ws])
+        check('★ 생성마다 응답 하나 · 기능 block — 넷(요약 · 다시 · 다시 · 할 일) · 묻고 취소한 것은 세지 않는다',
+          usage.length === 4 && usage.every((u) => u.feature === 'block' && u.status === 'completed'), JSON.stringify(usage))
+
+        // ⑥ 보기만 하는 사람 — 결과는 보이고 단추는 꺼졌다(까닭)
+        const viewer = await joinAs(ws, await createUser(`AI 블록을 보기만 ${stamp}`), 'member')
+        await aclMod.grantAccess(bossCtx, page, { type: 'user', id: boss.userId }, 'full_access')
+        const shared = await aclMod.grantAccess(bossCtx, page, { type: 'user', id: viewer.userId }, 'view')
+        await aclMod.revokeAccess(bossCtx, page, { type: 'workspace_everyone' })
+        await browseAs(viewer.token)
+        await openPage(false)
+        await waitFor(`!!document.querySelector('${inBlock(anchor, 'ai-block-generate')}')`, 10000)
+        const viewerUi = await evaluate(`(() => {
+          const b = document.querySelector('${inBlock(anchor, 'ai-block-generate')}')
+          return { disabled: b?.disabled ?? null, title: b?.title ?? null, result: document.querySelector('[data-block-id="${anchor}"] > .blk-group')?.textContent ?? '',
+            note: document.querySelector('${inBlock(anchor, 'ai-block-note')}')?.textContent ?? null }
+        })()`)
+        check('★ 보기만 하는 사람 — 결과는 보이고 생성 단추는 꺼져 까닭을 말한다',
+          shared.ok && viewerUi.disabled === true && viewerUi.title === '이 페이지를 고칠 수 있는 사람만 만들 수 있습니다.' && viewerUi.result.includes('요약: 주간 회의')
+            && viewerUi.note === viewerUi.title, JSON.stringify(viewerUi))
+
+        // ⑦ 공개 API — unsupported + has_children · 결과는 자식으로 따라가 읽는다
+        const made = await fetch(`${BASE}/api/workspaces/${ws}/api-tokens`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI-5 e2e ${stamp}` }) })
+        const apiToken = (await made.json().catch(() => null))?.token
+        const v1 = async (path) => {
+          const res = await fetch(`${BASE}${path}`, { headers: { authorization: `Bearer ${apiToken}`, 'notion-version': '2025-09-03' } })
+          return { status: res.status, body: await res.json().catch(() => null) }
+        }
+        const got = await v1(`/v1/blocks/${anchor}`)
+        const kids = await v1(`/v1/blocks/${anchor}/children`)
+        check('★ 공개 API — GET /v1/blocks/{AI 블록} 은 unsupported · has_children · 자식은 보통의 블록',
+          made.status === 201 && got.status === 200 && got.body?.type === 'unsupported' && got.body?.has_children === true
+            && kids.status === 200 && kids.body?.results?.length === 3 && kids.body.results.every((r) => r.type === 'bulleted_list_item'),
+          JSON.stringify({ made: made.status, got: [got.status, got.body?.type, got.body?.has_children], kids: [kids.status, kids.body?.results?.map((r) => r.type)] }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

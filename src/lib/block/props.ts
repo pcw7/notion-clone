@@ -36,6 +36,7 @@ import { clampExpression } from './equation.ts'
 import { clampButtonLabel } from './button.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { CALLOUT_ICON_KEY, CALLOUT_TYPE, isCalloutIcon } from './callout.ts'
+import { AI_BLOCK_TYPE, sanitizeAiBlockProps } from './ai-block.ts'
 import { isRefType, normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
 import { PAGE_COVER_KEY, PAGE_COVER_POSITION_KEY } from './page-cover.ts'
@@ -116,6 +117,12 @@ export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknow
 
   if (type === CALLOUT_TYPE && CALLOUT_ICON_KEY in nextProps && !isCalloutIcon(nextProps[CALLOUT_ICON_KEY])) {
     delete edit()[CALLOUT_ICON_KEY]
+  }
+
+  // AI 블록(AI-5) — 종류 · 지시 · 시각 · 해시의 모양(`block/ai-block.ts`)
+  if (type === AI_BLOCK_TYPE) {
+    const clean = sanitizeAiBlockProps(nextProps)
+    if (clean !== nextProps) nextProps = clean
   }
 
   const normalized = normalizeFormat(type, safeFormat)

@@ -226,6 +226,7 @@ export default async function TemplatePage({
         initialPageIcons={{ ...pageRefs.icons, ...mentionLabels.pageIcons }}
         breadcrumb={trail}
         ai={await aiEntryFor(ctx, readAiConfig())}
+        template
       />
     </main>
   )

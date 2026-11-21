@@ -4,7 +4,7 @@
  * 정본: 00-canonical-data-model.md §3.10 [보강 AI-1] ③ ④ ⑤ ⑦ · 마이그레이션 0146
  *
  * **호출 전에 · 한 트랜잭션에서 예약한다**(`reserveAiResponse`) — 스위치 → 그 사람(게스트 아님 · 로그인 세션) · 그 맥락(페이지를 볼 수
- * 있는가 · 고치기(AI-3)면 고칠 수 있는가) → 앱 전체 하루 → 6시간 창 → 월 → 체험 → 보충. 모자라면 거부한다(`ai_limit_reached` + 어느 한도 · 언제 풀리는지 — 셈은
+ * 있는가 · 고치기(AI-3) · AI 블록(AI-5)이면 고칠 수 있는가) → 앱 전체 하루 → 6시간 창 → 월 → 체험 → 보충. 모자라면 거부한다(`ai_limit_reached` + 어느 한도 · 언제 풀리는지 — 셈은
  * `quota.ts`). 통과하면 `ai_usage` 를 `reserved` 로 넣는 것이 곧 셈이다.
  *
  *   · 잠금의 차례는 늘 같다 — 워크스페이스의 AI 줄(`workspace_ai_setting`) → 그날의 전체 카운터(`ai_daily_usage`). 같은 워크스페이스의
@@ -206,9 +206,9 @@ export async function reserveAiResponse(
     if (!canUseAi(ctx)) return { ok: false, reason: 'forbidden' }
     const caps = pageId === null ? null : await effectiveCaps(tx, ctx, pageId)
     if (caps !== null && !can(caps, 'view')) return { ok: false, reason: 'not_found' }
-    // 고치기(AI-3) — 답이 그 페이지에 든다: 살아 있는 페이지 · 본문을 고칠 수 있다(`edit_content`) · 잠기지 않았다. 보기 · 코멘트 · 제안만
-    // 쓸 수 있는 사람은 거부한다(`cannot_edit` — 협업 연결의 `edit` 판정과 같다 · `doc-store.ts` accessOf)
-    if (input.feature === 'edit') {
+    // 고치기(AI-3) · AI 블록(AI-5) — 답이 그 페이지에 든다: 살아 있는 페이지 · 본문을 고칠 수 있다(`edit_content`) · 잠기지 않았다. 보기 ·
+    // 코멘트 · 제안만 쓸 수 있는 사람은 거부한다(`cannot_edit` — 협업 연결의 `edit` 판정과 같다 · `doc-store.ts` accessOf)
+    if (input.feature === 'edit' || input.feature === 'block') {
       if (pageId === null || caps === null) return { ok: false, reason: 'not_found' }
       const live = await tx.queryMaybe<{ one: number }>(
         `SELECT 1 AS one FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,

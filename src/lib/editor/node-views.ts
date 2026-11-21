@@ -39,8 +39,10 @@ import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 import { paintBlockColor } from './paint-block-color.ts'
 import { calloutNodeView, type CalloutViewDeps } from './callout-view.ts'
+import { aiBlockNodeView, type AiBlockViewDeps } from './ai-block-view.ts'
+import { AI_BLOCK_TYPE } from '../block/ai-block.ts'
 
-export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & BookmarkViewDeps & EmbedViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & CalloutViewDeps & {
+export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & BookmarkViewDeps & EmbedViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & CalloutViewDeps & AiBlockViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -513,6 +515,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     [nodeNameOf(EQUATION_TYPE)]: (node, view, getPos) => equationNodeView(node, view, getPos, deps),
     // 버튼 블록(자동화 5e-1) — 라벨의 단추 · 설정은 편집기 밖의 오버레이.
     [nodeNameOf(BUTTON_TYPE)]: (node, view, getPos) => buttonNodeView(node, view, getPos, deps),
+    // AI 블록(AI-5) — 머리 줄은 지연 로드 · 결과는 자식 그룹(보통의 블록)
+    [AI_BLOCK_TYPE]: (node, view, getPos) => aiBlockNodeView(node, view, getPos, deps),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
     // 인라인 수식(Phase 2 1b) — rich text 의 원자. 그리기는 블록 수식과 같은 한 곳(`equation-render.ts`).
     equation: (node, view, getPos) => inlineEquationNodeView(node, view, getPos, deps),
