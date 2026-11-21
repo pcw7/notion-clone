@@ -55,7 +55,7 @@ const WRITABLE: ReadonlySet<string> = new Set(WRITABLE_BLOCK_TYPES)
 /** 노션에는 있지만 만들 수 없는 타입 — 이름을 말하고 거부한다. 모르는 이름은 "블록 타입이 아니다". */
 export const UNWRITABLE_BLOCK_TYPES = [
   'child_page', 'child_database', 'link_to_page', 'synced_block', 'template', 'link_preview', 'pdf', 'audio', 'button', 'meeting_notes',
-  'transcription', 'tab', 'unsupported',
+  'transcription', 'tab', 'unsupported', 'ai_block',
 ] as const
 const UNWRITABLE: ReadonlySet<string> = new Set(UNWRITABLE_BLOCK_TYPES)
 
@@ -192,6 +192,9 @@ export function blockContentToApi(block: EditorBlock, read: BlockReadContext): A
       const ref = read.refs.get(block.id)
       return make(block.type === 'page' ? 'child_page' : 'child_database', { title: ref?.title ?? '' }, ref?.hasChildren ?? false)
     }
+    case 'ai_block':
+      // AI 블록(AI-5 · F-10-04) — 노션 API 처럼 `unsupported` · 결과(자식)는 보통의 블록이라 `has_children` 으로 따라가 읽는다
+      return make('unsupported', {})
     default:
       // 버튼 · 감싸 둔 모르는 타입 — 노션의 모양이 없다
       return make('unsupported', {}, false)

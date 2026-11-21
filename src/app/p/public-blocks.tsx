@@ -300,6 +300,8 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
         </div>
       )
     case 'column':
+    // AI 블록(AI-5) — 결과(자식)만. 머리(종류 · 지시 · 단추)는 편집기의 것이다
+    case 'ai_block':
       return <Blocks blocks={block.children ?? []} view={view} />
     case TOC_TYPE:
       return <TableOfContents view={view} color={color} />

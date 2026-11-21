@@ -1388,6 +1388,76 @@ span.blk-equation {
   pointer-events: none;
 }
 
+/*
+ * AI 블록(AI-5 · F-10-04) — 콜아웃과 같은 짜임: 상자는 **컨테이너**에 그린다(결과 = 자식 그룹이 상자 안에 선다). 머리 줄(노드 뷰)은 종류 ·
+ * 지시 · 시각 · 바뀜 표시 · 단추, 그 아래 미리보기(흐르는 동안 — 문서 밖). 만드는 동안은 옛 결과를 흐리게.
+ */
+.blk-editor .blk-container:has(> .blk-ai_block) {
+  margin: 8px 2px;
+  border: 1px solid rgba(124, 58, 237, 0.22);
+  border-radius: 10px;
+  background: rgba(124, 58, 237, 0.035);
+  padding: 8px 12px;
+}
+.blk-editor .blk-container:has(> .blk-ai_block[data-state='streaming']) > .blk-group,
+.blk-editor .blk-container:has(> .blk-ai_block[data-state='applying']) > .blk-group {
+  opacity: 0.4;
+}
+.blk-ai_block { font-size: 0.875rem; color: #6b7280; }
+.blk-ai_block .ai-block-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 28px; }
+.blk-ai_block .ai-block-icon { color: #7c3aed; }
+.blk-ai_block .ai-block-label { font-weight: 600; color: #4c1d95; }
+.blk-ai_block .ai-block-instruction {
+  max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 0; border-radius: 4px; background: none; padding: 0 4px; color: inherit; font: inherit; cursor: pointer;
+}
+.blk-ai_block .ai-block-instruction:disabled { cursor: default; }
+.blk-ai_block .ai-block-instruction:not(:disabled):hover { background: rgba(55, 53, 47, 0.06); }
+.blk-ai_block .ai-block-status { font-size: 0.75rem; }
+.blk-ai_block .ai-block-stale {
+  border: 0; border-radius: 9999px; background: #fef3c7; color: #92400e; padding: 1px 8px; font-size: 0.75rem; cursor: pointer;
+}
+.blk-ai_block .ai-block-stale:disabled { cursor: default; opacity: 0.7; }
+.blk-ai_block .ai-block-actions { margin-left: auto; display: inline-flex; gap: 4px; }
+.blk-ai_block .ai-block-button {
+  border: 1px solid rgba(55, 53, 47, 0.16); border-radius: 6px; background: transparent; padding: 2px 10px; color: #37352f; font: inherit; cursor: pointer;
+}
+.blk-ai_block .ai-block-button:not(:disabled):hover { background: rgba(55, 53, 47, 0.06); }
+.blk-ai_block .ai-block-button:disabled { cursor: default; opacity: 0.45; }
+.blk-ai_block .ai-block-primary { border-color: #7c3aed; background: #7c3aed; color: #ffffff; }
+.blk-ai_block .ai-block-primary:not(:disabled):hover { background: #6d28d9; }
+.blk-ai_block .ai-block-danger { border-color: #dc2626; color: #dc2626; }
+.blk-ai_block .ai-block-editor { margin-top: 6px; }
+.blk-ai_block .ai-block-textarea {
+  width: 100%; resize: vertical; border: 1px solid rgba(55, 53, 47, 0.16); border-radius: 6px; background: #ffffff;
+  padding: 6px 8px; color: #37352f; font: inherit;
+}
+.blk-ai_block .ai-block-editor-row, .blk-ai_block .ai-block-confirm { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+.blk-ai_block .ai-block-counter { margin-right: auto; font-size: 0.75rem; }
+.blk-ai_block .ai-block-confirm-text { margin-right: auto; color: #b45309; }
+.blk-ai_block .ai-block-note { margin-top: 4px; font-size: 0.75rem; }
+.blk-ai_block .ai-block-note[data-tone='error'] { color: #dc2626; }
+.blk-ai_block .ai-block-preview { margin-top: 6px; white-space: pre-wrap; color: #37352f; font-size: 1rem; line-height: 1.6; }
+.blk-ai_block [hidden] { display: none; }
+:root {
+  @variant dark {
+    .blk-editor .blk-container:has(> .blk-ai_block) { border-color: rgba(167, 139, 250, 0.3); background: rgba(167, 139, 250, 0.06); }
+    .blk-ai_block { color: #a3a3a3; }
+    .blk-ai_block .ai-block-icon { color: #a78bfa; }
+    .blk-ai_block .ai-block-label { color: #c4b5fd; }
+    .blk-ai_block .ai-block-instruction:not(:disabled):hover, .blk-ai_block .ai-block-button:not(:disabled):hover { background: rgba(255, 255, 255, 0.055); }
+    .blk-ai_block .ai-block-stale { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+    .blk-ai_block .ai-block-button { border-color: #404040; color: #d4d4d4; }
+    .blk-ai_block .ai-block-primary { border-color: #7c3aed; background: #7c3aed; color: #ffffff; }
+    .blk-ai_block .ai-block-primary:not(:disabled):hover { background: #6d28d9; }
+    .blk-ai_block .ai-block-danger { border-color: #f87171; color: #f87171; }
+    .blk-ai_block .ai-block-textarea { border-color: #404040; background: var(--background); color: #e5e5e5; }
+    .blk-ai_block .ai-block-confirm-text { color: #fbbf24; }
+    .blk-ai_block .ai-block-note[data-tone='error'] { color: #fca5a5; }
+    .blk-ai_block .ai-block-preview { color: #e5e5e5; }
+  }
+}
+
 .blk-editor .blk-code-caption {
   margin-top: 0.25rem;
   font-size: 0.8125rem;

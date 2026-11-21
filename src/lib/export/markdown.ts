@@ -482,6 +482,7 @@ const NESTS: ReadonlySet<string> = new Set([
   'callout',
   'column_list',
   'column',
+  'ai_block',
   TABLE_TYPE,
 ])
 
@@ -673,6 +674,11 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
 
     case 'column':
       // 컬럼 목록 밖의 컬럼은 정규화가 풀므로 오지 않는다 — 와도 자식을 그대로.
+      return renderSiblings(block.children ?? [], ctx).lines
+
+    case 'ai_block':
+      // AI 블록(AI-5 · F-10-04) — 결과(자식)만 보통의 블록으로. 머리(종류 · 지시 · 단추)는 쓰지 않는다 — 잃은 것으로 세지 않는다(지시는
+      // 결과를 만든 도구이지 페이지의 글이 아니다).
       return renderSiblings(block.children ?? [], ctx).lines
 
     case TABLE_TYPE: {

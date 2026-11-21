@@ -61,6 +61,7 @@ import { VIDEO_TYPE, validateVideoProperties } from '../block/video-block.ts'
 import { BOOKMARK_TYPE, validateBookmarkProperties } from '../block/bookmark-block.ts'
 import { EMBED_TYPE, validateEmbedProperties } from '../block/embed-block.ts'
 import { CALLOUT_TYPE, validateCalloutProperties } from '../block/callout.ts'
+import { AI_BLOCK_TYPE, validateAiBlockProperties } from '../block/ai-block.ts'
 import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { TABLE_CELLS_KEY, TABLE_ROW_TYPE, validateTableRow, validateTableWidths } from '../block/table.ts'
 import { isUuid } from '../ids.ts'
@@ -203,6 +204,10 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       }
       if (block.type === CODE_TYPE) {
         issues.push(...validateCodeProperties(block.properties, `${p}.properties`))
+      }
+      // AI 블록(AI-5) — 종류 · 지시 · 해시의 모양(`block/ai-block.ts`)
+      if (block.type === AI_BLOCK_TYPE) {
+        issues.push(...validateAiBlockProperties(block.properties, `${p}.properties`))
       }
       // 속성은 행(jsonb)에 쓰려고 JSON 으로 옮긴다 — 읽기(정규화)가 잘라 낼 만큼 깊은 값은 받지 않는다(8a-2 · `json-safe.ts`).
       for (const [key, value] of [['properties', block.properties], ['format', block.format]] as const) {

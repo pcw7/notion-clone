@@ -126,7 +126,8 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
   const walk = (list: readonly EditorBlock[], depth: number): void => {
     for (const block of list) {
       // 컬럼의 틀(Phase 2 1c)은 줄이 아니다 — 그 안의 블록을 같은 깊이로 차례로 편다(내보내기와 같다).
-      if (block.type === 'column_list' || block.type === 'column') {
+      // AI 블록(AI-5)도 틀이다 — 머리(지시 · 단추)는 글이 아니고 결과(자식)만 같은 깊이로(내보내기와 같다).
+      if (block.type === 'column_list' || block.type === 'column' || block.type === 'ai_block') {
         walk(block.children ?? [], depth)
         continue
       }

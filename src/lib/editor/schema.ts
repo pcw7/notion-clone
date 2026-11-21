@@ -44,6 +44,7 @@
 import { Schema, type MarkSpec, type NodeSpec } from '@tiptap/pm/model'
 
 import {
+  AI_BLOCK_TYPE,
   BLOCK_TYPES,
   BODY_BLOCK_TYPES,
   LAYOUT_BLOCK_TYPES,
@@ -351,6 +352,26 @@ nodes[TABLE_CELL_NODE] = {
   attrs: { colspan: { default: 1 }, rowspan: { default: 1 }, colwidth: { default: null } },
   parseDOM: [{ tag: 'td' }, { tag: 'th' }],
   toDOM: () => ['td', 0],
+} as NodeSpec
+
+// AI 블록(AI-5 · F-10-04) — 글이 없는 머리(원자)이고 결과는 컨테이너의 자식 그룹이다(보통의 블록 — 고칠 수 있다). 머리 줄 · 단추는 노드
+// 뷰가 그린다(`ai-block-view.ts`). toDOM 은 클립보드용 껍데기 — 종류만 싣는다(붙여넣기로 다시 읽으면 지시 · 해시는 없다).
+nodes[AI_BLOCK_TYPE] = {
+  group: 'blockContent',
+  attrs: blockAttrSpec,
+  atom: true,
+  selectable: true,
+  draggable: true,
+  parseDOM: [
+    {
+      tag: `div[data-block-type="${AI_BLOCK_TYPE}"]`,
+      getAttrs: (dom: HTMLElement) => ({ props: { kind: dom.getAttribute('data-ai-kind') ?? 'custom' }, format: {} }),
+    },
+  ],
+  toDOM: (node) => [
+    'div',
+    { 'data-block-type': AI_BLOCK_TYPE, 'data-ai-kind': String((node.attrs.props as { kind?: unknown })?.kind ?? 'custom'), class: `blk blk-${AI_BLOCK_TYPE}` },
+  ],
 } as NodeSpec
 
 // 자식 페이지 참조. 본문에 보이지만 내용은 그 페이지의 것이다.

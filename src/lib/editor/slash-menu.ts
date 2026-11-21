@@ -39,12 +39,14 @@
 
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
+import { AI_BLOCK_TYPE, type AiBlockKind } from '../block/ai-block.ts'
 import { BODY_BLOCK_TYPES, specOf, type BodyBlockType } from '../block/types.ts'
 import { applyTurnInto, insertParagraphAfter, type CommandDeps } from './commands.ts'
-import { containerAt } from './pm-blocks.ts'
+import { containerAt, findContainerById, isBlankLeaf } from './pm-blocks.ts'
+import { newBlockId } from './pm-adapter.ts'
 import { COLORS, type Color } from '../contracts/rich-text.ts'
 import { colorAliases, colorLabel } from './color-names.ts'
-import { isPlainTextNode, TABLE_CELL_NODE } from './schema.ts'
+import { blockSchema, isPlainTextNode, TABLE_CELL_NODE } from './schema.ts'
 
 type SlashCommandBase = {
   readonly label: string
@@ -119,6 +121,12 @@ export type ColorSlashCommand = SlashCommandBase & { readonly kind: 'color'; rea
  */
 export type AiSlashCommand = SlashCommandBase & { readonly kind: 'ai'; readonly id: 'ai' }
 
+/**
+ * AI 블록(AI-5 · F-10-04 — 노션의 Summary · Action items · Custom AI block) — 빈 AI 블록을 지시째로 넣는다(`runAiBlockSlashCommand`). 만드는
+ * 것은 늘 사람이 블록의 "생성" 을 누를 때다(자동으로 만들지 않는다). 직접 지시는 넣은 뒤 지시 입력칸이 열린다.
+ */
+export type AiBlockSlashCommand = SlashCommandBase & { readonly kind: 'ai_block'; readonly id: `ai_block:${AiBlockKind}`; readonly aiKind: AiBlockKind }
+
 export type SlashCommand =
   | BlockSlashCommand
   | PageSlashCommand
@@ -129,6 +137,7 @@ export type SlashCommand =
   | TableSlashCommand
   | ColorSlashCommand
   | AiSlashCommand
+  | AiBlockSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -238,6 +247,17 @@ const AI_COMMAND: AiSlashCommand = {
   kind: 'ai', id: 'ai', label: 'AI 에게 묻기', aliases: ['ai', 'ask', 'ask ai', '묻기', '에이아이', '인공지능'], group: 'AI',
 }
 
+/** AI 블록(AI-5) — 묻기 뒤. 공백은 메뉴를 닫으므로 `/AI요약` · `/요약` · `/ai할일` 처럼 붙여 찾는다(라벨의 공백을 뺀 꼴도 본다). */
+const AI_BLOCK_COMMANDS: readonly AiBlockSlashCommand[] = [
+  { kind: 'ai_block', id: 'ai_block:summary', aiKind: 'summary', label: 'AI 요약', aliases: ['요약', 'summary', 'ai summary'], group: 'AI' },
+  {
+    kind: 'ai_block', id: 'ai_block:action_items', aiKind: 'action_items', label: 'AI 할 일',
+    // `/할일` 은 할 일 목록만 찾는다(그 앞부분으로 시작하는 별칭을 두지 않는다)
+    aliases: ['액션아이템', 'action items', 'actionitems'], group: 'AI',
+  },
+  { kind: 'ai_block', id: 'ai_block:custom', aiKind: 'custom', label: 'AI 블록', aliases: ['직접지시', 'ai block', 'aiblock', 'custom ai'], group: 'AI' },
+]
+
 const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
@@ -261,6 +281,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   TABLE_COMMAND,
   ...COLUMN_COMMANDS,
   AI_COMMAND,
+  ...AI_BLOCK_COMMANDS,
   ...COLOR_COMMANDS,
 ]
 
@@ -409,6 +430,34 @@ export function runSlashCommand(
 
   dispatch(tr.scrollIntoView())
   return true
+}
+
+/**
+ * AI 블록 넣기(AI-5) — `/쿼리` 를 지우고, 그 줄이 빈 문단이면 그 자리를(같은 id), 아니면 그 뒤에 빈 AI 블록(`{ kind }`)을 넣고 뒤에 빈 문단 ·
+ * 캐럿(텍스트를 담지 않는 블록과 같은 모양). 한 트랜잭션. 넣은 블록의 id — 메뉴가 닫혀 있거나 자리가 없으면 null.
+ */
+export function runAiBlockSlashCommand(
+  state: EditorState,
+  dispatch: ((tr: Transaction) => void) | undefined,
+  kind: AiBlockKind,
+  newId: () => string = newBlockId,
+): string | null {
+  const menu = slashMenuState(state)
+  if (!menu.active) return null
+  const info = containerAt(state.selection.$from)
+  if (!info) return null
+  const tr = state.tr.delete(menu.from, state.selection.head)
+  closeSlashMenu(tr)
+  const at = findContainerById(tr.doc, info.id)
+  if (at === null) return null
+  const blank = isBlankLeaf(at) && at.contentNode.type.name === 'paragraph'
+  const id = blank ? info.id : newId()
+  const container = blockSchema.nodes.blockContainer!.create({ blockId: id }, [blockSchema.nodes[AI_BLOCK_TYPE]!.create({ props: { kind }, format: {} })])
+  if (blank) tr.replaceWith(at.pos, at.pos + at.node.nodeSize, container)
+  else tr.insert(at.pos + at.node.nodeSize, container)
+  insertParagraphAfter(tr, id, newId())
+  dispatch?.(tr.scrollIntoView())
+  return id
 }
 
 // ── 하위 페이지 (F-02-13) ─────────────────────────────────────────────

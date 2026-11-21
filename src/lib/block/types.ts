@@ -72,6 +72,12 @@ export type LayoutBlockType = (typeof LAYOUT_BLOCK_TYPES)[number]
 export const TABLE_BLOCK_TYPES = ['table', 'table_row'] as const
 export type TableBlockType = (typeof TABLE_BLOCK_TYPES)[number]
 
+/**
+ * AI 블록(AI-5 · F-10-04 · 정본 §3.10 [보강 AI-1] ⑩) — 지시를 든 그릇이고 결과는 자식(보통의 블록)이다. 본문 타입 목록 밖이다 — `/AI 요약` ·
+ * `/AI 할 일` · `/AI 블록` 이 지시째로 만들고(`editor/slash-menu.ts`) 바꾸기 · 입력 규칙에 서지 않는다.
+ */
+export { AI_BLOCK_TYPE } from './ai-block.ts'
+
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
 export const PAGE_TYPE = 'page' as const
 
@@ -88,6 +94,7 @@ export type BlockType =
   | BodyBlockType
   | LayoutBlockType
   | TableBlockType
+  | 'ai_block'
   | typeof PAGE_TYPE
   | typeof DATABASE_TYPE
   | typeof UNSUPPORTED_TYPE
@@ -238,6 +245,9 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   // (F-01-02 GAP: `table` 에는 color 필드가 없다). 머리 줄 · 머리 열은 표의 `properties`(`has_column_header` · `has_row_header`).
   table: { hasRichText: false, canHaveChildren: true, supportsColor: false, childTypes: ['table_row'], childrenInContent: true },
   table_row: { hasRichText: false, canHaveChildren: false, supportsColor: false, parentTypes: ['table'] },
+
+  // AI 블록(AI-5 · F-10-04) — 글 · 색 없는 원자 머리 + 자식(= 결과 · 보통의 블록). 속성은 `block/ai-block.ts`.
+  ai_block: { hasRichText: false, canHaveChildren: true, supportsColor: false },
 
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },

@@ -18,6 +18,8 @@
  *   번역       시스템 프롬프트가 번역 엔진이면(AI-4) — user 의 JSON 값마다 `[EN] ` 같은 언어 머리를 붙여 같은 열쇠의 JSON 으로(표지는
  *              그대로). 값에 `[dropkey]` 가 있으면 그 열쇠를 빼고 · `[badtag]` 면 꼬리표를 지운다(틀린 표지) · user 에 `[badjson]` 이면 JSON 이
  *              아닌 말. 0.05초마다 한 조각 · 네 조각(진행을 볼 수 있게)
+ *   AI 블록    시스템 프롬프트가 AI 블록이면(AI-5) — `Kind:` 와 `<page>` 의 원문 줄로 요약 · 할 일 · 직접 지시의 답(`fakeAiBlockAnswer`).
+ *              0.08초마다 한 조각 · 여덟 조각(흐르는 미리보기를 볼 수 있게) · `[echo]` 가 먼저다
  *   [429once]  처음 보는 그 요청만 429 + `Retry-After: 1`(같은 요청을 다시 보내면 답한다 — 바쁨 뒤 다시 시도를 볼 때)
  *   그 밖      `가짜 답: <질문>` — 세 조각 + (요청했으면) 사용량 조각 + `[DONE]`
  *
@@ -109,6 +111,26 @@ export function fakeTranslateAnswer(user: string, system: string): string {
     out[key] = head + (value.includes('[badtag]') ? value.replace(/<\/?t\d+>/g, '') : value)
   }
   return JSON.stringify(out)
+}
+
+/**
+ * AI 블록(AI-5)의 답 — 시스템 프롬프트의 `Kind:` 와 user 의 `<page>` 원문 줄(제목 줄 · "…" 빼고)로 짓는다. 요약은 `- 요약: 줄`(셋까지),
+ * 할 일은 `- [ ] 할 일: 줄`(다섯까지), 직접 지시는 `지시: …` 문단 + `- 줄`(셋까지). 줄의 마크다운 머리(`#` · `- [ ]` · `-` · `1.` · `>`)는 뗀다.
+ */
+export function fakeAiBlockAnswer(user: string, system: string): string {
+  const kind = /^Kind: (\w+)/m.exec(system)?.[1] ?? 'summary'
+  const page = /<page>\n([\s\S]*?)\n<\/page>/.exec(user)?.[1] ?? ''
+  const lines = page
+    .split('\n')
+    .slice(1)
+    .map((l) => l.replace(/^\s*(?:#{1,3} |- \[[ x]\] |- |\d+\. |> )?/, '').trim())
+    .filter((l) => l !== '' && l !== '…')
+  if (kind === 'action_items') return lines.slice(0, 5).map((l) => `- [ ] 할 일: ${l}`).join('\n')
+  if (kind === 'custom') {
+    const instruction = /<instruction>\n([\s\S]*?)\n<\/instruction>/.exec(user)?.[1] ?? ''
+    return [`지시: ${instruction}`, '', ...lines.slice(0, 3).map((l) => `- ${l}`)].join('\n')
+  }
+  return lines.slice(0, 3).map((l) => `- 요약: ${l}`).join('\n')
 }
 
 /** `[429once]` 가 이미 한 번 막은 요청. */
@@ -205,6 +227,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, record: FakeAiR
     delay = 50
   } else if (prompt.includes('[echo]')) {
     pieces = piecesOf(JSON.stringify(record.body.messages ?? null), 3)
+  } else if (/^You write the content of an AI block/.test(systemTextOf(record.body))) {
+    pieces = piecesOf(fakeAiBlockAnswer(prompt, systemTextOf(record.body)), 8)
+    delay = 80
   } else if (editSourceOf(prompt) !== null) {
     pieces = piecesOf(fakeEditAnswer(editSourceOf(prompt)!, /action items/i.test(systemTextOf(record.body))), 8)
     delay = 120

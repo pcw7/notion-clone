@@ -60,6 +60,7 @@ import { INLINE_PREVIEW_ROWS, inlinePreviewOf, inlinePreviewSource } from '@/lib
 import {
   closeSlashMenu,
   filterSlashCommands,
+  runAiBlockSlashCommand,
   runSlashCommand,
   slashMenuState,
   type SlashCommand,
@@ -459,6 +460,7 @@ export function BodyEditor({
   initialPageIcons,
   breadcrumb,
   ai = AI_OFF,
+  template = false,
 }: {
   workspaceId: string
   pageId: string
@@ -482,6 +484,8 @@ export function BodyEditor({
   breadcrumb: BreadcrumbTrail
   /** AI 에게 묻기의 입구(AI-2) — 서버가 그릴 때의 상태(`aiEntryFor`). `ready` 면 빈 줄의 안내 · 스페이스, 아니면 `/ai` 가 까닭을 말한다. */
   ai?: AiEntry
+  /** 데이터베이스 템플릿의 본문이다 — AI 블록을 만들지 않는다(그 템플릿으로 만든 페이지에서 만든다 · AI-5). */
+  template?: boolean
 }) {
   const router = useRouter()
   const mountRef = useRef<HTMLDivElement | null>(null)
@@ -670,6 +674,15 @@ export function BodyEditor({
     const view = viewRef.current
     if (view && !view.isDestroyed) view.dispatch(view.state.tr)
   }, [ai.state, editable, suggesting, aiUi])
+  // AI 블록(AI-5 · F-10-04) — 노드 뷰의 머리 줄(생성 단추 · 바뀜 표시)이 듣는다: 문서가 바뀌면(트랜잭션) · 맥락이 바뀌면(여기)
+  const aiBlockListenersRef = useRef<Set<() => void>>(new Set())
+  /** 방금 `/AI 블록` 으로 넣은 직접 지시 블록 — 노드 뷰가 처음 그릴 때 지시 입력칸에 포커스를 준다(한 번). */
+  const aiBlockFocusRef = useRef<Set<string>>(new Set())
+  const templateRef = useRef(template)
+  templateRef.current = template
+  useEffect(() => {
+    for (const listener of aiBlockListenersRef.current) listener()
+  }, [ai.state, editable, suggesting])
   /** 입력창을 그 줄에 연다 — 스페이스는 `ready` 일 때만(아니면 글자) · `/ai` 는 늘(까닭을 말한다). */
   const openAi = useCallback((blockId: string, from: 'space' | 'slash'): boolean => {
     const view = viewRef.current
@@ -1553,6 +1566,13 @@ export function BodyEditor({
         if (at !== null) openAi(at.id, 'slash')
         return
       }
+      // AI 블록(AI-5) — 빈 AI 블록을 넣는다(만들기는 블록의 "생성"). 직접 지시는 넣은 뒤 그 지시 입력칸으로
+      if (command.kind === 'ai_block') {
+        const id = runAiBlockSlashCommand(view.state, view.dispatch.bind(view), command.aiKind)
+        view.focus()
+        if (id !== null && command.aiKind === 'custom') aiBlockFocusRef.current.add(id)
+        return
+      }
 
       // `/수식` 은 지금 블록을 수식으로 바꾼다(블록 id 그대로) — 바꾼 뒤 그 입력창을 연다(F-01-20 — 만들면 곧바로 식을 쓴다).
       // `/버튼` 도 같다 — 바꾼 뒤 설정 창을 연다(08 — 액션 없는 빈 버튼이 남지 않게 · 정본 ⑰).
@@ -1790,6 +1810,20 @@ export function BodyEditor({
       aiHint: () => aiHintRef.current,
       // AI 로 고치기(AI-3) — 글을 고른 Ctrl/Cmd+J
       openAiEdit: () => openAiEdit(),
+      // AI 블록(AI-5) — 머리 줄이 묻는 지금의 맥락 · 바뀌면 부를 것
+      aiBlockHost: () => ({
+        workspaceId,
+        pageId,
+        ai: aiRef.current,
+        editable: editableRef.current,
+        suggesting: suggestingRef.current,
+        template: templateRef.current,
+      }),
+      subscribeAiBlock: (listener) => {
+        aiBlockListenersRef.current.add(listener)
+        return () => aiBlockListenersRef.current.delete(listener)
+      },
+      takeAiBlockFocus: (id) => aiBlockFocusRef.current.delete(id),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
@@ -1837,7 +1871,9 @@ export function BodyEditor({
         editable: () => editableRef.current,
         // ★ 협업 편집기가 돌려준 deps 를 넘긴다 — 받은 것을 그대로 넘기면 Mod-z 가 아무것도 되돌리지 않는다(§3.3-117).
         deps: collab.deps,
-        onTransaction: (v) => {
+        onTransaction: (v, tr) => {
+          // AI 블록(AI-5)의 바뀜 표시 — 노드 뷰가 조금 기다렸다 다시 센다
+          if (tr.docChanged) for (const listener of aiBlockListenersRef.current) listener()
           syncMenu(v)
           syncMentionMenu(v)
           setPasteRange(pasteUrlState(v.state))

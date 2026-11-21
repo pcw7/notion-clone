@@ -28,6 +28,11 @@ export type AskFailure =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'cannot_edit' }
   | { readonly kind: 'too_long' }
+  // AI 블록(AI-5) — 원문이 모자라다 · 직접 지시가 비었다 · 그사이 블록이 지워졌다 · 받았지만 쓰지 못했다
+  | { readonly kind: 'not_enough_content' }
+  | { readonly kind: 'instruction_missing' }
+  | { readonly kind: 'block_gone' }
+  | { readonly kind: 'write_failed' }
   | { readonly kind: 'limit'; readonly limit: string; readonly resetsAt: string | null }
   | { readonly kind: 'busy'; readonly retryAfter: number | null }
   | { readonly kind: 'provider' }
@@ -53,6 +58,11 @@ export function askFailureOf(body: unknown): AskFailure {
       return { kind: 'cannot_edit' }
     case 'input_too_long':
       return { kind: 'too_long' }
+    case 'not_enough_content':
+    case 'instruction_missing':
+    case 'block_gone':
+    case 'write_failed':
+      return { kind: b.error }
     case 'ai_limit_reached':
       return { kind: 'limit', limit: typeof b.limit === 'string' ? b.limit : '', resetsAt: typeof b.resetsAt === 'string' ? b.resetsAt : null }
     case 'ai_busy':
@@ -63,7 +73,7 @@ export function askFailureOf(body: unknown): AskFailure {
 }
 
 /** 지금 다시 해 볼 수 있는가 — 바쁨 · 공급자 · 연결만. 한도는 풀릴 때까지 · 꺼짐 · 권한 · 긴 글은 다시 해도 같다. */
-export const canRetry = (f: AskFailure): boolean => f.kind === 'busy' || f.kind === 'provider' || f.kind === 'network'
+export const canRetry = (f: AskFailure): boolean => f.kind === 'busy' || f.kind === 'provider' || f.kind === 'network' || f.kind === 'write_failed'
 
 /** 시각 — 오늘이면 "오후 3:20", 아니면 "12월 1일 오후 3:20"(그 사람의 시간대 · 시험은 시간대를 준다). */
 export function clockText(iso: string, now: Date, timeZone?: string): string {
@@ -92,6 +102,14 @@ export function askFailureMessage(f: AskFailure, now: Date = new Date(), timeZon
       return '이 페이지를 고칠 수 없습니다 — 편집 권한이 있어야 AI 로 고칠 수 있습니다.'
     case 'too_long':
       return '질문이 너무 깁니다 — 줄여서 다시 물어보세요.'
+    case 'not_enough_content':
+      return '요약할 내용이 부족합니다 — 페이지에 글을 더 쓴 뒤 다시 하세요.'
+    case 'instruction_missing':
+      return '지시를 먼저 쓰세요.'
+    case 'block_gone':
+      return '그사이 이 AI 블록이 지워졌습니다.'
+    case 'write_failed':
+      return '결과를 쓰지 못했습니다. 다시 시도하세요.'
     case 'limit':
       switch (f.limit) {
         case 'window':
@@ -220,17 +238,20 @@ export function streamAsk(
   return streamAi(workspaceId, json, signal, onDelta, fetchImpl)
 }
 
-/** 응답 하나를 읽는다 — 몸(JSON)은 기능마다(묻기 · 고치기 AI-3). 거부 · 스트림의 읽기는 같다. 던지지 않는다. */
+/**
+ * 응답 하나를 읽는다 — 몸(JSON)은 기능마다(묻기 · 고치기 AI-3 · AI 블록 AI-5 — 끝점 `block`). 거부 · 스트림의 읽기는 같다. 던지지 않는다.
+ */
 export async function streamAi(
   workspaceId: string,
   json: Readonly<Record<string, unknown>>,
   signal: AbortSignal,
   onDelta: (text: string) => void,
   fetchImpl: FetchLike = fetch,
+  endpoint: 'complete' | 'block' = 'complete',
 ): Promise<AskOutcome> {
   let res: Response
   try {
-    res = await fetchImpl(`/api/workspaces/${workspaceId}/ai/complete`, {
+    res = await fetchImpl(`/api/workspaces/${workspaceId}/ai/${endpoint}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(json),

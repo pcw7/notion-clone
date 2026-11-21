@@ -19,11 +19,13 @@ import {
   SLASH_COMMANDS,
   closeSlashMenu,
   filterSlashCommands,
+  runAiBlockSlashCommand,
   runSlashCommand,
   slashMenuPlugin,
   slashMenuState,
 } from './slash-menu.ts'
 import type { EditorBlock } from './document.ts'
+import { pmToDoc } from './pm-adapter.ts'
 
 let counter = 0
 const nextId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}`
@@ -376,5 +378,54 @@ describe('실행', () => {
     const next = execute(state, 'toggle')
     assert.ok(next)
     assert.equal(slashMenuState(next).active, false)
+  })
+})
+
+// ── AI 블록 (AI-5) ────────────────────────────────────────────────────
+
+describe('AI 블록 넣기(AI-5 · F-10-04)', () => {
+  test('★ /AI요약 · /요약 · /ai할일 · /AI블록 으로 찾는다 — /ai 의 첫 항목은 그대로 묻기', () => {
+    assert.deepEqual(filterSlashCommands('ai요약').map((c) => c.id), ['ai_block:summary'])
+    assert.deepEqual(filterSlashCommands('요약').map((c) => c.id), ['ai_block:summary'])
+    assert.deepEqual(filterSlashCommands('ai할일').map((c) => c.id), ['ai_block:action_items'])
+    assert.deepEqual(filterSlashCommands('ai블록').map((c) => c.id), ['ai_block:custom'])
+    assert.equal(filterSlashCommands('ai')[0]?.kind, 'ai')
+    assert.ok(!SLASH_COMMANDS.some((c) => c.kind === 'block' && (c.id as string) === 'ai_block'), '블록 타입 목록(바꾸기)에 서지 않는다')
+  })
+
+  test('★ 빈 줄이면 그 자리(같은 id)가 빈 AI 블록 · 뒤에 빈 문단과 캐럿 · `/쿼리` 는 지워진다 · 한 트랜잭션', () => {
+    const [a, b] = [nextId(), nextId()]
+    const state = type(caretAt(stateWith([blk(a, 'paragraph', '앞 글'), blk(b)]), b, 0), '/ai요약')
+    let next: EditorState | null = null
+    let dispatched = 0
+    const id = runAiBlockSlashCommand(state, (tr) => {
+      dispatched += 1
+      next = state.apply(tr)
+    }, 'summary', nextId)
+    assert.equal(id, b)
+    assert.equal(dispatched, 1)
+    const doc = pmToDoc((next as unknown as EditorState).doc)
+    assert.deepEqual(doc.blocks.map((x) => [x.type, x.properties]), [['paragraph', {}], ['ai_block', { kind: 'summary' }], ['paragraph', {}]])
+    assert.equal(doc.blocks[1]!.id, b)
+    assert.equal(slashMenuState(next as unknown as EditorState).active, false)
+    assert.equal((next as unknown as EditorState).selection.$from.parent.type.name, 'paragraph', '캐럿은 뒤의 빈 문단')
+  })
+
+  test('글이 있는 줄이면 지우지 않고 그 뒤에 넣는다(새 id)', () => {
+    const a = nextId()
+    const state = type(caretAt(stateWith([blk(a, 'paragraph', '글')]), a, 1), ' /ai블록')
+    let next: EditorState | null = null
+    const id = runAiBlockSlashCommand(state, (tr) => {
+      next = state.apply(tr)
+    }, 'custom', nextId)
+    const doc = pmToDoc((next as unknown as EditorState).doc)
+    assert.ok(id !== null && id !== a)
+    assert.deepEqual(doc.blocks.map((x) => [x.type, x.title.map((r) => r.plain_text).join('')]), [['paragraph', '글 '], ['ai_block', ''], ['paragraph', '']])
+    assert.deepEqual(doc.blocks[1]!.properties, { kind: 'custom' })
+  })
+
+  test('메뉴가 닫혀 있으면 아무것도 하지 않는다', () => {
+    const a = nextId()
+    assert.equal(runAiBlockSlashCommand(caretAt(stateWith([blk(a)]), a, 0), () => assert.fail('보내지 않는다'), 'summary', nextId), null)
   })
 })
