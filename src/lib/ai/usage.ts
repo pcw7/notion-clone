@@ -29,6 +29,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { aiProviderHost, type AiConfig } from './config.ts'
+import { pickModel } from './models.ts'
 import {
   aiQuotaView,
   decideAiQuota,
@@ -169,10 +170,12 @@ export type AiReservation = {
   readonly workspaceId: string
   readonly quota: AiQuota
   readonly grantId: string | null
+  /** 이 응답에 부를 모델(AI-7) — 원장 `ai_usage.model` 과 같다. 공급자에는 이것을 보낸다. */
+  readonly model: string
 }
 
 export type AiGateRefusal =
-  | { readonly ok: false; readonly reason: 'ai_unavailable' | 'ai_disabled' | 'forbidden' | 'not_found' | 'cannot_edit' }
+  | { readonly ok: false; readonly reason: 'ai_unavailable' | 'ai_disabled' | 'forbidden' | 'not_found' | 'cannot_edit' | 'model_not_allowed' }
   | { readonly ok: false; readonly reason: 'ai_limit_reached'; readonly limit: AiLimitKind; readonly resetsAt: string | null }
 
 export type AiReserveResult = { readonly ok: true; readonly reservation: AiReservation } | AiGateRefusal
@@ -180,12 +183,15 @@ export type AiReserveResult = { readonly ok: true; readonly reservation: AiReser
 /**
  * 응답 하나를 예약한다 — 공급자를 부르기 **전에**. 거부면 아무것도 쓰지 않는다.
  *
- * @param options.config 공급자 설정(없으면 `ai_unavailable`) — 하루 상한 · 모델을 여기서 읽는다
+ * 모델(AI-7 · 정본 ⑫) — `input.model` 이 없거나 null 이면 워크스페이스 기본(편집기의 기능 · 채팅의 자동). 글이면 허용(자동 ∪ 소유자가
+ * 더한 것) 안이어야 한다 — 밖이면 `model_not_allowed`(예약 없음). `modelFallback` 이면 밖일 때 기본으로(회수된 대화의 모델).
+ *
+ * @param options.config 공급자 설정(없으면 `ai_unavailable`) — 하루 상한 · 자동 모델(`AI_MODEL`)을 여기서 읽는다
  * @param options.now 지금(시험이 시각을 정한다) — 창 · 달 · 날의 경계가 이것을 본다
  */
 export async function reserveAiResponse(
   ctx: SessionContext,
-  input: { readonly feature: AiFeature; readonly pageId?: string | null },
+  input: { readonly feature: AiFeature; readonly pageId?: string | null; readonly model?: string | null; readonly modelFallback?: boolean },
   options: { readonly config: AiConfig | null; readonly now?: Date },
 ): Promise<AiReserveResult> {
   const config = options.config
@@ -196,14 +202,16 @@ export async function reserveAiResponse(
 
   return withCommandTransaction(async (tx): Promise<AiReserveResult> => {
     // ① 스위치 — 이 줄을 잠가 이 워크스페이스의 예약을 줄 세운다(줄이 없으면 꺼짐 — 꺼진 곳은 셀 것도 없다)
-    const setting = await tx.queryMaybe<{ enabled: boolean }>(
-      `SELECT enabled FROM workspace_ai_setting WHERE workspace_id = $1 FOR UPDATE`,
+    const setting = await tx.queryMaybe<{ enabled: boolean; allowed_models: string[]; default_model: string | null }>(
+      `SELECT enabled, allowed_models, default_model FROM workspace_ai_setting WHERE workspace_id = $1 FOR UPDATE`,
       [ctx.workspaceId],
     )
     if (setting === null || !setting.enabled) return { ok: false, reason: 'ai_disabled' }
 
-    // ② 그 사람 · 그 맥락(볼 수 있는 페이지만 — 볼 수 없으면 없는 것과 같다)
+    // ② 그 사람 · 그 모델(AI-7) · 그 맥락(볼 수 있는 페이지만 — 볼 수 없으면 없는 것과 같다)
     if (!canUseAi(ctx)) return { ok: false, reason: 'forbidden' }
+    const pick = pickModel(config.model, { allowed: setting.allowed_models, defaultModel: setting.default_model }, input.model ?? null, input.modelFallback === true)
+    if (!pick.ok) return { ok: false, reason: 'model_not_allowed' }
     const caps = pageId === null ? null : await effectiveCaps(tx, ctx, pageId)
     if (caps !== null && !can(caps, 'view')) return { ok: false, reason: 'not_found' }
     // 고치기(AI-3) · AI 블록(AI-5) — 답이 그 페이지에 든다: 살아 있는 페이지 · 본문을 고칠 수 있다(`edit_content`) · 잠기지 않았다. 보기 ·
@@ -241,10 +249,10 @@ export async function reserveAiResponse(
     await tx.query(
       `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, grant_id, model, page_id, created_at)
        VALUES ($1, $2, $3, $4, 'reserved', $5, $6, $7, $8, $9)`,
-      [id, ctx.workspaceId, ctx.userId, input.feature, decision.quota, grantId, config.model, pageId, now],
+      [id, ctx.workspaceId, ctx.userId, input.feature, decision.quota, grantId, pick.model, pageId, now],
     )
     await tx.query(`UPDATE ai_daily_usage SET responses = responses + 1 WHERE day = $1::date`, [day])
-    return { ok: true, reservation: { id, workspaceId: ctx.workspaceId, quota: decision.quota, grantId } }
+    return { ok: true, reservation: { id, workspaceId: ctx.workspaceId, quota: decision.quota, grantId, model: pick.model } }
   })
 }
 

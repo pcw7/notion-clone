@@ -7,11 +7,16 @@
  *
  * 소유자는 스위치(기본 끔)와 "글이 어디로 가는가" 알림을 본다 — 판정은 서버다(`PUT /ai` · `setAiEnabled`). 모두(게스트 아님)가 이번
  * 기간의 쓴 양 · 남은 보충 · 언제 풀리는지 · 공급자의 이름(host)을 본다. 쓴 양은 화면을 열 때의 값이다.
+ *
+ * 모델(AI-7 · F-10-26)은 지연 로드한 절이다(`ai-lazy.tsx` — 번들 예산). 사용량 분석(F-10-25)은 AI 절의 맨 아래에 따로 선다
+ * (`setting-panel.tsx` — 열고 나서 읽어 차므로 위에 두면 아래 절을 민다).
  */
 
 import { useState } from 'react'
 
+import type { AiModelSettingsView } from '@/lib/ai/model-setting'
 import type { AiSettingsSummary } from '@/lib/ai/usage'
+import { AiModelsPanel } from './ai-lazy'
 import {
   AI_DISABLED,
   AI_ENABLED,
@@ -25,7 +30,7 @@ import {
 
 const NOTE = 'text-xs text-neutral-500'
 
-export function AiPanel({ workspaceId, initial }: { workspaceId: string; initial: AiSettingsSummary }) {
+export function AiPanel({ workspaceId, initial, models }: { workspaceId: string; initial: AiSettingsSummary; models: AiModelSettingsView | null }) {
   const [enabled, setEnabled] = useState(initial.enabled)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -105,6 +110,7 @@ export function AiPanel({ workspaceId, initial }: { workspaceId: string; initial
           ))}
         </ul>
       </div>
+      {models !== null && <AiModelsPanel workspaceId={workspaceId} initial={models} />}
       {error !== null && (
         <p role="alert" data-testid="ai-error" className="text-xs text-red-600">
           {error}

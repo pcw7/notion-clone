@@ -3,12 +3,13 @@
  *
  * 정본: 00-canonical-data-model.md §3.10 [보강 AI-1] ⑪ · ④ · ⑥
  *
- * `POST /api/workspaces/{id}/ai/chat` 의 몸이다 — 본문 `{ sessionId?, message, scope? }`(범위 `{kind:'workspace'}` 기본 | `{kind:'page', pageId}`).
- * 라우트는 세션만 풀고 이것을 부른다(시험이 같은 길을 Next 없이 부른다).
+ * `POST /api/workspaces/{id}/ai/chat` 의 몸이다 — 본문 `{ sessionId?, message, scope?, model? }`(범위 `{kind:'workspace'}` 기본 |
+ * `{kind:'page', pageId}` · 모델은 AI-7 — 없으면 대화의 것 · null 은 자동). 라우트는 세션만 풀고 이것을 부른다(시험이 같은 길을 Next 없이 부른다).
  *
  * 거부는 JSON — AI-2 와 같다(`complete-http.ts` 머리말): 503 `ai_unavailable` · 403 `ai_disabled` · `forbidden`(게스트) · 404 `not_found`
- * (남의 대화 · 볼 수 없는 범위의 페이지) · 429 `ai_limit_reached` · 400 `invalid_input` · `input_too_long` · 공급자가 처음부터 거절하면 503
- * `ai_busy` · 502 `ai_provider_failed`. **거부면 아무것도 적지 않는다**(대화 · 질문 — 질문은 화면의 입력창에 남는다).
+ * (남의 대화 · 볼 수 없는 범위의 페이지) · 429 `ai_limit_reached` · 400 `invalid_input` · `input_too_long` · `model_not_allowed`(허용 밖의
+ * 모델 · AI-7) · 공급자가 처음부터 거절하면 503 `ai_busy` · 502 `ai_provider_failed`. **거부면 아무것도 적지 않는다**(대화 · 질문 — 질문은
+ * 화면의 입력창에 남는다). `session` · `done` 은 이 턴을 쓴 모델(`model`)을 싣는다.
  *
  * 한 턴 = 응답 하나(기능 `chat` · 호출 전에 예약 — 페이지 범위면 그 페이지로). 공급자가 흐르기 시작하면 대화(첫 턴이면 만든다 · 제목 = 첫
  * 질문) · 질문을 적고 SSE 로:
@@ -51,13 +52,20 @@ export async function aiChatResponse(ctx: SessionContext, body: unknown, signal:
 
   const parsed = parseChatBody(body, config.maxInputChars)
   if (!parsed.ok) return refuse(parsed.error)
-  const { sessionId, question, scope } = parsed.value
+  const { sessionId, question, scope, model } = parsed.value
 
   // 이어 가는 대화 — 그 사람의 것만(남의 것은 없는 것과 같다 · 예약 전). 게스트는 게이트가 `forbidden` 으로 말한다
-  if (sessionId !== null && canUseAi(ctx) && (await findOwnChatSession(ctx, sessionId)) === null) return refuse('not_found')
+  let storedModel: string | null = null
+  if (sessionId !== null && canUseAi(ctx)) {
+    const own = await findOwnChatSession(ctx, sessionId)
+    if (own === null) return refuse('not_found')
+    storedModel = own.model
+  }
 
+  // 모델(AI-7) — 본문의 것(null = 자동 · 허용 밖이면 400 model_not_allowed) · 없으면 대화의 것(회수됐으면 기본으로)
+  const requested = model !== undefined ? model : storedModel
   const pageId = scope.kind === 'page' ? scope.pageId : null
-  const reserved = await reserveAiResponse(ctx, { feature: 'chat', pageId }, { config, now: clock() })
+  const reserved = await reserveAiResponse(ctx, { feature: 'chat', pageId, model: requested, modelFallback: model === undefined }, { config, now: clock() })
   if (!reserved.ok) {
     if (reserved.reason !== 'ai_limit_reached') return refuse(reserved.reason)
     const retryAfter = reserved.resetsAt === null ? null : Math.max(1, Math.ceil((Date.parse(reserved.resetsAt) - clock().getTime()) / 1000))
@@ -67,6 +75,9 @@ export async function aiChatResponse(ctx: SessionContext, body: unknown, signal:
     )
   }
   const reservationId = reserved.reservation.id
+  const usedModel = reserved.reservation.model
+  // 대화에 남길 모델 — 고른 것 · 아니면 대화의 것(기본으로 돌아갔으면 자동)
+  const sessionModel = model !== undefined ? model : usedModel === requested ? storedModel : null
 
   const stop = new AbortController()
   const onAbort = () => stop.abort()
@@ -118,7 +129,7 @@ export async function aiChatResponse(ctx: SessionContext, body: unknown, signal:
   // 공급자를 연다 — 처음부터 거절하면 아무것도 적지 않는다
   let events: AsyncGenerator<ChatStreamEvent, void, undefined>
   try {
-    events = await openChatStream(config, build.messages, stop.signal, options.fetchImpl)
+    events = await openChatStream({ ...config, model: usedModel }, build.messages, stop.signal, options.fetchImpl)
   } catch (e) {
     const failure = failureOf(e)
     await finish(failure.reason === 'aborted' ? 'stopped' : 'failed', null)
@@ -134,7 +145,7 @@ export async function aiChatResponse(ctx: SessionContext, body: unknown, signal:
   // 턴을 연다 — 대화(첫 턴이면 만든다) · 질문. 그사이 대화가 지워졌으면 404(그 응답은 셈에서 뺀다)
   let turn: Awaited<ReturnType<typeof startChatTurn>>
   try {
-    turn = await startChatTurn(ctx, { sessionId, question, scope })
+    turn = await startChatTurn(ctx, { sessionId, question, scope, model: sessionModel })
   } catch (e) {
     stop.abort()
     await finish('failed', null)
@@ -173,7 +184,7 @@ export async function aiChatResponse(ctx: SessionContext, body: unknown, signal:
           return null
         }
       }
-      write('session', { sessionId: opened.sessionId, title: opened.title, created: opened.created, messageId: opened.messageId })
+      write('session', { sessionId: opened.sessionId, title: opened.title, created: opened.created, messageId: opened.messageId, model: usedModel })
       try {
         for await (const event of events) {
           if (event.type === 'end') {
@@ -204,6 +215,7 @@ export async function aiChatResponse(ctx: SessionContext, body: unknown, signal:
           sources: markCited(answer, sources),
           sessionId: opened.sessionId,
           messageId,
+          model: usedModel,
         })
       } catch (e) {
         const failure = failureOf(e)

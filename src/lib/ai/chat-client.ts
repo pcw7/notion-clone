@@ -7,29 +7,51 @@
  * 것을 그대로 쓴다(`askFailureOf` · `askFailureMessage`). 던지지 않는다.
  */
 
-import { askFailureOf, type AskFailure } from './ask-client.ts'
+import { askFailureMessage, askFailureOf, type AskFailure } from './ask-client.ts'
 import { readChatSources, type ChatScope, type ChatSource } from './chat-shared.ts'
 import type { AiQuotaView } from './quota.ts'
 import { createSseParser } from './sse.ts'
 
-export type ChatTurnRequest = { readonly sessionId: string | null; readonly message: string; readonly scope: ChatScope }
+/** 한 턴의 본문 — `model` 은 고른 모델(AI-7 · null = 자동 · 없으면 대화의 것). */
+export type ChatTurnRequest = { readonly sessionId: string | null; readonly message: string; readonly scope: ChatScope; readonly model?: string | null }
 
-/** 맨 먼저 오는 사건 — 대화가 섰다(첫 턴이면 새로 만들었다). */
-export type ChatOpened = { readonly sessionId: string; readonly title: string; readonly created: boolean; readonly messageId: string }
+/** 맨 먼저 오는 사건 — 대화가 섰다(첫 턴이면 새로 만들었다) · 이 턴을 쓰는 모델. */
+export type ChatOpened = { readonly sessionId: string; readonly title: string; readonly created: boolean; readonly messageId: string; readonly model: string | null }
+
+/** 채팅의 실패 — AI-2 의 것 + 허용 밖의 모델(AI-7 · 400 `model_not_allowed`). */
+export type ChatFailure = AskFailure | { readonly kind: 'model_not_allowed' }
 
 export type ChatOutcome =
-  | { readonly kind: 'done'; readonly truncated: boolean; readonly quota: AiQuotaView | null; readonly sources: ChatSource[]; readonly messageId: string | null }
-  | { readonly kind: 'failed'; readonly failure: AskFailure }
+  | {
+      readonly kind: 'done'
+      readonly truncated: boolean
+      readonly quota: AiQuotaView | null
+      readonly sources: ChatSource[]
+      readonly messageId: string | null
+      readonly model: string | null
+    }
+  | { readonly kind: 'failed'; readonly failure: ChatFailure }
   | { readonly kind: 'aborted' }
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>
+
+/** 거부의 JSON → 채팅의 실패. */
+export function chatFailureOf(body: unknown): ChatFailure {
+  const b = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
+  return b.error === 'model_not_allowed' ? { kind: 'model_not_allowed' } : askFailureOf(body)
+}
+
+/** 실패의 말 — 모델이 허용 밖이면 그 말 · 나머지는 AI-2 의 것. */
+export function chatFailureMessage(f: ChatFailure): string {
+  return f.kind === 'model_not_allowed' ? '그 모델은 이 워크스페이스에서 쓸 수 없습니다 — 다른 모델을 고르세요.' : askFailureMessage(f)
+}
 
 /** 사건 하나를 읽는다 — `session` 이면 그 모양 · 아니면 null. */
 export function chatOpenedOf(data: unknown): ChatOpened | null {
   if (typeof data !== 'object' || data === null) return null
   const d = data as Record<string, unknown>
   if (typeof d.sessionId !== 'string' || typeof d.title !== 'string' || typeof d.messageId !== 'string') return null
-  return { sessionId: d.sessionId, title: d.title, created: d.created === true, messageId: d.messageId }
+  return { sessionId: d.sessionId, title: d.title, created: d.created === true, messageId: d.messageId, model: typeof d.model === 'string' ? d.model : null }
 }
 
 /**
@@ -55,7 +77,7 @@ export async function streamChat(
   }
   if (!res.ok || res.body === null) {
     const json = await res.json().catch(() => null)
-    return { kind: 'failed', failure: json === null ? { kind: res.status >= 500 ? 'provider' : 'network' } : askFailureOf(json) }
+    return { kind: 'failed', failure: json === null ? { kind: res.status >= 500 ? 'provider' : 'network' } : chatFailureOf(json) }
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -82,6 +104,7 @@ export async function streamChat(
             quota: (data.quota as AiQuotaView | null | undefined) ?? null,
             sources: readChatSources(data.sources),
             messageId: typeof data.messageId === 'string' ? data.messageId : null,
+            model: typeof data.model === 'string' ? data.model : null,
           }
         } else if (event.event === 'error') return { kind: 'failed', failure: askFailureOf(data) }
       }

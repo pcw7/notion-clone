@@ -18,6 +18,7 @@
 import { plainTextForBlocks } from '../editor/block-clipboard.ts'
 import { askLines, pageExcerpt, ASK_MIN_CONTEXT, type AskPage } from './ask-prompt.ts'
 import { CHAT_MAX_SOURCES, CHAT_QUESTION_MAX, parseChatScope, type ChatScope, type ChatSource } from './chat-shared.ts'
+import { readModelField } from './models.ts'
 import type { ChatMessage } from './provider.ts'
 
 /** 내 AI 지시에서 싣는 글자(F-10-22 *"길이 상한"*). */
@@ -71,13 +72,15 @@ export type ChatRequest = {
   readonly sessionId: string | null
   readonly question: string
   readonly scope: ChatScope
+  /** 고른 모델(AI-7) — undefined 면 대화의 것 · null 이면 자동 · 글이면 그 모델(허용인지는 게이트가 본다). */
+  readonly model: string | null | undefined
 }
 
 export type ChatRequestParse =
   | { readonly ok: true; readonly value: ChatRequest }
   | { readonly ok: false; readonly error: 'invalid_input' | 'input_too_long' }
 
-/** 본문 `{ sessionId?, message, scope? }` 를 읽는다 — 모양이 틀리면 `invalid_input` · 질문이 길면(지시와 함께 상한을 넘으면) `input_too_long`. */
+/** 본문 `{ sessionId?, message, scope?, model? }` 를 읽는다 — 모양이 틀리면 `invalid_input` · 질문이 길면(지시와 함께 상한을 넘으면) `input_too_long`. */
 export function parseChatBody(body: unknown, maxInputChars: number): ChatRequestParse {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'invalid_input' }
   const b = body as Record<string, unknown>
@@ -86,9 +89,11 @@ export function parseChatBody(body: unknown, maxInputChars: number): ChatRequest
   if (rawSession !== null && (typeof rawSession !== 'string' || !UUID.test(rawSession))) return { ok: false, error: 'invalid_input' }
   const scope = parseChatScope(b.scope)
   if (scope === null) return { ok: false, error: 'invalid_input' }
+  const model = readModelField(b.model)
+  if (model === 'invalid') return { ok: false, error: 'invalid_input' }
   const question = b.message.trim()
   if (question.length > CHAT_QUESTION_MAX || CHAT_SYSTEM_PROMPT.length + question.length > maxInputChars) return { ok: false, error: 'input_too_long' }
-  return { ok: true, value: { sessionId: rawSession === null ? null : rawSession.toLowerCase(), question, scope } }
+  return { ok: true, value: { sessionId: rawSession === null ? null : rawSession.toLowerCase(), question, scope, model } }
 }
 
 // ── 찾는 말 ───────────────────────────────────────────────────────────

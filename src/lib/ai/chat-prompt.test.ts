@@ -41,7 +41,11 @@ const ws = (found: { pageId: string; page: AskPage }[], terms: string[] = []): C
 
 test('★ ① 요청 — 질문은 비지 않는다 · 범위는 워크스페이스(기본) | 페이지(uuid) · 대화 id 는 uuid · 길면 input_too_long', () => {
   const ok = parseChatBody({ message: '  알파 마감은?  ' }, 6000)
-  assert.deepEqual(ok, { ok: true, value: { sessionId: null, question: '알파 마감은?', scope: { kind: 'workspace' } } })
+  assert.deepEqual(ok, { ok: true, value: { sessionId: null, question: '알파 마감은?', scope: { kind: 'workspace' }, model: undefined } })
+  // 모델(AI-7) — 없음(대화의 것) · null(자동) · 글(앞뒤 공백을 뗀다) · 빈 글 · 숫자 · 201자는 모양이 틀렸다
+  const model = (m: unknown) => parseChatBody({ message: 'q', model: m }, 6000)
+  assert.deepEqual([model(null), model(' fake-model ')].map((r) => (r.ok ? r.value.model : 'bad')), [null, 'fake-model'])
+  for (const bad of ['', '  ', 3, 'm'.repeat(201)]) assert.deepEqual(model(bad), { ok: false, error: 'invalid_input' }, String(bad))
   const withPage = parseChatBody({ message: 'q', sessionId: PAGE_ID.toUpperCase(), scope: { kind: 'page', pageId: PAGE_ID.toUpperCase() } }, 6000)
   assert.ok(withPage.ok && withPage.value.sessionId === PAGE_ID && withPage.value.scope.kind === 'page' && withPage.value.scope.pageId === PAGE_ID)
   for (const bad of [null, [], {}, { message: '   ' }, { message: 3 }, { message: 'q', sessionId: 'x' }, { message: 'q', scope: { kind: 'page' } }, { message: 'q', scope: { kind: 'page', pageId: 'nope' } }, { message: 'q', scope: { kind: 'all' } }, { message: 'q', scope: { kind: 'workspace', pageId: PAGE_ID } }]) {
