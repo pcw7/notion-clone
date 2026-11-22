@@ -48,14 +48,20 @@ export const CHAT_CONTENT_MAX = 20000
 /** 다시 열 때 읽는 메시지 수(최근 것). */
 const OPEN_MESSAGES_LIMIT = 400
 
-type SessionRow = { id: string; title: string; scope: unknown; updated_at: Date }
+type SessionRow = { id: string; title: string; scope: unknown; updated_at: Date; model: string | null }
 
 const scopeOf = (raw: unknown): ChatScope => {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   return r.kind === 'page' && typeof r.pageId === 'string' ? { kind: 'page', pageId: r.pageId } : { kind: 'workspace' }
 }
 
-const summaryOf = (row: SessionRow): ChatSessionSummary => ({ id: row.id, title: row.title, scope: scopeOf(row.scope), updatedAt: row.updated_at.toISOString() })
+const summaryOf = (row: SessionRow): ChatSessionSummary => ({
+  id: row.id,
+  title: row.title,
+  scope: scopeOf(row.scope),
+  updatedAt: row.updated_at.toISOString(),
+  model: row.model,
+})
 
 // ── 대화 ──────────────────────────────────────────────────────────────
 
@@ -64,7 +70,7 @@ export async function listChatSessions(ctx: SessionContext): Promise<ChatSession
   if (!canUseAi(ctx)) return []
   const rows = await withReadTransaction((tx) =>
     tx.query<SessionRow>(
-      `SELECT id, title, scope, updated_at FROM ai_chat_session
+      `SELECT id, title, scope, updated_at, model FROM ai_chat_session
         WHERE workspace_id = $1 AND user_id = $2
         ORDER BY updated_at DESC, id DESC LIMIT $3`,
       [ctx.workspaceId, ctx.userId, CHAT_LIST_LIMIT],
@@ -76,7 +82,7 @@ export async function listChatSessions(ctx: SessionContext): Promise<ChatSession
 async function ownSessionIn(db: Reader, ctx: SessionContext, sessionId: string): Promise<SessionRow | null> {
   if (!isUuid(sessionId)) return null
   return db.queryMaybe<SessionRow>(
-    `SELECT id, title, scope, updated_at FROM ai_chat_session WHERE id = $1 AND workspace_id = $2 AND user_id = $3`,
+    `SELECT id, title, scope, updated_at, model FROM ai_chat_session WHERE id = $1 AND workspace_id = $2 AND user_id = $3`,
     [sessionId, ctx.workspaceId, ctx.userId],
   )
 }
@@ -88,8 +94,8 @@ export async function findOwnChatSession(ctx: SessionContext, sessionId: string)
   return row === null ? null : summaryOf(row)
 }
 
-/** 출처 페이지 중 그 사람이 **지금** 볼 수 있는 살아 있는 것. */
-async function viewablePagesIn(tx: Tx, ctx: SessionContext, pageIds: readonly string[]): Promise<Set<string>> {
+/** 출처 페이지 중 그 사람이 **지금** 볼 수 있는 살아 있는 것(사용량 기록의 페이지도 — AI-7). */
+export async function viewablePagesIn(tx: Tx, ctx: SessionContext, pageIds: readonly string[]): Promise<Set<string>> {
   if (pageIds.length === 0) return new Set()
   const scopes = await readableScopes(tx, ctx)
   if (scopes.length === 0) return new Set()
@@ -108,8 +114,11 @@ export async function getChatSession(ctx: SessionContext, sessionId: string): Pr
     const session = await ownSessionIn(tx, ctx, sessionId)
     if (session === null) return null
     const rows = (
-      await tx.query<{ id: string; role: 'user' | 'assistant'; content: string; status: ChatMessageStatus | null; sources: unknown }>(
-        `SELECT id, role, content, status, sources FROM ai_chat_message WHERE session_id = $1 ORDER BY seq DESC LIMIT $2`,
+      await tx.query<{ id: string; role: 'user' | 'assistant'; content: string; status: ChatMessageStatus | null; sources: unknown; model: string | null }>(
+        // 답을 쓴 모델은 원장의 것(AI-7 — 턴마다 다를 수 있다)
+        `SELECT m.id, m.role, m.content, m.status, m.sources, u.model
+           FROM ai_chat_message m LEFT JOIN ai_usage u ON u.id = m.usage_id
+          WHERE m.session_id = $1 ORDER BY m.seq DESC LIMIT $2`,
         [session.id, OPEN_MESSAGES_LIMIT],
       )
     ).reverse()
@@ -127,6 +136,7 @@ export async function getChatSession(ctx: SessionContext, sessionId: string): Pr
       content: r.content,
       status: r.status,
       sources: sourcesOf[i]!.map((s) => ({ ...s, viewable: viewable.has(s.pageId) })),
+      ...(r.role === 'assistant' ? { model: r.model } : {}),
     }))
     return { ...summaryOf(session), messages, scopeTitle }
   })
@@ -141,7 +151,7 @@ export async function renameChatSession(ctx: SessionContext, sessionId: string, 
   if (title === null) return { ok: false, reason: 'invalid_title' }
   return withCommandTransaction(async (tx): Promise<ChatSessionCommand<ChatSessionSummary>> => {
     const row = await tx.queryMaybe<SessionRow>(
-      `UPDATE ai_chat_session SET title = $4 WHERE id = $1 AND workspace_id = $2 AND user_id = $3 RETURNING id, title, scope, updated_at`,
+      `UPDATE ai_chat_session SET title = $4 WHERE id = $1 AND workspace_id = $2 AND user_id = $3 RETURNING id, title, scope, updated_at, model`,
       [sessionId, ctx.workspaceId, ctx.userId, title],
     )
     return row === null ? { ok: false, reason: 'not_found' } : { ok: true, value: summaryOf(row) }
@@ -188,11 +198,13 @@ export async function loadChatHistory(ctx: SessionContext, sessionId: string): P
 }
 
 /**
- * 턴을 연다 — 첫 턴이면 대화를 만들고(제목 = 첫 질문) 아니면 범위 · 시각을 고친다 · 질문을 적는다. 그사이 대화가 지워졌으면 null.
+ * 턴을 연다 — 첫 턴이면 대화를 만들고(제목 = 첫 질문) 아니면 범위 · 모델 · 시각을 고친다 · 질문을 적는다. 그사이 대화가 지워졌으면 null.
+ *
+ * @param input.model 이 대화에 남길 모델(AI-7) — null 은 자동. 허용인지는 게이트가 이미 봤다.
  */
 export async function startChatTurn(
   ctx: SessionContext,
-  input: { readonly sessionId: string | null; readonly question: string; readonly scope: ChatScope },
+  input: { readonly sessionId: string | null; readonly question: string; readonly scope: ChatScope; readonly model: string | null },
 ): Promise<{ readonly sessionId: string; readonly title: string; readonly created: boolean; readonly messageId: string } | null> {
   return withTransaction(async (tx) => {
     let sessionId = input.sessionId
@@ -202,14 +214,14 @@ export async function startChatTurn(
       sessionId = randomUUID()
       title = chatTitleOf(input.question)
       await tx.query(
-        `INSERT INTO ai_chat_session (id, workspace_id, user_id, title, scope) VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [sessionId, ctx.workspaceId, ctx.userId, title, JSON.stringify(input.scope)],
+        `INSERT INTO ai_chat_session (id, workspace_id, user_id, title, scope, model) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+        [sessionId, ctx.workspaceId, ctx.userId, title, JSON.stringify(input.scope), input.model],
       )
     } else {
       const row = await tx.queryMaybe<{ title: string }>(
-        `UPDATE ai_chat_session SET scope = $4::jsonb, updated_at = GREATEST(now(), created_at)
+        `UPDATE ai_chat_session SET scope = $4::jsonb, model = $5, updated_at = GREATEST(now(), created_at)
           WHERE id = $1 AND workspace_id = $2 AND user_id = $3 RETURNING title`,
-        [sessionId, ctx.workspaceId, ctx.userId, JSON.stringify(input.scope)],
+        [sessionId, ctx.workspaceId, ctx.userId, JSON.stringify(input.scope), input.model],
       )
       if (row === null) return null
       title = row.title

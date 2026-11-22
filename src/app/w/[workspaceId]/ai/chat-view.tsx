@@ -10,13 +10,17 @@
  * (서버는 아무것도 적지 않았다). 흐르는 동안에는 대화를 바꾸지 않는다.
  *
  * 답은 평문으로 보인다(줄바꿈 유지) — 마크다운을 그리지 않는다(편집기를 이 화면에 싣지 않는다 · 번들).
+ *
+ * 모델(AI-7 · F-10-26) — 입력 위의 고르개(자동 = 워크스페이스 기본 + 쓸 수 있는 모델)는 대화마다다(서버가 대화에 남긴다). 다시 연 대화의
+ * 모델이 회수됐으면 "자동" 으로 바꾸고 알린다. 답 밑에 그 답을 쓴 모델.
  */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import Link from '@/app/link'
-import { AI_ASK_DISABLED, AI_ASK_UNAVAILABLE, askFailureMessage, remainingText, type AskFailure } from '@/lib/ai/ask-client'
-import { sourceChipText, streamChat } from '@/lib/ai/chat-client'
+import { AI_ASK_DISABLED, AI_ASK_UNAVAILABLE, remainingText } from '@/lib/ai/ask-client'
+import { chatFailureMessage, sourceChipText, streamChat, type ChatFailure } from '@/lib/ai/chat-client'
+import type { AiModelChoices } from '@/lib/ai/model-setting'
 import {
   CHAT_DEFAULT_TITLE,
   CHAT_QUESTION_MAX,
@@ -47,6 +51,7 @@ export function ChatView({
   initialScope,
   initialScopeTitle,
   instructions,
+  models,
 }: {
   workspaceId: string
   entry: ChatEntry
@@ -55,7 +60,15 @@ export function ChatView({
   initialScope: ChatScope
   initialScopeTitle: string | null
   instructions: ChatInstructionsBadge
+  /** 모델 고르개(AI-7) — 공급자 없음 · AI 를 쓸 수 없으면 null(고르개가 서지 않는다). */
+  models: AiModelChoices | null
 }) {
+  const allowedModels = models?.allowed ?? []
+  /** 대화의 모델 → 고르개의 값 — 지금 쓸 수 없으면 자동(null). */
+  const usableModel = (m: string | null | undefined) => (m !== null && m !== undefined && allowedModels.includes(m) ? m : null)
+  /** 대화의 모델이 회수됐다는 말 — 다음 턴부터 기본으로(F-10-26). */
+  const revokedNotice = (m: string | null | undefined) =>
+    models !== null && m !== null && m !== undefined && !allowedModels.includes(m) ? `이 대화의 모델(${m})을 더 쓸 수 없어 자동으로 바꿨습니다.` : null
   const [sessions, setSessions] = useState(initialSessions)
   const [sessionId, setSessionId] = useState<string | null>(opened?.id ?? null)
   const [title, setTitle] = useState<string | null>(opened?.title ?? null)
@@ -65,14 +78,15 @@ export function ChatView({
   const [picking, setPicking] = useState(false)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
-  const [failure, setFailure] = useState<AskFailure | null>(null)
+  const [model, setModel] = useState<string | null>(() => usableModel(opened?.model))
+  const [failure, setFailure] = useState<ChatFailure | null>(null)
   /** 도중에 실패한 답의 말 — 메시지 id 마다. */
   const [failures, setFailures] = useState<Record<string, string>>({})
   const [footnote, setFootnote] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(() => revokedNotice(opened?.model))
   const [copied, setCopied] = useState<string | null>(null)
   const stopRef = useRef<AbortController | null>(null)
   const rootRef = useRef<HTMLElement>(null)
@@ -101,6 +115,7 @@ export function ChatView({
     setSessionId(null)
     setTitle(null)
     setMessages([])
+    setModel(null)
     setFailures({})
     setFailure(null)
     setFootnote(null)
@@ -124,6 +139,8 @@ export function ChatView({
       setSessionId(s.id)
       setTitle(s.title)
       setMessages([...s.messages])
+      setModel(usableModel(s.model))
+      setNotice(revokedNotice(s.model))
       setFailures({})
       setFailure(null)
       setFootnote(null)
@@ -156,16 +173,22 @@ export function ChatView({
     stopRef.current = stop
     let openedTurn = false
     const turnScope = scope
+    const turnModel = model
     const outcome = await streamChat(
       workspaceId,
-      { sessionId, message: text, scope: turnScope },
+      // 모델 — 고르개가 있을 때만 싣는다(null = 자동)
+      models === null ? { sessionId, message: text, scope: turnScope } : { sessionId, message: text, scope: turnScope, model: turnModel },
       stop.signal,
       {
         onOpened: (o) => {
           openedTurn = true
           setSessionId(o.sessionId)
           setTitle(o.title)
-          setSessions((list) => [{ id: o.sessionId, title: o.title, scope: turnScope, updatedAt: new Date().toISOString() }, ...list.filter((s) => s.id !== o.sessionId)])
+          setSessions((list) => [
+            { id: o.sessionId, title: o.title, scope: turnScope, updatedAt: new Date().toISOString(), model: turnModel },
+            ...list.filter((s) => s.id !== o.sessionId),
+          ])
+          setMessages((m) => m.map((x) => (x.id === answerId ? { ...x, model: o.model } : x)))
           syncUrl(o.sessionId)
         },
         onDelta: (t) => setMessages((m) => m.map((x) => (x.id === answerId ? { ...x, content: x.content + t } : x))),
@@ -176,7 +199,7 @@ export function ChatView({
     const settle = (patch: Partial<ChatMessageView>) => setMessages((m) => m.map((x) => (x.id === answerId ? { ...x, ...patch } : x)))
     if (outcome.kind === 'done') {
       const sources: ChatSourceView[] = outcome.sources.map((s) => ({ ...s, viewable: true }))
-      settle({ id: outcome.messageId ?? answerId, status: 'completed', sources })
+      settle({ id: outcome.messageId ?? answerId, status: 'completed', sources, ...(outcome.model === null ? {} : { model: outcome.model }) })
       const left = remainingText(outcome.quota)
       setFootnote([outcome.truncated ? '답이 길어 잘렸습니다' : null, left].filter((s) => s !== null).join(' · ') || null)
       return
@@ -193,7 +216,7 @@ export function ChatView({
       return
     }
     settle({ status: 'failed' })
-    setFailures((f) => ({ ...f, [answerId]: askFailureMessage(outcome.failure) }))
+    setFailures((f) => ({ ...f, [answerId]: chatFailureMessage(outcome.failure) }))
   }
 
   const stopNow = () => stopRef.current?.abort()
@@ -398,7 +421,12 @@ export function ChatView({
                     </div>
                   )}
                   {m.status !== null && (
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {typeof m.model === 'string' && (
+                        <span data-testid="ai-chat-model-used" className={`${NOTE} max-w-[14rem] truncate`} title="이 답을 쓴 모델">
+                          {m.model}
+                        </span>
+                      )}
                       {m.status === 'stopped' && <span className={NOTE}>멈췄습니다</span>}
                       {m.status === 'failed' && (
                         <span data-testid="ai-chat-failed" role="alert" className="text-xs text-red-600 dark:text-red-400">
@@ -447,6 +475,29 @@ export function ChatView({
                   '특정 페이지…'
                 )}
               </button>
+              {models !== null && (
+                <label className="ml-auto flex min-w-0 items-center gap-1">
+                  <span className="shrink-0 text-neutral-500">모델</span>
+                  <select
+                    data-testid="ai-chat-model"
+                    aria-label="이 대화의 모델"
+                    value={model ?? ''}
+                    disabled={streaming || !ready}
+                    onChange={(e) => {
+                      setModel(e.target.value === '' ? null : e.target.value)
+                      setNotice(null)
+                    }}
+                    className="min-w-0 max-w-[14rem] rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+                  >
+                    <option value="">자동 ({models.defaultModel})</option>
+                    {allowedModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
             {picking && (
               <PagePicker
@@ -463,7 +514,7 @@ export function ChatView({
             )}
             {failure !== null && (
               <p data-testid="ai-chat-error" role="alert" className="text-sm text-red-600 dark:text-red-400">
-                {askFailureMessage(failure)}
+                {chatFailureMessage(failure)}
               </p>
             )}
             {notice !== null && (

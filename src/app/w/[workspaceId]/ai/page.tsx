@@ -4,7 +4,7 @@
  * 정본: 00-canonical-data-model.md §3.10 [보강 AI-1] ⑪ — **따로인 화면**이다(페이지 화면의 첫 JS 에 들지 않는다). 사이드바의 "AI" ·
  * Ctrl/Cmd+Shift+J · 페이지 "···" 의 "AI 와 이 페이지 대화"(`?page=<id>` — 범위를 그 페이지로) 가 여기로 온다. `?s=<id>` 는 연 대화.
  *
- * 첫 목록 · 연 대화 · 범위 페이지의 제목 · 내 AI 지시의 상태는 서버가 읽어서 준다(모두 그 사람의 것 · 볼 수 있는 것만). 게스트는 AI 를
+ * 첫 목록 · 연 대화 · 범위 페이지의 제목 · 내 AI 지시의 상태 · 모델 고르개(AI-7)는 서버가 읽어서 준다(모두 그 사람의 것 · 볼 수 있는 것만). 게스트는 AI 를
  * 쓰지 않으므로 까닭만 보인다. 꺼짐 · 공급자 없음이면 지난 대화는 읽을 수 있고 입력은 닫힌다(소유자에게는 설정 → AI 링크).
  *
  * 진입 게이트가 레이아웃과 여기 양쪽에서 돈다(레이아웃 머리말의 규칙).
@@ -16,6 +16,7 @@ import { AI_ASK_FORBIDDEN } from '@/lib/ai/ask-client'
 import { aiInstructionsViewFor, chatScopePageOf, getChatSession, listChatSessions } from '@/lib/ai/chat-store'
 import { WORKSPACE_SCOPE, type ChatScope } from '@/lib/ai/chat-shared'
 import { readAiConfig } from '@/lib/ai/config'
+import { aiModelChoicesFor } from '@/lib/ai/model-setting'
 import { aiEntryFor } from '@/lib/ai/usage'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { SCREEN_TITLES } from '@/lib/nav/screen-title'
@@ -29,7 +30,8 @@ export default async function AiChatPage({ params, searchParams }: PageProps<'/w
   const { workspaceId } = await params
   const query = await searchParams
   const ctx = await requirePageSession(workspaceId)
-  const entry = await aiEntryFor(ctx, readAiConfig())
+  const config = readAiConfig()
+  const entry = await aiEntryFor(ctx, config)
 
   if (entry.state === 'forbidden') {
     return (
@@ -42,11 +44,13 @@ export default async function AiChatPage({ params, searchParams }: PageProps<'/w
 
   const sessionParam = one(query.s)
   const pageParam = one(query.page)
-  const [sessions, opened, scopePage, instructions] = await Promise.all([
+  const [sessions, opened, scopePage, instructions, models] = await Promise.all([
     listChatSessions(ctx),
     sessionParam === null ? null : getChatSession(ctx, sessionParam),
     pageParam === null ? null : chatScopePageOf(ctx, pageParam),
     aiInstructionsViewFor(ctx),
+    // 모델 고르개(AI-7) — 자동(워크스페이스 기본) + 쓸 수 있는 모델. 판정은 한 턴의 게이트가 다시 한다
+    aiModelChoicesFor(ctx, config),
   ])
 
   // 범위 — `?page=` 가 이긴다 · 아니면 연 대화의 범위(그 페이지를 지금 볼 수 있을 때) · 아니면 워크스페이스 전체
@@ -71,6 +75,7 @@ export default async function AiChatPage({ params, searchParams }: PageProps<'/w
       initialScope={scope}
       initialScopeTitle={scopeTitle}
       instructions={{ title: instructions?.title ?? null, state: instructions?.state ?? 'none' }}
+      models={models}
     />
   )
 }

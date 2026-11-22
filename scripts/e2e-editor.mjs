@@ -39015,6 +39015,177 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('AI 모델 · 사용량 (AI-7 · F-10-26 · F-10-25)')) { try {
+      // 정본 §3.10 [보강 AI-1] ⑫ · 10 F-10-26 · F-10-25. 이 절이 만든 Free 워크스페이스(체험 20)에서 진행한다. 공급자는 러너가 띄운 가짜 —
+      // `GET /models` 는 채팅 모델 둘(fake-model · fake-model-large) + 걸러야 할 것들(받아쓰기 · 말하기 · 안전 · 임베딩 · 내린 모델). 소유자가
+      // 설정 → AI → 모델에서 둘째 모델을 더하고 기본으로 정한다(감사 한 줄) → 멤버가 /ai 에서 "자동"(= 기본)으로 한 번 · fake-model 을 골라 한 번
+      // 묻는다(공급자가 그 모델을 받는다 · 답 밑에 모델 · 대화에 남는다) → 허용 밖의 모델은 API 로 400(원장 그대로) → 소유자의 사용량(꾸민 날의
+      // 30일 막대 · 사람마다 · 기록의 모델 · 볼 수 없는 페이지) → 멤버의 사용량은 자기 것만. 끝에 브라우저 세션을 되돌린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { FAKE_AI_MODEL_LARGE } = await import(new URL('../src/lib/testing/fake-ai-provider.ts', import.meta.url).href)
+      const { createPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 모델의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 모델 ${stamp}` }) })).json()).workspaceId
+      const mate = await joinAs(ws, await createUser(`AI 모델의 멤버 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const resolvedMate = await resolveSessionContext(mate.token, ws)
+      if (!resolvedMate.ok) throw new Error(`멤버의 세션을 풀지 못했다: ${resolvedMate.reason}`)
+      // 멤버만의 개인 페이지 — 그 페이지로 쓴 기록은 소유자에게 "볼 수 없는 페이지"
+      const hiddenPage = (await createPage(resolvedMate.context, { privateTop: true, title: titleFromPlainText(`멤버의 메모 ${stamp}`) })).id
+      const SETTINGS = `${BASE}/w/${ws}/settings?s=workspace.ai`
+      const AI_URL = `${BASE}/w/${ws}/ai`
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const chooseValue = (sel, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(sel)})
+        if (!s) return false
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const chatReady = () => waitFor(`document.querySelector('[data-testid="ai-chat"]')?.dataset.hydrated === 'true'`, 15000)
+      const settled = (n) => waitFor(`document.querySelectorAll('[data-testid="ai-chat-message"][data-role="assistant"]:not([data-status="streaming"])').length === ${n}`, 15000)
+      const ask = async (text) => {
+        await clickSelector('[data-testid="ai-chat-input"]')
+        await typeText(text)
+        await waitFor(`document.querySelector('[data-testid="ai-chat-input"]')?.value === ${JSON.stringify(text)}`, 3000)
+        await clickSelector('[data-testid="ai-chat-send"]')
+      }
+      const usedLabels = () => evaluate(`[...document.querySelectorAll('[data-testid="ai-chat-model-used"]')].map((e) => e.textContent)`)
+      const usageReady = () => waitFor(`document.querySelector('[data-testid="ai-usage-analytics"]')?.dataset.ready === 'true'`, 15000)
+      const logRows = () => evaluate(`[...document.querySelectorAll('[data-testid="ai-usage-log-row"]')].map((r) => ({
+        user: r.dataset.userId, feature: r.dataset.feature, model: r.dataset.model, status: r.dataset.status,
+        hidden: !!r.querySelector('[data-testid="ai-usage-log-hidden"]'), hiddenText: r.querySelector('[data-testid="ai-usage-log-hidden"]')?.textContent ?? null,
+      }))`)
+      const usageCount = async () => (await dbQuery(`SELECT count(*)::int AS n FROM ai_usage WHERE workspace_id = $1`, [ws]))[0].n
+
+      try {
+        const on = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asBoss, body: JSON.stringify({ enabled: true }) })
+        check('전제 — 소유자가 AI 를 켠다', on.status === 200, String(on.status))
+
+        // ① 소유자 — 공급자의 목록(채팅 모델만)에서 둘째 모델을 더하고 기본으로
+        await browseAs(boss.token)
+        await send('Page.navigate', { url: SETTINGS })
+        const modelsShown = await waitFor(`document.querySelector('[data-testid="ai-models"]')?.dataset.hydrated === 'true'`, 20000)
+        const options = await evaluate(`[...document.querySelectorAll('[data-testid="ai-model-option"]')].map((i) => i.dataset.model)`)
+        check('★ 설정 → AI → 모델 — 공급자의 목록에서 채팅 모델만(받아쓰기 · 말하기 · 안전 · 임베딩 · 내린 모델은 없다) · 자동은 늘 켜져 있다',
+          modelsShown && JSON.stringify(options) === JSON.stringify(['fake-model', FAKE_AI_MODEL_LARGE])
+            && (await evaluate(`document.querySelector('[data-testid="ai-model-option"][data-model="fake-model"]')?.disabled`)) === true,
+          JSON.stringify({ modelsShown, options }))
+        await clickSelector(`[data-testid="ai-model-option"][data-model="${FAKE_AI_MODEL_LARGE}"]`)
+        await waitFor(`[...document.querySelectorAll('[data-testid="ai-model-default"] option')].some((o) => o.value === ${JSON.stringify(FAKE_AI_MODEL_LARGE)})`, 5000)
+        await chooseValue('[data-testid="ai-model-default"]', FAKE_AI_MODEL_LARGE)
+        await clickSelector('[data-testid="ai-models-save"]')
+        const savedUi = await waitFor(`!!document.querySelector('[data-testid="ai-models-saved"]')`, 8000)
+        const setting = (await dbQuery(`SELECT allowed_models, default_model FROM workspace_ai_setting WHERE workspace_id = $1`, [ws]))[0]
+        const audit = await dbQuery(`SELECT value_after FROM audit_event WHERE workspace_id = $1 AND setting_key = 'ai.models'`, [ws])
+        check('★ 둘째 모델을 더하고 기본으로 저장 — 표의 허용 목록 · 기본 · 감사 한 줄(ai.models)',
+          savedUi && JSON.stringify(setting?.allowed_models) === JSON.stringify([FAKE_AI_MODEL_LARGE]) && setting?.default_model === FAKE_AI_MODEL_LARGE
+            && audit.length === 1 && audit[0].value_after?.default === FAKE_AI_MODEL_LARGE,
+          JSON.stringify({ savedUi, setting, audit }))
+
+        // ② 멤버 — /ai 의 고르개(자동 = 기본 + 쓸 수 있는 모델) · 자동으로 한 번 · fake-model 을 골라 한 번
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: AI_URL })
+        await chatReady()
+        const picker = await evaluate(`[...document.querySelectorAll('[data-testid="ai-chat-model"] option')].map((o) => [o.value, o.textContent])`)
+        check('★ /ai 의 모델 고르개 — "자동(기본 모델)" + 쓸 수 있는 모델 둘',
+          JSON.stringify(picker) === JSON.stringify([['', `자동 (${FAKE_AI_MODEL_LARGE})`], ['fake-model', 'fake-model'], [FAKE_AI_MODEL_LARGE, FAKE_AI_MODEL_LARGE]]),
+          JSON.stringify(picker))
+        await ask(`자동으로 묻는다 ${stamp}`)
+        await settled(1)
+        const autoModel = fakeAi.requests.at(-1)?.body.model
+        check('★ 자동 — 공급자가 워크스페이스 기본(둘째 모델)을 받고 답 밑에 그 모델',
+          autoModel === FAKE_AI_MODEL_LARGE && JSON.stringify(await usedLabels()) === JSON.stringify([FAKE_AI_MODEL_LARGE]),
+          JSON.stringify({ autoModel, labels: await usedLabels() }))
+        await chooseValue('[data-testid="ai-chat-model"]', 'fake-model')
+        await ask(`[echo] 고른 모델로 ${stamp}`)
+        await settled(2)
+        const picked = fakeAi.requests.at(-1)?.body.model
+        const sessionId = await evaluate(`document.querySelector('[data-testid="ai-chat"]')?.dataset.sessionId`)
+        const stored = (await dbQuery(`SELECT model FROM ai_chat_session WHERE id = $1`, [sessionId]))[0]?.model
+        const ledger = (await dbQuery(`SELECT model FROM ai_usage WHERE workspace_id = $1 AND user_id = $2 AND feature = 'chat' ORDER BY created_at`, [ws, mate.userId])).map((r) => r.model)
+        const echoed = String((fakeAi.requests.at(-1)?.body.messages ?? []).map((m) => m.content).join('\n'))
+        check('★ 모델을 고르면 — 공급자 · 원장 · 대화가 그 모델 · 앞선 턴이 그대로 실린다(문맥 유지) · 답 밑에 모델',
+          picked === 'fake-model' && stored === 'fake-model' && JSON.stringify(ledger) === JSON.stringify([FAKE_AI_MODEL_LARGE, 'fake-model'])
+            && echoed.includes(`자동으로 묻는다 ${stamp}`) && JSON.stringify(await usedLabels()) === JSON.stringify([FAKE_AI_MODEL_LARGE, 'fake-model']),
+          JSON.stringify({ picked, stored, ledger, labels: await usedLabels() }))
+        await send('Page.navigate', { url: `${AI_URL}?s=${sessionId}` })
+        await chatReady()
+        check('다시 열면 고르개가 그 대화의 모델 · 답마다 그 답의 모델',
+          (await evaluate(`document.querySelector('[data-testid="ai-chat-model"]')?.value`)) === 'fake-model'
+            && JSON.stringify(await usedLabels()) === JSON.stringify([FAKE_AI_MODEL_LARGE, 'fake-model']),
+          JSON.stringify(await usedLabels()))
+
+        // ③ 허용 밖의 모델 — API 로 400 · 원장 그대로
+        const beforeCount = await usageCount()
+        const refused = await fetch(`${BASE}/api/workspaces/${ws}/ai/chat`, { method: 'POST', headers: asMate, body: JSON.stringify({ message: 'x', model: 'whisper-large-v3' }) })
+        const refusedBody = await refused.json().catch(() => null)
+        check('★ 허용 밖의 모델 — 400 model_not_allowed · 예약 · 셈이 없다',
+          refused.status === 400 && refusedBody?.error === 'model_not_allowed' && (await usageCount()) === beforeCount,
+          JSON.stringify({ status: refused.status, refusedBody }))
+
+        // ④ 소유자의 사용량 — 꾸민 날(이틀 전 · 소유자 번역 셋) · 오늘 · 사람마다 · 기록(모델 · 볼 수 없는 페이지)
+        const day = (offset) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10)
+        const seeded = day(2)
+        await dbQuery(
+          `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, model, input_tokens, output_tokens, created_at, finished_at)
+           SELECT gen_random_uuid(), $1, $2, 'translate', 'completed', 'trial', 'fake-model', 10, 5, $3::timestamptz + g * interval '1 second', $3::timestamptz + g * interval '1 second'
+             FROM generate_series(1, 3) g`,
+          [ws, boss.userId, `${seeded}T12:00:00Z`],
+        )
+        await dbQuery(
+          `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, model, input_tokens, output_tokens, page_id, created_at, finished_at)
+           VALUES (gen_random_uuid(), $1, $2, 'ask', 'completed', 'trial', 'fake-model', 4, 2, $3, now(), now())`,
+          [ws, mate.userId, hiddenPage],
+        )
+        await browseAs(boss.token)
+        await send('Page.navigate', { url: SETTINGS })
+        const ready = await usageReady()
+        const seg = await evaluate(`document.querySelector('[data-testid="ai-usage-chart-segment"][data-day="${seeded}"][data-feature="translate"]')?.dataset.value ?? null`)
+        const todayTotal = await evaluate(`document.querySelector('[data-testid="ai-usage-chart-day"][data-day="${day(0)}"]')?.dataset.total ?? null`)
+        const days = await evaluate(`document.querySelectorAll('[data-testid="ai-usage-chart-day"]').length`)
+        check('★ 지난 30일 막대 — 30날 · 꾸민 날의 번역 3 · 오늘 3(멤버의 채팅 둘 + 묻기 하나 · 기능마다 쌓는다)',
+          ready && (await textOf('[data-testid="ai-usage-analytics"]')) !== null && days === 30 && seg === '3' && todayTotal === '3'
+            && (await evaluate(`document.querySelector('[data-testid="ai-usage-analytics"]').dataset.scope`)) === 'workspace',
+          JSON.stringify({ ready, days, seg, todayTotal }))
+        const memberRow = await evaluate(`document.querySelector('[data-testid="ai-usage-member"][data-user-id="${mate.userId}"]')?.dataset.responses ?? null`)
+        const largeRow = await evaluate(`document.querySelector('[data-testid="ai-usage-models-row"][data-key="${FAKE_AI_MODEL_LARGE}"]')?.dataset.responses ?? null`)
+        check('★ 사람마다 · 모델마다(이번 달) — 멤버의 응답 3 · 둘째 모델 1',
+          memberRow === '3' && largeRow === '1', JSON.stringify({ memberRow, largeRow }))
+        const rows = await logRows()
+        check('★ AI 활동 기록 — 멤버의 채팅 두 줄이 그 모델로 · 멤버의 개인 페이지로 쓴 줄은 "볼 수 없는 페이지"',
+          rows.some((r) => r.user === mate.userId && r.feature === 'chat' && r.model === FAKE_AI_MODEL_LARGE && r.status === 'completed')
+            && rows.some((r) => r.user === mate.userId && r.feature === 'chat' && r.model === 'fake-model')
+            && rows.some((r) => r.user === mate.userId && r.feature === 'ask' && r.hidden && r.hiddenText === '볼 수 없는 페이지')
+            && rows.length === 6,
+          JSON.stringify(rows))
+        await chooseValue('[data-testid="ai-usage-log-feature"]', 'translate')
+        const filtered = await waitFor(`(() => { const r = [...document.querySelectorAll('[data-testid="ai-usage-log-row"]')]; return r.length === 3 && r.every((x) => x.dataset.feature === 'translate') })()`, 8000)
+        check('기록을 기능으로 거른다 — 번역 셋', filtered, JSON.stringify(await logRows()))
+
+        // ⑤ 멤버의 사용량 — 자기 것만(꾸민 소유자의 날은 없다 · 사람 표는 자기 하나 · 기록은 자기 줄만) · 모델 설정은 보기만
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: SETTINGS })
+        const mineReady = await usageReady()
+        const mine = await logRows()
+        const memberIds = await evaluate(`[...document.querySelectorAll('[data-testid="ai-usage-member"]')].map((r) => r.dataset.userId)`)
+        check('★ 멤버의 설정 → 사용량은 자기 것만 — 범위 self · 사람 표 · 기록 · 막대에 소유자의 것이 없다 · 사람 거르기 없음 · 모델은 보기만',
+          mineReady && (await evaluate(`document.querySelector('[data-testid="ai-usage-analytics"]').dataset.scope`)) === 'self'
+            && JSON.stringify(memberIds) === JSON.stringify([mate.userId]) && mine.length === 3 && mine.every((r) => r.user === mate.userId)
+            && (await evaluate(`!document.querySelector('[data-testid="ai-usage-chart-segment"][data-day="${seeded}"]')`)) === true
+            && (await evaluate(`!document.querySelector('[data-testid="ai-usage-log-member"]')`)) === true
+            && (await evaluate(`document.querySelector('[data-testid="ai-models"]')?.dataset.canManage`)) === 'false',
+          JSON.stringify({ mineReady, memberIds, mine }))
+        const peek = await fetch(`${BASE}/api/workspaces/${ws}/ai/usage/log?member=${boss.userId}`, { headers: asMate })
+        check('멤버가 남의 기록을 거르면 403', peek.status === 403, String(peek.status))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

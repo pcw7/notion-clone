@@ -6182,6 +6182,53 @@ try {
     await rejectsBy('★ 같은 사람의 설정 두 줄(지시는 한 번에 하나)', insertSetting, [wsId, userId], 'ai_user_setting_pkey')
     await rejectsBy('★ 그 워크스페이스의 사람이 아닌 사람의 설정', insertSetting, [aiStranger, userId], 'fk_ai_user_setting_member')
     await rejectsBy('없는 페이지를 가리킨다', `UPDATE ai_user_setting SET instructions_page_id = $3 WHERE workspace_id = $1 AND user_id = $2`, [wsId, userId, randomUUID()], 'ai_user_setting_instructions_page_id_fkey')
+
+    // AI 모델 고르기 · 사용량 분석(0149 · AI-7 · §3.10 [보강 AI-1] ⑫) — 더한 모델(≤ 20 · 겹침 · 빈 · 공백 · NULL · 2차원) · 기본은 더한 것
+    // 안 · 대화의 모델(1~200 · 공백) · 활동 기록의 인덱스 둘
+    const MODEL_CONSTRAINTS = {
+      workspace_ai_setting: ['ck_workspace_ai_setting_allowed', 'ck_workspace_ai_setting_default'],
+      ai_chat_session: ['ck_ai_chat_session_model'],
+    }
+    for (const [table, names] of Object.entries(MODEL_CONSTRAINTS)) {
+      for (const name of names) {
+        const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass`, [name, table])).rowCount
+        if (has === 1) ok(`${name} 이 있다`)
+        else fail(`${name} 이 ${table} 에 없다`)
+      }
+    }
+    const modelDefaults = (await client.query(`SELECT allowed_models, default_model FROM workspace_ai_setting WHERE workspace_id = $1`, [wsId])).rows[0]
+    if (Array.isArray(modelDefaults?.allowed_models) && modelDefaults.allowed_models.length === 0 && modelDefaults.default_model === null) {
+      ok('★ workspace_ai_setting 기본 — 더한 모델 없음 · 기본 자동(NULL)')
+    } else fail(`workspace_ai_setting 의 모델 기본값이 틀렸다 — ${JSON.stringify(modelDefaults)}`)
+    const setModels = `UPDATE workspace_ai_setting SET allowed_models = $2::text[], default_model = $3 WHERE workspace_id = $1`
+    await client.query(setModels, [wsId, ['fake-model-large', 'm'.repeat(200)], 'fake-model-large'])
+    await client.query(setModels, [wsId, Array.from({ length: 20 }, (_, i) => `m${i}`), 'm19'])
+    await client.query(setModels, [wsId, [], null])
+    ok('workspace_ai_setting 모델 정상 (더한 둘 · 200자 · 20개 · 기본이 더한 것 · 비움)')
+    await rejectsBy('★ 더한 모델 21개', setModels, [wsId, Array.from({ length: 21 }, (_, i) => `m${i}`), null], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('★ 같은 모델을 두 번', setModels, [wsId, ['a', 'a'], null], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('빈 모델 id', setModels, [wsId, [''], null], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('모델 id 의 앞 공백', setModels, [wsId, [' a'], null], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('모델 id 201자', setModels, [wsId, ['m'.repeat(201)], null], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('★ NULL 원소', setModels, [wsId, ['a', null], null], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('2차원 배열', `UPDATE workspace_ai_setting SET allowed_models = '{{a,b},{c,d}}'::text[] WHERE workspace_id = $1`, [wsId], 'ck_workspace_ai_setting_allowed')
+    await rejectsBy('★ 기본이 더한 모델 밖', setModels, [wsId, ['a'], 'b'], 'ck_workspace_ai_setting_default')
+    await rejectsBy('더한 것 없이 기본만', setModels, [wsId, [], 'a'], 'ck_workspace_ai_setting_default')
+
+    const insertSessionModel = `INSERT INTO ai_chat_session (id, workspace_id, user_id, title, model) VALUES ($1, $2, $3, '모델', $4)`
+    await client.query(insertSessionModel, [randomUUID(), wsId, userId, 'fake-model-large'])
+    await client.query(insertSessionModel, [randomUUID(), wsId, userId, null])
+    await client.query(insertSessionModel, [randomUUID(), wsId, userId, 'm'.repeat(200)])
+    ok('ai_chat_session.model 정상 (모델 · 자동 NULL · 200자)')
+    await rejectsBy('★ 대화의 모델이 빈 글', insertSessionModel, [randomUUID(), wsId, userId, ''], 'ck_ai_chat_session_model')
+    await rejectsBy('대화의 모델 앞뒤 공백', insertSessionModel, [randomUUID(), wsId, userId, ' m '], 'ck_ai_chat_session_model')
+    await rejectsBy('대화의 모델 201자', insertSessionModel, [randomUUID(), wsId, userId, 'm'.repeat(201)], 'ck_ai_chat_session_model')
+
+    for (const [index, cols] of [['ix_ai_usage_recent', 'workspace_id, created_at DESC, id DESC'], ['ix_ai_usage_user_recent', 'workspace_id, user_id, created_at DESC, id DESC']]) {
+      const def = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = $1`, [index])).rows[0]?.indexdef ?? ''
+      if (def.includes(`(${cols})`)) ok(`${index} — 활동 기록(최근 것부터 · 키셋)`)
+      else fail(`${index} 가 (${cols}) 가 아니다 — ${def || '없다'}`)
+    }
   }
 
   await client.query('ROLLBACK')

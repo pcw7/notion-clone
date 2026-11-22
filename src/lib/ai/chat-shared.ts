@@ -92,6 +92,8 @@ export type ChatSessionSummary = {
   readonly scope: ChatScope
   /** ISO. */
   readonly updatedAt: string
+  /** 이 대화에서 고른 모델(AI-7) — null 은 자동(워크스페이스 기본). */
+  readonly model: string | null
 }
 
 export type ChatMessageStatus = 'completed' | 'stopped' | 'failed'
@@ -106,6 +108,8 @@ export type ChatMessageView = {
   /** 사람의 말은 null. */
   readonly status: ChatMessageStatus | null
   readonly sources: readonly ChatSourceView[]
+  /** AI 의 답을 쓴 모델(원장의 것 · AI-7) — 사람의 말 · 아직 모르면 없다. */
+  readonly model?: string | null
 }
 
 export type ChatSessionView = ChatSessionSummary & {

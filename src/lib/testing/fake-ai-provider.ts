@@ -24,6 +24,9 @@
  *   그 밖      `가짜 답: <질문>` — 세 조각 + (요청했으면) 사용량 조각 + `[DONE]`
  *
  * 키가 `Bearer ${FAKE_AI_KEY}` 가 아니면 401. 받은 요청은 `requests` 에 쌓인다(키 · 본문 · 도중에 끊겼는가).
+ *
+ * `GET /models`(AI-7) — `FAKE_AI_MODEL_LIST`(채팅 모델 둘 + 걸러야 할 것들 — 받아쓰기 · 말하기 · 안전 분류 · 임베딩 · 내린 모델). 부른 수는
+ * `modelListCalls`.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -31,6 +34,18 @@ import type { AddressInfo } from 'node:net'
 
 export const FAKE_AI_KEY = 'fake-ai-key-for-tests'
 export const FAKE_AI_MODEL = 'fake-model'
+/** 목록의 둘째 채팅 모델(AI-7 — 소유자가 더하는 것). */
+export const FAKE_AI_MODEL_LARGE = 'fake-model-large'
+/** `GET /models` 의 `data` — 채팅 모델은 `FAKE_AI_MODEL` · `FAKE_AI_MODEL_LARGE` 뿐이다. */
+export const FAKE_AI_MODEL_LIST = [
+  { id: FAKE_AI_MODEL, object: 'model', owned_by: 'fake', active: true },
+  { id: FAKE_AI_MODEL_LARGE, object: 'model', owned_by: 'fake', active: true },
+  { id: 'whisper-large-v3', object: 'model', owned_by: 'fake', active: true },
+  { id: 'playai-tts', object: 'model', owned_by: 'fake', active: true },
+  { id: 'meta-llama/llama-guard-4-12b', object: 'model', owned_by: 'fake', active: true },
+  { id: 'text-embedding-3-small', object: 'model', owned_by: 'fake' },
+  { id: 'fake-model-retired', object: 'model', owned_by: 'fake', active: false },
+] as const
 /** 실패 응답의 본문에 싣는 글 — 이것이 사람에게 닿으면 공급자의 말이 샌 것이다. */
 export const FAKE_AI_SECRET_BODY = 'provider-secret-detail sk-live-should-not-leak'
 
@@ -45,6 +60,8 @@ export type FakeAiProvider = {
   /** `AI_BASE_URL` 에 넣을 주소 — `http://127.0.0.1:<port>/v1`. */
   readonly baseUrl: string
   readonly requests: FakeAiRequest[]
+  /** `GET /models` 를 받은 수(AI-7 — 캐시를 볼 때). */
+  readonly modelListCalls: () => number
   close(): Promise<void>
 }
 
@@ -261,7 +278,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, record: FakeAiR
 /** 띄운다 — 포트를 주지 않으면 빈 포트. */
 export async function startFakeAiProvider(options: { readonly port?: number } = {}): Promise<FakeAiProvider> {
   const requests: FakeAiRequest[] = []
+  let modelLists = 0
   const server = createServer((req, res) => {
+    if (req.method === 'GET' && (req.url ?? '').endsWith('/models')) {
+      modelLists += 1
+      if (req.headers.authorization !== `Bearer ${FAKE_AI_KEY}`) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: FAKE_AI_SECRET_BODY } }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ object: 'list', data: FAKE_AI_MODEL_LIST }))
+      return
+    }
     if (req.method !== 'POST' || !(req.url ?? '').endsWith('/chat/completions')) {
       res.writeHead(404).end()
       return
@@ -283,6 +310,7 @@ export async function startFakeAiProvider(options: { readonly port?: number } = 
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
+    modelListCalls: () => modelLists,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections()

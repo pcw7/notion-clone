@@ -120,7 +120,8 @@ export async function aiCompleteResponse(
 
   let events: AsyncGenerator<ChatStreamEvent, void, undefined>
   try {
-    events = await openChatStream(config, messages, stop.signal, options.fetchImpl)
+    // 모델은 게이트가 고른 것(워크스페이스 기본 · AI-7)
+    events = await openChatStream({ ...config, model: reserved.reservation.model }, messages, stop.signal, options.fetchImpl)
   } catch (e) {
     const failure = failureOf(e)
     await finish(failure.reason === 'aborted' ? 'stopped' : 'failed', null)

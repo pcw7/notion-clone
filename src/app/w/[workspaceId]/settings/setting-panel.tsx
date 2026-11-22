@@ -9,6 +9,7 @@
 import { readAiConfig } from '@/lib/ai/config'
 import { aiSettingsSummary } from '@/lib/ai/usage'
 import { aiInstructionsViewFor } from '@/lib/ai/chat-store'
+import { aiModelSettingsFor } from '@/lib/ai/model-setting'
 import { canCreateApiToken, listApiTokens } from '@/lib/api/api-token'
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
@@ -37,6 +38,7 @@ import { AccountDeletePanel } from './account-delete-panel'
 import { AccessibilityPanel } from './accessibility-panel'
 import { AiPanel } from './ai-panel'
 import { AiInstructionsPanel } from './ai-instructions-panel'
+import { AiUsagePanel } from './ai-lazy'
 import { ApiTokenPanel } from './api-token-panel'
 import { AuditPanel } from './audit-panel'
 import { EmojiPanel } from './emoji-panel'
@@ -105,12 +107,22 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
     case 'ai': {
       // AI(AI-1) — 스위치 · 쓴 양 · 공급자의 host. 게스트면 null(패널 목록이 이미 걸렀다). 스위치는 `PUT /ai` 가 다시 판정한다.
       // 내 AI 지시(AI-6 · F-10-22) — 그 사람 자신의 것(AI 를 쓸 수 있는 사람만 · 로그인 세션). 고르기 · 만들기 · 해제는 `…/ai/instructions` 가 판정한다.
-      const [summary, instructions] = await Promise.all([aiSettingsSummary(ctx, { config: readAiConfig() }), aiInstructionsViewFor(ctx)])
+      // 모델(AI-7 · F-10-26) — 더한 모델 · 기본(소유자에게는 공급자의 목록 — 1시간 캐시). 사용량 분석은 패널이 열 때 읽는다.
+      const config = readAiConfig()
+      const [summary, instructions, models] = await Promise.all([
+        aiSettingsSummary(ctx, { config }),
+        aiInstructionsViewFor(ctx),
+        aiModelSettingsFor(ctx, { config }),
+      ])
       if (summary === null) return null
       return (
         <>
-          <AiPanel workspaceId={ctx.workspaceId} initial={summary} />
+          <AiPanel workspaceId={ctx.workspaceId} initial={summary} models={models} />
           {instructions !== null && <AiInstructionsPanel workspaceId={ctx.workspaceId} initial={instructions} />}
+          {/* 사용량(AI-7 · F-10-25) — 열고 나서 읽어 차므로 맨 아래(위의 절을 밀지 않게) */}
+          <div className="mt-6">
+            <AiUsagePanel workspaceId={ctx.workspaceId} />
+          </div>
         </>
       )
     }

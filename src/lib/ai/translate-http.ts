@@ -268,10 +268,12 @@ export async function aiTranslateResponse(ctx: SessionContext, raw: unknown, sig
       /** 공급자에 한 번 — 답(받은 데까지) 또는 실패. */
       const callOnce = async (
         chunk: readonly TranslateUnit[],
+        model: string,
       ): Promise<{ readonly ok: true; readonly text: string; readonly usage: TokenUsage | null } | { readonly ok: false; readonly failure: AiProviderError; readonly usage: TokenUsage | null }> => {
         let usage: TokenUsage | null = null
         try {
-          const events = await openChatStream(config, translateMessages(language, chunk), stop.signal, options.fetchImpl)
+          // 모델은 청크의 예약이 고른 것(워크스페이스 기본 · AI-7)
+          const events = await openChatStream({ ...config, model }, translateMessages(language, chunk), stop.signal, options.fetchImpl)
           let text = ''
           for await (const event of events) {
             if (event.type === 'end') {
@@ -300,7 +302,7 @@ export async function aiTranslateResponse(ctx: SessionContext, raw: unknown, sig
             return { ok: false, stop: { reason: 'unavailable' } }
           }
           const id = reserved.reservation.id
-          const answer = await callOnce(chunk)
+          const answer = await callOnce(chunk, reserved.reservation.model)
           if (answer.ok) {
             await finish(id, 'completed', answer.usage)
             return { ok: true, runs: readTranslation(answer.text, chunk) }
