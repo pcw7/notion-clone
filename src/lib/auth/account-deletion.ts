@@ -127,6 +127,9 @@ export async function deleteAccount(userId: string, input: { readonly confirmEma
     await tx.query(`DELETE FROM mfa_backup_code WHERE user_id = $1`, [userId])
     await tx.query(`DELETE FROM mfa_method WHERE user_id = $1`, [userId])
     await tx.query(`DELETE FROM user_email WHERE user_id = $1`, [userId])
+    // AI 채팅 · 내 AI 지시(AI-6 · 정본 §3.10 [보강 AI-1] ⑪) — 그 사람만 읽는 글이다. 메시지는 대화와 함께(CASCADE) · 원장(`ai_usage`)은 남는다
+    await tx.query(`DELETE FROM ai_chat_session WHERE user_id = $1`, [userId])
+    await tx.query(`DELETE FROM ai_user_setting WHERE user_id = $1`, [userId])
     return { ok: true, workspaces }
   })
 }

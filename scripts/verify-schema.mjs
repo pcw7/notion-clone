@@ -89,6 +89,8 @@ const EXPECTED_TABLES = [
   'api_token',
   // AI 1차 기반 AI-1 (0146)
   'workspace_ai_setting', 'ai_usage', 'ai_grant', 'ai_daily_usage',
+  // AI 채팅 · 내 AI 지시 AI-6 (0148)
+  'ai_chat_session', 'ai_chat_message', 'ai_user_setting',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -6087,6 +6089,99 @@ try {
     ok('★ doc_update.origin = ai 정상 삽입(AI 가 서버에서 쓴 본문 · 행위자는 부른 사람)')
     await rejectsBy('★ 모르는 본문 쓰기 출처', insertUpdate, [randomUUID(), userId, 'robot'], 'doc_update_origin_check')
     await rejectsBy('출처 대문자 AI', insertUpdate, [randomUUID(), userId, 'AI'], 'doc_update_origin_check')
+
+    // AI 채팅 · 내 AI 지시(0148 · AI-6 · §3.10 [보강 AI-1] ⑪) — 그 사람의 대화(제목 · 범위 · 멤버십) · 메시지(역할 · 모양 · 상태 · 출처 ·
+    // 토큰 · 원장의 응답 하나에 하나 · 대화를 지우면 함께) · 사람마다 지시 페이지 하나
+    const CHAT_CONSTRAINTS = {
+      ai_chat_session: ['ck_ai_chat_session_title', 'ck_ai_chat_session_scope', 'ck_ai_chat_session_updated', 'fk_ai_chat_session_member'],
+      ai_chat_message: [
+        'ck_ai_chat_message_role', 'ck_ai_chat_message_content', 'ck_ai_chat_message_sources', 'ck_ai_chat_message_status',
+        'ck_ai_chat_message_input_tokens', 'ck_ai_chat_message_output_tokens', 'ck_ai_chat_message_shape', 'uq_ai_chat_message_usage',
+      ],
+      ai_user_setting: ['fk_ai_user_setting_member'],
+    }
+    for (const [table, names] of Object.entries(CHAT_CONSTRAINTS)) {
+      for (const name of names) {
+        const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass`, [name, table])).rowCount
+        if (has === 1) ok(`${name} 이 있다`)
+        else fail(`${name} 이 ${table} 에 없다`)
+      }
+    }
+    const insertSession = `INSERT INTO ai_chat_session (id, workspace_id, user_id, title, scope, created_at, updated_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`
+    const sessionRow = (over = {}) => {
+      const s = { id: randomUUID(), ws: wsId, user: userId, title: '알파 마감은?', scope: { kind: 'workspace' }, created: '2031-01-01T00:00:00Z', updated: '2031-01-01T00:00:00Z', ...over }
+      return [s.id, s.ws, s.user, s.title, JSON.stringify(s.scope), s.created, s.updated]
+    }
+    const chatSession = randomUUID()
+    await client.query(insertSession, sessionRow({ id: chatSession }))
+    await client.query(insertSession, sessionRow({ title: '가'.repeat(60), scope: { kind: 'page', pageId: randomUUID() }, updated: '2031-01-02T00:00:00Z' }))
+    ok('ai_chat_session 정상 삽입 (워크스페이스 범위 · 페이지 범위 · 제목 60자)')
+    await rejectsBy('★ 대화 제목이 비었다', insertSession, sessionRow({ title: '' }), 'ck_ai_chat_session_title')
+    await rejectsBy('★ 대화 제목 61자', insertSession, sessionRow({ title: '가'.repeat(61) }), 'ck_ai_chat_session_title')
+    await rejectsBy('대화 제목의 앞뒤 공백', insertSession, sessionRow({ title: ' 알파 ' }), 'ck_ai_chat_session_title')
+    await rejectsBy('★ 모르는 범위', insertSession, sessionRow({ scope: { kind: 'database' } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('★ 페이지 범위에 페이지가 없다(NULL 이면 통과하는 구멍)', insertSession, sessionRow({ scope: { kind: 'page' } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('★ 범위의 종류가 null(NULL 이면 통과하는 구멍)', insertSession, sessionRow({ scope: { kind: null } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('범위가 빈 객체', insertSession, sessionRow({ scope: {} }), 'ck_ai_chat_session_scope')
+    await rejectsBy('페이지 id 가 숫자', insertSession, sessionRow({ scope: { kind: 'page', pageId: 5 } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('페이지 범위의 id 가 uuid 가 아니다', insertSession, sessionRow({ scope: { kind: 'page', pageId: 'x' } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('워크스페이스 범위에 페이지가 붙었다', insertSession, sessionRow({ scope: { kind: 'workspace', pageId: randomUUID() } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('범위에 모르는 열쇠', insertSession, sessionRow({ scope: { kind: 'workspace', model: 'x' } }), 'ck_ai_chat_session_scope')
+    await rejectsBy('범위가 배열', insertSession, sessionRow({ scope: ['workspace'] }), 'ck_ai_chat_session_scope')
+    await rejectsBy('★ 만든 시각보다 앞선 고친 시각', insertSession, sessionRow({ updated: '2030-12-31T00:00:00Z' }), 'ck_ai_chat_session_updated')
+    await rejectsBy('★ 그 워크스페이스의 사람이 아닌 사람의 대화', insertSession, sessionRow({ ws: aiStranger }), 'fk_ai_chat_session_member')
+
+    const chatUsage = randomUUID()
+    const chatUsage2 = randomUUID()
+    for (const id of [chatUsage, chatUsage2]) {
+      await client.query(
+        `INSERT INTO ai_usage (id, workspace_id, user_id, feature, status, quota, model, created_at, finished_at)
+         VALUES ($1, $2, $3, 'chat', 'completed', 'trial', 'fake-model', '2031-01-01T00:00:00Z', '2031-01-01T00:00:01Z')`,
+        [id, wsId, userId],
+      )
+    }
+    const insertMessage = `INSERT INTO ai_chat_message (id, session_id, role, content, sources, status, input_tokens, output_tokens, usage_id)
+                           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`
+    const message = (over = {}) => {
+      const m = { session: chatSession, role: 'user', content: '알파 마감은?', sources: [], status: null, inT: null, outT: null, usage: null, ...over }
+      return [randomUUID(), m.session, m.role, m.content, JSON.stringify(m.sources), m.status, m.inT, m.outT, m.usage]
+    }
+    const answer = (over = {}) => message({ role: 'assistant', content: '12월 3일 [1]', sources: [{ n: 1, pageId: randomUUID(), title: '계획', cited: true }], status: 'completed', inT: 10, outT: 5, usage: chatUsage, ...over })
+    await client.query(insertMessage, message())
+    await client.query(insertMessage, answer())
+    await client.query(insertMessage, message({ role: 'assistant', content: '', status: 'stopped', usage: chatUsage2, sources: Array.from({ length: 8 }, (_, n) => ({ n })) }))
+    ok('ai_chat_message 정상 삽입 (질문 · 출처 · 토큰이 있는 답 · 빈 멈춘 답 · 출처 8)')
+    await rejectsBy('★ 모르는 역할(system 을 저장)', insertMessage, message({ role: 'system' }), 'ck_ai_chat_message_role')
+    await rejectsBy('★ 빈 질문', insertMessage, message({ content: '   ' }), 'ck_ai_chat_message_content')
+    await rejectsBy('메시지 20,001자', insertMessage, answer({ content: 'x'.repeat(20001), usage: randomUUID() }), 'ck_ai_chat_message_content', 'ai_chat_message_usage_id_fkey')
+    // CHECK 는 이름 차례로 검사된다 — 겨눈 것만 어기도록 원장의 응답은 비우지 않는다(없는 id 여도 FK 는 문장 끝에 — 그 전에 CHECK 이 막는다)
+    await rejectsBy('★ 출처가 배열이 아니다', insertMessage, answer({ sources: { n: 1 }, usage: randomUUID() }), 'ck_ai_chat_message_sources')
+    await rejectsBy('출처 9개', insertMessage, answer({ sources: Array.from({ length: 9 }, (_, n) => ({ n })), usage: randomUUID() }), 'ck_ai_chat_message_sources')
+    await rejectsBy('★ 모르는 답의 상태', insertMessage, answer({ status: 'pending', usage: randomUUID() }), 'ck_ai_chat_message_status')
+    await rejectsBy('답의 입력 토큰 음수', insertMessage, answer({ inT: -1, usage: randomUUID() }), 'ck_ai_chat_message_input_tokens')
+    await rejectsBy('답의 출력 토큰 음수', insertMessage, answer({ outT: -1, usage: randomUUID() }), 'ck_ai_chat_message_output_tokens')
+    await rejectsBy('★ 상태가 있는 질문', insertMessage, message({ status: 'completed' }), 'ck_ai_chat_message_shape')
+    await rejectsBy('★ 원장을 가리키는 질문', insertMessage, message({ usage: chatUsage2 }), 'ck_ai_chat_message_shape', 'uq_ai_chat_message_usage')
+    await rejectsBy('출처가 있는 질문', insertMessage, message({ sources: [{ n: 1 }] }), 'ck_ai_chat_message_shape')
+    await rejectsBy('★ 상태 없는 답', insertMessage, answer({ status: null, usage: null }), 'ck_ai_chat_message_shape')
+    await rejectsBy('★ 원장의 응답이 없는 답', insertMessage, answer({ usage: null }), 'ck_ai_chat_message_shape')
+    await rejectsBy('★ 원장의 응답 하나에 답 둘', insertMessage, answer(), 'uq_ai_chat_message_usage')
+    // 대화를 지우면 메시지도 — 원장은 남는다
+    await client.query('SAVEPOINT chat_cascade')
+    await client.query(`DELETE FROM ai_chat_session WHERE id = $1`, [chatSession])
+    const leftMessages = (await client.query(`SELECT count(*)::int AS n FROM ai_chat_message WHERE session_id = $1`, [chatSession])).rows[0].n
+    const leftUsage = (await client.query(`SELECT count(*)::int AS n FROM ai_usage WHERE id = ANY($1::uuid[])`, [[chatUsage, chatUsage2]])).rows[0].n
+    await client.query('ROLLBACK TO SAVEPOINT chat_cascade')
+    if (leftMessages === 0 && leftUsage === 2) ok('★ 대화를 지우면 메시지가 함께 없어지고(CASCADE) 원장은 남는다')
+    else fail(`대화를 지운 뒤 메시지 ${leftMessages} · 원장 ${leftUsage}`)
+
+    // 내 AI 지시 — 사람마다 워크스페이스마다 한 줄
+    const insertSetting = `INSERT INTO ai_user_setting (workspace_id, user_id, instructions_page_id) VALUES ($1, $2, NULL)`
+    await client.query(insertSetting, [wsId, userId])
+    ok('ai_user_setting 정상 삽입 (지시 페이지 없음)')
+    await rejectsBy('★ 같은 사람의 설정 두 줄(지시는 한 번에 하나)', insertSetting, [wsId, userId], 'ai_user_setting_pkey')
+    await rejectsBy('★ 그 워크스페이스의 사람이 아닌 사람의 설정', insertSetting, [aiStranger, userId], 'fk_ai_user_setting_member')
+    await rejectsBy('없는 페이지를 가리킨다', `UPDATE ai_user_setting SET instructions_page_id = $3 WHERE workspace_id = $1 AND user_id = $2`, [wsId, userId, randomUUID()], 'ai_user_setting_instructions_page_id_fkey')
   }
 
   await client.query('ROLLBACK')

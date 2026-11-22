@@ -26,6 +26,8 @@ export const SCREEN_TITLES = {
   noAccess: '접근 요청',
   offline: '오프라인',
   developers: 'API 문서',
+  // AI 채팅(AI-6 · F-10-17) — 사이드바의 "AI"
+  ai: 'AI',
 } as const
 
 /** 틀을 씌운 전체 제목 — 브라우저에서 탭 제목을 쓸 때(10d-7b · `DocumentTitle`) · 틀이 닿지 않는 루트 구간의 화면. */

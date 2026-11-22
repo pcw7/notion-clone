@@ -47,6 +47,7 @@ import { CommentPanel } from './comment-panel'
 import { FavoriteButton } from './favorite-button'
 import { DuplicatePageButton } from './duplicate-page-button'
 import { TranslatePageButton } from './translate-page-button'
+import { AiChatMenuLink } from './ai-chat-menu-link'
 import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
@@ -351,6 +352,8 @@ export async function PageContentBase({
             {rowPage === null && <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />}
             {/* 번역(AI-4 · F-10-03) — 번역본은 새 하위 페이지 · 고칠 수 있는 사람만(게스트는 AI 를 쓰지 않는다) · 패널은 누를 때 받는다 */}
             {access === 'edit' && aiEntry.state !== 'forbidden' && <TranslatePageButton workspaceId={workspaceId} pageId={page.id} ai={aiEntry} />}
+            {/* AI 와 이 페이지 대화(AI-6 · F-10-17) — 볼 수 있는 사람 모두(게스트는 AI 를 쓰지 않는다) · 채팅 화면으로 가는 링크뿐 */}
+            {aiEntry.state !== 'forbidden' && <AiChatMenuLink workspaceId={workspaceId} pageId={page.id} />}
             {history && <PageHistoryButton workspaceId={workspaceId} pageId={page.id} />}
             {/* 업데이트(4d-3 · F-11-04) — 볼 수 있는 사람 모두 · 행도 */}
             <PageUpdatesButton workspaceId={workspaceId} pageId={page.id} />

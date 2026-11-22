@@ -58,7 +58,7 @@ import { TrashPanel, type TrashRow } from './trash-panel'
 import { SIDEBAR_TOGGLE_EVENT } from './app-commands'
 import { getSidebarStore } from './sidebar-state'
 import { getVisitHistory } from './visit-history'
-import { ChevronRight, Home, Inbox, Library, Search, Settings } from 'lucide-react'
+import { ChevronRight, Home, Inbox, Library, Search, Settings, Sparkles } from 'lucide-react'
 import { SIDEBAR_ICON, SIDEBAR_ICON_STROKE, SIDEBAR_ROW, SIDEBAR_ROW_CURRENT, SIDEBAR_SECTION_HEAD } from './sidebar-style'
 import { openSearchOverlay } from './search-overlay'
 import { PageIconView } from './page-icon-view'
@@ -453,6 +453,17 @@ export function Sidebar({
       >
         <Home aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>홈</span>
+      </Link>
+
+      {/* AI 채팅(AI-6 · F-10-17) — 노션 사이드바의 "Notion AI". 따로인 화면이다(Ctrl/Cmd + Shift + J 도 여기로 · `ai-shortcut.tsx`). */}
+      <Link
+        href={`/w/${workspaceId}/ai`}
+        data-testid="sidebar-ai"
+        title="AI (Ctrl/Cmd + Shift + J)"
+        className={SIDEBAR_ROW}
+      >
+        <Sparkles aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
+        <span>AI</span>
       </Link>
 
       {/* 라이브러리 — 성격별 탭 · 이름으로 찾기(10c-2 · F-07-19). 홈이 섹션마다 몇 개를 보이면 여기서 다 본다. */}
