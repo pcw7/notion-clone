@@ -38830,6 +38830,191 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('AI 채팅 — 대화 · 출처 · 이전 대화 · 내 지시 (AI-6 · F-10-17 · F-10-22)')) { try {
+      // 정본 §3.10 [보강 AI-1] ⑪ · 10 F-10-17 · F-10-22. 이 절이 만든 Free 워크스페이스(체험 20)에서 멤버 한 사람이 묻는다. 공급자는 러너가 띄운
+      // 가짜 — 보통은 `가짜 답: <질문>` · `[echo]` 면 받은 메시지들 · `[slow]` 면 0.1초마다 한 조각. 단축키 · 사이드바 "AI" → 낱말이 있는 페이지를
+      // 묻는다(흐르는 답 · 출처 칩 — 같은 낱말의 볼 수 없는 페이지는 출처도 공급자의 글도 아니다) → 이어 묻기(공급자가 앞선 턴을 받는다) → 다시
+      // 불러도 이전 대화에서 다시 열린다 → 멈추기 → 지우기 → 페이지 "···" 의 "AI 와 이 페이지 대화"(범위가 그 페이지) → 설정의 "내 AI 지시"
+      // (남이 고칠 수 있으면 경고 · 다음 턴의 요청에 실린다). 끝에 브라우저 세션을 되돌린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const boss = await joinAs(workspaceId, await createUser(`AI 채팅의 소유자 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${boss.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `AI 채팅 ${stamp}` }) })).json()).workspaceId
+      const resolvedBoss = await resolveSessionContext(boss.token, ws)
+      if (!resolvedBoss.ok) throw new Error(`소유자의 세션을 풀지 못했다: ${resolvedBoss.reason}`)
+      const bossCtx = resolvedBoss.context
+      const mate = await joinAs(ws, await createUser(`AI 채팅의 멤버 ${stamp}`), 'member')
+      const word = `망고${stamp}`
+      const mkPage = async (title, lines) => {
+        const id = (await (await fetch(`${BASE}/api/workspaces/${ws}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title }) })).json()).page.id
+        const saved = await savePageBody(bossCtx, id, { blocks: lines.map((t) => ({ id: randomUUID(), type: 'paragraph', title: [textRun(t)], properties: {}, format: {}, children: [] })) })
+        if (!saved.ok) throw new Error(`본문 준비 실패: ${JSON.stringify(saved)}`)
+        return id
+      }
+      const planTitle = `망고 계획 ${stamp}`
+      const plan = await mkPage(planTitle, [`${word} 출시일은 12월 3일`, '담당은 김 대리'])
+      // 같은 낱말 · 소유자만 보는 페이지 — 멤버의 출처가 되면 안 된다
+      const secret = await mkPage(`망고 비밀 ${stamp}`, [`${word} 출시일 비밀 숫자 4242`])
+      await aclMod.grantAccess(bossCtx, secret, { type: 'user', id: boss.userId }, 'full_access')
+      await aclMod.revokeAccess(bossCtx, secret, { type: 'workspace_everyone' })
+      const rulesTitle = `팀 말투 ${stamp}`
+      const rules = await mkPage(rulesTitle, ['해적 말투로 답한다'])
+
+      const AI_URL = `${BASE}/w/${ws}/ai`
+      const here = () => evaluate('location.pathname + location.search')
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const chatReady = () => waitFor(`document.querySelector('[data-testid="ai-chat"]')?.dataset.hydrated === 'true'`, 15000)
+      const assistants = () => evaluate(`[...document.querySelectorAll('[data-testid="ai-chat-message"][data-role="assistant"]')].map((m) => ({
+        status: m.dataset.status,
+        text: m.querySelector('[data-testid="ai-chat-answer"]')?.textContent ?? '',
+        sources: [...m.querySelectorAll('[data-testid="ai-chat-source"]')].map((a) => ({ page: a.dataset.pageId, href: a.getAttribute('href'), text: a.textContent })),
+      }))`)
+      const settled = (n) => waitFor(`document.querySelectorAll('[data-testid="ai-chat-message"][data-role="assistant"]:not([data-status="streaming"])').length === ${n}`, 15000)
+      const ask = async (text) => {
+        await clickSelector('[data-testid="ai-chat-input"]')
+        await typeText(text)
+        await waitFor(`document.querySelector('[data-testid="ai-chat-input"]')?.value === ${JSON.stringify(text)}`, 3000)
+        await clickSelector('[data-testid="ai-chat-send"]')
+      }
+      const sessionsShown = () => evaluate(`[...document.querySelectorAll('[data-testid="ai-chat-session"]')].map((li) => ({ id: li.dataset.sessionId, title: li.textContent }))`)
+      const sentMessages = () => fakeAi.requests.at(-1)?.body.messages ?? []
+      const sentText = () => sentMessages().map((m) => m.content).join('\n')
+
+      try {
+        const on = await fetch(`${BASE}/api/workspaces/${ws}/ai`, { method: 'PUT', headers: asBoss, body: JSON.stringify({ enabled: true }) })
+        check('전제 — 소유자가 AI 를 켠다', on.status === 200, String(on.status))
+        await browseAs(mate.token)
+
+        // ① 단축키 · 사이드바 "AI" — 따로인 화면 /w/{id}/ai
+        await send('Page.navigate', { url: `${BASE}/w/${ws}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-ai"]')`, 15000)
+        let viaKey = false
+        for (let i = 0; i < 3 && !viaKey; i += 1) {
+          await sleep(400)
+          await key('j', MOD | 8)
+          viaKey = await waitFor(`location.pathname === '/w/${ws}/ai' && !!document.querySelector('[data-testid="ai-chat"]')`, 4000)
+        }
+        check('★ Ctrl/Cmd + Shift + J — 어디서든 AI 채팅 화면으로', viaKey, String(await here()))
+        await send('Page.navigate', { url: `${BASE}/w/${ws}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-ai"]')`, 15000)
+        await clickSelector('[data-testid="sidebar-ai"]')
+        const opened = (await waitFor(`location.pathname === '/w/${ws}/ai'`, 10000)) && (await chatReady())
+        check('★ 사이드바의 "AI" — /w/{id}/ai(새 대화 · 이전 대화 없음 · 범위는 워크스페이스 전체)',
+          opened && (await textOf('[data-testid="ai-chat-title"]')) === '새 대화' && (await sessionsShown()).length === 0
+            && (await evaluate(`document.querySelector('[data-testid="ai-chat-scope-workspace"]')?.getAttribute('aria-pressed')`)) === 'true',
+          JSON.stringify({ opened, at: await here() }))
+
+        // ② 낱말이 있는 페이지를 묻는다 — 흐르는 답 · 출처 칩(그 페이지로) · 볼 수 없는 같은 낱말의 페이지는 없다
+        const q1 = `${word} 출시일은 언제인가요?`
+        await ask(q1)
+        await settled(1)
+        const first = (await assistants())[0]
+        const firstSessions = await sessionsShown()
+        check('★ 답이 흐르고(가짜 답) 출처 칩 하나가 그 페이지로 간다 · 대화가 이전 대화 맨 위에 선다(제목 = 질문) · 주소가 ?s=',
+          first?.status === 'completed' && first.text === `가짜 답: ${q1}` && first.sources.length === 1 && first.sources[0].page === plan
+            && first.sources[0].href === `/w/${ws}/${plan}` && first.sources[0].text === `[1] ${planTitle}`
+            && firstSessions.length === 1 && firstSessions[0].title.startsWith(q1) && (await here()) === `/w/${ws}/ai?s=${firstSessions[0].id}`,
+          JSON.stringify({ first, firstSessions, at: await here() }))
+        check('★ 같은 낱말이 있어도 볼 수 없는 페이지는 출처도 공급자의 글도 아니다',
+          sentText().includes(`[1] ${planTitle}`) && !sentText().includes('4242') && !sentText().includes('망고 비밀'), sentText().slice(0, 600))
+        const chatId = firstSessions[0]?.id
+
+        // ③ 이어 묻기 — 공급자가 앞선 턴(user · assistant)을 받는다
+        await ask('[echo] 그 담당은 누구?')
+        await settled(2)
+        const roles = sentMessages().map((m) => [m.role, m.content])
+        const at = roles.findIndex(([r, c]) => r === 'user' && c === q1)
+        check('★ 이어 묻기 — 공급자가 앞선 질문과 답을 차례대로 받는다(user → assistant) · 마지막이 이번 질문',
+          at > 0 && roles[at + 1]?.[0] === 'assistant' && roles[at + 1]?.[1] === `가짜 답: ${q1}` && roles.at(-1)?.[1] === '[echo] 그 담당은 누구?'
+            && (await assistants())[1]?.status === 'completed',
+          JSON.stringify(roles.map(([r, c]) => [r, c.slice(0, 40)])))
+
+        // ④ 다시 불러도 — 이전 대화에 있고 그 대화가 다시 열린다(질문 둘 · 답 둘 · 출처 칩)
+        await send('Page.navigate', { url: `${AI_URL}?s=${chatId}` })
+        await chatReady()
+        const reopened = await assistants()
+        check('★ 다시 불러도 이전 대화에 있고 다시 열린다 — 답 둘 · 첫 답의 출처 칩 · 제목',
+          (await sessionsShown()).some((s) => s.id === chatId) && reopened.length === 2 && reopened[0].sources[0]?.page === plan
+            && String(await textOf('[data-testid="ai-chat-title"]')).startsWith(q1),
+          JSON.stringify(reopened.map((r) => [r.status, r.sources.length])))
+        await send('Page.navigate', { url: AI_URL })
+        await chatReady()
+        await clickSelector(`[data-testid="ai-chat-session"][data-session-id="${chatId}"] [data-testid="ai-chat-session-open"]`)
+        check('이전 대화 목록에서 누르면 그 대화가 열린다', await waitFor(`document.querySelectorAll('[data-testid="ai-chat-message"][data-role="assistant"]').length === 2`, 8000))
+
+        // ⑤ 멈추기 — 받은 데까지 남는다(stopped)
+        await ask('[slow] 길게 써 줘')
+        await waitFor(`(document.querySelectorAll('[data-testid="ai-chat-answer"]')[2]?.textContent ?? '').includes('조각1')`, 8000)
+        await clickSelector('[data-testid="ai-chat-stop"]', { settle: false })
+        const stoppedUi = await waitFor(`document.querySelectorAll('[data-testid="ai-chat-message"][data-role="assistant"]')[2]?.dataset.status === 'stopped'`, 8000)
+        let stoppedRow = null
+        for (let i = 0; i < 60 && stoppedRow?.status !== 'stopped'; i += 1) {
+          await sleep(100)
+          stoppedRow = (await dbQuery(`SELECT status, content FROM ai_chat_message WHERE session_id = $1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1`, [chatId]))[0] ?? null
+        }
+        check('★ 멈추기 — 답이 멈추고(멈췄습니다) 받은 데까지 stopped 로 남는다', stoppedUi && stoppedRow?.status === 'stopped' && stoppedRow.content.startsWith('조각0'),
+          JSON.stringify(stoppedRow))
+
+        // ⑥ 지우기 — 목록에서 사라지고 대화 · 메시지가 없어진다(원장은 남는다)
+        await clickSelector(`[data-testid="ai-chat-session"][data-session-id="${chatId}"] [data-testid="ai-chat-delete"]`)
+        await clickSelector('[data-testid="ai-chat-delete-confirm"]')
+        const goneUi = await waitFor(`!document.querySelector('[data-testid="ai-chat-session"][data-session-id="${chatId}"]')`, 8000)
+        const leftRows = await dbQuery(`SELECT (SELECT count(*)::int FROM ai_chat_session WHERE id = $1) AS s, (SELECT count(*)::int FROM ai_chat_message WHERE session_id = $1) AS m`, [chatId])
+        const ledger = await dbQuery(`SELECT feature, status FROM ai_usage WHERE workspace_id = $1 AND user_id = $2`, [ws, mate.userId])
+        check('★ 지우기 — 목록에서 사라지고 대화 · 메시지가 없다 · 원장(턴마다 한 줄 · 기능 chat)은 남는다',
+          goneUi && leftRows[0]?.s === 0 && leftRows[0]?.m === 0 && ledger.length === 3 && ledger.every((u) => u.feature === 'chat')
+            && (await textOf('[data-testid="ai-chat-title"]')) === '새 대화',
+          JSON.stringify({ goneUi, leftRows, ledger }))
+
+        // ⑦ 페이지 "···" → "AI 와 이 페이지 대화" — 범위가 그 페이지
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/${plan}` })
+        await waitFor(`!!document.querySelector('[data-testid="page-ai-chat"]')`, 15000)
+        await clickSelector('[data-testid="page-ai-chat"]')
+        const scoped = (await waitFor(`location.pathname === '/w/${ws}/ai' && location.search === '?page=${plan}'`, 10000)) && (await chatReady())
+        check('★ 페이지 "···" 의 "AI 와 이 페이지 대화" — 채팅 화면이 그 페이지를 범위로 연다',
+          scoped && (await evaluate(`document.querySelector('[data-testid="ai-chat-scope-page"]')?.getAttribute('aria-pressed')`)) === 'true'
+            && (await textOf('[data-testid="ai-chat-scope-title"]')) === planTitle,
+          JSON.stringify({ scoped, at: await here() }))
+        await ask('[echo] 이 페이지를 요약해 줘')
+        await settled(1)
+        const pageUsage = (await dbQuery(`SELECT page_id FROM ai_usage WHERE workspace_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`, [ws, mate.userId]))[0]
+        check('★ 페이지 범위 — 공급자가 그 페이지의 원문을 받는다(번호 출처 없이) · 원장의 page_id 가 그 페이지',
+          sentText().includes(`<page>\nTitle: ${planTitle}\n${word} 출시일은 12월 3일`) && !sentMessages().slice(1).some((m) => String(m.content).includes('<sources>\n'))
+            && pageUsage?.page_id === plan,
+          JSON.stringify({ page: pageUsage, sent: sentText().slice(-400) }))
+
+        // ⑧ 내 AI 지시 — 설정에서 페이지를 고른다(남이 고칠 수 있으면 경고) → 다음 턴의 요청에 따로 감싸 실린다
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/settings?s=workspace.ai` })
+        await waitFor(`document.querySelector('[data-testid="ai-instructions"]')?.dataset.state === 'none'`, 15000)
+        await clickSelector('[data-testid="ai-instructions-pick"]')
+        await waitFor(`!!document.querySelector('[data-testid="ai-instructions-picker-input"]')`, 5000)
+        await clickSelector('[data-testid="ai-instructions-picker-input"]')
+        await typeText(rulesTitle)
+        await waitFor(`!!document.querySelector('[data-testid="ai-instructions-picker-option"][data-page-id="${rules}"]')`, 8000)
+        await clickSelector(`[data-testid="ai-instructions-picker-option"][data-page-id="${rules}"]`)
+        const picked = await waitFor(`document.querySelector('[data-testid="ai-instructions"]')?.dataset.state === 'ok'`, 8000)
+        const warning = String(await textOf('[data-testid="ai-instructions-warning"]'))
+        check('★ 내 AI 지시 — 고른 페이지가 서고 · 남(소유자)이 고칠 수 있으니 F-10-22 의 경고',
+          picked && (await textOf('[data-testid="ai-instructions-page"]')) === rulesTitle && warning.includes('다른 사람이 이 페이지를 고치면 내 AI 의 행동이 바뀝니다'),
+          JSON.stringify({ picked, warning }))
+        await send('Page.navigate', { url: AI_URL })
+        await chatReady()
+        const badge = String(await textOf('[data-testid="ai-chat-instructions"]'))
+        await ask('[echo] 지시 확인')
+        await settled(1)
+        const second = sentMessages()[1]
+        check('★ 다음 턴의 요청에 내 AI 지시가 따로(user · standing_instructions) 실린다 · 시스템 지시에는 없다 · 화면은 "적용 중"',
+          second?.role === 'user' && String(second.content).includes('<standing_instructions>\n해적 말투로 답한다\n</standing_instructions>')
+            && !String(sentMessages()[0]?.content).includes('해적') && badge.startsWith('내 AI 지시 적용 중'),
+          JSON.stringify({ badge, second: String(second?.content).slice(0, 200) }))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

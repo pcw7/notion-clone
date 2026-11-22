@@ -16,7 +16,11 @@
 import type { AiConfig } from './config.ts'
 import { createSseParser, readChatChunk, type TokenUsage } from './sse.ts'
 
-export type ChatMessage = { readonly role: 'system' | 'user'; readonly content: string }
+/**
+ * 메시지 하나 — `assistant` 는 AI 채팅(AI-6)의 앞선 답뿐이다(서버가 저장한 것을 서버가 싣는다). 편집기가 보낸 메시지는 system · user 만
+ * 받는다(`request.ts` — 대화를 꾸며 넣지 못하게).
+ */
+export type ChatMessage = { readonly role: 'system' | 'user' | 'assistant'; readonly content: string }
 
 export type AiProviderFailure =
   /** 공급자가 요청 수 · 분당 토큰을 막았다(429 — 무료 등급의 한도 · 잠시 뒤 풀린다 · 화면은 `ai_busy`). */

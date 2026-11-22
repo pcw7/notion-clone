@@ -39,6 +39,8 @@ export const BUNDLE_BUDGETS: readonly BudgetRule[] = [
   { pattern: /^\/w\/\[workspaceId\]\/db\/\[databaseId\]\/templates\//, maxKB: 470, baselineKB: 412, why: '데이터베이스 템플릿 편집 — 편집기' },
   { pattern: /^\/w\/\[workspaceId\]\/db\//, maxKB: 520, baselineKB: 462, why: '데이터베이스 화면 — 표 · 보드 · 행 열기(편집기 포함)' },
   { pattern: /^\/w\/\[workspaceId\]\/\[pageId\]\/page$/, maxKB: 450, baselineKB: 399, why: '페이지 — 편집기(ProseMirror · Yjs · 협업)' },
+  // AI 채팅(AI-6) — 따로인 화면(편집기 없음 · 답은 평문). 잰 크기 191.8KB + 약 10%
+  { pattern: /^\/w\/\[workspaceId\]\/ai\/page$/, maxKB: 211, baselineKB: 192, why: 'AI 채팅 — 이전 대화 · 대화 · 범위 고르개' },
   { pattern: /^\/w\//, maxKB: 230, baselineKB: 199, why: '워크스페이스의 다른 화면 — 사이드바 · 설정' },
   { pattern: /^/, maxKB: 160, baselineKB: 136, why: '편집기가 없는 화면 — 로그인 · 공개 · 초대' },
 ]
