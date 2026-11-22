@@ -21980,10 +21980,12 @@ async function main() {
       const transitionNow = `getComputedStyle(document.body).transitionProperty`
       const a11yState = () => evaluate(`JSON.stringify({ contrast: document.documentElement.dataset.contrast ?? null, motion: document.documentElement.dataset.motion ?? null,
         color: ${note} ? ${colorNow} : null, transition: ${transitionNow}, cookie: document.cookie })`)
-      // 화면이 살아나기 전의 클릭은 라디오의 표시만 바꾸고 버려진다 — `<html>` 의 속성이 바뀔 때까지 다시 누른다
+      // 화면이 살아나기 전의 클릭은 라디오의 표시만 바꾸고 버려진다 — 그 라디오는 이미 체크돼 다시 눌러도 change 가 오지 않는다. 하이드레이트를
+      // 기다린 뒤에 누르고(설정 패널이 지연 청크로 하이드레이트되며 틈이 넓어졌다 — 전체 판 2e7da3e 의 10d-4) `<html>` 의 속성이 바뀔 때까지 다시 누른다
       const pick = async (group, value) => {
         const attr = group === 'a11y-contrast' ? 'contrast' : 'motion'
         const done = `document.documentElement.dataset.${attr} === ${JSON.stringify(value)} && document.cookie.includes(${JSON.stringify(`nc_${attr}=${value}`)})`
+        await waitHydrated(`[data-testid="${group}"] input[value="${value}"]`)
         for (let i = 0; i < 8 && !(await evaluate(done)); i += 1) {
           await clickSelector(`[data-testid="${group}"] input[value="${value}"]`)
           await waitFor(done, 2000)
@@ -22134,6 +22136,8 @@ async function main() {
       const rootSize = `parseFloat(getComputedStyle(document.documentElement).fontSize)`
       const pickScale = async (value) => {
         const done = `document.documentElement.dataset.fontScale === ${JSON.stringify(value)} && document.cookie.includes(${JSON.stringify(`nc_font_scale=${value}`)})`
+        // 하이드레이트 전에 누른 라디오는 체크만 되고 버려진다 — 그 뒤로는 다시 눌러도 change 가 오지 않는다(새로 읽은 뒤 "보통" 이 125 에 남았다 · 2e7da3e)
+        await waitHydrated(`[data-testid="a11y-font-scale"] input[value="${value}"]`)
         for (let i = 0; i < 8 && !(await evaluate(done)); i += 1) {
           await clickSelector(`[data-testid="a11y-font-scale"] input[value="${value}"]`)
           await waitFor(done, 2000)
