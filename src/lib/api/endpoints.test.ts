@@ -59,9 +59,11 @@ test('라우트 파일의 글 — v1Route(핸들러)만 · 받지 않는 메서�
     'export const GET = v1Route(retrievePage)',
     'export const PATCH = v1Route(updateApiPage)',
     'export const POST = unknownUrl',
+    "export const PUT = v1Route(sendApiFileUpload, { body: 'multipart' })",
   ].join('\n')
   assert.deepEqual(routeHandlers(source), [
     { method: 'GET', handler: 'retrievePage' },
     { method: 'PATCH', handler: 'updateApiPage' },
+    { method: 'PUT', handler: 'sendApiFileUpload' },
   ])
 })

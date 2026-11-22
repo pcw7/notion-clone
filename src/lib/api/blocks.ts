@@ -45,6 +45,7 @@ import {
 } from './block-body.ts'
 import { appendBlocksIn, deleteBlockIn, updateBlockIn, type AppendPlace, type EditOutcome } from './block-edit.ts'
 import { apiTypeOf, parseApiBlockUpdate, parseApiChildren, tableWidthOf } from './block-json.ts'
+import { ownFileIdOf } from './file-url.ts'
 import { loadPageIn, type LoadedPage } from './page-object.ts'
 import {
   apiLinks,
@@ -238,7 +239,7 @@ async function changeBodyBlock(ctx: SessionContext, owner: LoadedPage, id: strin
       }
       const parent = entry.parentId === null ? undefined : index.get(entry.parentId)?.block
       const tableWidth = entry.block.type === 'table_row' && parent !== undefined ? tableWidthOf(parent) : undefined
-      const parsed = parseApiBlockUpdate(entry.block, change.payload, `body.${change.typeKey}`, { tableWidth })
+      const parsed = parseApiBlockUpdate(entry.block, change.payload, `body.${change.typeKey}`, { tableWidth, ownFileId: ownFileIdOf })
       if (!parsed.ok) return no(bodyInvalid(parsed.message))
       const upload = await uploadIssueIn(tx, ctx, parsed.uploads)
       if (upload !== null) return no(bodyInvalid(upload))
@@ -356,7 +357,7 @@ export const appendBlockChildren: V1Handler = async ({ ctx, params, body, reques
       }
       if (parentType === 'table') tableWidth = tableWidthOf(entry.block)
     }
-    const parsed = parseApiChildren(body.children, 'body.children', parentType, newApiBlockId, { tableWidth })
+    const parsed = parseApiChildren(body.children, 'body.children', parentType, newApiBlockId, { tableWidth, ownFileId: ownFileIdOf })
     if (!parsed.ok) return no(bodyInvalid(parsed.message))
     const upload = await uploadIssueIn(tx, ctx, parsed.uploads)
     if (upload !== null) return no(bodyInvalid(upload))

@@ -10,7 +10,8 @@
  *   3. 발급자 — `resolveSessionContext({ apiToken })`(발급자는 그대로 둘이다 · 같은 0단계 게이트). 모르는 · 폐기한 · 만료된 토큰과 게이트가
  *      막은 토큰(내보낸 멤버 · 멈춘 사람 · 지운 워크스페이스 · 지운 계정)은 모두 401 `unauthorized` — 어느 쪽인지 말하지 않는다.
  *   4. 레이트리밋 — 토큰마다(`API_RATE_RULE`) · 넘으면 429 `rate_limited` + `Retry-After`. 저장소 장애면 연다(`rate-limit.ts` 의 판단).
- *   5. 본문 — 500KB 까지 읽는다(넘으면 400 `validation_error`) · JSON 이 아니면 400 `invalid_json`.
+ *   5. 본문 — 500KB 까지 읽는다(넘으면 400 `validation_error`) · JSON 이 아니면 400 `invalid_json`. 파일 보내기(API-7 — `{ body: 'multipart' }`)는
+ *      `multipart/form-data` 만 · 상한은 파일 하나의 상한 + 64KB(`API_MAX_MULTIPART_BYTES`) · 핸들러는 `FormData` 를 받는다.
  *   6. 처리 — 볼 수 없는 것은 404 `object_not_found`(있는지 새지 않는다 · 403 으로 답하지 않는다).
  *
  * 모든 응답에 새 `request_id`(본문 · `x-request-id` 머리)와 `cache-control: no-store` 를 싣는다. 토큰 값은 어디에도 남기지 않는다.
@@ -23,6 +24,7 @@ import { consume } from '../rate-limit.ts'
 import { isApiTokenShape } from './token-format.ts'
 import {
   API_MAX_BODY_BYTES,
+  API_MAX_MULTIPART_BYTES,
   API_MESSAGES,
   API_RATE_NAMESPACE,
   API_RATE_RULE,
@@ -45,7 +47,7 @@ export type V1Request = {
   readonly ctx: SessionContext
   readonly request: Request
   readonly params: Readonly<Record<string, string | readonly string[] | undefined>>
-  /** JSON 본문 — 없으면 undefined. */
+  /** JSON 본문 — 없으면 undefined. `{ body: 'multipart' }` 의 라우트는 `FormData`. */
   readonly body: unknown
   readonly requestId: string
 }
@@ -67,10 +69,10 @@ function error(status: number, code: ApiErrorCode, message: string, requestId: s
 }
 
 /** 본문을 상한까지만 읽는다 — `content-length` 가 넘으면 읽지 않고, 없거나 거짓이면 읽으며 센다. */
-async function readCappedBody(request: Request, max: number): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }> {
+async function readCappedBody(request: Request, max: number): Promise<{ readonly ok: true; readonly bytes: Buffer } | { readonly ok: false }> {
   const declared = Number(request.headers.get('content-length') ?? '')
   if (Number.isFinite(declared) && declared > max) return { ok: false }
-  if (request.body === null) return { ok: true, text: '' }
+  if (request.body === null) return { ok: true, bytes: Buffer.alloc(0) }
   const reader = request.body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
@@ -84,13 +86,42 @@ async function readCappedBody(request: Request, max: number): Promise<{ readonly
     }
     chunks.push(value)
   }
-  return { ok: true, text: Buffer.concat(chunks).toString('utf8') }
+  return { ok: true, bytes: Buffer.concat(chunks) }
 }
 
 const BODYLESS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
-/** `/v1` 라우트 하나를 만든다 — `export const GET = v1Route(handler)`. */
-export function v1Route(handler: V1Handler): V1RouteHandler {
+/** 라우트의 선택 — 본문의 모양(기본 JSON · 파일 보내기는 `multipart`). */
+export type V1RouteOptions = { readonly body?: 'json' | 'multipart' }
+
+type BodyRead = { readonly ok: true; readonly body: unknown } | { readonly ok: false; readonly code: ApiErrorCode; readonly message: string }
+
+/** 본문 — JSON(500KB) 또는 multipart(파일의 상한 + 64KB → `FormData`). */
+async function readBody(request: Request, kind: 'json' | 'multipart'): Promise<BodyRead> {
+  if (kind === 'multipart') {
+    const type = request.headers.get('content-type') ?? ''
+    if (!/^multipart\/form-data\s*;/i.test(type)) return { ok: false, code: 'validation_error', message: API_MESSAGES.multipartRequired }
+    const read = await readCappedBody(request, API_MAX_MULTIPART_BYTES)
+    if (!read.ok) return { ok: false, code: 'validation_error', message: API_MESSAGES.fileTooLarge }
+    try {
+      return { ok: true, body: await new Response(read.bytes as BodyInit, { headers: { 'content-type': type } }).formData() }
+    } catch {
+      return { ok: false, code: 'validation_error', message: API_MESSAGES.invalidMultipart }
+    }
+  }
+  const read = await readCappedBody(request, API_MAX_BODY_BYTES)
+  if (!read.ok) return { ok: false, code: 'validation_error', message: API_MESSAGES.bodyTooLarge }
+  const text = read.bytes.toString('utf8')
+  if (text.trim() === '') return { ok: true, body: undefined }
+  try {
+    return { ok: true, body: JSON.parse(text) }
+  } catch {
+    return { ok: false, code: 'invalid_json', message: API_MESSAGES.invalidJson }
+  }
+}
+
+/** `/v1` 라우트 하나를 만든다 — `export const GET = v1Route(handler)` · 파일 보내기는 `v1Route(handler, { body: 'multipart' })`. */
+export function v1Route(handler: V1Handler, options: V1RouteOptions = {}): V1RouteHandler {
   return async (request, routeContext) => {
     const requestId = randomUUID()
     try {
@@ -112,15 +143,9 @@ export function v1Route(handler: V1Handler): V1RouteHandler {
 
       let body: unknown = undefined
       if (!BODYLESS.has(request.method.toUpperCase())) {
-        const read = await readCappedBody(request, API_MAX_BODY_BYTES)
-        if (!read.ok) return error(400, 'validation_error', API_MESSAGES.bodyTooLarge, requestId)
-        if (read.text.trim() !== '') {
-          try {
-            body = JSON.parse(read.text)
-          } catch {
-            return error(400, 'invalid_json', API_MESSAGES.invalidJson, requestId)
-          }
-        }
+        const read = await readBody(request, options.body ?? 'json')
+        if (!read.ok) return error(400, read.code, read.message, requestId)
+        body = read.body
       }
 
       const params = ((await routeContext?.params) ?? {}) as V1Request['params']

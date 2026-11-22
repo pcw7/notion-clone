@@ -10,7 +10,8 @@
  *   · relation — **볼 수 있는 행만**(대상 표의 행 범위 `rowsAccessForDataSource` + `restrictedRowsSql` — 표 화면과 같은 술어). 대상 표를 열 수
  *     없으면 비어 있다(앱은 개수만 보인다 — 노션처럼 id 를 흘리지 않는다)
  *   · rollup — 표 화면과 같은 `computeRollupsIn`(볼 수 없는 연결은 뺀다) · 수식 — 같은 행의 칸으로(`evaluateRowFormulas`)
- *   · 아이콘 · 커버 — 올린 파일 · 내장 커버는 노션의 모양으로 줄 주소가 없어 null 이다(서명 URL 이 없다 — `file/storage.ts`)
+ *   · 아이콘 · 커버 — 올린 파일은 노션처럼 `{type:'file', file:{url, expiry_time}}`(1시간 서명 주소 · API-7 · `file-url.ts`) · 내장 커버는
+ *     노션의 모양이 없어 null
  *   · `public_url` — 이 페이지 자신이 게시돼 열려 있고 그 사람이 게시를 관리할 수 있을 때만(앱의 공유 패널이 토큰을 그 사람에게만 보인다)
  */
 
@@ -278,8 +279,8 @@ async function rowValuesFrom(
   }
 }
 
-/** 아이콘 — 이모지 · 외부 주소 · 커스텀 이모지(이름과 함께). 올린 파일은 줄 주소가 없어 null(머리말). */
-export async function iconToApi(tx: Tx, ctx: SessionContext, icon: PageIcon | null): Promise<unknown> {
+/** 아이콘 — 이모지 · 외부 주소 · 커스텀 이모지(이름과 함께) · 올린 파일은 노션처럼 서명 주소(API-7 · 정본 ⑪). */
+export async function iconToApi(tx: Tx, ctx: SessionContext, icon: PageIcon | null, links: ApiLinks): Promise<unknown> {
   if (icon === null) return null
   switch (icon.type) {
     case 'emoji':
@@ -294,13 +295,15 @@ export async function iconToApi(tx: Tx, ctx: SessionContext, icon: PageIcon | nu
       return { type: 'custom_emoji', custom_emoji: { id: icon.custom_emoji.id, name: emoji?.name ?? null } }
     }
     case 'file':
-      return null
+      return { type: 'file', file: links.fileUrl(icon.file_id) }
   }
 }
 
-/** 커버 — 외부 주소만 노션의 모양이 있다. 내장 커버(그라디언트 · 단색)와 올린 파일은 null(머리말). */
-export function coverToApi(cover: PageCover | null): unknown {
-  return cover?.type === 'external' ? { type: 'external', external: { url: cover.url } } : null
+/** 커버 — 외부 주소 · 올린 파일(서명 주소 — API-7). 내장 커버(그라디언트 · 단색)는 노션의 모양이 없어 null. */
+export function coverToApi(cover: PageCover | null, links: ApiLinks): unknown {
+  if (cover?.type === 'external') return { type: 'external', external: { url: cover.url } }
+  if (cover?.type === 'file') return { type: 'file', file: links.fileUrl(cover.file_id) }
+  return null
 }
 
 /**
@@ -334,8 +337,8 @@ export async function pageObjectIn(
     last_edited_time: page.lastEditedAt.toISOString(),
     created_by: page.createdBy === null ? null : userRef(page.createdBy),
     last_edited_by: page.lastEditedBy === null ? null : userRef(page.lastEditedBy),
-    cover: coverToApi(page.cover),
-    icon: await iconToApi(tx, ctx, page.icon),
+    cover: coverToApi(page.cover, links),
+    icon: await iconToApi(tx, ctx, page.icon, links),
     parent: page.parent,
     in_trash: page.trashed,
     properties,

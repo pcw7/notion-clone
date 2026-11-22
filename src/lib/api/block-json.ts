@@ -7,7 +7,8 @@
  * 읽기 — 본문(원문 — 제안 마크는 문서 밖이다)의 블록 하나를 노션의 `{type, [type]: payload}` 로. 노션의 모양으로 말할 수 없는 것은 `unsupported`:
  *   · 버튼 블록(노션 API 도 unsupported 다) · 모르는 타입을 감싸 둔 블록 · 출처가 없는 빈 이미지 · 비디오 · 파일
  *   · 하위 페이지 참조 → `child_page {title}` · 인라인 데이터베이스 → `child_database {title}`(볼 수 없으면 빈 제목 — 자리는 이미 보인다)
- *   · 올린 파일은 `{type:'file_upload', file_upload:{id}}` — 짧게 사는 파일 주소를 만드는 길이 아직 없다(API-2 files 속성과 같은 결정 · 정본 ⑥)
+ *   · 올린 파일은 노션처럼 `{type:'file', file:{url, expiry_time}}` — 1시간 사는 서명 주소(`links.fileUrl` · API-7 · 정본 ⑪). 그 값을 그대로
+ *     다시 보내면 같은 파일이다(우리 서명이 맞을 때만 — `ownFileId` · 만료는 보지 않는다) · 옛 모양 `file_upload {id}` 도 받는다
  *   · 노션에 자리가 없는 우리 값(이미지의 대체 텍스트 · 폭 · 정렬, 임베드의 높이, 코드의 줄바꿈)은 싣지 않는다 — 고치기는 그 값을 남긴다
  *
  * 받기 — 노션의 요청 모양을 우리 블록으로. **엄격하게** — 틀리면 그 자리를 영어로 말한다(`body.children[0].paragraph.rich_text …`).
@@ -175,8 +176,8 @@ export function blockContentToApi(block: EditorBlock, read: BlockReadContext): A
         payload.type = 'external'
         payload.external = { url: source.url }
       } else {
-        payload.type = 'file_upload'
-        payload.file_upload = { id: source.fileId }
+        payload.type = 'file'
+        payload.file = links.fileUrl(source.fileId)
       }
       if (block.type === 'file') {
         payload.name = source.kind === 'external' ? externalFileName(source.url) : (read.fileNames.get(source.fileId) ?? '')
@@ -231,8 +232,11 @@ export function apiBlockObject(
 
 // ── 받기 ──────────────────────────────────────────────────────────────
 
-/** 받은 블록이 가리키는 올린 파일 — 이 워크스페이스의 것인지 DB 가 본다. */
+/** 받은 블록이 가리키는 올린 파일 — 이 워크스페이스의 것인지 DB 가 본다(API 업로드 세션이면 그 상태도 — `upload-claim.ts`). */
 export type UploadRef = { readonly id: string; readonly blockType: 'image' | 'video' | 'file'; readonly path: string }
+
+/** 받기의 선택 — 표의 열 수 · 우리 서명 주소를 파일 id 로(왕복 — 없으면 `type: "file"` 은 받지 않는다). */
+export type ParseOptions = { readonly tableWidth?: number; readonly ownFileId?: (url: string) => string | null }
 
 /** 받는 쪽에서 던지는 거부 — 경계에서 `{ ok: false, message }` 로 바뀐다. 밖으로 나가지 않는다. */
 class Invalid extends Error {}
@@ -240,7 +244,12 @@ function fail(message: string): never {
   throw new Invalid(message)
 }
 
-type ParseState = { count: number; readonly newId: () => string; readonly uploads: UploadRef[] }
+type ParseState = {
+  count: number
+  readonly newId: () => string
+  readonly uploads: UploadRef[]
+  readonly ownFileId?: ((url: string) => string | null) | undefined
+}
 
 /** 받은 블록의 글 · 속성 · 모습. 표는 열 수도(자식 행의 셀 수를 본다). */
 type Content = { title: RichTextRun[]; properties: Record<string, unknown>; format: BlockFormat; tableWidth?: number; textChanged: boolean; cellsChanged: boolean }
@@ -266,7 +275,7 @@ const PAYLOAD_KEYS: Readonly<Record<WritableType, readonly string[]>> = {
   column: ['width_ratio'],
   table: ['table_width', 'has_column_header', 'has_row_header'],
   table_row: ['cells'],
-  // `file`(노션이 호스팅한 주소)은 받아서 왜 안 되는지 말한다
+  // `file`(읽은 서명 주소)은 왕복으로 받는다 — 우리 주소가 아니면 왜 안 되는지 말한다
   image: ['type', 'external', 'file_upload', 'file', 'caption'],
   video: ['type', 'external', 'file_upload', 'file', 'caption'],
   file: ['type', 'external', 'file_upload', 'file', 'caption', 'name'],
@@ -451,9 +460,16 @@ function contentOf(type: WritableType, payload: Obj, p: string, state: ParseStat
           properties.source = { type: 'file', file_id: id }
           state.uploads.push({ id: id as string, blockType: type, path: `${p}.file_upload.id` })
         } else if (kind === 'file') {
-          fail(`${p}.type "file" cannot be written — use "external" or "file_upload".`)
+          // 왕복 — 읽은 `{type:'file', file:{url}}` 을 그대로(우리 서명 주소만 · 만료는 보지 않는다)
+          const url = isObject(payload.file) ? payload.file.url : undefined
+          const id = typeof url === 'string' && state.ownFileId !== undefined ? state.ownFileId(url) : null
+          if (id === null) {
+            fail(`${p}.file.url should be a file URL read from this API (send it back unchanged) — use "external" for other URLs, instead was ${shownValue(url)}.`)
+          }
+          properties.source = { type: 'file', file_id: id }
+          state.uploads.push({ id: id as string, blockType: type, path: `${p}.file.url` })
         } else {
-          fail(`${p}.type should be "external" or "file_upload", instead was ${shownValue(kind)}.`)
+          fail(`${p}.type should be "external", "file_upload" or "file", instead was ${shownValue(kind)}.`)
         }
         takeCaption()
         // `name`(파일)은 받기만 한다 — 바깥 주소의 이름은 주소에서, 올린 파일의 이름은 파일에서 온다
@@ -562,9 +578,9 @@ export function parseApiChildren(
   path: string,
   parent: BlockType,
   newId: () => string,
-  options: { readonly tableWidth?: number } = {},
+  options: ParseOptions = {},
 ): ParsedChildren {
-  const state: ParseState = { count: 0, newId, uploads: [] }
+  const state: ParseState = { count: 0, newId, uploads: [], ownFileId: options.ownFileId }
   try {
     return { ok: true, blocks: parseList(raw, path, parent, options.tableWidth, 0, state), uploads: state.uploads }
   } catch (e) {
@@ -590,9 +606,9 @@ export type ParsedUpdate =
  * `PATCH /v1/blocks/{id}` 의 `{ [type]: payload }` 를 지금 블록에 — 준 키만 바꾼다(노션). 열쇠는 그 블록의 노션 타입이어야 한다(타입은
  * 바꿀 수 없다). `children` 은 받지 않는다(붙이기는 `PATCH …/children`). 표 행은 표의 열 수(`tableWidth`)를 받아 셀 수를 본다.
  */
-export function parseApiBlockUpdate(block: EditorBlock, payload: unknown, path: string, options: { readonly tableWidth?: number } = {}): ParsedUpdate {
+export function parseApiBlockUpdate(block: EditorBlock, payload: unknown, path: string, options: ParseOptions = {}): ParsedUpdate {
   const type = block.type
-  const state: ParseState = { count: 0, newId: () => block.id, uploads: [] }
+  const state: ParseState = { count: 0, newId: () => block.id, uploads: [], ownFileId: options.ownFileId }
   try {
     if (!WRITABLE.has(type)) fail(`${path} cannot be updated — blocks of type "${apiTypeOf(block)}" are not editable through the API.`)
     if (!isObject(payload)) fail(`${path} should be an object, instead was ${shownValue(payload)}.`)

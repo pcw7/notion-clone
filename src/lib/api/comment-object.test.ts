@@ -18,7 +18,11 @@ import {
 } from './comment-object.ts'
 import type { ApiLinks } from './rich-text.ts'
 
-const LINKS: ApiLinks = { origin: 'https://app.test', pageUrl: (id) => `https://app.test/w/ws/${id}` }
+const LINKS: ApiLinks = {
+  origin: 'https://app.test',
+  pageUrl: (id) => `https://app.test/w/ws/${id}`,
+  fileUrl: (id) => ({ url: `https://app.test/api/files/${id}`, expiry_time: '2026-11-22T01:00:00.000Z' }),
+}
 const PAGE = '1f2e3d4c-5b6a-4789-8abc-def012345678'
 const BLOCK = '2f2e3d4c-5b6a-4789-8abc-def012345678'
 const USER = '3f2e3d4c-5b6a-4789-8abc-def012345678'

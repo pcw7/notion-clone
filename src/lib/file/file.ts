@@ -1,20 +1,20 @@
 /**
  * 파일 업로드 · 조회 — F-12-09 / F-09-08
  *
- * 정본: 00-canonical-data-model.md §3.10 `file`, 09-api-integrations.md F-09-08
+ * 정본: 00-canonical-data-model.md §3.10 `file` · `api_file_upload`, §3.1 [보강 API-1] ⑪, 09-api-integrations.md F-09-08
  *
  * ──────────────────────────────────────────────────────────────────────
- * 한 번에 올린다 (create → send → complete 가 아니라)
+ * 앱은 한 번에 올린다 · 공개 API 는 만들기 → 보내기 (API-7)
  * ──────────────────────────────────────────────────────────────────────
  *
- * F-09-08 이 적은 노션의 API 는 3단계(세션 생성 → 전송 → 마감)이고 그 상태를 담을
- * `file_upload` 표가 필요하다. **정본 스키마(§3.10)에는 `file` 하나뿐이다.**
- * 그리고 3단계가 필요한 이유는 multi-part 인데, 그건 20 MiB 를 넘는 파일의 이야기고
- * 우리 상한은 5 MiB 다(`limits.ts`). 그래서 요청 하나로 받고, 받은 뒤에 행을 만든다.
+ * F-09-08 이 적은 노션의 API 는 3단계(세션 생성 → 전송 → 마감)이다. 마감이 필요한 이유는
+ * multi-part 인데, 그건 20 MiB 를 넘는 파일의 이야기고 우리 상한은 5 MiB 다(`limits.ts`).
+ * 그래서 앱은 요청 하나로 받고, 받은 뒤에 행을 만든다(`uploadFile`).
  *
- * 20 MiB 를 넘길 수 있게 되는 날(유료 플랜) multi-part 가 필요해지고, 그때 세션 표가
- * 함께 온다. F-09-08 이 그 설계를 이미 적어 뒀다 — *"파트 업로드 자체가 재시도·재개
- * 가능한 잡이어야 한다"*.
+ * 공개 API(API-7)는 노션의 모양대로 세션(`api_file_upload` — id = 이 파일의 id)을 먼저
+ * 만들고 보내기에서 **같은 판정 · 같은 저장**(`uploadFileIn` — 세션 행과 한 트랜잭션)을 지난다.
+ * 마감(`complete`)은 single_part 라 없다. 20 MiB 를 넘길 수 있게 되는 날(유료 플랜) multi-part
+ * 가 필요해진다 — F-09-08: *"파트 업로드 자체가 재시도·재개 가능한 잡이어야 한다"*.
  *
  * ──────────────────────────────────────────────────────────────────────
  * 스토리지에 먼저 쓰고 행은 나중에 만든다
@@ -35,7 +35,6 @@ import {
   storageKeyFor,
   storedMimeOf,
   validateUpload,
-  type AllowedMime,
   type UploadKind,
   type UploadRejection,
 } from './limits.ts'
@@ -88,10 +87,10 @@ export type UploadResult =
  * 있다"는 증명이다(CLAUDE.md 권한 규칙). 페이지 단위 ACL 은 W6 이라 지금은 다른 쓰기
  * 경로(페이지 생성·본문 저장)와 같은 수준이다.
  */
-export async function uploadFile(
-  ctx: SessionContext,
-  input: { bytes: Uint8Array; mime: string; originalName: string | null; kind?: UploadKind },
-): Promise<UploadResult> {
+type UploadInput = { bytes: Uint8Array; mime: string; originalName: string | null; kind?: UploadKind }
+
+/** 받을지와 저장할 MIME — 앱의 업로드와 공개 API 의 보내기(API-7)가 같은 판정을 쓴다. */
+function prepareUpload(input: UploadInput): { readonly ok: true; readonly mime: string } | { readonly ok: false; readonly reason: UploadRejection } {
   const kind: UploadKind = input.kind ?? 'image'
   const rejection = validateUpload(
     {
@@ -105,6 +104,13 @@ export async function uploadFile(
   // 저장할 MIME(정본 §3.4 [보강 F-2] ②) — 비디오는 가린 바이트의 것 · 파일이 말한 이미지 · 비디오 MIME 은 바이트로 확인한다
   const mime = storedMimeOf(kind, input.mime, input.bytes)
   if (mime === null) return { ok: false, reason: 'unsupported_type' }
+  return { ok: true, mime }
+}
+
+export async function uploadFile(ctx: SessionContext, input: UploadInput): Promise<UploadResult> {
+  const prepared = prepareUpload(input)
+  if (!prepared.ok) return prepared
+  const mime = prepared.mime
 
   const id = randomUUID()
   const storageKey = storageKeyFor(ctx.workspaceId, id, mime)
@@ -156,7 +162,7 @@ async function insertFileRow(
 export async function storeFileIn(
   tx: Tx,
   ctx: SessionContext,
-  input: { id: string; bytes: Uint8Array; mime: AllowedMime; originalName: string | null },
+  input: { id: string; bytes: Uint8Array; mime: string; originalName: string | null },
   stored: string[],
 ): Promise<StoredFile> {
   const storageKey = storageKeyFor(ctx.workspaceId, input.id, input.mime)
@@ -166,6 +172,18 @@ export async function storeFileIn(
   const row = await insertFileRow(tx, ctx, { id: input.id, storageKey, mime: input.mime, size: input.bytes.byteLength, originalName: input.originalName, checksum })
   if (row === null) throw new Error('파일을 만드는 중 워크스페이스가 사라졌습니다')
   return toStoredFile(row)
+}
+
+/**
+ * **부르는 쪽의 트랜잭션에서** 올린다 — 공개 API 의 보내기(API-7)가 세션 행과 파일 행을 한 트랜잭션에 묶는다. 판정은 `uploadFile` 과 같고
+ * (`prepareUpload`) id 는 부르는 쪽이 정한다(세션 id = 파일 id · 정본 ⑪). 저장소에 먼저 쓰고 쓴 키를 `stored` 에 쌓는다 — 되돌려지면 부르는
+ * 쪽이 `discardStoredObjects` 로 지운다.
+ */
+export async function uploadFileIn(tx: Tx, ctx: SessionContext, input: UploadInput & { id: string }, stored: string[]): Promise<UploadResult> {
+  const prepared = prepareUpload(input)
+  if (!prepared.ok) return prepared
+  const file = await storeFileIn(tx, ctx, { id: input.id, bytes: input.bytes, mime: prepared.mime, originalName: input.originalName }, stored)
+  return { ok: true, file }
 }
 
 /** 되돌려진 트랜잭션이 남긴 객체를 지운다 — 하나가 실패해도 나머지를 지운다(남는 것은 아무도 가리키지 않는 객체 · GC 의 몫이다). */
@@ -206,6 +224,25 @@ export async function readFile(
   fileId: string,
 ): Promise<{ file: StoredFile; bytes: Uint8Array } | null> {
   const file = await getFile(ctx, fileId)
+  if (file === null) return null
+  const bytes = await fileStorage().read(file.storageKey)
+  return bytes === null ? null : { file, bytes }
+}
+
+/**
+ * 서명 주소의 파일(API-7 · 정본 [보강 API-1] ⑪) — **세션이 없다**: 서명이 곧 1시간짜리 권한이고 부르는 쪽(`app/api/files/[fileId]`)이
+ * 먼저 본다. 행이 없거나 · 지운 워크스페이스의 것이거나 · 객체가 없으면 null(404).
+ */
+export async function readSignedFile(fileId: string): Promise<{ file: StoredFile; bytes: Uint8Array } | null> {
+  const file = await withReadTransaction(async (tx) => {
+    const row = await tx.queryMaybe<FileRow>(
+      `SELECT f.id, f.workspace_id, f.storage_key, f.mime, f.size_bytes, f.original_name, f.checksum, f.ref_count
+         FROM file f JOIN workspace w ON w.id = f.workspace_id
+        WHERE f.id = $1 AND w.deleted_at IS NULL`,
+      [fileId],
+    )
+    return row === null ? null : toStoredFile(row)
+  })
   if (file === null) return null
   const bytes = await fileStorage().read(file.storageKey)
   return bytes === null ? null : { file, bytes }

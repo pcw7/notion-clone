@@ -10,6 +10,7 @@
 
 import { createHash } from 'node:crypto'
 
+import { MAX_UPLOAD_BYTES } from '../file/limits.ts'
 import type { RateLimitRule } from '../rate-limit.ts'
 
 /** 받는 단 하나의 `Notion-Version` — 데이터 소스 판(정본 ③). */
@@ -17,6 +18,9 @@ export const NOTION_VERSION = '2025-09-03'
 
 /** 요청 본문의 상한 — 노션의 500KB(F-09-05). 넘으면 400 `validation_error`. */
 export const API_MAX_BODY_BYTES = 500 * 1024
+
+/** 파일 보내기(API-7 · 정본 ⑪)의 본문 상한 — 500KB 가 아니라 파일 하나의 상한(앱의 것) + 폼의 머리 64KB. 넘으면 읽지 않고 400. */
+export const API_MAX_MULTIPART_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
 
 /**
  * 토큰마다 — 5초 창에 15번(평균 초당 3번 · 한 창 안의 몰림은 15번까지 받는다). 고정 창이라 창의 경계에서는 두 배까지 지난다
@@ -160,6 +164,9 @@ export const API_MESSAGES = {
   unauthorized: 'API token is invalid.',
   rateLimited: 'You have been rate limited. Please try again later.',
   bodyTooLarge: `Request body too large. The limit is ${API_MAX_BODY_BYTES / 1024}KB.`,
+  fileTooLarge: `The file is too large. The limit is ${MAX_UPLOAD_BYTES / 1024 / 1024}MB per file.`,
+  multipartRequired: 'Send the file as multipart/form-data with a "file" field.',
+  invalidMultipart: 'Error parsing multipart/form-data body.',
   invalidJson: 'Error parsing JSON body.',
   invalidUrl: 'Invalid request URL.',
   internal: 'Unexpected error occurred.',

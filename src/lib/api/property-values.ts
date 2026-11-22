@@ -9,8 +9,8 @@
  *
  *   · 제목 속성의 id 는 노션처럼 늘 `'title'` 이다(받을 때는 우리 id 도 받는다 · `findProperty`)
  *   · select · status · multi_select — `{id, name, color}`(지운 옵션을 가리키면 빠진다)
- *   · files — 올린 파일은 짧게 사는 주소를 만들 길이 없다(서명 URL 이 없다 — `file/storage.ts`). 그래서 노션의 **요청** 모양
- *     `{name, type:'file_upload', file_upload:{id}}` 으로 준다(그대로 다시 보내면 같은 값이다)
+ *   · files — 노션처럼 `{name, type:'file', file:{url, expiry_time}}`(1시간 사는 서명 주소 · API-7 · 정본 ⑪). 그대로 다시 보내면 같은
+ *     값이다(우리 서명이 맞을 때만 — `ownFileId`) · 옛 모양 `{name, type:'file_upload', file_upload:{id}}` 도 받는다
  *   · place — 노션의 `{lat, lon, name, address, aws_place_id, google_place_id}`(뒤의 둘은 우리에게 없다 — null)
  *   · rollup — 숫자(세기 · 비율 · 기간의 일수) · 날짜 · 배열(원본 보기) · 계산할 수 없으면 `unsupported`
  *   · verification — 만료는 읽을 때 판정한다(`expired`)
@@ -103,7 +103,7 @@ export function cellToApi(type: MvpPropertyType, raw: unknown, options: readonly
     case 'people':
       return value.people.map((p) => userRef(p.id))
     case 'files':
-      return value.files.map((f) => ({ name: f.name, type: 'file_upload', file_upload: { id: f.id } }))
+      return value.files.map((f) => ({ name: f.name, type: 'file', file: links.fileUrl(f.id) }))
     case 'url':
       return value.url === '' ? null : value.url
     case 'email':
@@ -286,9 +286,16 @@ function pickOption(raw: unknown, options: readonly SelectOption[], at: string, 
 
 /**
  * 노션의 값 하나 → 우리 쓰기. `raw` 는 `properties` 의 값(`{ "title": [...] }` · `{ "type": "number", "number": 3 }`) — 제목 · 글은 배열만
- * 보내도 받는다. `path` 는 오류 글의 자리(`body.properties.Name`).
+ * 보내도 받는다. `path` 는 오류 글의 자리(`body.properties.Name`). `ownFileId` 는 읽은 서명 주소를 파일 id 로(왕복 — 없으면 files 의
+ * `type: "file"` 은 받지 않는다).
  */
-export function parsePropertyWrite(property: ApiProperty, raw: unknown, path: string, options: readonly SelectOption[]): WriteParse {
+export function parsePropertyWrite(
+  property: ApiProperty,
+  raw: unknown,
+  path: string,
+  options: readonly SelectOption[],
+  ownFileId?: (url: string) => string | null,
+): WriteParse {
   const type = property.type
   if (!isWritableType(type)) return reject(`${path}: property "${property.name}" is a ${type} property and cannot be updated.`)
 
@@ -314,7 +321,7 @@ export function parsePropertyWrite(property: ApiProperty, raw: unknown, path: st
     return { ok: true, write: { kind: 'relation', propertyId: property.id, ids } }
   }
 
-  const cell = toCellValue(type as MvpPropertyType, value, at, property, options)
+  const cell = toCellValue(type as MvpPropertyType, value, at, property, options, ownFileId)
   if (typeof cell === 'string') return reject(cell)
   // 마지막 확인은 앱의 칸 계약 — 그 글(한국어)은 싣지 않고 자리만 말한다
   const issues = validateCellValue(type as MvpPropertyType, cell)
@@ -323,7 +330,14 @@ export function parsePropertyWrite(property: ApiProperty, raw: unknown, path: st
 }
 
 /** 타입마다 노션의 값 → 우리 칸. 틀리면 오류 글(문자열). */
-function toCellValue(type: MvpPropertyType, value: unknown, at: string, property: ApiProperty, options: readonly SelectOption[]): CellValue | string {
+function toCellValue(
+  type: MvpPropertyType,
+  value: unknown,
+  at: string,
+  property: ApiProperty,
+  options: readonly SelectOption[],
+  ownFileId: ((url: string) => string | null) | undefined,
+): CellValue | string {
   switch (type) {
     case 'title':
     case 'rich_text': {
@@ -385,11 +399,18 @@ function toCellValue(type: MvpPropertyType, value: unknown, at: string, property
         const f = `${at}[${i}]`
         if (!isObject(item)) return `${f} should be an object, instead was ${shownValue(item)}.`
         const kind = item.type ?? ('file_upload' in item ? 'file_upload' : 'external' in item ? 'external' : 'file' in item ? 'file' : undefined)
-        if (kind !== 'file_upload') {
-          return `${f}.type ${shownValue(kind)} is not supported. Upload the file in the app and send {"type":"file_upload","file_upload":{"id":…}}.`
+        let id: string | null
+        if (kind === 'file_upload') {
+          id = parseApiId(isObject(item.file_upload) ? item.file_upload.id : undefined)
+          if (id === null) return `${f}.file_upload.id should be a valid uuid, instead was ${shownValue(isObject(item.file_upload) ? item.file_upload.id : item.file_upload)}.`
+        } else if (kind === 'file') {
+          // 왕복 — 읽은 서명 주소 그대로(만료는 보지 않는다)
+          const url = isObject(item.file) ? item.file.url : undefined
+          id = typeof url === 'string' && ownFileId !== undefined ? ownFileId(url) : null
+          if (id === null) return `${f}.file.url should be a file URL read from this API (send it back unchanged), instead was ${shownValue(url)}.`
+        } else {
+          return `${f}.type ${shownValue(kind)} is not supported. Upload the file (POST /v1/file_uploads) and send {"type":"file_upload","file_upload":{"id":…}}.`
         }
-        const id = parseApiId(isObject(item.file_upload) ? item.file_upload.id : undefined)
-        if (id === null) return `${f}.file_upload.id should be a valid uuid, instead was ${shownValue(isObject(item.file_upload) ? item.file_upload.id : item.file_upload)}.`
         if (typeof item.name !== 'string' || item.name.trim() === '') return `${f}.name should be a non-empty string, instead was ${shownValue(item.name)}.`
         files.push({ id, name: item.name.trim() })
       }

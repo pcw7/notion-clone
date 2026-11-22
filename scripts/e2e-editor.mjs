@@ -37906,6 +37906,92 @@ async function main() {
         String(limited?.code ?? limited))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 파일 올리기 (API-7 · F-09-08)')) { try {
+      // 공개 API 의 파일 올리기(정본 §3.1 [보강 API-1] ⑪ · 09 F-09-08). 새 멤버가 토큰을 만들고 노션의 공식 SDK(`@notionhq/client`)로 작은 PNG 를
+      // 올린다(create → send) · 자기 개인 페이지에 이미지 블록과 아이콘으로 붙인다 · 읽은 서명 주소를 **쿠키 없이** 열어 같은 바이트를 받는다 ·
+      // 바꾼 서명은 403 · 편집기에서 그 이미지가 그려진다 · 읽은 아이콘을 그대로 PATCH 하면 같은 파일(왕복). 자기 데이터를 스스로 만든다 —
+      // E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const sdkMod = await import('@notionhq/client')
+      const sdk = sdkMod.default ?? sdkMod
+      const { APIErrorCode, APIResponseError } = sdk
+      const pageMod = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`파일 올리기의 사람 ${stamp}`), 'member')
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: `API-7 e2e ${stamp}` }),
+      })
+      const apiToken = (await made.json().catch(() => null))?.token
+      if (made.status !== 201 || typeof apiToken !== 'string') throw new Error(`토큰을 만들지 못했다: ${made.status}`)
+      const notion = new sdk.Client({ auth: apiToken, baseUrl: BASE, notionVersion: '2025-09-03', logLevel: sdk.LogLevel.ERROR })
+      const caught = async (fn) => {
+        try {
+          await fn()
+          return null
+        } catch (e) {
+          return e
+        }
+      }
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+      const page = await pageMod.createPage(mate.ctx, { title: [textRun(`API 파일 ${stamp}`)], privateTop: true })
+
+      // 올리기 — create → send(SDK 가 multipart/form-data 로)
+      const created = await notion.fileUploads.create({ filename: 'dot.png', content_type: 'image/png' })
+      const sent = await notion.fileUploads.send({ file_upload_id: created.id, file: { filename: 'dot.png', data: new Blob([png], { type: 'image/png' }) } })
+      check('★ SDK fileUploads.create → send — pending(보내기 주소 · 1시간) → uploaded(길이 · 형식)',
+        created.object === 'file_upload' && created.status === 'pending' && created.upload_url?.endsWith(`/v1/file_uploads/${created.id}/send`)
+          && Math.abs(Date.parse(created.expiry_time) - Date.parse(created.created_time) - 3600_000) < 5000
+          && sent.id === created.id && sent.status === 'uploaded' && sent.content_length === png.length && sent.content_type === 'image/png',
+        JSON.stringify({ created, sent }).slice(0, 500))
+
+      // 붙이기 — 이미지 블록 · 아이콘
+      const appended = await notion.blocks.children.append({ block_id: page.id, children: [{ type: 'image', image: { type: 'file_upload', file_upload: { id: created.id } } }] })
+      const imageId = appended.results?.[0]?.id
+      const iconed = await notion.pages.update({ page_id: page.id, icon: { type: 'file_upload', file_upload: { id: created.id } } })
+      const after = await notion.fileUploads.retrieve({ file_upload_id: created.id })
+      const listed = await notion.fileUploads.list({ status: 'uploaded' })
+      check('★ 이미지 블록 · 아이콘으로 붙인다 — 읽으면 type "file" 의 서명 주소 · 붙은 업로드는 만료가 없다 · 목록(uploaded)에 있다',
+        appended.results?.[0]?.image?.type === 'file' && /\/api\/files\/[0-9a-f-]{36}\?expires=\d+&signature=/.test(appended.results[0].image.file?.url ?? '')
+          && iconed.icon?.type === 'file' && iconed.icon.file?.url?.includes(`/api/files/${created.id}?`)
+          && after.status === 'uploaded' && after.expiry_time === null && listed.results.some((u) => u.id === created.id),
+        JSON.stringify({ image: appended.results?.[0]?.image, icon: iconed.icon, after: after.status }).slice(0, 500))
+
+      // 서명 주소 — 쿠키 없이 같은 바이트 · 바꾼 서명은 403
+      const url = appended.results[0].image.file.url
+      const opened = await fetch(url.replace(new URL(url).origin, BASE))
+      const bytes = Buffer.from(await opened.arrayBuffer())
+      const tamperedUrl = url.replace(/signature=(.)/, (_m, c) => `signature=${c === 'A' ? 'B' : 'A'}`)
+      const tampered = await fetch(tamperedUrl.replace(new URL(url).origin, BASE))
+      check('★ 서명 주소를 쿠키 없이 연다 — 같은 바이트 · image/png · nosniff · 바꾼 서명은 403',
+        opened.status === 200 && bytes.equals(png) && opened.headers.get('content-type') === 'image/png'
+          && opened.headers.get('x-content-type-options') === 'nosniff' && tampered.status === 403,
+        JSON.stringify({ status: opened.status, length: bytes.length, type: opened.headers.get('content-type'), tampered: tampered.status }))
+
+      // 왕복 · 거부 — 읽은 아이콘을 그대로 · complete 는 400 · 바깥 주소의 type "file" 은 400
+      const reread = await notion.pages.retrieve({ page_id: page.id })
+      const back = await notion.pages.update({ page_id: page.id, icon: reread.icon })
+      const complete = await caught(() => notion.fileUploads.complete({ file_upload_id: created.id }))
+      const foreign = await caught(() => notion.pages.update({ page_id: page.id, cover: { type: 'file', file: { url: 'https://cdn.example.com/a.png' } } }))
+      check('★ 읽은 아이콘을 그대로 PATCH — 같은 파일 · complete 는 validation_error · 바깥 주소의 type "file" 은 validation_error',
+        back.icon?.type === 'file' && back.icon.file?.url?.includes(`/api/files/${created.id}?`)
+          && APIResponseError.isAPIResponseError(complete) && complete.code === APIErrorCode.ValidationError
+          && APIResponseError.isAPIResponseError(foreign) && foreign.code === APIErrorCode.ValidationError,
+        JSON.stringify({ back: back.icon?.type, complete: complete?.code ?? String(complete), foreign: foreign?.code ?? String(foreign) }))
+
+      // 편집기 — 그 사람으로 열면 이미지 블록 · 아이콘이 그려진다(앱의 파일 경로 · 세션)
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page.id}` })
+        const drawn = await waitFor(`(() => { const i = document.querySelector('.blk-editor [data-block-id="${imageId}"] img'); return !!i && i.complete && i.naturalWidth > 0 })()`, 15000)
+        const src = await evaluate(`document.querySelector('.blk-editor [data-block-id="${imageId}"] img')?.getAttribute('src') ?? null`)
+        check('★ 편집기 — API 로 붙인 이미지가 그려진다(앱의 파일 경로 — 서명 주소가 아니다)',
+          drawn && typeof src === 'string' && src.includes(`/files/${created.id}`) && !src.includes('signature='),
+          String(src))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('개발자 문서 (API-6 · F-09-15)')) { try {
       // 개발자 문서(정본 §3.1 [보강 API-1] · 09 F-09-15) — 로그인 없이 열리는 공개 화면. 주소 표의 줄이 `/v1` 라우트 파일이 여는 것과 하나도
       // 다르지 않은지(단위 시험과 같은 셈을 화면에서) · "노션과 다른 점" 절 · 예제의 주소가 이 앱의 공개 주소인지 본다. 설정 → 내 계정 →

@@ -2619,8 +2619,8 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > ③ **모양은 노션 API `2025-09-03`**(데이터 소스 판 — 위 투영 규칙과 같다). 주소는 앱 출처의 `/v1/...` · `Authorization: Bearer <토큰>` · `Notion-Version`
 > 헤더는 받아 확인한다(없으면 400 `missing_version`). 오류는 노션 모양 `{object:'error', status, code, message, request_id}` · 코드는 노션 것
 > (`unauthorized` · `restricted_resource` · `object_not_found` · `rate_limited` · `validation_error` · `invalid_request` · `conflict_error` ·
-> `internal_server_error`). **볼 수 없는 것은 404 `object_not_found`**(있는지 새지 않는다 — 앱의 404 와 같다). 우리에게 없는 기능(동기 블록 · 파일
-> 올리기 API 등)은 400 `validation_error` 로 "지원하지 않는다" 를 말한다.
+> `internal_server_error`). **볼 수 없는 것은 404 `object_not_found`**(있는지 새지 않는다 — 앱의 404 와 같다). 우리에게 없는 기능(동기 블록 ·
+> 여러 조각 업로드 등)은 400 `validation_error` 로 "지원하지 않는다" 를 말한다(파일 올리기 자체는 ⑪ 이 열었다).
 > ④ **제한** — 토큰마다 평균 초당 3번(노션과 같다 · 짧은 몰림은 받는다) · 넘으면 429 `rate_limited` + `Retry-After`. 요청 본문 500KB · 한 번에 블록
 > 1000개 · 목록은 `page_size` 100 · `start_cursor` / `next_cursor` / `has_more`(노션의 상한 그대로).
 > ⑤ **쓰기 · 읽기의 규칙은 앱과 같다** — 쓰기는 출처 `api`(`doc_update.origin` · 활동의 행위자는 그 사람 · 데이터베이스 자동화는 사람의 편집처럼 깨운다) ·
@@ -2628,9 +2628,10 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 읽기도 소유자만(4y 가 이미 적어 둔 게이트) · 잠긴 페이지는 쓰기 거부.
 > 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-4b 데이터베이스 · 데이터 소스 만들기 · 고치기 →
 > API-5 검색 · 코멘트 · 사용자 →
-> API-6 개발자 문서 · SDK 호환 검사.
-> ⑥ **[API-2] 페이지에서 노션과 다르게 둔 것** — 올린 파일의 아이콘 · 커버와 내장 커버는 `null`(짧게 사는 파일 주소를 만드는 길이 없다 — 뒤로) ·
-> files 속성은 `{name, type:'file_upload', file_upload:{id}}`(그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
+> API-6 개발자 문서 · SDK 호환 검사 → API-7 파일 올리기 · 서명 주소(⑪).
+> ⑥ **[API-2] 페이지에서 노션과 다르게 둔 것** — 내장 커버는 `null`(노션의 모양이 없다) · 올린 파일의 아이콘 · 커버 · files 속성은 노션처럼
+> `{type:'file', file:{url, expiry_time}}`(⑪ 의 서명 주소 — API-7 전에는 아이콘 · 커버가 `null`, files 가 `file_upload {id}` 였다 · 그 모양도
+> 계속 받는다 · 읽은 값을 그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
 > 만든다 — 옵션 만들기는 구조 고치기 권한이라 칸 쓰기에 섞지 않는다) · 잠긴 페이지 쓰기는 400 `validation_error` · 내보내기 정책이 꺼지면 쓰기도
 > 막는다(쓰기 응답도 페이지 내용을 돌려준다) · `public_url` 은 게시를 관리할 수 있는 사람에게만 · `children` 은 API-3 부터(그 전에는 빈 배열만) ·
 > `filter_properties` 는 읽기(`GET` — 질의와 같은 규칙 · 모르는 속성은 400 · API-6 의 SDK 검사가 찾아 더했다)만 듣는다(만들기 · 고치기의 응답은 모든 속성).
@@ -2638,7 +2639,7 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 하나(경로 ② · 출처 `api` · 열린 편집기에 곧바로 간다) · **지운 본문 블록은 되살릴 수 없다**(Y.Doc 에서 빠진다 — 버전 기록으로 되돌린다 ·
 > `in_trash:false` 는 페이지만) · 그 안의 하위 페이지는 휴지통으로(편집기에서 지울 때와 같다) · 토글 헤딩 · 이모지가 아닌 콜아웃 아이콘 ·
 > `link_to_page` · `synced_block` · `pdf` · `audio` · `template` 쓰기는 400 · 버튼 · 출처 없는 미디어는 `unsupported` 로 읽는다 · 올린 파일은
-> `file_upload {id}`(⑥과 같다) · 붙일 자리는 `after` 와 `position` 을 둘 다 받는다 · 잠긴 · 휴지통의 페이지에 쓰면 400.
+> `{type:'file', file:{url, expiry_time}}`(⑥과 같다 · ⑪) · 붙일 자리는 `after` 와 `position` 을 둘 다 받는다 · 잠긴 · 휴지통의 페이지에 쓰면 400.
 > ⑧ **[API-4] 데이터 소스 · 질의에서 노션과 다르게 둔 것** — 질의는 앱의 행 질의(`queryRows` — 권한 술어가 필터보다 먼저 · keyset 커서 ·
 > 10,000 상한)를 지난다: 노션의 DSL 을 앱의 필터 트리로 옮길 뿐 SQL 컴파일러를 따로 두지 않는다(`timestamp` 필터 · 정렬은 행 시각의 열쇠
 > `@created_time` · `@last_edited_time` 으로 앱의 필터에 더했다) · **rollup 필터는 400**(값을 저장하지 않는다 — D1) · 장소 · 버튼 필터도 400 ·
@@ -2672,7 +2673,7 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 제안의 스레드(`suggestion.thread_id`)는 목록에 없다(id 로 하나를 읽으면 해결된 것도 준다) · 가리키던 블록이 사라진 스레드의 `parent` 는 `page_id`(앱이
 > 페이지 코멘트로 보인다) · 블록에 다는 새 스레드는 블록 하나 전체에 · 데이터베이스 id 는 400 · 잠긴 페이지에도 단다(앱과 같다) · 해결된 스레드에
 > 답하면 다시 연다(앱의 규칙) · `display_name` 은 `user` 만(`integration` · `custom` 은 400 — 개인 토큰은 그 사람으로 쓴다 · 응답의 `resolved_name` 은
-> 지금 이름) · `attachments` 는 빈 배열만(파일 올리기 API 가 없다) · `markdown` 은 400(다음 판의 것) · 날짜 멘션은 400(앱에 없다) · 멘션만 든 코멘트는
+> 지금 이름) · `attachments` 는 빈 배열만(앱의 코멘트에 첨부가 없다 — ⑪ 의 올린 파일도 붙이지 않는다) · `markdown` 은 400(다음 판의 것) · 날짜 멘션은 400(앱에 없다) · 멘션만 든 코멘트는
 > 빈 코멘트(400 — 멘션의 `plain_text` 는 비어 있다) · **코멘트 안의 사람 멘션은 멘션 알림**(이 조각이 앱의 명령에 더했다 — 앱 화면도 같다 · 고칠 때는
 > 새로 든 사람만 · 인박스는 그 코멘트를 미리 보인다 · 멘션된 사람은 같은 코멘트의 답글 · 코멘트 알림을 따로 받지 않는다 — 알림은 하나) · 고치기 · 지우기(`PATCH` · `DELETE` — 노션은 2026-04 에 열었다)는 작성자만이고 남의 코멘트는
 > 403(노션은 404 — 앱은 그 코멘트를 보인다) · 지우면 지우기 전의 객체 · 코멘트는 열린 패널에 곧바로 가지 않는다(앱의 패널은 열 때 읽는다) ·
@@ -2680,6 +2681,39 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 활동 중인 멤버만(게스트 · 멈춘 사람은 빠진다 — 노션도 게스트를 뺀다) · 한 사람은 게스트 · 멈춘 사람도(나간 사람은 404) · 이메일은 설정 화면이
 > 멤버에게 보이는 그대로 · 노션은 개인 토큰의 사용자 목록을 막지만 우리는 연다(토큰은 그 사람이다 — 앱의 멤버 화면과 같다) · 내보내기 정책 게이트는
 > 걸지 않는다(내용이 아니다).
+> ⑪ **[API-7] 파일 올리기 · 서명 주소** ⟨56번 트랙 · 09 F-09-08 · 마이그레이션 0150⟩ —
+> **주소**는 노션의 것: `POST /v1/file_uploads`(만들기) · `POST /v1/file_uploads/{id}/send`(`multipart/form-data` 의 `file` 하나) ·
+> `GET /v1/file_uploads/{id}` · `GET /v1/file_uploads`(내 것만 · `status` 로 거르기 · `page_size` · `start_cursor`). **`single_part` 만** —
+> `multi_part` 는 400(파일 하나의 상한이 앱의 5 MiB(`file/limits.ts`)라 노션의 여러 조각 문턱 20 MiB 에 닿지 않는다) · `external_url` 은
+> 400(다른 사이트의 파일을 서버가 대신 받아 오지 않는다 — 바깥 주소는 `external` 로 붙인다) · `complete` 는 늘 400(single_part 는 보내면 끝이다).
+> 보내기의 본문 상한은 500KB(④)가 아니라 **파일의 상한 + 64KB**(폼의 머리) — 넘으면 읽지 않고 400.
+> **상태**는 표 `api_file_upload`(§3.10): **id 는 올린 뒤의 `file.id` 와 같다**(왕복이 쉽고 · 앱에서 올린 파일의 id 를 받던 옛 `file_upload {id}`
+> 와 같은 이름 공간) · 주인은 토큰의 사람(같은 워크스페이스 · 남의 것은 404 — 있는지 새지 않는다) · 저장하는 상태는 `pending` · `uploaded` 둘이고
+> `expired` 는 읽을 때 판정한다(붙지 않았고 만든 뒤 1시간이 지났다 · 지우는 잡은 없다 — 붙지 않은 파일은 `ref_count = 0` 이라 FS1 의 GC 몫) ·
+> `failed` 는 생기지 않는다. 보내기는 `pending` 이고 만료 전에만 · **붙이면** 같은 트랜잭션에서 `attached_at` 을 쓰고 만료를 비운다(노션 — 붙은
+> 업로드는 영구 · 같은 id 를 여러 곳에 다시 붙인다 · 그 뒤로는 보통의 워크스페이스 파일이라 누구의 쓰기든 받는다 — 쓰기가 거부되면 함께 되돌린다).
+> **저장은 앱의 업로드 길**(`file/file.ts` — 같은 검사 · 같은 MIME 가리기 · 같은 상한 · 같은 `file` 행과 `uploaded_by`) · 쓰임은 `file`(무엇이든 받는다 —
+> 앱의 파일 블록과 같다) · 단 **이미지 · 비디오라고 말한 것은 바이트가 그것이어야 한다**(앱은 조용히 `octet-stream` 으로 낮추지만 API 는 400 으로
+> 말한다) · `content_type` 은 MIME 의 모양(매개변수는 뗀다 · 없으면 파일 이름의 확장자 → 보낸 부분의 형식 → `octet-stream`) · 파일 이름 900바이트.
+> 감사 · 활동은 앱의 업로드가 남기는 것(`file.uploaded_by`) 그대로다.
+> **붙이기**는 노션이 받는 모든 자리에서 `{type:'file_upload', file_upload:{id}}` — 이미지 · 비디오 · 파일 블록 · files 속성 · 페이지 · 데이터베이스
+> 아이콘 · 페이지 커버(pdf · audio 블록 · 데이터베이스 커버 · 코멘트 첨부는 앱에 없어 그대로 400). 검사는 **세션 → 앱** 차례: 세션이 있으면 주인 ·
+> `uploaded` · 만료 전이어야 하고(붙은 뒤로는 묻지 않는다) 그다음은 앱의 것(이 워크스페이스의 파일 · 이미지 블록 · 아이콘 · 커버는 받는 이미지 4종 ·
+> 비디오 블록은 2종). 아니면 400 `validation_error`(모르는 id · 지난 업로드 · 다른 워크스페이스 모두 — 자리를 말한다). 참조 수는 앱의 장부(본문 투영 ·
+> 칸 트리거 0139 · 아이콘 · 커버 참조)가 센다 — 새 장부를 두지 않는다. 권한 · 잠금 · 내보내기 정책 · 요청 제한(부를 때마다)은 다른 쓰기와 같다 —
+> 올리기 주소들도 내보내기 정책 게이트를 지난다.
+> **읽기는 노션처럼 서명된 주소** — 올린 파일은 `{type:'file', file:{url, expiry_time}}`(블록 · files 속성(`name` 과 함께) · 아이콘 · 커버). 주소는
+> 앱의 출처의 `GET /api/files/{file_id}?expires=<유닉스 초>&signature=<base64url>` · 수명 **1시간**(읽을 때마다 새로 만든다 — 저장하지 않는다 ·
+> §3.10) · 서명은 `AUTH_SECRET` 에서 HKDF-SHA256(`info='notion-clone/api-file-url/v1'`)으로 유도한 키의 HMAC-SHA256(파일 id · 만료) · **세션 없이**
+> 연다(주소가 곧 1시간짜리 권한이다 — 노션과 같다) · 비교는 상수 시간 · 틀린 서명 · 지난 만료는 403 · 서명이 맞아도 파일 행 · 바이트가 없거나 지운
+> 워크스페이스면 404 · 머리는 앱의 파일 경로와 같다(`serve.ts` — 이미지 · 비디오만 inline · `nosniff`) · 캐시는 만료까지 `private`. 앱의 화면은 여전히
+> 세션으로 인증하는 안정 경로를 쓴다.
+> **왕복**: 읽은 `{type:'file', file:{url}}` 을 그대로 보내면 **같은 파일**이다 — 우리 주소이고 서명이 맞으면(만료는 보지 않는다 — 노션의 클라이언트는
+> 읽은 것을 그대로 PATCH 한다) 그 파일 id 로 읽고 위의 검사를 그대로 지난다. 다른 주소의 `type:'file'` 은 400(남의 주소는 `external`). 옛 모양
+> `file_upload {id}` 도 계속 받는다.
+> **노션과 다른 점**: 여러 조각 · 바깥 주소 가져오기 없음 · `complete` 는 늘 400 · 파일 하나 5 MiB(요금제 엔타이틀먼트가 생기면 그것) · 이미지 ·
+> 비디오라 말하고 다른 바이트를 보내면 400 · 업로드 목록은 토큰의 사람의 것만 · `created_by.type` 은 늘 `person` · 서명 주소는 앱의 출처(S3 가
+> 아니다) · 코멘트 첨부는 없다(⑩).
 
 **정본 상수**
 
@@ -6339,6 +6373,17 @@ CREATE TABLE file (
   uploaded_by uuid NULL, created_at timestamptz NOT NULL
 );
 -- 서명 URL 은 저장하지 않고 조회 시점에 생성한다(저장하면 만료 관리가 불가능).
+
+CREATE TABLE api_file_upload (                 -- 공개 API 의 파일 올리기 세션 — §3.1 [보강 API-1] ⑪ (API-7 · 0150)
+  id uuid PRIMARY KEY,                         -- = 올린 뒤의 file.id
+  workspace_id uuid NOT NULL REFERENCES workspace(id), user_id uuid NOT NULL,   -- 주인 = 토큰의 사람 (workspace_member 복합 FK)
+  status text NOT NULL CHECK (status IN ('pending','uploaded')),               -- 'expired' 는 읽을 때 판정 · 'failed' 없음
+  filename text NULL, content_type text NULL, content_length bigint NULL,
+  file_id uuid NULL REFERENCES file(id),       -- uploaded 일 때만 · = id
+  created_at timestamptz NOT NULL, last_edited_at timestamptz NOT NULL,
+  expires_at timestamptz NULL,                 -- 만든 뒤 1시간 · 붙으면 NULL
+  attached_at timestamptz NULL                 -- 처음 붙인 때 (attached_at IS NULL) = (expires_at IS NOT NULL)
+);
 
 CREATE TABLE plan (
   id uuid PRIMARY KEY, code text NOT NULL UNIQUE

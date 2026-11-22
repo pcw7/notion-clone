@@ -87,6 +87,8 @@ const EXPECTED_TABLES = [
   'suggestion',
   // 공개 API 의 개인 토큰 API-1 (0145)
   'api_token',
+  // 공개 API 의 파일 올리기 세션 API-7 (0150)
+  'api_file_upload',
   // AI 1차 기반 AI-1 (0146)
   'workspace_ai_setting', 'ai_usage', 'ai_grant', 'ai_daily_usage',
   // AI 채팅 · 내 AI 지시 AI-6 (0148)
@@ -6229,6 +6231,86 @@ try {
       if (def.includes(`(${cols})`)) ok(`${index} — 활동 기록(최근 것부터 · 키셋)`)
       else fail(`${index} 가 (${cols}) 가 아니다 — ${def || '없다'}`)
     }
+  }
+
+  {
+    // 공개 API 의 파일 올리기 세션(0150 · API-7 · §3.1 [보강 API-1] ⑪ · §3.10) — 상태 둘 · 이름 900바이트 · MIME 의 모양 · 파일 행은 올린 뒤에만
+    // 같은 id · 길이는 올린 뒤에만(> 0) · 붙는 것은 올린 것만 · (붙음) = (만료 없음) · 시각의 차례 · 멤버십 · 파일 FK · 목록의 인덱스
+    const UPLOAD_CONSTRAINTS = [
+      'ck_api_file_upload_status', 'ck_api_file_upload_filename', 'ck_api_file_upload_content_type', 'ck_api_file_upload_file',
+      'ck_api_file_upload_length', 'ck_api_file_upload_attached', 'ck_api_file_upload_expiry', 'ck_api_file_upload_edited',
+      'fk_api_file_upload_member',
+    ]
+    for (const name of UPLOAD_CONSTRAINTS) {
+      const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = 'api_file_upload'::regclass`, [name])).rowCount
+      if (has === 1) ok(`${name} 이 있다`)
+      else fail(`${name} 이 없다`)
+    }
+    const owner = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_api_file_upload_owner'`)).rows[0]?.indexdef ?? ''
+    if (owner.includes('(workspace_id, user_id, created_at DESC, id DESC)')) ok('ix_api_file_upload_owner — 내 업로드(최근 것부터)')
+    else fail(`ix_api_file_upload_owner 가 틀렸다 — ${owner || '없다'}`)
+
+    await client.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1, $2, 'member', 'active') ON CONFLICT (workspace_id, user_id) DO NOTHING`,
+      [wsId, userId],
+    )
+    const fileOf = async (id) => {
+      await client.query(`INSERT INTO file (id, workspace_id, region_id, storage_key, created_at) VALUES ($1, $2, 'local', $3, now())`, [id, wsId, `${wsId}/${id}.png`])
+      return id
+    }
+    const insertUpload = `INSERT INTO api_file_upload (id, workspace_id, user_id, status, filename, content_type, content_length, file_id,
+                                                       created_at, last_edited_at, expires_at, attached_at)
+                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+    const up = (over = {}) => {
+      const u = {
+        id: randomUUID(), ws: wsId, user: userId, status: 'pending', filename: '점.png', type: 'image/png', length: null, file: null,
+        created: '2026-11-22T00:00:00Z', edited: '2026-11-22T00:00:00Z', expires: '2026-11-22T01:00:00Z', attached: null, ...over,
+      }
+      return [u.id, u.ws, u.user, u.status, u.filename, u.type, u.length, u.file, u.created, u.edited, u.expires, u.attached]
+    }
+    const sent = await fileOf(randomUUID())
+    const attached = await fileOf(randomUUID())
+    const other = await fileOf(randomUUID())
+    await client.query(insertUpload, up())
+    await client.query(insertUpload, up({ filename: null, type: null }))
+    await client.query(insertUpload, up({ id: sent, status: 'uploaded', file: sent, length: 4096, edited: '2026-11-22T00:00:05Z' }))
+    await client.query(insertUpload, up({ id: attached, status: 'uploaded', file: attached, length: 1, expires: null, attached: '2026-11-22T00:00:09Z', filename: '가'.repeat(300), type: 'application/vnd.ms-excel' }))
+    ok('api_file_upload 정상 삽입 (보내기 전 · 이름 · 형식 없음 · 올림 · 붙음(900바이트 이름 · 만료 없음))')
+
+    const rejectsBy = async (label, sql, params, ...names) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (names.includes(e.constraint)) ok(`${label} — ${e.constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${names.join(' | ')} 가 아니라 ${e.constraint ?? e.code} (${String(e.message).split('\n')[0]})`)
+      }
+    }
+    await rejectsBy('★ 저장하지 않는 상태(expired — 읽을 때 판정)', insertUpload, up({ status: 'expired' }), 'ck_api_file_upload_status')
+    await rejectsBy('빈 파일 이름', insertUpload, up({ filename: '' }), 'ck_api_file_upload_filename')
+    await rejectsBy('★ 파일 이름 901바이트 이상(한글 301자)', insertUpload, up({ filename: '가'.repeat(301) }), 'ck_api_file_upload_filename')
+    await rejectsBy('★ 대문자 MIME', insertUpload, up({ type: 'Image/PNG' }), 'ck_api_file_upload_content_type')
+    await rejectsBy('MIME 의 매개변수', insertUpload, up({ type: 'text/plain; charset=utf-8' }), 'ck_api_file_upload_content_type')
+    await rejectsBy('MIME 이 아니다', insertUpload, up({ type: 'png' }), 'ck_api_file_upload_content_type')
+    await rejectsBy('★ 올렸는데 파일 행이 없다', insertUpload, up({ status: 'uploaded', length: 5 }), 'ck_api_file_upload_file')
+    await rejectsBy('★ 보내기 전인데 파일 행을 가리킨다', insertUpload, up({ id: other, file: other }), 'ck_api_file_upload_file')
+    await rejectsBy('★ 다른 id 의 파일 행(세션 id = 파일 id)', insertUpload, up({ status: 'uploaded', file: other, length: 5 }), 'ck_api_file_upload_file')
+    await rejectsBy('★ 올렸는데 길이가 없다', insertUpload, up({ id: other, status: 'uploaded', file: other }), 'ck_api_file_upload_length')
+    await rejectsBy('0 바이트', insertUpload, up({ id: other, status: 'uploaded', file: other, length: 0 }), 'ck_api_file_upload_length')
+    await rejectsBy('보내기 전인데 길이가 있다', insertUpload, up({ length: 5 }), 'ck_api_file_upload_length')
+    await rejectsBy('★ 보내기 전인데 붙었다', insertUpload, up({ expires: null, attached: '2026-11-22T00:10:00Z' }), 'ck_api_file_upload_attached')
+    await rejectsBy('만든 시각보다 앞서 붙었다', insertUpload, up({ id: other, status: 'uploaded', file: other, length: 5, expires: null, attached: '2026-11-21T00:00:00Z' }), 'ck_api_file_upload_attached')
+    await rejectsBy('★ 붙었는데 만료가 있다', insertUpload, up({ id: other, status: 'uploaded', file: other, length: 5, attached: '2026-11-22T00:10:00Z' }), 'ck_api_file_upload_expiry')
+    await rejectsBy('★ 붙지 않았는데 만료가 없다', insertUpload, up({ expires: null }), 'ck_api_file_upload_expiry')
+    await rejectsBy('만든 순간의 만료', insertUpload, up({ expires: '2026-11-22T00:00:00Z' }), 'ck_api_file_upload_expiry')
+    await rejectsBy('만든 시각보다 앞선 고친 시각', insertUpload, up({ edited: '2026-11-21T23:59:59Z' }), 'ck_api_file_upload_edited')
+    await rejectsBy('★ 없는 파일 행을 가리킨다', insertUpload, (() => { const id = randomUUID(); return up({ id, status: 'uploaded', file: id, length: 5 }) })(), 'api_file_upload_file_id_fkey')
+    const strangerWs = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '업로드의 남', 'local', now())`, [strangerWs])
+    await rejectsBy('★ 멤버였던 적 없는 워크스페이스의 업로드', insertUpload, up({ ws: strangerWs }), 'fk_api_file_upload_member')
   }
 
   await client.query('ROLLBACK')
