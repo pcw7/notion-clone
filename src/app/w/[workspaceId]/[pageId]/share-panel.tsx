@@ -23,6 +23,7 @@
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
 
 import {
   GUEST_LEVEL_OPTIONS,
@@ -52,8 +53,18 @@ import {
   requestKindLabel,
   requesterLabel,
 } from '../access-request-messages'
-import { PublishSection } from './publish-section'
-import { PageAccessSection } from './page-access-section'
+
+/**
+ * 웹 게시 · 페이지 단위 접근 절은 패널을 열고 목록이 온 뒤에야 선다 — 지연 로드한다(BD-1 · 페이지 화면의 첫 JS 에서 약 4KB). 둘 다
+ * 자기 상태를 따로 읽으므로(게시 절은 읽는 동안 아무것도 그리지 않는다) 패널을 여는 순간 청크를 함께 받기 시작하면 목록이 오기 전에
+ * 들어온다 — 보이는 차례가 같다.
+ */
+const PublishSection = dynamic(() => import('./publish-section').then((m) => m.PublishSection))
+const PageAccessSection = dynamic(() => import('./page-access-section').then((m) => m.PageAccessSection))
+const prefetchSections = (kind: 'page' | 'database'): void => {
+  void import('./publish-section').catch(() => undefined)
+  if (kind === 'database') void import('./page-access-section').catch(() => undefined)
+}
 
 type AccessEntry = {
   principalType: string
@@ -164,6 +175,11 @@ export function SharePanel({
       cancelled = true
     }
   }, [initialOpen, url])
+
+  // 열리면 게시 · 접근 절의 청크를 받기 시작한다 — 목록을 읽는 동안 들어온다(BD-1)
+  useEffect(() => {
+    if (open) prefetchSections(kind)
+  }, [open, kind])
 
   useEffect(() => {
     if (!open) return

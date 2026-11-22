@@ -68,13 +68,22 @@ import {
   type SearchFilters,
 } from '@/lib/search/search-filters'
 import { usePathname, useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
 
-import { LEFT_USER } from '@/lib/database/cell-format'
+import { LEFT_USER } from '@/lib/database/left-user'
 import { splitHighlight } from '@/lib/search/highlight'
 import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import type { PeopleNames } from './db/[databaseId]/cell-view'
-import { PeopleEditor } from './db/[databaseId]/people-editor'
 import { PageIconView } from './page-icon-view'
+
+/**
+ * 사람 고르개(10a-3b)는 칩을 누른 뒤에야 선다 — 지연 로드한다(BD-1). 이 오버레이는 모든 워크스페이스 화면의 레이아웃에 있어서, 고르개가
+ * 끌고 오는 표 API · 자동화 · 버튼 말들(약 9KB)이 설정 · 홈 같은 화면의 첫 JS 에 들어갔다. 칩에 마우스를 올리거나 포커스하면 미리 받는다.
+ */
+const PeopleEditor = dynamic(() => import('./db/[databaseId]/people-editor').then((m) => m.PeopleEditor))
+const prefetchPeopleEditor = (): void => {
+  void import('./db/[databaseId]/people-editor').catch(() => undefined)
+}
 import { appActionsFor, formatCommandShortcut, rankByQuery, type CommandAction, type CommandShortcut } from '@/lib/nav/command-actions'
 import { usePageCommands, type PageCommand } from './page-commands'
 import { requestSidebarToggle, toggleThemeNow } from './app-commands'
@@ -551,6 +560,8 @@ export function SearchOverlay({
         aria-pressed={value !== null}
         aria-expanded={picker === which}
         data-testid={testId}
+        onPointerEnter={prefetchPeopleEditor}
+        onFocus={prefetchPeopleEditor}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => setPicker((p) => (p === which ? null : which))}
         className={CHIP}

@@ -25,28 +25,31 @@ import { canManageGroups, listGroups } from '@/lib/workspace/group'
 import { listGuests } from '@/lib/workspace/guest'
 import { listMembers, listPendingInvites, workspaceNameOf } from '@/lib/workspace/list'
 import { invitableRoles } from '@/lib/workspace/member-rules'
-import { ExportButton } from '../export-button'
-import { GroupPanel } from '../group-panel'
-import { GuestPanel } from '../guest-panel'
-import { InviteForm } from '../invite-form'
-import { DeleteWorkspacePanel } from '../delete-workspace-panel'
-import { LeavePanel } from '../leave-panel'
-import { MemberPanel } from '../member-panel'
-import { PendingInviteList } from '../pending-invite-list'
 import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
-import { AccountDeletePanel } from './account-delete-panel'
-import { AccessibilityPanel } from './accessibility-panel'
-import { AiPanel } from './ai-panel'
-import { AiInstructionsPanel } from './ai-instructions-panel'
 import { AiUsagePanel } from './ai-lazy'
-import { ApiTokenPanel } from './api-token-panel'
-import { AuditPanel } from './audit-panel'
-import { EmojiPanel } from './emoji-panel'
-import { MfaPanel } from './mfa-panel'
-import { OfflinePanel } from './offline-panel'
-import { PasswordPanel } from './password-panel'
+// 클라이언트 패널은 지연 로드를 거친다(BD-1) — 서버 렌더는 그대로 · 열지 않은 패널은 첫 JS 에 들지 않는다(`panels-lazy.tsx`)
+import {
+  AccountDeletePanel,
+  AccessibilityPanel,
+  AiInstructionsPanel,
+  AiPanel,
+  ApiTokenPanel,
+  AuditPanel,
+  DeleteWorkspacePanel,
+  EmojiPanel,
+  ExportButton,
+  GroupPanel,
+  GuestPanel,
+  InviteForm,
+  LeavePanel,
+  MemberPanel,
+  MfaPanel,
+  OfflinePanel,
+  PasswordPanel,
+  PendingInviteList,
+  SitePanel,
+} from './panels-lazy'
 import { PlanPanel } from './plan-panel'
-import { SitePanel } from './site-panel'
 
 const HEADING = 'text-sm font-medium'
 const NOTE = 'mt-1 text-xs text-neutral-500'

@@ -32739,6 +32739,9 @@ async function main() {
           shown && JSON.stringify(details) === JSON.stringify(['workspace.allow_publish_sites_and_forms: false → true', 'workspace.allow_publish_sites_and_forms: true → false']),
           JSON.stringify(details))
 
+        // 줄은 서버가 그린 HTML 에 이미 있다 — 고르개가 하이드레이트되기 전에 쏜 change 는 React 가 듣지 못한다(BD-1 — 설정 패널이 미리
+        // 받은 지연 청크로 하이드레이트되면서 그 틈이 드러났다 · 거르기 없는 CSV 를 읽었다). 하이드레이트를 기다린 뒤에 바꾼다.
+        await waitHydrated(`${PANEL} [data-testid="audit-type"]`)
         await evaluate(`(() => { const s = document.querySelector('${PANEL} [data-testid="audit-type"]'); s.value = 'workspace.setting_changed'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
         // 줄이 모두 그 종류인 것만으로는 거르기가 반영됐다고 할 수 없다 — 쌓인 기록이 이미 모두 설정 변경이면 바꾸기 전에도 참이다(전체 판 #466 이
         // 링크가 바뀌기 전의 `/audit/csv` 를 읽었다). CSV 링크가 그 거르기를 담을 때까지 기다린다.

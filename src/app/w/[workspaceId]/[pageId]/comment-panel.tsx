@@ -27,18 +27,8 @@ import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useState } from 'react'
 
 import { CommentReactions, type EmojiLabel, type ReactionView } from './comment-reactions'
-
-const FOCUS_EVENT = 'nc:comment-focus'
-
-/**
- * 패널을 열고 그 스레드를 보여준다 — 본문의 하이라이트를 눌렀을 때 · 방금 만든 스레드.
- *
- * 모듈 스토어를 두지 않고 DOM 이벤트로 알린다(검색 오버레이와 같은 규칙) — 부르는 쪽(본문 편집기)과 그리는 쪽(패널)이
- * 서로를 모르는 것이 이 한 기능에는 충분하고, 상태를 둘로 두지 않는다.
- */
-export function openCommentThread(discussionId: string): void {
-  window.dispatchEvent(new CustomEvent(FOCUS_EVENT, { detail: discussionId }))
-}
+// 여는 이벤트는 따로 둔다(BD-1) — 본문 편집기가 이 패널 모듈 전체를 끌고 오지 않게
+import { COMMENT_FOCUS_EVENT as FOCUS_EVENT } from './comment-events'
 
 type Run = { plain_text?: string }
 

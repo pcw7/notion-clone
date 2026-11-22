@@ -30,6 +30,7 @@
  */
 
 import { MAX_RUN_CONTENT, textRun, toPlainText } from '../contracts/rich-text.ts'
+import { LEFT_USER } from './left-user.ts'
 import {
   CONTACT_MAX_LENGTH,
   emptyValue,
@@ -106,8 +107,8 @@ export function cellText(
   }
 }
 
-/** 이름을 모르는 사람 — 워크스페이스를 떠났다(정본 [보강] 사람 속성 ②⑥). */
-export const LEFT_USER = '떠난 사용자'
+/** 이름을 모르는 사람 — 워크스페이스를 떠났다(정본 [보강] 사람 속성 ②⑥). 값은 `left-user.ts`(검색 오버레이가 이 모듈 없이 쓴다 · BD-1). */
+export { LEFT_USER }
 
 const DATE_PARTS = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/
 
