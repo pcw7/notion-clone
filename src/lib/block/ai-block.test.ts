@@ -92,7 +92,12 @@ test('② 속성 — 읽기의 기본값 · 정화(모르는 종류 · 긴 지�
 
 test('★ ③ 공개 API — 읽으면 unsupported(+ 결과가 있으면 has_children) · 만들기는 거부', () => {
   const filled = aiBlock([blk('paragraph', '결과')])
-  const read = { links: { origin: 'https://app.test', pageUrl: (id: string) => `https://app.test/w/ws/${id}` }, refs: new Map(), fileNames: new Map(), columnWidths: columnWidthsOf({ blocks: [filled] }) }
+  const links = {
+    origin: 'https://app.test',
+    pageUrl: (id: string) => `https://app.test/w/ws/${id}`,
+    fileUrl: (id: string) => ({ url: `https://app.test/api/files/${id}`, expiry_time: '2026-11-22T01:00:00.000Z' }),
+  }
+  const read = { links, refs: new Map(), fileNames: new Map(), columnWidths: columnWidthsOf({ blocks: [filled] }) }
   assert.deepEqual(blockContentToApi(filled, read), { type: 'unsupported', payload: {}, hasChildren: true })
   assert.deepEqual(blockContentToApi(aiBlock([]), read), { type: 'unsupported', payload: {}, hasChildren: false })
   const parsed = parseApiChildren([{ type: 'ai_block', ai_block: {} }], 'body.children', 'page', randomUUID)

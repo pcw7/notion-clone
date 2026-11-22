@@ -24,11 +24,13 @@ import { readBodyYDoc } from '../collab/ydoc.ts'
 import type { Tx } from '../db/tx.ts'
 import { rowsToDoc, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { docToPm } from '../editor/pm-adapter.ts'
+import { isAllowedMime, isVideoMime } from '../file/limits.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { apiBlockObject, blockContentToApi, columnWidthsOf, type RefInfo, type UploadRef } from './block-json.ts'
 import { loadPageIn, type LoadedPage } from './page-object.ts'
 import type { ApiLinks } from './rich-text.ts'
+import { claimApiUploadsIn } from './upload-claim.ts'
 
 // ── 찾기 ──────────────────────────────────────────────────────────────
 
@@ -237,11 +239,14 @@ export function databaseBlockObject(database: LoadedDatabase): Record<string, un
 // ── 쓰기 ──────────────────────────────────────────────────────────────
 
 /**
- * 받은 블록이 가리키는 올린 파일 — 이 워크스페이스의 파일이고 그 블록이 받는 종류(이미지는 image/* · 비디오는 video/*)여야 한다. 맞지 않는
- * 첫 자리의 글을 돌려준다(없으면 null). 다른 워크스페이스의 파일 id 를 본문에 심는 길을 막는다.
+ * 받은 블록이 가리키는 올린 파일 — API 업로드 세션이면 그 상태(주인 · 올림 · 만료 전 — `upload-claim.ts` · 받으면 붙인 표시) 다음, 이
+ * 워크스페이스의 파일이고 그 블록이 받는 종류(이미지는 받는 이미지 4종 · 비디오는 2종 — 앱의 업로드가 받는 것)여야 한다. 맞지 않는 첫 자리의
+ * 글을 돌려준다(없으면 null). 다른 워크스페이스의 파일 id 를 본문에 심는 길을 막는다.
  */
 export async function uploadIssueIn(tx: Tx, ctx: SessionContext, uploads: readonly UploadRef[]): Promise<string | null> {
   if (uploads.length === 0) return null
+  const claimed = await claimApiUploadsIn(tx, ctx, uploads)
+  if (claimed !== null) return claimed
   const files = new Map(
     (
       await tx.query<{ id: string; mime: string | null }>(`SELECT id, mime FROM file WHERE id = ANY($1::uuid[]) AND workspace_id = $2`, [
@@ -253,7 +258,7 @@ export async function uploadIssueIn(tx: Tx, ctx: SessionContext, uploads: readon
   for (const upload of uploads) {
     const mime = files.get(upload.id)
     if (mime === undefined) return `${upload.path} should be a file uploaded to this workspace, instead was "${upload.id}".`
-    if (upload.blockType !== 'file' && !mime.startsWith(`${upload.blockType}/`)) {
+    if ((upload.blockType === 'image' && !isAllowedMime(mime)) || (upload.blockType === 'video' && !isVideoMime(mime))) {
       return `${upload.path} should be an ${upload.blockType} file, instead was a file of type "${mime || 'unknown'}".`
     }
   }

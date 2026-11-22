@@ -24,7 +24,11 @@ import {
 } from './property-values.ts'
 import type { ApiLinks } from './rich-text.ts'
 
-const links: ApiLinks = { origin: 'https://app.test', pageUrl: (id) => `https://app.test/w/ws/${id}` }
+const links: ApiLinks = {
+  origin: 'https://app.test',
+  pageUrl: (id) => `https://app.test/w/ws/${id}`,
+  fileUrl: (id) => ({ url: `https://app.test/api/files/${id}?expires=1&signature=s`, expiry_time: '2026-11-22T01:00:00.000Z' }),
+}
 const U1 = '11111111-1111-4111-8111-111111111111'
 const U2 = '22222222-2222-4222-8222-222222222222'
 const F1 = '33333333-3333-4333-8333-333333333333'
@@ -121,7 +125,7 @@ test('★ 내보내기 — 셀 타입마다 노션의 모양', () => {
   assert.equal(value(P.check, r).checkbox, true)
   assert.deepEqual(value(P.date, r).date, { start: '2026-03-01T09:00:00+09:00', end: '2026-03-02T18:00:00+09:00', time_zone: 'Asia/Seoul' })
   assert.deepEqual(value(P.people, r).people, [{ object: 'user', id: U1 }, { object: 'user', id: U2 }])
-  assert.deepEqual(value(P.files, r).files, [{ name: '보고서.pdf', type: 'file_upload', file_upload: { id: F1 } }])
+  assert.deepEqual(value(P.files, r).files, [{ name: '보고서.pdf', type: 'file', file: links.fileUrl(F1) }], '노션처럼 서명 주소(API-7)')
   assert.equal(value(P.url, r).url, 'https://example.com')
   assert.equal(value(P.email, r).email, 'a@example.com')
   assert.equal(value(P.phone, r).phone_number, '010-1234-5678')
@@ -227,7 +231,13 @@ test('속성 찾기 — 이름이 먼저 · 우리 id · title 별칭 · propert
   assert.equal(apiPropertyId(P.number), P.number.id)
 })
 
-const write = (p: ApiProperty, raw: unknown, options: readonly SelectOption[] = []) => parsePropertyWrite(p, raw, `body.properties.${p.name}`, options)
+/** 시험의 "우리 서명 주소" — `links.fileUrl` 이 만든 주소면 그 파일 id(왕복 · API-7). */
+const fixtureFileId = (url: string): string | null => {
+  const id = /\/api\/files\/([0-9a-f-]{36})\?/.exec(url)?.[1]
+  return id !== undefined && links.fileUrl(id).url === url ? id : null
+}
+const write = (p: ApiProperty, raw: unknown, options: readonly SelectOption[] = []) =>
+  parsePropertyWrite(p, raw, `body.properties.${p.name}`, options, fixtureFileId)
 const cell = (p: ApiProperty, raw: unknown, options: readonly SelectOption[] = []) => {
   const w = write(p, raw, options)
   assert.ok(w.ok, JSON.stringify(w))
@@ -258,6 +268,12 @@ test('★ 받기 — 타입마다 우리 칸', () => {
     type: 'files',
     files: [{ id: F1, name: '사진.png' }],
   })
+  // 왕복(API-7) — 읽은 `{name, type:'file', file:{url}}` 을 그대로 · 우리 서명 주소가 아니면 거부
+  const ownFileId = (url: string) => (url === links.fileUrl(F1).url ? F1 : null)
+  const roundTrip = parsePropertyWrite(P.files, { files: [{ name: '사진.png', type: 'file', file: links.fileUrl(F1) }] }, 'body.properties.파일', [], ownFileId)
+  assert.deepEqual(roundTrip.ok && roundTrip.write.kind === 'cell' ? roundTrip.write.value : roundTrip, { type: 'files', files: [{ id: F1, name: '사진.png' }] })
+  const foreign = parsePropertyWrite(P.files, { files: [{ name: 'x', type: 'file', file: { url: 'https://cdn.test/x' } }] }, 'body.properties.파일', [], ownFileId)
+  assert.ok(!foreign.ok && /files\[0\]\.file\.url should be a file URL read from this API/.test(foreign.message))
   assert.deepEqual(cell(P.url, { url: 'https://a.test' }), { type: 'url', url: 'https://a.test' })
   assert.deepEqual(cell(P.url, { url: null }), { type: 'url', url: '' }, 'null 은 비우기')
   assert.deepEqual(cell(P.email, { email: 'b@a.test' }), { type: 'email', email: 'b@a.test' })

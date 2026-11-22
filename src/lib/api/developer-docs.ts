@@ -1,14 +1,17 @@
 /**
  * 개발자 문서의 내용 — 오류 코드 · 제한 · 예제 · 노션과 다른 점 (API-6 · F-09-15 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ① ~ ⑩ · 09-api-integrations.md F-09-05 · F-09-15
+ * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ① ~ ⑪ · 09-api-integrations.md F-09-05 · F-09-08 · F-09-15
  *
  * 숫자는 규약의 상수에서 읽는다(손으로 적은 숫자가 코드와 어긋나지 않게) — 요청 제한 · 본문 · 쪽 크기 · 블록 · 질의 상한 · 토큰 수 · 만료.
  * 오류 코드 표는 `ApiErrorCode` 의 모든 값을 가져야 한다(`satisfies` — 코드를 더하면 여기서 타입이 막는다). 화면은 `app/developers/page.tsx`.
  */
 
 import { MAX_QUERY_PAGINATION } from '../database/limits.ts'
+import { MAX_UPLOAD_BYTES } from '../file/limits.ts'
 import { API_MAX_BLOCKS, API_MAX_CHILDREN, API_MAX_NESTING } from './block-json.ts'
+import { FILE_UPLOAD_TTL_SECONDS } from './file-upload-object.ts'
+import { FILE_URL_TTL_SECONDS } from './file-url.ts'
 import { API_TOKEN_DEFAULT_EXPIRY_DAYS, API_TOKEN_EXPIRY_DAYS, API_TOKEN_MAX_LIVE } from './token-format.ts'
 import { API_MAX_BODY_BYTES, API_MAX_PAGE_SIZE, API_RATE_RULE, NOTION_VERSION, type ApiErrorCode } from './v1-protocol.ts'
 
@@ -43,6 +46,11 @@ export const LIMITS: readonly { readonly name: string; readonly value: string; r
     note: '커서로 넘겨 받을 수 있는 행의 상한. 닿으면 응답의 request_status 가 incomplete — created_time 으로 범위를 잘라 다시 묻는다(SDK 의 iterateAllDataSourceRows).',
   },
   { name: '토큰', value: `사람마다 워크스페이스마다 ${API_TOKEN_MAX_LIVE}개`, note: '살아 있는(폐기 · 만료되지 않은) 것만 센다.' },
+  {
+    name: '파일 올리기',
+    value: `파일 하나 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB`,
+    note: `보내기(multipart)의 본문은 500KB 가 아니라 이 상한을 따른다. 만든 업로드는 ${FILE_UPLOAD_TTL_SECONDS / 60}분 안에 보내고 붙인다 — 읽어 받은 파일 주소는 ${FILE_URL_TTL_SECONDS / 60}분 산다.`,
+  },
 ]
 
 /** 오류 코드 — 노션의 코드 그대로. 글(`message`)은 영어(노션의 말투). */
@@ -148,7 +156,7 @@ export const DIFFERENCES: readonly { readonly title: string; readonly items: rea
   {
     title: '토큰과 범위',
     items: [
-      '개인 토큰만 있다 — 통합(봇) · OAuth · 웹훅 · 파일 올리기 · 뷰 · 페이지 옮기기는 없다(그런 주소는 400 invalid_request_url).',
+      '개인 토큰만 있다 — 통합(봇) · OAuth · 웹훅 · 뷰 · 페이지 옮기기는 없다(그런 주소는 400 invalid_request_url).',
       '토큰은 만든 사람 그대로다 — 노션은 개인 토큰의 사용자 목록을 막지만 여기서는 연다(앱의 멤버 화면과 같다).',
       `받는 판은 ${NOTION_VERSION} 하나다.`,
     ],
@@ -156,8 +164,8 @@ export const DIFFERENCES: readonly { readonly title: string; readonly items: rea
   {
     title: '페이지 (⑥)',
     items: [
-      '올린 파일의 아이콘 · 커버와 내장 커버는 null 로 읽힌다(짧게 사는 파일 주소를 만들지 않는다).',
-      '파일 속성은 { type: "file_upload", file_upload: { id } } — 읽은 값을 그대로 다시 보내면 같은 값이다.',
+      '내장 커버(그라디언트 · 단색)는 null 로 읽힌다(노션의 모양이 없다).',
+      '올린 파일의 아이콘 · 커버 · 파일 속성은 노션처럼 { type: "file", file: { url, expiry_time } } — 읽은 값을 그대로 다시 보내면 같은 값이다.',
       '없는 선택 옵션 이름은 거부한다(노션은 새로 만든다) — 옵션은 데이터 소스 고치기로 만든다.',
       '잠긴 페이지에 쓰면 400 · 내보내기 정책이 꺼진 워크스페이스는 소유자만 읽고 쓴다.',
       'filter_properties 는 읽기(GET /v1/pages/{id} · 질의)에서만 듣는다 — 만들기 · 고치기의 응답은 모든 속성.',
@@ -197,6 +205,15 @@ export const DIFFERENCES: readonly { readonly title: string; readonly items: rea
       '코멘트의 display_name 은 user 만 · attachments 는 빈 배열만 · markdown 은 400.',
       '남의 코멘트를 고치거나 지우면 403(노션은 404) · 해결된 스레드에 답하면 다시 열린다.',
       '사용자 목록은 활동 중인 멤버만(게스트 · 멈춘 사람은 빠진다).',
+    ],
+  },
+  {
+    title: '파일 올리기 (⑪)',
+    items: [
+      'single_part 만 받는다 — multi_part · external_url 은 400(파일 하나가 5MB 라 나눌 일이 없다 · 다른 사이트의 파일을 대신 받아 오지 않는다) · complete 는 늘 400.',
+      '이미지 · 비디오라고 말하고(content_type) 다른 바이트를 보내면 400 — 그 밖의 형식은 내려받기 파일로 저장된다(앱의 파일 블록과 같다).',
+      '붙이기 — 이미지 · 비디오 · 파일 블록 · 파일 속성 · 페이지와 데이터베이스 아이콘 · 페이지 커버에 { type: "file_upload", file_upload: { id } }. pdf · audio 블록 · 코멘트 첨부는 없다.',
+      '읽으면 { type: "file", file: { url, expiry_time } } — 이 앱이 서명한 1시간짜리 주소(로그인 없이 열린다 · 캐시하지 말고 다시 읽는다). 업로드 목록은 내 것만.',
     ],
   },
 ]

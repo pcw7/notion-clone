@@ -38,9 +38,11 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { newApiBlockId, uploadIssueIn, writeNewPageBodyIn } from './block-body.ts'
 import { parseApiChildren, type UploadRef } from './block-json.ts'
+import { fileUrlKey, ownFileIdOf, signedFileUrl } from './file-url.ts'
 import { loadPageIn, readApiOptions, readApiPage, readApiPageOnly, readApiProperties, readPropertyItem, visibleRelationIn } from './page-object.ts'
 import { TITLE_PROPERTY_ID, findProperty, parsePropertyWrite, type ApiProperty, type ApiWrite } from './property-values.ts'
 import type { ApiLinks } from './rich-text.ts'
+import { claimApiUploadsIn, type UploadClaim } from './upload-claim.ts'
 import { v1Fail, v1Ok, type V1Handler, type V1Reply } from './v1.ts'
 import { API_MAX_PAGE_SIZE, decodeCursor, invalidPathIdMessage, parseApiId, parsePageSize, shownValue } from './v1-protocol.ts'
 
@@ -59,10 +61,18 @@ export const invalid = (message: string): V1Reply => v1Fail(400, 'validation_err
 export const bodyInvalid = (clause: string): V1Reply => invalid(`body failed validation: ${clause}`)
 export const conflict = (): V1Reply => v1Fail(409, 'conflict_error', CONFLICT_MESSAGE)
 
-/** 앱의 주소 — 설정한 공개 주소(`NEXT_PUBLIC_APP_URL` — 초대 링크 · 자동화와 같은 값), 없으면 요청의 출처. */
+/**
+ * 앱의 주소 — 설정한 공개 주소(`NEXT_PUBLIC_APP_URL` — 초대 링크 · 자동화와 같은 값), 없으면 요청의 출처. 올린 파일은 그 출처의 서명 주소
+ * (API-7 · 한 응답 안에서는 같은 시각으로 — 같은 파일은 같은 주소).
+ */
 export function apiLinks(ctx: SessionContext, request: Request): ApiLinks {
   const origin = (process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin).replace(/\/+$/, '')
-  return { origin, pageUrl: (pageId) => `${origin}/w/${ctx.workspaceId}/${pageId}` }
+  const now = new Date()
+  return {
+    origin,
+    pageUrl: (pageId) => `${origin}/w/${ctx.workspaceId}/${pageId}`,
+    fileUrl: (fileId) => signedFileUrl(origin, fileUrlKey(), fileId, now),
+  }
 }
 
 /** 내보내기 정책(정본 [보강] 보안 정책 ① · [보강 API-1] ⑤) — 끄면 소유자만. 블록 API 도 같은 게이트다(내용을 돌려준다). */
@@ -160,8 +170,25 @@ const parsed = <T>(value: T): Parsed<T> => ({ ok: true, value })
 const refused = <T>(reply: V1Reply): Parsed<T> => ({ ok: false, reply })
 
 /**
- * 노션의 아이콘(요청) → 우리 아이콘. `file_upload` 는 이 워크스페이스에 올린 이미지의 id 다(명령이 다시 본다). 데이터베이스의 아이콘(API-4b)도
- * 같은 모양이다.
+ * 아이콘 · 커버의 올린 파일 — `file_upload {id}`(API-7 의 업로드 · 앱에서 올린 파일) · 읽은 `file {url}`(우리 서명 주소의 왕복 — 만료는 보지
+ * 않는다). 우리 주소가 아닌 `file` 은 거부한다(바깥 주소는 `external`).
+ */
+function uploadedFileOf(raw: Record<string, unknown>, kind: 'file_upload' | 'file', at: string): Parsed<{ type: 'file'; file_id: string } | undefined> {
+  if (kind === 'file_upload') {
+    const id = parseApiId(isObject(raw.file_upload) ? raw.file_upload.id : undefined)
+    return parsed(id === null ? undefined : { type: 'file', file_id: id })
+  }
+  const url = isObject(raw.file) ? raw.file.url : undefined
+  const id = typeof url === 'string' ? ownFileIdOf(url) : null
+  if (id === null) {
+    return refused(bodyInvalid(`${at}.file.url should be a file URL read from this API (send it back unchanged) — use "external" for other URLs, instead was ${shownValue(url)}.`))
+  }
+  return parsed({ type: 'file', file_id: id })
+}
+
+/**
+ * 노션의 아이콘(요청) → 우리 아이콘. `file_upload` · `file` 은 이 워크스페이스에 올린 이미지다(API 업로드 세션은 `lookClaims` 가 · 이미지인지는
+ * 명령이 다시 본다). 데이터베이스의 아이콘(API-4b)도 같은 모양이다.
  */
 export function parseIcon(raw: unknown): Parsed<PageIcon | null> {
   if (raw === null) return parsed(null)
@@ -170,34 +197,53 @@ export function parseIcon(raw: unknown): Parsed<PageIcon | null> {
   let candidate: unknown
   if (kind === 'emoji') candidate = { type: 'emoji', emoji: raw.emoji }
   else if (kind === 'external') candidate = { type: 'external', url: isObject(raw.external) ? raw.external.url : undefined }
-  else if (kind === 'file_upload') {
-    const id = parseApiId(isObject(raw.file_upload) ? raw.file_upload.id : undefined)
-    candidate = id === null ? undefined : { type: 'file', file_id: id }
+  else if (kind === 'file_upload' || kind === 'file') {
+    const file = uploadedFileOf(raw, kind, 'body.icon')
+    if (!file.ok) return file
+    candidate = file.value
   } else if (kind === 'custom_emoji') {
     const id = parseApiId(isObject(raw.custom_emoji) ? raw.custom_emoji.id : undefined)
     candidate = id === null ? undefined : { type: 'custom_emoji', custom_emoji: { id } }
   } else {
-    return refused(bodyInvalid(`body.icon.type should be "emoji", "external", "file_upload" or "custom_emoji", instead was ${shownValue(kind)}.`))
+    return refused(bodyInvalid(`body.icon.type should be "emoji", "external", "file_upload", "file" or "custom_emoji", instead was ${shownValue(kind)}.`))
   }
   const icon = parsePageIconInput(candidate)
   return icon === undefined ? refused(bodyInvalid(`body.icon is not a valid ${String(kind)} icon.`)) : parsed(icon)
 }
 
-/** 노션의 커버(요청) → 우리 커버 — 외부 주소 · 올린 이미지. */
+/** 노션의 커버(요청) → 우리 커버 — 외부 주소 · 올린 이미지(`file_upload` · 읽은 `file` 의 왕복). */
 function parseCover(raw: unknown): Parsed<PageCover | null> {
   if (raw === null) return parsed(null)
   if (!isObject(raw)) return refused(bodyInvalid(`body.cover should be an object or \`null\`, instead was ${shownValue(raw)}.`))
   const kind = raw.type ?? ['external', 'file_upload', 'file'].find((k) => k in raw)
   let candidate: unknown
   if (kind === 'external') candidate = { type: 'external', url: isObject(raw.external) ? raw.external.url : undefined }
-  else if (kind === 'file_upload') {
-    const id = parseApiId(isObject(raw.file_upload) ? raw.file_upload.id : undefined)
-    candidate = id === null ? undefined : { type: 'file', file_id: id }
+  else if (kind === 'file_upload' || kind === 'file') {
+    const file = uploadedFileOf(raw, kind, 'body.cover')
+    if (!file.ok) return file
+    candidate = file.value
   } else {
-    return refused(bodyInvalid(`body.cover.type should be "external" or "file_upload", instead was ${shownValue(kind)}.`))
+    return refused(bodyInvalid(`body.cover.type should be "external", "file_upload" or "file", instead was ${shownValue(kind)}.`))
   }
   const cover = parsePageCoverInput(candidate)
   return cover === undefined ? refused(bodyInvalid(`body.cover is not a valid ${String(kind)} cover.`)) : parsed(cover)
+}
+
+/** 아이콘 · 커버가 붙이는 올린 파일 — API 업로드 세션의 검사(`claimApiUploadsIn`)에 넘긴다. 데이터베이스의 아이콘도 쓴다. */
+export function lookClaims(icon: PageIcon | null | undefined, cover?: PageCover | null): UploadClaim[] {
+  return [
+    ...(icon?.type === 'file' ? [{ id: icon.file_id, path: 'body.icon' }] : []),
+    ...(cover?.type === 'file' ? [{ id: cover.file_id, path: 'body.cover' }] : []),
+  ]
+}
+
+/** files 속성의 칸이 붙이는 올린 파일 — 자리는 `body.properties.<이름>.files[i]`. */
+function cellClaims(writes: readonly ApiWrite[], schema: readonly ApiProperty[]): UploadClaim[] {
+  return writes.flatMap((w) => {
+    if (w.kind !== 'cell' || w.value.type !== 'files') return []
+    const name = schema.find((p) => p.id === w.propertyId)?.name ?? w.propertyId
+    return w.value.files.map((f, i) => ({ id: f.id, path: `body.properties.${name}.files[${i}]` }))
+  })
 }
 
 type ParentRef = { readonly kind: 'page_id' | 'data_source_id' | 'database_id'; readonly id: string }
@@ -227,7 +273,7 @@ function planWrites(raw: unknown, properties: readonly ApiProperty[], options: R
     const property = findProperty(properties, key)
     if (property === null) return refused(invalid(`${key} is not a property that exists.`))
     if (writes.some((w) => w.propertyId === property.id)) return refused(bodyInvalid(`body.properties.${key}: property "${property.name}" is given twice.`))
-    const write = parsePropertyWrite(property, value, `body.properties.${key}`, options.get(property.id) ?? [])
+    const write = parsePropertyWrite(property, value, `body.properties.${key}`, options.get(property.id) ?? [], ownFileIdOf)
     if (!write.ok) return refused(bodyInvalid(write.message))
     writes.push(write.write)
   }
@@ -259,10 +305,25 @@ async function runCommand(id: string, run: () => Promise<Step>): Promise<Step> {
   }
 }
 
-/** 아이콘 · 커버 — 준 것만. */
-async function applyLookIn(tx: Tx, ctx: SessionContext, pageId: string, icon: PageIcon | null | undefined, cover: PageCover | null | undefined): Promise<void> {
+/** 아이콘 · 커버 — 준 것만. API 로 올린 파일이면 그 세션부터 본다(API-7) — 거부면 그 답(부르는 쪽이 트랜잭션째 되돌린다). */
+async function applyLookIn(
+  tx: Tx,
+  ctx: SessionContext,
+  pageId: string,
+  icon: PageIcon | null | undefined,
+  cover: PageCover | null | undefined,
+): Promise<V1Reply | null> {
+  const claimed = await claimApiUploadsIn(tx, ctx, lookClaims(icon, cover))
+  if (claimed !== null) return bodyInvalid(claimed)
   if (icon !== undefined) await setPageIconIn(tx, ctx, asBlockId(pageId), icon)
   if (cover !== undefined) await setPageCoverIn(tx, ctx, asBlockId(pageId), cover)
+  return null
+}
+
+/** files 칸이 붙이는 API 업로드의 검사(API-7) — 칸 쓰기(`createRowIn` · `updateCellsIn`) 앞에서. */
+async function claimCellsIn(tx: Tx, ctx: SessionContext, writes: readonly ApiWrite[], schema: readonly ApiProperty[]): Promise<V1Reply | null> {
+  const claimed = await claimApiUploadsIn(tx, ctx, cellClaims(writes, schema))
+  return claimed === null ? null : bodyInvalid(claimed)
 }
 
 /**
@@ -316,7 +377,8 @@ async function createUnderPage(
       if (!can(caps, 'view')) return stepFail(notFound('page', parentId))
       if (!can(caps, 'create_child')) return stepFail(restricted())
       const page = await createPageIn(tx, ctx, { parentPageId: asBlockId(parentId), title })
-      await applyLookIn(tx, ctx, page.id, icon, cover)
+      const look = await applyLookIn(tx, ctx, page.id, icon, cover)
+      if (look !== null) return stepFail(look)
       const wrote = await writeNewBodyIn(tx, ctx, page.id, body)
       if (wrote !== null) return stepFail(wrote)
       return { ok: true, id: page.id }
@@ -340,11 +402,14 @@ async function createRowUnder(
       const schema = await readApiProperties(tx, dataSourceId)
       const plan = planWrites(properties, schema, await readApiOptions(tx, schema))
       if (!plan.ok) return stepFail(plan.reply)
+      const claimed = await claimCellsIn(tx, ctx, plan.value, schema)
+      if (claimed !== null) return stepFail(claimed)
       const made = await createRowIn(tx, ctx, dataSourceId, { cells: cellsOf(plan.value) })
       if (!made.ok) return stepFail(made.reason === 'not_found' ? notFound('data source', dataSourceId) : rowFailureReply(made, dataSourceId, schema))
       const linked = await applyRelationsIn(tx, ctx, made.value.id, plan.value, schema)
       if (linked !== null) return stepFail(linked)
-      await applyLookIn(tx, ctx, made.value.id, icon, cover)
+      const look = await applyLookIn(tx, ctx, made.value.id, icon, cover)
+      if (look !== null) return stepFail(look)
       const wrote = await writeNewBodyIn(tx, ctx, made.value.id, body)
       if (wrote !== null) return stepFail(wrote)
       return { ok: true, id: made.value.id }
@@ -380,7 +445,7 @@ export const createApiPage: V1Handler = async ({ ctx, body, request }) => {
   const parent = parseParent(body.parent)
   if (!parent.ok) return parent.reply
   // 본문 — 블록 API 와 같은 변환 · 같은 상한(페이지 본문의 맨 위)
-  const children = body.children === undefined ? null : parseApiChildren(body.children, 'body.children', 'page', newApiBlockId)
+  const children = body.children === undefined ? null : parseApiChildren(body.children, 'body.children', 'page', newApiBlockId, { ownFileId: ownFileIdOf })
   if (children !== null && !children.ok) return bodyInvalid(children.message)
   const newBody: NewBody = children === null ? { blocks: [], uploads: [] } : { blocks: children.blocks, uploads: children.uploads }
   const icon = body.icon === undefined ? undefined : parseIcon(body.icon)
@@ -466,13 +531,16 @@ export const updateApiPage: V1Handler = async ({ ctx, params, body, request }) =
         } else {
           const cells = cellsOf(plan.value)
           if (cells.length > 0) {
+            const claimed = await claimCellsIn(tx, ctx, plan.value, head.schema)
+            if (claimed !== null) return stepFail(claimed)
             const updated = await updateCellsIn(tx, ctx, id, { cells })
             if (!updated.ok) return stepFail(rowFailureReply(updated, id, head.schema))
           }
           const linked = await applyRelationsIn(tx, ctx, id, plan.value, head.schema)
           if (linked !== null) return stepFail(linked)
         }
-        await applyLookIn(tx, ctx, id, icon?.value, cover?.value)
+        const look = await applyLookIn(tx, ctx, id, icon?.value, cover?.value)
+        if (look !== null) return stepFail(look)
         return { ok: true, id }
       }),
     )

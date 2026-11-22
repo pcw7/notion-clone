@@ -141,8 +141,8 @@ async function databaseObjectIn(tx: Tx, ctx: SessionContext, row: DatabaseRow, l
     last_edited_by: row.last_edited_by === null ? null : userRef(row.last_edited_by),
     title: toApiRichText(title, links),
     description: [],
-    icon: await iconToApi(tx, ctx, readPageIcon(row.icon)),
-    cover: coverToApi(readPageCover(row.cover)),
+    icon: await iconToApi(tx, ctx, readPageIcon(row.icon), links),
+    cover: coverToApi(readPageCover(row.cover), links),
     parent: apiParentOf(row.parent_type, row.parent_id, row.parent_block_type),
     is_inline: row.is_inline,
     in_trash: row.lifecycle === 'trashed',
@@ -216,7 +216,7 @@ async function dataSourceObjectIn(
     title: toApiRichText(title, links),
     description: [],
     // 노션 — 앱에서 단 아이콘은 데이터베이스 · 데이터 소스 둘 다 같은 것을 돌려준다
-    icon: await iconToApi(tx, ctx, readPageIcon(database.icon)),
+    icon: await iconToApi(tx, ctx, readPageIcon(database.icon), links),
     in_trash: source.lifecycle === 'trashed',
     is_inline: database.is_inline,
   }

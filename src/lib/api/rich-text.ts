@@ -42,8 +42,15 @@ export type ApiRichText = {
   readonly href: string | null
 }
 
-/** 응답이 앱의 주소를 만드는 길 — 앱의 출처(게시 주소 · 다음 쪽 주소) · 페이지 멘션의 `href` · 페이지의 `url`. */
-export type ApiLinks = { readonly origin: string; readonly pageUrl: (pageId: string) => string }
+/**
+ * 응답이 앱의 주소를 만드는 길 — 앱의 출처(게시 주소 · 다음 쪽 주소) · 페이지 멘션의 `href` · 페이지의 `url` · 올린 파일의 서명 주소
+ * (API-7 · `file-url.ts` — 노션의 `file: {url, expiry_time}`).
+ */
+export type ApiLinks = {
+  readonly origin: string
+  readonly pageUrl: (pageId: string) => string
+  readonly fileUrl: (fileId: string) => { readonly url: string; readonly expiry_time: string }
+}
 
 const FLAGS = ['bold', 'italic', 'strikethrough', 'underline', 'code'] as const
 

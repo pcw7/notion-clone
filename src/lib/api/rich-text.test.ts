@@ -12,7 +12,11 @@ import assert from 'node:assert/strict'
 import { DEFAULT_ANNOTATIONS, equationRun, pageMentionRun, textRun, userMentionRun, type RichTextRun } from '../contracts/rich-text.ts'
 import { parseApiRichText, toApiRichText, type ApiLinks } from './rich-text.ts'
 
-const links: ApiLinks = { origin: 'https://app.test', pageUrl: (id) => `https://app.test/w/ws/${id}` }
+const links: ApiLinks = {
+  origin: 'https://app.test',
+  pageUrl: (id) => `https://app.test/w/ws/${id}`,
+  fileUrl: (id) => ({ url: `https://app.test/api/files/${id}`, expiry_time: '2026-11-22T01:00:00.000Z' }),
+}
 const PAGE = '1f2e3d4c-5b6a-4789-8abc-def012345678'
 const USER = '2a2e3d4c-5b6a-4789-8abc-def012345678'
 

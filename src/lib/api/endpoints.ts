@@ -1,7 +1,7 @@
 /**
  * 공개 API `/v1` 의 주소 목록 — 개발자 문서의 표가 이것을 그린다 (API-6 · F-09-15 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ③ ~ ⑩ · 09-api-integrations.md F-09-15 *"단일 소스로 두면 드리프트가 사라진다"*
+ * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ③ ~ ⑪ · 09-api-integrations.md F-09-15 *"단일 소스로 두면 드리프트가 사라진다"*
  *
  * `endpoints.test.ts` 가 `src/app/v1/**\/route.ts` 를 읽어 **메서드 · 주소 · 핸들러 이름**이 이 목록과 하나도 다르지 않은지 본다 — 라우트를
  * 더하거나 빼면 여기도 고쳐야 CI 가 지난다. 받지 않는 메서드(`v1InvalidUrl` — 400 `invalid_request_url`)는 싣지 않는다.
@@ -146,6 +146,37 @@ export const API_ENDPOINT_GROUPS: readonly ApiEndpointGroup[] = [
       { method: 'DELETE', path: '/v1/comments/{comment_id}', handler: 'deleteApiComment', sdk: 'comments.delete', summary: '코멘트 지우기', note: '쓴 사람만(남의 것은 403)' },
     ],
   },
+  {
+    title: '파일 올리기',
+    endpoints: [
+      {
+        method: 'POST',
+        path: '/v1/file_uploads',
+        handler: 'createApiFileUpload',
+        sdk: 'fileUploads.create',
+        summary: '업로드 만들기',
+        note: 'single_part 만 · 1시간 안에 보내고 붙인다',
+      },
+      {
+        method: 'POST',
+        path: '/v1/file_uploads/{file_upload_id}/send',
+        handler: 'sendApiFileUpload',
+        sdk: 'fileUploads.send',
+        summary: '파일 보내기',
+        note: 'multipart/form-data 의 file 하나 · 파일 하나 5MB',
+      },
+      {
+        method: 'POST',
+        path: '/v1/file_uploads/{file_upload_id}/complete',
+        handler: 'completeApiFileUpload',
+        sdk: 'fileUploads.complete',
+        summary: '여러 조각 마감',
+        note: '늘 400 — single_part 는 보내면 끝',
+      },
+      { method: 'GET', path: '/v1/file_uploads/{file_upload_id}', handler: 'retrieveApiFileUpload', sdk: 'fileUploads.retrieve', summary: '업로드 하나', note: '내 것만' },
+      { method: 'GET', path: '/v1/file_uploads', handler: 'listApiFileUploads', sdk: 'fileUploads.list', summary: '내 업로드 목록', note: 'status 로 거른다' },
+    ],
+  },
 ]
 
 /** 펼친 목록 — 표의 줄 수 · 시험이 쓴다. */
@@ -163,9 +194,12 @@ export function routeFileToPath(relative: string): string | null {
   return `/${segments.map((s) => (s.startsWith('[') && s.endsWith(']') ? `{${s.slice(1, -1)}}` : s)).join('/')}`
 }
 
-/** 라우트 파일의 글에서 `export const GET = v1Route(retrievePage)` 들 — 받지 않는 메서드(`unknownUrl`)는 빠진다. */
+/**
+ * 라우트 파일의 글에서 `export const GET = v1Route(retrievePage)` 들 — 선택을 준 것(`v1Route(sendApiFileUpload, { body: 'multipart' })`)도 ·
+ * 받지 않는 메서드(`unknownUrl`)는 빠진다.
+ */
 export function routeHandlers(source: string): { readonly method: string; readonly handler: string }[] {
-  return [...source.matchAll(/^export const (GET|POST|PATCH|PUT|DELETE) = v1Route\((\w+)\)/gm)]
+  return [...source.matchAll(/^export const (GET|POST|PATCH|PUT|DELETE) = v1Route\((\w+)(?:, \{[^}]*\})?\)/gm)]
     .map((m) => ({ method: m[1]!, handler: m[2]! }))
     .filter((r) => r.handler !== 'v1InvalidUrl')
 }

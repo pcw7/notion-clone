@@ -25,7 +25,11 @@ import {
 } from './block-json.ts'
 import type { ApiLinks } from './rich-text.ts'
 
-const links: ApiLinks = { origin: 'https://app.test', pageUrl: (id) => `https://app.test/w/ws/${id}` }
+const links: ApiLinks = {
+  origin: 'https://app.test',
+  pageUrl: (id) => `https://app.test/w/ws/${id}`,
+  fileUrl: (id) => ({ url: `https://app.test/api/files/${id}?expires=1&signature=s`, expiry_time: '2026-11-22T01:00:00.000Z' }),
+}
 const PAGE = '1f2e3d4c-5b6a-4789-8abc-def012345678'
 const USER = '2a2e3d4c-5b6a-4789-8abc-def012345678'
 const FILE = '3a2e3d4c-5b6a-4789-8abc-def012345678'
@@ -116,7 +120,9 @@ function everyType(): EditorBlock[] {
 test('★ 왕복 — 받는 타입 전부가 우리 → 노션 → 우리로 같다(중첩 · 서식 · 멘션 · 색 · 폭 · 표 · 올린 파일)', () => {
   const ours = everyType()
   const read = readContext(ours)
-  const parsed = parseApiChildren(ours.map((b) => asRequest(b, read)), 'body.children', 'page', nextId)
+  // 올린 파일은 읽은 서명 주소 그대로 돌아온다(API-7 왕복)
+  const ownFileId = (url: string) => (url === links.fileUrl(FILE).url ? FILE : null)
+  const parsed = parseApiChildren(ours.map((b) => asRequest(b, read)), 'body.children', 'page', nextId, { ownFileId })
   assert.ok(parsed.ok, parsed.ok ? '' : parsed.message)
   if (!parsed.ok) return
   assert.deepEqual(canon(parsed.blocks), canon(ours))
@@ -151,7 +157,11 @@ test('★ 읽기 — 노션의 모양 · 기본값', () => {
   assert.equal(columns.hasChildren, true)
   assert.deepEqual(table.payload, { table_width: 2, has_column_header: true, has_row_header: false })
   assert.equal((image.payload.external as { url: string }).url, 'https://example.com/a.png')
-  assert.deepEqual([uploaded.payload.type, uploaded.payload.file_upload], ['file_upload', { id: FILE }], '올린 파일은 id 만(짧게 사는 주소가 아직 없다)')
+  assert.deepEqual(
+    [uploaded.payload.type, uploaded.payload.file, uploaded.payload.file_upload],
+    ['file', links.fileUrl(FILE), undefined],
+    '올린 파일은 노션처럼 서명 주소(API-7)',
+  )
   assert.equal(file.payload.name, 'doc.pdf', '바깥 주소의 이름은 주소에서')
   assert.equal(uploadedFile.payload.name, '보고서.pdf', '올린 파일의 이름은 파일 행에서')
   const row = blockContentToApi(ours[17].children![0], read)
@@ -200,11 +210,28 @@ test('★ 받기의 거부 — 우리에게 없는 타입은 그 이름을 말�
   reject([{ type: 'heading_1', heading_1: { rich_text: [], is_toggleable: true } }], /is_toggleable should be false/)
   reject([{ type: 'heading_2', heading_2: { rich_text: [], children: [p()] } }], /heading_2\.children should be not present/)
   reject([{ type: 'callout', callout: { rich_text: [], icon: { type: 'external', external: { url: 'https://x.test/i.png' } } } }], /icon\.type `"external"` is not supported/)
-  reject([{ type: 'image', image: { type: 'file', file: { url: 'https://x.test/a.png' } } }], /type "file" cannot be written/)
+  reject([{ type: 'image', image: { type: 'file', file: { url: 'https://x.test/a.png' } } }], /image\.file\.url should be a file URL read from this API/)
   reject([{ type: 'image', image: { external: { url: 'javascript:alert(1)' } } }], /external\.url should be an http or https URL/)
   reject([{ type: 'bookmark', bookmark: { url: 'ftp://x.test' } }], /bookmark\.url should be an http or https URL/)
   reject([{ type: 'code', code: { rich_text: [], language: 'x'.repeat(65) } }], /language\.length should be ≤ 64/)
   reject([{ type: 'equation', equation: { expression: 'x'.repeat(1001) } }], /expression\.length should be ≤ 1000/)
+})
+
+test('★ 받기 — 읽은 `{type:"file", file:{url}}` 을 그대로 보내면 같은 파일(API-7 왕복) · 우리 주소가 아니면 거부 · 옛 file_upload 도 받는다', () => {
+  const ownFileId = (url: string) => (url === links.fileUrl(FILE).url ? FILE : null)
+  const read = { type: 'image', image: { type: 'file', file: links.fileUrl(FILE), caption: [] } }
+  const r = parseApiChildren([read, { type: 'file', file: { file_upload: { id: FILE }, name: '보고서.pdf' } }], 'body.children', 'page', nextId, { ownFileId })
+  assert.ok(r.ok, r.ok ? '' : r.message)
+  if (!r.ok) return
+  assert.deepEqual(r.blocks.map((b) => b.properties.source), [{ type: 'file', file_id: FILE }, { type: 'file', file_id: FILE }])
+  assert.deepEqual(r.uploads, [
+    { id: FILE, blockType: 'image', path: 'body.children[0].image.file.url' },
+    { id: FILE, blockType: 'file', path: 'body.children[1].file.file_upload.id' },
+  ])
+  const foreign = parseApiChildren([{ type: 'image', image: { type: 'file', file: { url: 'https://cdn.test/a.png' } } }], 'body.children', 'page', nextId, { ownFileId })
+  assert.ok(!foreign.ok && /use "external" for other URLs/.test(foreign.message))
+  const updated = parseApiBlockUpdate(block('video'), { file: links.fileUrl(FILE) }, 'body.video', { ownFileId })
+  assert.ok(updated.ok && updated.next.properties.source !== undefined && updated.uploads[0]?.path === 'body.video.file.url')
 })
 
 test('★ 받기의 거부 — 구조(컬럼 · 표 · 중첩 2단)', () => {

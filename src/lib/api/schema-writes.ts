@@ -74,6 +74,7 @@ import {
   isConflict,
   isObject,
   LOCKED_MESSAGE,
+  lookClaims,
   notFound,
   parseIcon,
   policyBlock,
@@ -82,6 +83,7 @@ import {
 } from './pages.ts'
 import { TITLE_PROPERTY_ID } from './property-values.ts'
 import { parseApiRichText } from './rich-text.ts'
+import { claimApiUploadsIn } from './upload-claim.ts'
 import {
   isOptionTypeConfig,
   parseSchemaProperties,
@@ -569,6 +571,9 @@ export const createApiDatabase: V1Handler = async ({ ctx, body, request }) => {
     if (!created.ok) return databaseRefusal(created.reason, parentId, 'page')
     databaseId = created.value.id
     if (icon !== undefined && icon.value !== null) {
+      // API 로 올린 이미지면 그 세션부터(API-7)
+      const claimed = await claimApiUploadsIn(tx, ctx, lookClaims(icon.value))
+      if (claimed !== null) return bodyInvalid(claimed)
       const set = await setDatabaseIconIn(tx, ctx, databaseId, icon.value)
       if (!set.ok) return databaseRefusal(set.reason, databaseId, 'database')
     }
@@ -640,6 +645,8 @@ export const updateApiDatabase: V1Handler = async ({ ctx, params, body, request 
         if (!r.ok) return databaseRefusal(r.reason, id, 'database')
       }
       if (icon !== undefined) {
+        const claimed = await claimApiUploadsIn(tx, ctx, lookClaims(icon.value))
+        if (claimed !== null) return bodyInvalid(claimed)
         const r = await setDatabaseIconIn(tx, ctx, id, icon.value)
         if (!r.ok) return databaseRefusal(r.reason, id, 'database')
       }
