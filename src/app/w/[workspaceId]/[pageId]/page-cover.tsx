@@ -267,7 +267,12 @@ export function PageCoverBanner({ frame }: { frame: 'page' | 'peek' }) {
               const d = drag.current
               if (d !== null) setDraft(dragCoverPosition(d.from, e.clientY - d.startY, d.overflow))
             }}
-            onPointerUp={() => {
+            onPointerUp={(e) => {
+              // 놓은 자리가 마지막 위치다 — 끄는 동안의 갱신(pointermove)은 연속 우선순위라 다음 작업으로 미뤄 그려질 수 있다. 놓기(이산
+              // 이벤트)에서 한 번 더 정하면 곧바로 그려져, 놓은 뒤의 읽기 · Enter · "위치 저장" 이 늘 마지막 값을 본다(PC-3 — 부하에서 놓은
+              // 직후에 읽은 위치가 한 칸 늦었다: 화면 0.4908 · 저장 0.4897).
+              const d = drag.current
+              if (d !== null) setDraft(dragCoverPosition(d.from, e.clientY - d.startY, d.overflow))
               drag.current = null
             }}
             onKeyDown={(e) => {

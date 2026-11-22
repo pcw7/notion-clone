@@ -27,9 +27,11 @@
  * 그것까지 들어온 뒤에 준비됐다고 한다 — 먼저 칠하고 나중에 들어온 품은 문법을 반영하려면 한 번 더 그려야 한다.
  *
  * lowlight 인스턴스는 모듈에 하나다 — 등록은 전역이고 멱등이다. 편집기가 여럿이어도 한 번 불러 같이 쓴다.
+ * **lowlight(와 highlight.js 의 핵심)도 첫 문법과 함께 지연 로드한다**(BD-1) — 문법이 늘 비동기로 들어오므로 칠하기는 원래 첫 문법이
+ * 들어온 뒤다. 핵심을 문법과 나란히 받으면 칠해지는 때가 같고, 코드 블록이 없는 페이지는 핵심을 받지 않는다(편집기의 첫 JS 에서 약 6KB).
  */
 
-import { createLowlight } from 'lowlight'
+import type { createLowlight } from 'lowlight'
 import type { LanguageFn } from 'highlight.js'
 
 // ── 노션 이름 → highlight.js 문법 ─────────────────────────────────────
@@ -250,9 +252,19 @@ export function grammarClosure(grammar: string): string[] {
   return [...seen]
 }
 
-const lowlight = createLowlight()
+type Lowlight = ReturnType<typeof createLowlight>
+
+/** 들어온 lowlight — 첫 문법을 부를 때 함께 받는다(머리말). 그 전에는 null 이고, 어떤 문법도 준비되지 않았다. */
+let lowlight: Lowlight | null = null
+let lowlightLoading: Promise<Lowlight> | null = null
 const loading = new Map<string, Promise<void>>()
 const failed = new Set<string>()
+
+/** lowlight 를 한 번 받아 만든다 — 실패하면 그 약속을 그대로 둔다(문법의 실패와 같다 · 이번 세션에 다시 부르지 않는다). */
+function loadLowlight(): Promise<Lowlight> {
+  lowlightLoading ??= import('lowlight').then((module) => (lowlight = module.createLowlight()))
+  return lowlightLoading
+}
 
 /** 한 문법 파일을 불러 등록한다 — 이미 불렀거나 부르는 중이면 그 약속. 실패하면 다시 부르지 않는다(덩어리가 없는 배포 · 끊긴 망). */
 function loadOne(name: string): Promise<void> {
@@ -262,8 +274,8 @@ function loadOne(name: string): Promise<void> {
   const promise =
     loader === undefined
       ? Promise.reject(new Error(`문법이 없다: ${name}`))
-      : loader().then((module) => {
-          if (!lowlight.registered(name)) lowlight.register(name, module.default)
+      : Promise.all([loader(), loadLowlight()]).then(([module, ll]) => {
+          if (!ll.registered(name)) ll.register(name, module.default)
         })
   const settled = promise.catch((error: unknown) => {
     failed.add(name)
@@ -284,7 +296,8 @@ export type GrammarStatus = 'ready' | 'loading' | 'failed' | 'idle'
 export function grammarStatus(grammar: string): GrammarStatus {
   const names = grammarClosure(grammar)
   if (names.some((name) => failed.has(name) || !GRAMMAR_LOADERS.has(name))) return 'failed'
-  if (names.every((name) => lowlight.registered(name))) return 'ready'
+  const ll = lowlight
+  if (ll !== null && names.every((name) => ll.registered(name))) return 'ready'
   return names.some((name) => loading.has(name)) ? 'loading' : 'idle'
 }
 
@@ -334,7 +347,7 @@ export function flattenTokens(root: HastNode, base: number): TokenRange[] {
  * 문법이 준비되지 않았거나 highlight.js 가 던지면 빈 배열 — **칠하기가 편집을 막지 않는다**.
  */
 export function highlightTokens(grammar: string, text: string, range: { readonly scanFrom: number; readonly from: number; readonly to: number }): TokenRange[] {
-  if (grammarStatus(grammar) !== 'ready') return []
+  if (grammarStatus(grammar) !== 'ready' || lowlight === null) return []
   let root: HastNode
   try {
     root = lowlight.highlight(grammar, text.slice(range.scanFrom, range.to)) as HastNode
