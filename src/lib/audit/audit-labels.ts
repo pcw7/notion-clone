@@ -37,6 +37,10 @@ const SECURITY_CHANGE: Readonly<Record<string, string>> = {
   // 공개 API 의 개인 토큰(API-1) — 이 워크스페이스의 범위로 쌓는다 · 이름을 함께 보인다
   api_token_created: 'API 토큰을 만들었다',
   api_token_revoked: 'API 토큰을 폐기했다',
+  // 공개 API 웹훅(API-8) — 이름 자리에 받는 주소의 힌트(확인 토큰은 싣지 않는다)
+  api_webhook_created: 'API 웹훅을 만들었다',
+  api_webhook_verified: 'API 웹훅을 확인했다',
+  api_webhook_deleted: 'API 웹훅을 지웠다',
 }
 
 const PRINCIPAL: Readonly<Record<string, string>> = {

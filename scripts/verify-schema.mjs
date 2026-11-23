@@ -89,6 +89,8 @@ const EXPECTED_TABLES = [
   'api_token',
   // 공개 API 의 파일 올리기 세션 API-7 (0150)
   'api_file_upload',
+  // 공개 API 의 웹훅 구독 · 아웃박스 API-8 (0151)
+  'api_webhook_subscription', 'api_webhook_event',
   // AI 1차 기반 AI-1 (0146)
   'workspace_ai_setting', 'ai_usage', 'ai_grant', 'ai_daily_usage',
   // AI 채팅 · 내 AI 지시 AI-6 (0148)
@@ -6311,6 +6313,178 @@ try {
     const strangerWs = randomUUID()
     await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '업로드의 남', 'local', now())`, [strangerWs])
     await rejectsBy('★ 멤버였던 적 없는 워크스페이스의 업로드', insertUpload, up({ ws: strangerWs }), 'fk_api_file_upload_member')
+  }
+
+  {
+    // 공개 API 의 웹훅(0151 · API-8 · §3.1 [보강 API-1] ⑫ · §3.10) — 구독: 토큰의 워크스페이스 · 사람 · 봉인한 주소 · 확인 토큰 · 카탈로그의
+    // 이벤트 · 상태 넷 · 꺼짐의 까닭 · 확인 시각의 짝. 아웃박스: 종류 · 대상 · 상태 넷 · 시도 0~8 · 다음 시각 · 끝난 시각 · 보냄은 2xx ·
+    // 실패는 여덟 번 · 건너뜀의 까닭 · test 의 대상 · 한 구독에 한 이벤트 한 번 · 일의 종류 api_webhook_deliver
+    const HOOK_CONSTRAINTS = {
+      api_webhook_subscription: [
+        'ck_api_webhook_url_sealed', 'ck_api_webhook_url_hint', 'ck_api_webhook_secret_sealed', 'ck_api_webhook_event_types', 'ck_api_webhook_status',
+        'ck_api_webhook_disabled_reason', 'ck_api_webhook_verification_status', 'ck_api_webhook_verification_error', 'ck_api_webhook_failures',
+        'fk_api_webhook_token', 'ck_api_webhook_disabled_pair', 'ck_api_webhook_verified', 'ck_api_webhook_verified_order',
+        'ck_api_webhook_verification_sent', 'ck_api_webhook_updated',
+      ],
+      api_webhook_event: [
+        'ck_api_webhook_event_type', 'ck_api_webhook_event_entity', 'ck_api_webhook_event_authors', 'ck_api_webhook_event_data',
+        'ck_api_webhook_event_status', 'ck_api_webhook_event_attempts', 'ck_api_webhook_event_http', 'ck_api_webhook_event_error',
+        'ck_api_webhook_event_skip_reason', 'uq_api_webhook_event_once', 'ck_api_webhook_event_pending', 'ck_api_webhook_event_finished',
+        'ck_api_webhook_event_delivered', 'ck_api_webhook_event_failed', 'ck_api_webhook_event_skipped', 'ck_api_webhook_event_attempted',
+        'ck_api_webhook_event_test',
+      ],
+      api_token: ['uq_api_token_owner'],
+    }
+    for (const [table, names] of Object.entries(HOOK_CONSTRAINTS)) {
+      for (const name of names) {
+        const has = (await client.query(`SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass`, [name, table])).rowCount
+        if (has === 1) ok(`${name} 이 있다`)
+        else fail(`${name} 이 없다`)
+      }
+    }
+    for (const [index, pattern, label] of [
+      ['ix_api_webhook_event_due', /\(next_attempt_at\) WHERE \(status = 'pending'::text\)/, '워커 — 때가 된 것(기다리는 줄만)'],
+      ['ix_api_webhook_event_entity', /\(subscription_id, entity_id, seq\) WHERE \(status = 'pending'::text\)/, '워커 — 같은 대상의 앞선 줄'],
+      ['ix_api_webhook_event_log', /\(subscription_id, seq DESC\)/, '화면의 배달 기록'],
+      ['ix_api_webhook_event_finished', /\(finished_at\) WHERE \(finished_at IS NOT NULL\)/, '끝난 줄 지우기'],
+      ['ix_api_webhook_token', /\(api_token_id, created_at, id\)/, '토큰의 구독'],
+    ]) {
+      const def = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = $1`, [index])).rows[0]?.indexdef ?? ''
+      if (pattern.test(def)) ok(`${index} — ${label}`)
+      else fail(`${index} 가 틀렸다 — ${def || '없다'}`)
+    }
+
+    await client.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1, $2, 'member', 'active') ON CONFLICT (workspace_id, user_id) DO NOTHING`,
+      [wsId, userId],
+    )
+    const hex64 = () => randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '')
+    const tokenId = randomUUID()
+    await client.query(
+      `INSERT INTO api_token (id, user_id, workspace_id, name, token_hash, last4, created_at) VALUES ($1, $2, $3, '웹훅 프로브', $4, 'ab12', '2026-11-23T00:00:00Z')`,
+      [tokenId, userId, wsId, hex64()],
+    )
+    // 봉인의 모양 — 판 1바이트(1) ‖ IV 12 ‖ 태그 16 ‖ 암호문(앱의 봉인 함수가 만드는 모양 · 내용은 프로브의 것)
+    const sealed = Buffer.concat([Buffer.from([1]), Buffer.alloc(28, 7), Buffer.from('cipher')])
+    const insertHook = `INSERT INTO api_webhook_subscription (id, workspace_id, api_token_id, user_id, url_sealed, url_hint, secret_sealed, event_types,
+                                                              status, disabled_reason, verified_at, verification_sent_at, verification_status,
+                                                              verification_error, consecutive_failures, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11, $12, $13, $14, $15, $16, $17)`
+    const hook = (over = {}) => {
+      const h = {
+        id: randomUUID(), ws: wsId, token: tokenId, user: userId, url: sealed, hint: 'hooks.example.com/…abcd', secret: sealed, events: ['page.created'],
+        status: 'pending_verification', reason: null, verified: null, sent: null, http: null, error: null, failures: 0,
+        created: '2026-11-23T00:00:00Z', updated: '2026-11-23T00:00:00Z', ...over,
+      }
+      return [h.id, h.ws, h.token, h.user, h.url, h.hint, h.secret, h.events, h.status, h.reason, h.verified, h.sent, h.http, h.error, h.failures, h.created, h.updated]
+    }
+    const activeId = randomUUID()
+    await client.query(insertHook, hook())
+    await client.query(insertHook, hook({ id: activeId, status: 'active', verified: '2026-11-23T00:01:00Z', sent: '2026-11-23T00:00:01Z', http: 200, events: ['comment.deleted', 'data_source.schema_updated'] }))
+    await client.query(insertHook, hook({ status: 'disabled', reason: 'token_revoked' }))
+    await client.query(insertHook, hook({ status: 'disabled', reason: 'failures', verified: '2026-11-23T00:01:00Z', failures: 3, sent: '2026-11-23T00:00:01Z', error: 'network: refused' }))
+    await client.query(insertHook, hook({ status: 'paused', verified: '2026-11-23T00:00:00Z' }))
+    ok('api_webhook_subscription 정상 삽입 (확인 전 · 켜짐 · 토큰 폐기로 꺼짐(확인 전) · 실패로 꺼짐 · 멈춤)')
+
+    const rejectsBy = async (label, sql, params, ...names) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (names.includes(e.constraint)) ok(`${label} — ${e.constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${names.join(' | ')} 가 아니라 ${e.constraint ?? e.code} (${String(e.message).split('\n')[0]})`)
+      }
+    }
+    const verifiedAt = '2026-11-23T00:01:00Z'
+    await rejectsBy('★ 평문 주소(봉인하지 않았다)', insertHook, hook({ url: Buffer.from('https://hooks.example.com/notion/secret-path') }), 'ck_api_webhook_url_sealed')
+    await rejectsBy('★ 평문 확인 토큰(서명의 비밀)', insertHook, hook({ secret: Buffer.from(`secret_${'a'.repeat(43)}`) }), 'ck_api_webhook_secret_sealed')
+    await rejectsBy('봉인이 너무 짧다(판 바이트만)', insertHook, hook({ url: Buffer.from([1, 2, 3]) }), 'ck_api_webhook_url_sealed')
+    await rejectsBy('빈 힌트', insertHook, hook({ hint: '' }), 'ck_api_webhook_url_hint')
+    await rejectsBy('★ 고른 이벤트가 없다', insertHook, hook({ events: [] }), 'ck_api_webhook_event_types')
+    await rejectsBy('★ 카탈로그 밖의 이벤트', insertHook, hook({ events: ['page.created', 'page.exploded'] }), 'ck_api_webhook_event_types')
+    await rejectsBy('★ test 는 고를 수 없다', insertHook, hook({ events: ['test'] }), 'ck_api_webhook_event_types')
+    await rejectsBy('deprecated 이벤트(database.schema_updated)', insertHook, hook({ events: ['database.schema_updated'] }), 'ck_api_webhook_event_types')
+    await rejectsBy('NULL 이 든 이벤트 목록', insertHook, hook({ events: ['page.created', null] }), 'ck_api_webhook_event_types')
+    await rejectsBy('★ 모르는 상태', insertHook, hook({ status: 'deleted' }), 'ck_api_webhook_status')
+    await rejectsBy('★ 까닭 없는 꺼짐', insertHook, hook({ status: 'disabled' }), 'ck_api_webhook_disabled_pair')
+    await rejectsBy('켜졌는데 꺼짐의 까닭', insertHook, hook({ status: 'active', verified: verifiedAt, reason: 'failures' }), 'ck_api_webhook_disabled_pair')
+    await rejectsBy('모르는 꺼짐의 까닭', insertHook, hook({ status: 'disabled', reason: 'boredom' }), 'ck_api_webhook_disabled_reason')
+    await rejectsBy('★ 확인하지 않았는데 켜짐', insertHook, hook({ status: 'active' }), 'ck_api_webhook_verified')
+    await rejectsBy('확인하지 않았는데 멈춤', insertHook, hook({ status: 'paused' }), 'ck_api_webhook_verified')
+    await rejectsBy('★ 확인을 기다리는데 확인 시각', insertHook, hook({ verified: verifiedAt }), 'ck_api_webhook_verified')
+    await rejectsBy('만든 시각보다 앞선 확인', insertHook, hook({ status: 'active', verified: '2026-11-22T00:00:00Z' }), 'ck_api_webhook_verified_order')
+    await rejectsBy('보낸 적 없는데 확인 요청의 결과', insertHook, hook({ http: 200 }), 'ck_api_webhook_verification_sent')
+    await rejectsBy('HTTP 상태가 아니다', insertHook, hook({ sent: verifiedAt, http: 42 }), 'ck_api_webhook_verification_status')
+    await rejectsBy('★ 확인 요청의 까닭 201자(응답 본문을 담지 않는다)', insertHook, hook({ sent: verifiedAt, error: 'x'.repeat(201) }), 'ck_api_webhook_verification_error')
+    await rejectsBy('음수 잇단 실패', insertHook, hook({ failures: -1 }), 'ck_api_webhook_failures')
+    await rejectsBy('만든 시각보다 앞선 고친 시각', insertHook, hook({ updated: '2026-11-22T00:00:00Z' }), 'ck_api_webhook_updated')
+    const strangerUser = randomUUID()
+    await client.query(`INSERT INTO "user" (id, name, created_at) VALUES ($1, '웹훅의 남', now())`, [strangerUser])
+    await rejectsBy('★ 토큰의 사람이 아닌 사람의 구독', insertHook, hook({ user: strangerUser }), 'fk_api_webhook_token')
+    await rejectsBy('★ 없는 토큰의 구독', insertHook, hook({ token: randomUUID() }), 'fk_api_webhook_token')
+
+    const insertEvent = `INSERT INTO api_webhook_event (id, subscription_id, workspace_id, event_id, type, entity_id, entity_type, authors, data, occurred_at,
+                                                        status, attempts, next_attempt_at, last_attempt_at, last_http_status, last_error, skip_reason, finished_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18)`
+    const at = '2026-11-23T01:00:00Z'
+    const ev = (over = {}) => {
+      const e = {
+        id: randomUUID(), sub: activeId, ws: wsId, event: randomUUID(), type: 'test', entity: activeId, entityType: 'webhook_subscription',
+        authors: JSON.stringify([{ id: userId, type: 'person' }]), data: '{}', occurred: at,
+        status: 'pending', attempts: 0, next: at, last: null, http: null, error: null, skip: null, finished: null, ...over,
+      }
+      return [e.id, e.sub, e.ws, e.event, e.type, e.entity, e.entityType, e.authors, e.data, e.occurred, e.status, e.attempts, e.next, e.last, e.http, e.error, e.skip, e.finished]
+    }
+    const pageEntity = randomUUID()
+    const sharedEvent = randomUUID()
+    await client.query(insertEvent, ev({ event: sharedEvent }))
+    await client.query(insertEvent, ev({ type: 'page.created', entity: pageEntity, entityType: 'page', status: 'pending', attempts: 3, last: at, http: 500, error: 'http_error: HTTP 500' }))
+    await client.query(insertEvent, ev({ status: 'delivered', attempts: 1, next: null, last: at, http: 204, finished: at }))
+    await client.query(insertEvent, ev({ status: 'failed', attempts: 8, next: null, last: at, http: 503, error: 'http_error: HTTP 503', finished: at }))
+    await client.query(insertEvent, ev({ type: 'comment.created', entity: pageEntity, entityType: 'comment', status: 'skipped', next: null, skip: 'access_lost', finished: at }))
+    ok('api_webhook_event 정상 삽입 (기다림 · 다시 기다림 · 보냄(204) · 실패(8번) · 건너뜀)')
+
+    await rejectsBy('★ 모르는 이벤트 종류', insertEvent, ev({ type: 'page.exploded', entityType: 'page' }), 'ck_api_webhook_event_type')
+    await rejectsBy('모르는 대상의 종류', insertEvent, ev({ type: 'page.created', entityType: 'user' }), 'ck_api_webhook_event_entity')
+    await rejectsBy('저자가 배열이 아니다', insertEvent, ev({ authors: '{}' }), 'ck_api_webhook_event_authors')
+    await rejectsBy('data 가 객체가 아니다', insertEvent, ev({ data: '[]' }), 'ck_api_webhook_event_data')
+    await rejectsBy('★ 모르는 상태', insertEvent, ev({ status: 'sent', next: null, finished: at }), 'ck_api_webhook_event_status')
+    await rejectsBy('★ 아홉 번째 시도', insertEvent, ev({ attempts: 9, last: at }), 'ck_api_webhook_event_attempts')
+    await rejectsBy('★ 기다리는데 다음 시각이 없다', insertEvent, ev({ next: null }), 'ck_api_webhook_event_pending')
+    await rejectsBy('끝났는데 다음 시각이 있다', insertEvent, ev({ status: 'delivered', attempts: 1, last: at, http: 200, finished: at }), 'ck_api_webhook_event_pending')
+    await rejectsBy('★ 끝났는데 끝난 시각이 없다', insertEvent, ev({ status: 'skipped', skip: 'paused', next: null }), 'ck_api_webhook_event_finished')
+    await rejectsBy('기다리는데 끝난 시각', insertEvent, ev({ finished: at }), 'ck_api_webhook_event_finished')
+    await rejectsBy('★ 보냈는데 2xx 가 아니다', insertEvent, ev({ status: 'delivered', attempts: 1, next: null, last: at, http: 500, finished: at }), 'ck_api_webhook_event_delivered')
+    await rejectsBy('보냈는데 시도한 적이 없다', insertEvent, ev({ status: 'delivered', next: null, finished: at }), 'ck_api_webhook_event_delivered')
+    await rejectsBy('★ 여덟 번 전에 실패로 끝났다', insertEvent, ev({ status: 'failed', attempts: 7, next: null, last: at, finished: at }), 'ck_api_webhook_event_failed')
+    await rejectsBy('★ 까닭 없는 건너뜀', insertEvent, ev({ status: 'skipped', next: null, finished: at }), 'ck_api_webhook_event_skipped')
+    await rejectsBy('보냈는데 건너뜀의 까닭', insertEvent, ev({ status: 'delivered', attempts: 1, next: null, last: at, http: 200, finished: at, skip: 'paused' }), 'ck_api_webhook_event_skipped')
+    await rejectsBy('모르는 건너뜀의 까닭', insertEvent, ev({ status: 'skipped', next: null, finished: at, skip: 'bored' }), 'ck_api_webhook_event_skip_reason')
+    await rejectsBy('시도했는데 시도 시각이 없다', insertEvent, ev({ attempts: 1 }), 'ck_api_webhook_event_attempted')
+    await rejectsBy('시도한 적 없는데 시도 시각', insertEvent, ev({ last: at }), 'ck_api_webhook_event_attempted')
+    await rejectsBy('HTTP 상태가 아니다', insertEvent, ev({ attempts: 1, last: at, http: 42 }), 'ck_api_webhook_event_http')
+    await rejectsBy('★ 까닭 201자(응답 본문을 담지 않는다)', insertEvent, ev({ attempts: 1, last: at, error: 'x'.repeat(201) }), 'ck_api_webhook_event_error')
+    await rejectsBy('★ test 의 대상이 페이지', insertEvent, ev({ entity: pageEntity, entityType: 'page' }), 'ck_api_webhook_event_test')
+    await rejectsBy('page.created 의 대상이 구독', insertEvent, ev({ type: 'page.created' }), 'ck_api_webhook_event_test')
+    await rejectsBy('★ 한 구독에 같은 이벤트 두 번', insertEvent, ev({ event: sharedEvent }), 'uq_api_webhook_event_once')
+    await rejectsBy('없는 구독의 줄', insertEvent, ev({ sub: randomUUID() }), 'api_webhook_event_subscription_id_fkey')
+
+    // 구독을 지우면 그 줄들도(FK CASCADE)
+    await client.query(`DELETE FROM api_webhook_subscription WHERE id = $1`, [activeId])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM api_webhook_event WHERE subscription_id = $1`, [activeId])).rows[0].n
+    if (left === 0) ok('★ 구독을 지우면 기다리던 줄 · 기록도 사라진다(CASCADE)')
+    else fail(`구독을 지웠는데 줄이 ${left}개 남았다`)
+
+    const putJob = `INSERT INTO scheduled_job (id, kind, run_at, payload, dedupe_key) VALUES ($1, $2, now(), '{}'::jsonb, $3)`
+    await client.query(putJob, [randomUUID(), 'api_webhook_deliver', `probe-${randomUUID()}`])
+    ok('★ 일의 종류 api_webhook_deliver — 통과한다')
+    const kindDef = (await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)).rows[0]?.def ?? ''
+    if (['version_gc', 'automation_webhook', 'verification_expire', 'api_webhook_deliver'].every((k) => kindDef.includes(`'${k}'`))) ok('앞의 일의 종류도 그대로 있다')
+    else fail(`일의 종류가 어긋났다: ${kindDef}`)
+    await rejectsBy('★ 모르는 일의 종류(0151 뒤에도)', putJob, [randomUUID(), 'api_webhook_explode', null], 'ck_scheduled_job_kind')
   }
 
   await client.query('ROLLBACK')

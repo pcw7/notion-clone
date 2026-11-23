@@ -8,8 +8,11 @@
  * 이 워크스페이스의 내 토큰 목록(이름 · 끝 4자 · 만든 날 · 마지막 사용 · 만료)과 만들기 · 폐기. 만들면 값을 한 번 보이고(복사 · "다시 볼 수
  * 없습니다") 닫으면 사라진다. 폐기는 화면 안에서 묻는다(`window.confirm` 이 아니다). 만들기는 게스트에게 서지 않는다 — 판정은 라우트의
  * 명령이 다시 한다(`POST /api-tokens` · `DELETE /api-tokens/[id]`).
+ *
+ * 토큰마다 "웹훅"(API-8 · F-09-09) — 누르면 그 토큰의 웹훅 절(`api-webhook-section.tsx`)을 지연 로드로 연다.
  */
 
+import dynamic from 'next/dynamic'
 import { useState } from 'react'
 
 import type { ApiTokenSummary } from '@/lib/api/api-token'
@@ -23,6 +26,12 @@ import {
   expiryValue,
   maskedToken,
 } from './api-token-messages'
+
+// 토큰의 웹훅 절(API-8) — "웹훅" 을 누를 때 받는다(이 패널의 청크에도 넣지 않는다)
+const ApiWebhookSection = dynamic(() => import('./api-webhook-section').then((m) => m.ApiWebhookSection), {
+  ssr: false,
+  loading: () => <p className="mt-2 w-full text-xs text-neutral-500">불러오는 중…</p>,
+})
 
 const FIELD =
   'min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-2 py-1 text-sm outline-none focus:border-neutral-500 dark:border-neutral-700'
@@ -44,6 +53,7 @@ export function ApiTokenPanel({ workspaceId, initial, canCreate }: { workspaceId
   const [expiry, setExpiry] = useState(API_TOKEN_EXPIRY_OPTIONS[0]!.value)
   const [created, setCreated] = useState<{ readonly value: string; readonly name: string } | null>(null)
   const [confirming, setConfirming] = useState<string | null>(null)
+  const [hooksOpen, setHooksOpen] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -226,6 +236,15 @@ export function ApiTokenPanel({ workspaceId, initial, canCreate }: { workspaceId
                   </span>
                   <button
                     type="button"
+                    data-testid="api-token-webhooks"
+                    aria-expanded={hooksOpen === token.id}
+                    onClick={() => setHooksOpen((open) => (open === token.id ? null : token.id))}
+                    className={BUTTON}
+                  >
+                    웹훅
+                  </button>
+                  <button
+                    type="button"
                     data-testid="api-token-revoke"
                     disabled={busy}
                     onClick={() => {
@@ -237,6 +256,9 @@ export function ApiTokenPanel({ workspaceId, initial, canCreate }: { workspaceId
                     폐기
                   </button>
                 </>
+              )}
+              {hooksOpen === token.id && confirming !== token.id && (
+                <ApiWebhookSection workspaceId={workspaceId} tokenId={token.id} tokenExpired={token.expired} />
               )}
             </li>
           ))}

@@ -22,7 +22,8 @@
  *
  *   · `resolveSessionContext()` — 로그인 세션. 0단계 게이트를 지난다. **공개 API 의 개인 토큰도 이 함수가 받는다**(API-1 · 정본
  *     §3.1 [보강 API-1] ②) — 워크스페이스는 토큰 행에서 오고, 같은 게이트(`passGate` — 지운 워크스페이스 · 멤버십 · SSO)를 지난다.
- *     `apiToken` 을 싣고 `sessionId` 자리에 토큰 id 를 둔다.
+ *     `apiToken` 을 싣고 `sessionId` 자리에 토큰 id 를 둔다. 웹훅 워커(API-8)는 같은 길을 토큰 **행 id** 로 묻는다(`{ apiTokenId }` —
+ *     같은 질의 · 같은 게이트 · 마지막 사용 시각은 쓰지 않는다). 그래서 발급자는 여전히 둘이다.
  *   · `resolveDelegatedContext()` — DB automation 을 **만든 사람**으로 실행하는 위임(세션 없는 워커가 부른다). 발급 전에 그 사람이
  *     지금도 지워지지 않았고 그 워크스페이스의 활성 멤버인지 본다. SSO · 2단계 인증은 로그인의 문이라 묻지 않는다. `delegation` 을
  *     싣고 `sessionId` 자리에 automation id 를 둔다.
@@ -191,8 +192,17 @@ type SessionRow = GateRow & {
 /** 공개 API 의 개인 토큰 — 쿠키 대신 이것을 내면 워크스페이스는 토큰 행에서 온다(API-1). */
 export type ApiTokenCredential = { readonly apiToken: string }
 
+/**
+ * 공개 API 웹훅의 배달(API-8 · 정본 [보강 API-1] ⑫) — 워커가 구독의 토큰 **행 id** 로 다시 묻는다. 토큰 값은 해시만 있어 워커가 낼 수
+ * 없다. 같은 질의 · 같은 게이트(폐기 · 만료 · 사람 · 멤버십 · 게스트 · SSO · 지운 워크스페이스)를 지나고 `last_used_at` 은 쓰지 않는다
+ * (배달은 그 사람의 사용이 아니다). **사람이 낸 값으로 부르지 않는다** — 워커의 코드만 부른다(라우트는 `{ apiToken }` 만 낸다).
+ */
+export type ApiTokenIdCredential = { readonly apiTokenId: string }
+
 /** `last_used_at` 을 이만큼 지나야 다시 쓴다 — 요청마다 쓰지 않는다(정본 [보강 API-1] · 0145 ③). */
 export const API_TOKEN_TOUCH_SECONDS = 60
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * 세션 토큰과 워크스페이스로부터 컨텍스트를 만든다.
@@ -203,12 +213,15 @@ export const API_TOKEN_TOUCH_SECONDS = 60
  * `{ apiToken }` 을 내면 공개 API 의 개인 토큰으로 묻는다(API-1 ② — 발급자는 그대로 둘이다). 워크스페이스는 토큰 행의 것이다.
  */
 export async function resolveSessionContext(token: string | null | undefined, workspaceId: WorkspaceId): Promise<SessionResolution>
-export async function resolveSessionContext(credential: ApiTokenCredential): Promise<SessionResolution>
+export async function resolveSessionContext(credential: ApiTokenCredential | ApiTokenIdCredential): Promise<SessionResolution>
 export async function resolveSessionContext(
-  token: string | null | undefined | ApiTokenCredential,
+  token: string | null | undefined | ApiTokenCredential | ApiTokenIdCredential,
   workspaceId?: WorkspaceId,
 ): Promise<SessionResolution> {
-  if (typeof token === 'object' && token !== null) return resolveApiTokenCredential(token.apiToken)
+  if (typeof token === 'object' && token !== null) {
+    if ('apiTokenId' in token) return resolveApiTokenCredential({ by: 'id', id: token.apiTokenId })
+    return resolveApiTokenCredential({ by: 'value', token: token.apiToken })
+  }
   if (!token || workspaceId === undefined) return { ok: false, reason: 'no_session' }
 
   const row = await queryMaybe<SessionRow>(
@@ -265,9 +278,13 @@ export async function resolveSessionContext(
  * 개인 토큰의 길(API-1 ②) — 한 번의 질의로 토큰 · 사람 · 멤버십 · SSO 를 읽고 `passGate` 를 지난다. 그 앞에서 토큰만의 것을 묻는다:
  * 폐기 · 만료 · 사람이 지워졌거나 멈췄다(`user.status`) · 게스트로 내려갔다(만들 때와 같은 판정 — 토큰은 멤버 이상의 것). 2단계 인증은
  * 묻지 않는다 — 토큰은 그 단계를 지난 세션이 만들었다. 통과하면 `last_used_at` 을 1분에 한 번만 쓴다.
+ *
+ * 웹훅 워커는 값 대신 행 id 로 묻는다(`by: 'id'` — API-8). 질의 · 게이트는 하나이고 찾는 열만 다르다 · 그때는 `last_used_at` 을 쓰지 않는다.
  */
-async function resolveApiTokenCredential(token: string): Promise<SessionResolution> {
-  if (token === '') return { ok: false, reason: 'no_session' }
+async function resolveApiTokenCredential(
+  key: { readonly by: 'value'; readonly token: string } | { readonly by: 'id'; readonly id: string },
+): Promise<SessionResolution> {
+  if (key.by === 'value' ? key.token === '' : !UUID_SHAPE.test(key.id)) return { ok: false, reason: 'no_session' }
   const row = await queryMaybe<
     GateRow & {
       token_id: string
@@ -295,8 +312,8 @@ async function resolveApiTokenCredential(token: string): Promise<SessionResoluti
        JOIN workspace w ON w.id = t.workspace_id
        LEFT JOIN workspace_member m ON m.user_id = t.user_id AND m.workspace_id = t.workspace_id
        LEFT JOIN sso_config sc ON sc.workspace_id = t.workspace_id
-      WHERE t.token_hash = $1`,
-    [hashSessionToken(token), API_TOKEN_TOUCH_SECONDS],
+      WHERE ${key.by === 'value' ? 't.token_hash = $1' : 't.id = $1::uuid'}`,
+    [key.by === 'value' ? hashSessionToken(key.token) : key.id, API_TOKEN_TOUCH_SECONDS],
   )
   if (!row) return { ok: false, reason: 'no_session' }
   if (row.is_revoked) return { ok: false, reason: 'revoked' }
@@ -307,7 +324,7 @@ async function resolveApiTokenCredential(token: string): Promise<SessionResoluti
   if (!gate.ok) return gate
   if (gate.role === 'guest') return { ok: false, reason: 'not_a_member' }
 
-  if (row.touch_due) {
+  if (key.by === 'value' && row.touch_due) {
     // 조건을 다시 건다 — 같은 순간의 두 요청이 둘 다 쓰지 않게
     await query(
       `UPDATE api_token SET last_used_at = now()
