@@ -437,11 +437,22 @@ export async function postJson(
   body: unknown,
   options: { readonly resolve?: Resolver; readonly timeoutMs?: number; readonly headers?: Readonly<Record<string, string>> } = {},
 ): Promise<OutboundResult> {
+  return postJsonText(rawUrl, JSON.stringify(body), options)
+}
+
+/**
+ * 이미 만든 JSON 글을 그대로 POST 한다 — 본문의 바이트에 서명하는 쪽(공개 API 웹훅 · API-8)이 쓴다. 규칙은 `postJson` 과 같다.
+ */
+export async function postJsonText(
+  rawUrl: string,
+  json: string,
+  options: { readonly resolve?: Resolver; readonly timeoutMs?: number; readonly headers?: Readonly<Record<string, string>> } = {},
+): Promise<OutboundResult> {
   const pinned = await pinTarget(rawUrl, options.resolve)
   if (!pinned.ok) return pinned.failure
   const { url, host, target } = pinned
 
-  const payload = Buffer.from(JSON.stringify(body), 'utf8')
+  const payload = Buffer.from(json, 'utf8')
   const timeoutMs = options.timeoutMs ?? OUTBOUND_TIMEOUT_MS
   const requestOptions: RequestOptions = {
     method: 'POST',

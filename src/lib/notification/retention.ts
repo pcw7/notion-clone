@@ -18,6 +18,7 @@
  *   ⑧ 끝난 자동화 배달 — 끝난 지 `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(5c-2 · 정본 ⑬ — 페이지 웹훅의 묶음과 같다)
  *   ⑨ 감사 로그 — `AUDIT_RETENTION_DAYS`(365)일이 지나면 지운다(6d-1 · 정본 [보강] 감사 로그 ④). 기준은 **잡의 시각과 DB 의 시각 중 이른
  *      쪽** — 0087 의 트리거가 DB 시각으로 365일이 지난 행만 지우게 두므로, 잡의 시각이 앞서 있으면(검사가 미래 시각을 넘긴다) 거부된다
+ *   ⑩ 끝난 공개 API 웹훅 이벤트 — 끝난 지 `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(API-8 · 정본 [보강 API-1] ⑫ — 페이지 웹훅과 같은 날)
  *
  * 감사 기록(`audit_event`)은 지우지 않는다(F-11-12). 기간은 코드 상수다 — 관리자 화면은 없다(노션에도 없다).
  */
@@ -54,6 +55,7 @@ export type RetentionResult = {
   readonly runs: number
   readonly automationDeliveries: number
   readonly auditEvents: number
+  readonly apiWebhookEvents: number
   /** 그 해마다 파티션이 어떻게 됐나 — `created` · `exists` · `blocked`. */
   readonly partitions: Readonly<Record<number, string>>
   /** 한 종류라도 한 판이 꽉 찼다 — 더 남았을 수 있다. */
@@ -196,6 +198,18 @@ export async function runDataRetention(
     [new Date(now.getTime() - AUDIT_RETENTION_DAYS * DAY), batch, ws, AUDIT_RETENTION_DAYS],
   )
 
+  // ⑩ 끝난 공개 API 웹훅 이벤트
+  const apiWebhookEvents = await query<{ id: string }>(
+    `DELETE FROM api_webhook_event e USING (
+       SELECT e2.id FROM api_webhook_event e2
+        WHERE e2.finished_at < $1
+          AND ($3::uuid[] IS NULL OR e2.workspace_id = ANY($3::uuid[]))
+        LIMIT $2) old
+     WHERE e.id = old.id
+     RETURNING e.id`,
+    [new Date(now.getTime() - WEBHOOK_DELIVERY_DAYS * DAY), batch, ws],
+  )
+
   // ⑤ 파티션 — 올해 · 다음 해(UTC). 검사는 끈다(위 `options.partitions`)
   const partitions: Record<number, string> = {}
   if (options.partitions !== false) {
@@ -204,7 +218,17 @@ export async function runDataRetention(
     }
   }
 
-  const counts = [processed.length, overCap.length, events.length, visits.length, deliveries.length, runs.length, automationDeliveries.length, auditEvents.length]
+  const counts = [
+    processed.length,
+    overCap.length,
+    events.length,
+    visits.length,
+    deliveries.length,
+    runs.length,
+    automationDeliveries.length,
+    auditEvents.length,
+    apiWebhookEvents.length,
+  ]
   return {
     processedNotifications: processed.length,
     unreadOverCap: overCap.length,
@@ -214,6 +238,7 @@ export async function runDataRetention(
     runs: runs.length,
     automationDeliveries: automationDeliveries.length,
     auditEvents: auditEvents.length,
+    apiWebhookEvents: apiWebhookEvents.length,
     partitions,
     more: counts.some((n) => n === batch),
   }

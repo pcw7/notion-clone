@@ -6,7 +6,8 @@
  *   · 만들기는 **멤버 이상**(게스트는 아니다) · 사람마다 워크스페이스마다 살아 있는 것 20개(`limit_reached`) — 그 사람의 멤버십 행을
  *     잠그고 센다(두 탭이 동시에 만들어도 21개가 되지 않는다). 역할도 그 행에서 다시 읽는다 — 세션의 역할은 낡았을 수 있다.
  *   · 값은 만들 때 **한 번만** 평문으로 돌려준다. 저장은 해시만(`hashSessionToken` — 세션 토큰과 같은 규약) · 끝 4자는 알아보는 데만.
- *   · 목록 · 폐기는 **자기 것만**(이 워크스페이스의). 폐기는 곧바로 듣는다 — 게이트가 매 요청 `revoked_at` 을 읽는다.
+ *   · 목록 · 폐기는 **자기 것만**(이 워크스페이스의). 폐기는 곧바로 듣는다 — 게이트가 매 요청 `revoked_at` 을 읽는다. 그 토큰의 웹훅
+ *     구독(API-8)도 같은 트랜잭션에서 끈다(`token_revoked`).
  *   · 셋 다 **세션에 매인 명령**이다 — 위임 · API 토큰의 컨텍스트로는 `forbidden`(토큰이 토큰을 만들지 못한다 · `isLoginSession`).
  *   · 만들기 · 폐기는 감사 로그에 남는다(`account.security_changed` · 이 워크스페이스의 범위 — 소유자가 감사 로그에서 본다).
  */
@@ -18,6 +19,7 @@ import { hashSessionToken, isLoginSession, type SessionContext } from '../auth/s
 import { withCommandTransaction, withReadTransaction } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { API_TOKEN_MAX_LIVE, apiTokenLast4, newApiToken, normalizeTokenName, parseExpiryDays } from './token-format.ts'
+import { skipPendingApiWebhookEventsIn } from './webhooks.ts'
 
 export type ApiTokenFailure =
   /** 게스트 · 로그인 세션이 아닌 컨텍스트(위임 · API 토큰). */
@@ -139,6 +141,13 @@ export async function revokeApiToken(ctx: SessionContext, tokenId: string): Prom
       [tokenId, ctx.workspaceId, ctx.userId],
     )
     if (row === null) return fail('not_found')
+    // 그 토큰의 웹훅 구독도 곧바로 선다(API-8 · 정본 ⑫) — 꺼짐(`token_revoked`) · 기다리던 이벤트는 건너뛴다
+    const hooks = await tx.query<{ id: string }>(
+      `UPDATE api_webhook_subscription SET status = 'disabled', disabled_reason = 'token_revoked', updated_at = now()
+        WHERE api_token_id = $1 RETURNING id`,
+      [tokenId],
+    )
+    await skipPendingApiWebhookEventsIn(tx, hooks.map((h) => h.id), 'token_revoked')
     await recordForContextIn(tx, ctx, 'account.security_changed', { metadata: { change: 'api_token_revoked', tokenId, name: row.name } })
     return { ok: true, value: null } as const
   })

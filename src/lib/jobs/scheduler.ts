@@ -11,7 +11,7 @@
  *   · 시각은 실행기의 `now` 하나 — SQL 의 `now()` 를 쓰지 않는다(검사가 시각을 정한다)
  *   · 세션 없이 도는 **시스템 주체**다 — 권한을 묻지 않는다. 무엇을 해도 되는지는 그 일의 규칙이 정한다
  *
- * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073 · 0074 · 0076 · 0080 · 0082 · 0134)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
+ * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073 · 0074 · 0076 · 0080 · 0082 · 0134 · 0151)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
  *
  *   · `version_gc` — 만료된 버전을 지운다(4a-1 · F-11-03 · `history/gc.ts`)
  *   · `trash_purge` — 만료된 휴지통 묶음을 `purged` 로(4b-1 · F-11-06 · `block/trash-purge.ts`)
@@ -26,6 +26,7 @@
  *   · `automation_webhook` — 자동화가 쌓은 `send_webhook` 배달을 보낸다(5c-2 · F-08-13 · `automation/webhook-send.ts`) — 남았으면 곧바로,
  *     아니면 5초 뒤
  *   · `verification_expire` — 검증의 만료 시각에 소유자에게 알린다(VF-3 · F-03-23 · `notification/verification-expire.ts`) — 한 번짜리, 검증할 때 넣는다
+ *   · `api_webhook_deliver` — 공개 API 웹훅의 아웃박스를 보낸다(API-8 · F-09-09 · `api/webhook-deliver.ts`) — 남았으면 곧바로, 아니면 5초 뒤
  */
 
 import { randomUUID } from 'node:crypto'
@@ -41,6 +42,7 @@ import { runDataRetention } from '../notification/retention.ts'
 import { runWebhookDelivery } from '../notification/webhook-delivery.ts'
 import { runAutomationDispatch } from '../automation/dispatch.ts'
 import { runAutomationWebhooks } from '../automation/webhook-send.ts'
+import { runApiWebhookDelivery } from '../api/webhook-deliver.ts'
 
 export type JobKind =
   | 'version_gc'
@@ -52,6 +54,7 @@ export type JobKind =
   | 'automation_dispatch'
   | 'automation_webhook'
   | 'verification_expire'
+  | 'api_webhook_deliver'
 
 /** 일의 결과 — 주기 일은 다음 실행 시각을 준다(없으면 한 번으로 끝). */
 export type JobOutcome = { readonly again: Date | null }
@@ -83,6 +86,8 @@ const HANDLERS: Readonly<Record<JobKind, JobHandler>> = {
     await runVerificationExpire(payload, now)
     return { again: null }
   },
+  // 공개 API 웹훅 — "테스트 보내기" 가 곧 나가야 한다. 남았으면 곧바로, 아니면 5초 뒤(정본 [보강 API-1] ⑫)
+  api_webhook_deliver: async (_payload, now) => ({ again: new Date(now.getTime() + ((await runApiWebhookDelivery(now)).more ? 0 : 5_000)) }),
 }
 
 /** 워커가 뜰 때 넣어 보는 주기 일 — 이미 살아 있으면 그대로다(키의 부분 UNIQUE). */
@@ -95,6 +100,7 @@ export const RECURRING: readonly { readonly kind: JobKind; readonly dedupeKey: s
   { kind: 'webhook_deliver', dedupeKey: 'webhook_deliver' },
   { kind: 'automation_dispatch', dedupeKey: 'automation_dispatch' },
   { kind: 'automation_webhook', dedupeKey: 'automation_webhook' },
+  { kind: 'api_webhook_deliver', dedupeKey: 'api_webhook_deliver' },
 ]
 
 /** 다섯 번째 실패면 멈춘다. */

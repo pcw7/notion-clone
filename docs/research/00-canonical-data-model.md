@@ -2628,7 +2628,7 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 읽기도 소유자만(4y 가 이미 적어 둔 게이트) · 잠긴 페이지는 쓰기 거부.
 > 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-4b 데이터베이스 · 데이터 소스 만들기 · 고치기 →
 > API-5 검색 · 코멘트 · 사용자 →
-> API-6 개발자 문서 · SDK 호환 검사 → API-7 파일 올리기 · 서명 주소(⑪).
+> API-6 개발자 문서 · SDK 호환 검사 → API-7 파일 올리기 · 서명 주소(⑪) → API-8 웹훅 — 구독 · 확인 토큰 · 서명 · 배달(⑫) → API-9 웹훅 이벤트.
 > ⑥ **[API-2] 페이지에서 노션과 다르게 둔 것** — 내장 커버는 `null`(노션의 모양이 없다) · 올린 파일의 아이콘 · 커버 · files 속성은 노션처럼
 > `{type:'file', file:{url, expiry_time}}`(⑪ 의 서명 주소 — API-7 전에는 아이콘 · 커버가 `null`, files 가 `file_upload {id}` 였다 · 그 모양도
 > 계속 받는다 · 읽은 값을 그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
@@ -2714,6 +2714,52 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > **노션과 다른 점**: 여러 조각 · 바깥 주소 가져오기 없음 · `complete` 는 늘 400 · 파일 하나 5 MiB(요금제 엔타이틀먼트가 생기면 그것) · 이미지 ·
 > 비디오라 말하고 다른 바이트를 보내면 400 · 업로드 목록은 토큰의 사람의 것만 · `created_by.type` 은 늘 `person` · 서명 주소는 앱의 출처(S3 가
 > 아니다) · 코멘트 첨부는 없다(⑩).
+> ⑫ **[API-8] 웹훅 — 구독 · 확인 토큰 · 서명 · 배달** ⟨56번 트랙 · 09 F-09-09 · 마이그레이션 0151⟩ —
+> **구독은 API 토큰 하나의 것**이다(노션의 웹훅은 통합의 것 — 개인 토큰에는 웹훅이 없다. 우리의 통합 자리가 개인 토큰이라 구독을 토큰 아래에
+> 둔다). 만드는 곳은 설정 → 내 계정 → API 토큰의 그 토큰 줄의 "웹훅"(토큰 패널 안 · 누르면 받는 지연 청크). 표는 `api_webhook_subscription` ·
+> `api_webhook_event`(§3.10). 워크스페이스 · 사람은 토큰의 것(복합 FK — `api_token` 에 `UNIQUE (id, workspace_id, user_id)` 를 더했다) ·
+> 토큰을 지우면 구독도 사라진다. 모든 명령은 **세션에 매인 명령**(토큰이 웹훅을 만들지 못한다) · 내 (폐기하지 않은) 토큰의 구독만 보이고
+> 바뀐다(남의 것은 404) · 게스트는 만들지 못한다.
+> **받는 주소**는 바깥 요청의 한 길(`net/outbound.ts`)의 규칙 그대로 — https · 기본 포트 · 사설 · 내부 이름 금지 · 이름을 풀어 고른 주소로만
+> 연결(DNS rebinding) · 리다이렉트를 따르지 않는다. http · 루프백은 `OUTBOUND_ALLOW_HOSTS` 의 `host:port`(e2e · 개발의 받는 서버 — 운영에 두지
+> 않는다)만. 주소는 **봉인해 둔다**(`url_sealed` — 주소 안에 비밀이 든 경우가 있다) · 화면에는 힌트만(페이지 웹훅과 같다).
+> **이벤트**는 노션의 이름 21개(`lib/api/webhook-events.ts` — page 8 · database 4 · data_source 6 · comment 3)에서 하나 이상 고른다. 노션이
+> deprecated 로 둔 `database.content_updated` · `database.schema_updated` 는 처음부터 `data_source.*` 로 · 문서가 어긋나는 `file_upload.*` ·
+> `view.*` 는 넣지 않는다. **내보내는 것은 API-9** — 이 조각은 구독 · 서명 · 배달 · `test` 까지(목록은 마이그레이션의 두 CHECK 와 같다 ·
+> 단위 검사가 파일을 읽어 견준다).
+> **상태** 넷 — `pending_verification` → (확인) `active` ⇄ `paused`(사람) · `disabled`(까닭: `failures` — 다시 켤 수 있다 · `token_revoked`).
+> **확인(노션)**: 만들면 커밋한 뒤 받는 주소로 `{ "verification_token": "secret_…" }` 를 한 번 POST 한다(서명 없음 · 결과의 상태 코드 · 짧은
+> 까닭을 구독에 적어 화면이 말한다). 사람이 받은 값을 붙여 넣으면(상수 시간 비교 · 앞뒤 공백은 뗀다) `active`. "다시 보내기" 는 확인을 기다릴
+> 때만 · 10초에 한 번. **확인 토큰이 곧 서명의 비밀**이다 — `secret_sealed`(AES-256-GCM · `AUTH_SECRET` 에서 HKDF 로 유도한 키 · info
+> `notion-clone/api-webhook-secret/v1` — 주소의 키와 다르다). 평문 칸이 없다(CHECK 가 봉인의 판 바이트를 본다) · 어떤 읽기 함수 · 감사 로그에도
+> 싣지 않는다.
+> **배달** — 아웃박스 `api_webhook_event`(구독 × 이벤트 한 줄 · **만드는 쪽의 트랜잭션에서** `emitApiWebhookEventIn` 으로 · 같은 이벤트는 모든
+> 구독에 같은 `event_id`). 공용 스케줄러의 열 번째 소비자 `api_webhook_deliver`(남았으면 곧바로 · 아니면 5초 뒤)가 보낸다. 봉투는 노션의
+> 모양 `{ id, timestamp, workspace_id, workspace_name, subscription_id, integration_id, type, authors:[{id, type:'person'}], attempt_number,
+> entity:{id, type}, data }` — `integration_id` 는 토큰의 id · `accessible_by` 는 싣지 않는다(노션도 공개 통합에만) · 머리는
+> `X-Notion-Signature: sha256=<hex HMAC-SHA256(보낸 본문 그대로, 확인 토큰)>` · `Content-Type: application/json` · `User-Agent:
+> notion-clone-webhook/1`(사람의 정보 없음). 10초 · 2xx 면 보냄 · 아니면 다시 — **여덟 번까지 · n 번째 실패 뒤 11.25분 × 2^(n−1)(±10%)** —
+> 11 · 22 · 45분 · 1.5 · 3 · 6 · 12시간이라 마지막 시도는 첫 시도의 약 24시간 뒤(노션의 "8회 · 약 24시간"). 응답 본문은 두지 않는다(상태 코드와
+> 200자 이하의 까닭만). **이벤트를 세 번 잇달아 끝내 보내지 못하면 구독을 끈다**(`disabled` · `failures` · 화면이 까닭을 말한다 · 다시 켜면
+> 0 부터 — 노션은 끄기를 문서에 적지 않았다 · 08 F-08-13 의 "자동 일시정지 + 수동 재개" 와 같은 쪽). **한 구독에 동시에 하나만** 보낸다
+> (워커가 구독 행에 임대) · **대상마다 차례**(같은 대상의 앞선 줄이 기다리는 중이면 뒤의 줄도 기다린다 · 다른 대상은 막히지 않는다).
+> **보내기 전마다 권한을 다시 본다** — 구독의 상태 · 워크스페이스의 웹훅 스위치(10n-70) · **토큰의 컨텍스트**: 발급자는 그대로 둘이다 —
+> `resolveSessionContext({ apiTokenId })` 가 토큰 값 대신 행 id 로 같은 질의 · 같은 게이트(폐기 · 만료 · 지웠거나 멈춘 사람 · 멤버십 · 게스트 ·
+> SSO · 지운 워크스페이스)를 지난다(마지막 사용 시각은 쓰지 않는다 · 워커의 코드만 부른다). 안 되면 그 구독의 기다리던 줄을 모두 `skipped`
+> (까닭 — `token_revoked` · `token_expired` · `access_lost` …) — 실패가 아니라 잇단 실패에 세지 않는다. 대상이 있는 이벤트는 그 사람이 **지금**
+> 대상을 볼 수 있는지 묻는다(페이지 · 블록 · 데이터베이스는 그 노드 · 데이터 소스는 가진 데이터베이스의 `view` · 댓글은 API-9 가 더한다 —
+> 그때까지는 닫는다) — 아니면 그 줄만 `entity_not_visible`. 워커가 보내다 죽으면 임대가 지나 다시 보낸다 — **적어도 한 번**(노션은 "많아야
+> 한 번") · 받는 쪽은 `id` 로 거른다.
+> **토큰**을 폐기하면 같은 트랜잭션에서 그 구독이 꺼지고(`token_revoked`) 기다리던 줄은 건너뛴다. 만료는 읽을 때 판정한다(화면의 칩 "멈춤 · 토큰
+> 만료" · 보내지 않는다 · 만들기 · 테스트 · 다시 보내기는 400). 사람이 빠지면 구독은 그대로 두고 보내지 않는다(다시 들어오면 이어 간다).
+> **테스트** — "테스트 보내기" 는 노션에 없는 이벤트 `test`(대상은 구독 자신 `webhook_subscription` · 저자는 그 사람 · `data` 는 빈 객체)를 같은
+> 아웃박스 · 같은 워커 · 같은 서명으로 보낸다. 켜진 구독만 · 기다리는 테스트는 다섯까지.
+> **상한** — 토큰마다 5개(토큰 행을 잠그고 센다) · 워크스페이스마다 50개(워크스페이스의 advisory 잠금). 소유자가 웹훅을 끈 워크스페이스에는
+> 만들지 못하고 쌓인 줄도 나가지 않는다(멈추기 · 지우기는 된다). 지우면 기다리던 줄 · 기록도 함께(FK CASCADE). 끝난 줄은 7일 뒤
+> `data_retention` ⑩ 이 지운다. 화면의 배달 기록은 최근 20줄(시각 · 종류 · 시도 n/8 · 상태 코드 또는 까닭). 만들기 · 확인 · 지우기는 감사
+> 로그(`account.security_changed` — 토큰 id · 구독 id · 주소의 힌트만).
+> **노션과 다른 점**: 구독이 통합이 아니라 개인 토큰의 것 · 주소를 봉인하고 힌트만 보인다 · `test` 이벤트 · 잇단 실패 셋이면 끈다 · 적어도 한 번 ·
+> 대상마다 차례를 지킨다(노션은 순서를 보장하지 않는다) · `accessible_by` 없음 · 묶기(aggregation)는 API-9 가 정한다 · 재전송(replay) 단추 없음.
 
 **정본 상수**
 
@@ -6385,6 +6431,39 @@ CREATE TABLE api_file_upload (                 -- 공개 API 의 파일 올리�
   attached_at timestamptz NULL                 -- 처음 붙인 때 (attached_at IS NULL) = (expires_at IS NOT NULL)
 );
 
+CREATE TABLE api_webhook_subscription (        -- 공개 API 의 웹훅 구독 — §3.1 [보강 API-1] ⑫ (API-8 · 0151)
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL, api_token_id uuid NOT NULL, user_id uuid NOT NULL,   -- (api_token_id, workspace_id, user_id) → api_token 복합 FK · CASCADE
+  url_sealed bytea NOT NULL, url_hint text NOT NULL,                             -- 봉인한 주소 · 화면의 힌트
+  secret_sealed bytea NOT NULL,                -- 확인 토큰 = 서명의 비밀 · 봉인(평문 칸 없음)
+  event_types text[] NOT NULL,                 -- 카탈로그 21개 중 하나 이상 · test 는 없다
+  status text NOT NULL CHECK (status IN ('pending_verification','active','paused','disabled')),
+  disabled_reason text NULL CHECK (disabled_reason IN ('failures','token_revoked')),   -- disabled 일 때만
+  verified_at timestamptz NULL,                -- 확인 전 NULL · active/paused 는 NOT NULL
+  verification_sent_at timestamptz NULL, verification_status int NULL, verification_error text NULL,  -- 확인 요청의 마지막 결과
+  consecutive_failures int NOT NULL DEFAULT 0, -- 끝내 실패한 이벤트의 잇단 수 — 3 이면 disabled(failures)
+  locked_until timestamptz NULL,               -- 워커의 임대 — 한 구독에 동시에 하나
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+);
+
+CREATE TABLE api_webhook_event (               -- 웹훅 아웃박스 — 구독 × 이벤트 한 줄 (API-8 · 0151)
+  id uuid PRIMARY KEY, seq bigint GENERATED ALWAYS AS IDENTITY,   -- seq = 차례
+  subscription_id uuid NOT NULL REFERENCES api_webhook_subscription(id) ON DELETE CASCADE,
+  workspace_id uuid NOT NULL REFERENCES workspace(id),
+  event_id uuid NOT NULL,                      -- 봉투의 id(멱등 키) · UNIQUE (subscription_id, event_id)
+  type text NOT NULL,                          -- 'test' + 카탈로그
+  entity_id uuid NOT NULL, entity_type text NOT NULL,   -- page · block · database · data_source · comment · webhook_subscription(test)
+  authors jsonb NOT NULL, data jsonb NOT NULL, occurred_at timestamptz NOT NULL,
+  status text NOT NULL CHECK (status IN ('pending','delivered','failed','skipped')),
+  attempts int NOT NULL DEFAULT 0,             -- 0~8 · failed 는 8
+  next_attempt_at timestamptz NULL,            -- pending 일 때만
+  last_attempt_at timestamptz NULL, last_http_status int NULL,
+  last_error text NULL,                        -- 200자 이하 — 응답 본문은 두지 않는다
+  skip_reason text NULL,                       -- skipped 일 때만
+  finished_at timestamptz NULL,                -- pending 이 아닐 때만 · 7일 뒤 지운다
+  created_at timestamptz NOT NULL
+);
+
 CREATE TABLE plan (
   id uuid PRIMARY KEY, code text NOT NULL UNIQUE
     CHECK (code IN ('free','plus','business','enterprise')),
@@ -6560,6 +6639,9 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > **두 번째 소비자 — 휴지통 자동 비우기(F-11-06 · `trash_purge`)**: §3.4 [보강] 휴지통 자동 비우기(4b-1 · 마이그레이션 0069).
 >
 > **세 번째 소비자 — 물리 삭제(F-11-06 · `trash_hard_delete`)**: §3.4 [보강] 물리 삭제(4b-2 · 마이그레이션 0070).
+>
+> **열 번째 소비자 — 공개 API 웹훅 보내기(F-09-09 · `api_webhook_deliver`)**: §3.1 [보강 API-1] ⑫(API-8 · 마이그레이션 0151) — 남았으면 곧바로 ·
+> 아니면 5초 뒤. 끝난 줄은 `data_retention` ⑩ 이 7일 뒤 지운다.
 
 **[보강] 자동화 엔진 · 버튼 속성** ⟨자동화 5a · F-08-07 · F-03-15(= 08 F-08-08) / 마이그레이션 0078⟩
 

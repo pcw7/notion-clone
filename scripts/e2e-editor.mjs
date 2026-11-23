@@ -37996,6 +37996,169 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 웹훅 (API-8 · F-09-09)')) { try {
+      // 공개 API 의 웹훅(정본 §3.1 [보강 API-1] ⑫ · 09 F-09-09). 새 멤버가 설정에서 토큰을 만들고 그 토큰의 "웹훅" 에 이 판의 받는 서버
+      // (127.0.0.1:HOOK_PORT — 앱은 `OUTBOUND_ALLOW_HOSTS` 로 그 주소만 검사를 비켜 간다)를 건다 → 받는 서버가 받은 확인 토큰을 붙여 넣는다
+      // (틀린 값은 거부) → "테스트 보내기" → **워커 대신 이 판이 보내기를 부른다**(`runApiWebhookDelivery` — 페이지 웹훅 절과 같다) → 받은
+      // 요청의 `X-Notion-Signature` 를 확인 토큰으로 다시 계산해 견준다 → 기록에 HTTP 200. 받는 서버가 500 이면 기록이 "다시 보낼 예정 · 1/8"
+      // → 간격 뒤 2/8 · 받은 attempt_number 도 2 → 멈추면 기다리던 줄은 건너뜀 → 지우기. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      // 끝에 브라우저 세션을 소유자로 되돌린다.
+      const { runApiWebhookDelivery } = await import(new URL('../src/lib/api/webhook-deliver.ts', import.meta.url).href)
+      const { createServer } = await import('node:http')
+      const { createHmac } = await import('node:crypto')
+      const stamp = Date.now()
+      const hookPath = `/api8/${stamp}`
+      const received = []
+      let answer = 200
+      const receiver = createServer((req, res) => {
+        const chunks = []
+        req.on('data', (c) => chunks.push(c))
+        req.on('end', () => {
+          received.push({ path: req.url, headers: req.headers, body: Buffer.concat(chunks).toString('utf8') })
+          res.writeHead(answer).end('ok')
+        })
+      })
+      await new Promise((r) => receiver.listen(HOOK_PORT, '127.0.0.1', r))
+      const savedAllow = process.env.OUTBOUND_ALLOW_HOSTS
+      process.env.OUTBOUND_ALLOW_HOSTS = `127.0.0.1:${HOOK_PORT}` // 보내기는 이 판에서 부른다
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`웹훅의 사람 ${stamp}`), 'member')
+      const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.api`
+      const ITEM = '[data-testid="api-webhooks"] [data-testid="api-webhook"]'
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const typeInto = async (sel, value) => {
+        for (let i = 0; i < 6; i += 1) {
+          await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
+          await typeText(value)
+          if ((await evaluate(`document.querySelector(${JSON.stringify(sel)})?.value ?? null`)) === value) return true
+          await sleep(300)
+        }
+        return false
+      }
+      const hits = () => received.filter((r) => r.path === hookPath)
+      const deliver = (aheadMs) => runApiWebhookDelivery(new Date(Date.now() + aheadMs), { workspaces: [workspaceId] })
+      const logOutcome = () => evaluate(`document.querySelector('${ITEM} [data-testid="api-webhook-log-row"] [data-testid="api-webhook-log-outcome"]')?.textContent ?? null`)
+      const refreshLog = async (until) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(`${ITEM} [data-testid="api-webhook-log-refresh"]`)
+          if (await waitFor(until, 2500)) return true
+        }
+        return false
+      }
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: SETTINGS })
+        await waitFor(`!!document.querySelector('[data-testid="api-token-panel"]')`, 15000)
+        // 토큰 — 설정에서 만든다(하이드레이션 전에 친 글자는 닿지 않는다 — 버튼이 살아날 때까지 다시 친다)
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector('[data-testid="api-token-name"]')
+          await evaluate(`(() => { const el = document.querySelector('[data-testid="api-token-name"]'); el?.focus(); el?.select() })()`)
+          await typeText(`웹훅 토큰 ${stamp}`)
+          if (await waitFor(`document.querySelector('[data-testid="api-token-create"]')?.disabled === false`, 1500)) break
+        }
+        await clickSelector('[data-testid="api-token-create"]')
+        await waitFor(`!!document.querySelector('[data-testid="api-token-value"]')`, 10000)
+        await clickSelector('[data-testid="api-token-dismiss"]')
+        const tokenId = await evaluate(`document.querySelector('[data-testid="api-token-row"]')?.dataset.id ?? null`)
+
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector('[data-testid="api-token-webhooks"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="api-webhooks-empty"]')`, 3000)) break
+        }
+        check('★ 토큰 줄의 "웹훅" 을 누르면 그 토큰의 웹훅 절이 열린다 — 아직 없다 · 서명을 알린다',
+          typeof tokenId === 'string' && (await evaluate(`document.querySelector('[data-testid="api-webhooks"]')?.dataset.token ?? null`)) === tokenId
+            && String(await textOf('[data-testid="api-webhooks"]')).includes('X-Notion-Signature'),
+          String(await textOf('[data-testid="api-webhooks"]')))
+
+        const hookUrl = `http://127.0.0.1:${HOOK_PORT}${hookPath}`
+        await typeInto('[data-testid="api-webhook-url"]', hookUrl)
+        await clickSelector('[data-testid="api-webhook-event"][value="page.created"]')
+        await waitFor(`document.querySelector('[data-testid="api-webhook-add"]')?.disabled === false`, 5000)
+        await clickSelector('[data-testid="api-webhook-add"]')
+        await waitFor(`!!document.querySelector('${ITEM}')`, 15000)
+        const verification = hits()[0] === undefined ? null : JSON.parse(hits()[0].body)
+        check('★ 더하면 받는 서버가 확인 토큰을 한 번 받는다(서명 없음) — 화면은 "확인 기다림" · "보냈습니다(HTTP 200)" · 원래 주소 대신 힌트',
+          /^secret_[A-Za-z0-9_-]{43}$/.test(String(verification?.verification_token)) && hits()[0].headers['x-notion-signature'] === undefined
+            && String(await textOf(`${ITEM} [data-testid="api-webhook-status"]`)) === '확인 기다림'
+            && String(await textOf(`${ITEM} [data-testid="api-webhook-verification"]`)).includes('HTTP 200')
+            && String(await textOf(`${ITEM} [data-testid="api-webhook-hint"]`)) === `127.0.0.1:${HOOK_PORT}/…${String(stamp).slice(-4)}`
+            && !String(await evaluate('document.body.textContent')).includes(hookPath)
+            && (await evaluate(`document.querySelector('[data-testid="api-webhook-url"]')?.value`)) === '',
+          JSON.stringify({ verification, item: await textOf(ITEM) }))
+
+        await typeInto(`${ITEM} [data-testid="api-webhook-verify-input"]`, 'secret_wrong')
+        await clickSelector(`${ITEM} [data-testid="api-webhook-verify"]`)
+        check('틀린 확인 토큰은 거부한다 — 확인을 기다린 채',
+          await waitFor(`(document.querySelector('${ITEM} [data-testid="api-webhook-item-error"]')?.textContent ?? '').includes('확인 토큰이 맞지 않습니다')
+            && document.querySelector('${ITEM}')?.dataset.status === 'pending_verification'`, 8000),
+          String(await textOf(ITEM)))
+        await typeInto(`${ITEM} [data-testid="api-webhook-verify-input"]`, String(verification?.verification_token))
+        await clickSelector(`${ITEM} [data-testid="api-webhook-verify"]`)
+        check('★ 받은 확인 토큰을 붙여 넣으면 켜진다 — "켜짐" · 테스트 단추가 선다',
+          await waitFor(`document.querySelector('${ITEM}')?.dataset.status === 'active'
+            && document.querySelector('${ITEM} [data-testid="api-webhook-status"]')?.textContent === '켜짐'
+            && !!document.querySelector('${ITEM} [data-testid="api-webhook-test"]')`, 8000),
+          String(await textOf(ITEM)))
+        const subscriptionId = await evaluate(`document.querySelector('${ITEM}')?.dataset.id ?? null`)
+
+        // 테스트 → 워커(이 판) → 받는 서버 — 서명을 확인 토큰으로 다시 계산한다
+        await clickSelector(`${ITEM} [data-testid="api-webhook-test"]`)
+        await waitFor(`(document.querySelector('${ITEM} [data-testid="api-webhook-log-outcome"]')?.textContent ?? '') === '보내기를 기다림'`, 8000)
+        const firstPass = await deliver(60_000)
+        const hit = hits()[1]
+        const envelope = hit === undefined ? null : JSON.parse(hit.body)
+        const expected = hit === undefined ? '' : `sha256=${createHmac('sha256', String(verification?.verification_token)).update(hit.body, 'utf8').digest('hex')}`
+        check('★ 테스트 이벤트가 서명과 함께 간다 — X-Notion-Signature = HMAC-SHA256(본문, 확인 토큰) · 노션의 봉투(test · 1번째 시도 · 토큰 id · 사람)',
+          hit !== undefined && hit.headers['x-notion-signature'] === expected && envelope?.type === 'test' && envelope?.attempt_number === 1
+            && envelope?.subscription_id === subscriptionId && envelope?.integration_id === tokenId && envelope?.workspace_id === workspaceId
+            && envelope?.authors?.[0]?.id === mate.userId && envelope?.authors?.[0]?.type === 'person'
+            && envelope?.entity?.type === 'webhook_subscription' && hit.headers['user-agent'] === 'notion-clone-webhook/1',
+          JSON.stringify({ firstPass, envelope, sig: hit?.headers['x-notion-signature'] ?? null, expected }))
+        check('★ 배달 기록에 HTTP 200 — 보냄 · 1/8회',
+          await refreshLog(`(document.querySelector('${ITEM} [data-testid="api-webhook-log-outcome"]')?.textContent ?? '') === '보냄 · 1/8회 · HTTP 200'`),
+          String(await logOutcome()))
+
+        // 받는 서버가 실패하면 — 다시 보낼 예정(백오프) → 간격 뒤 두 번째 시도
+        answer = 500
+        await clickSelector(`${ITEM} [data-testid="api-webhook-test"]`)
+        await waitFor(`(document.querySelector('${ITEM} [data-testid="api-webhook-log-outcome"]')?.textContent ?? '') === '보내기를 기다림'`, 8000)
+        await deliver(60_000)
+        check('★ 받는 서버가 500 이면 기록이 "다시 보낼 예정 · 1/8회 · HTTP 500"',
+          await refreshLog(`/^다시 보낼 예정 .+ · 1\\/8회 · HTTP 500$/.test(document.querySelector('${ITEM} [data-testid="api-webhook-log-outcome"]')?.textContent ?? '')`),
+          String(await logOutcome()))
+        await deliver(60_000 + 13 * 60_000)
+        const retry = hits().at(-1) === undefined ? null : JSON.parse(hits().at(-1).body)
+        check('★ 간격(약 11분) 뒤 다시 — 같은 이벤트 id · attempt_number 2 · 기록 2/8회',
+          retry?.attempt_number === 2 && retry?.id === JSON.parse(hits().at(-2).body).id
+            && (await refreshLog(`(document.querySelector('${ITEM} [data-testid="api-webhook-log-outcome"]')?.textContent ?? '').includes('2/8회 · HTTP 500')`)),
+          JSON.stringify({ retry: retry?.attempt_number ?? null, outcome: await logOutcome() }))
+
+        await clickSelector(`${ITEM} [data-testid="api-webhook-toggle"]`)
+        check('★ 멈추기 — "멈춤" · 기다리던 줄은 건너뜀 · 단추는 다시 켜기',
+          await waitFor(`document.querySelector('${ITEM}')?.dataset.status === 'paused'
+            && (document.querySelector('${ITEM} [data-testid="api-webhook-log-outcome"]')?.textContent ?? '') === '건너뜀 · 멈춤'
+            && document.querySelector('${ITEM} [data-testid="api-webhook-toggle"]')?.textContent === '다시 켜기'`, 8000),
+          String(await textOf(ITEM)))
+        const before = hits().length
+        await deliver(24 * 3600_000)
+        check('멈춘 웹훅에는 아무것도 나가지 않는다', hits().length === before, String(hits().length - before))
+
+        await clickSelector(`${ITEM} [data-testid="api-webhook-remove"]`)
+        const asked = await waitFor(`!!document.querySelector('${ITEM} [data-testid="api-webhook-remove-confirm"]')`, 5000)
+        await clickSelector(`${ITEM} [data-testid="api-webhook-remove-confirm"]`)
+        check('★ 지우기는 한 번 더 묻고 · 지우면 목록에서 사라진다',
+          asked && (await waitFor(`!document.querySelector('${ITEM}') && !!document.querySelector('[data-testid="api-webhooks-empty"]')`, 8000)),
+          String(await textOf('[data-testid="api-webhooks"]')))
+      } finally {
+        await browseAs(session)
+        if (savedAllow === undefined) delete process.env.OUTBOUND_ALLOW_HOSTS
+        else process.env.OUTBOUND_ALLOW_HOSTS = savedAllow
+        receiver.closeAllConnections()
+        await new Promise((r) => receiver.close(() => r()))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('개발자 문서 (API-6 · F-09-15)')) { try {
       // 개발자 문서(정본 §3.1 [보강 API-1] · 09 F-09-15) — 로그인 없이 열리는 공개 화면. 주소 표의 줄이 `/v1` 라우트 파일이 여는 것과 하나도
       // 다르지 않은지(단위 시험과 같은 셈을 화면에서) · "노션과 다른 점" 절 · 예제의 주소가 이 앱의 공개 주소인지 본다. 설정 → 내 계정 →
