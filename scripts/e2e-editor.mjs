@@ -18119,6 +18119,9 @@ async function main() {
         renamed === newName && (await waitFor(`document.querySelector(${JSON.stringify(renameSel)})?.value === ${JSON.stringify(newName)}`, 5000)),
         JSON.stringify({ renamed }))
 
+      // 이름을 바꾼 뒤의 다시 받기(router.refresh)가 끝날 때까지 — 그동안 이름 칸은 꺼져 있다(busy || pending). 그 전에 남이 고치면
+      // 늦게 닿은 다시 받기가 남의 배치를 먼저 가져와 아래의 충돌이 일어나지 않는다(전체 판 2e7da3e · API-9 영향 판 — 두 번)
+      await enabled(renameSel)
       // 남이 먼저 고친다 — 지금 판으로 API 가 배치를 바꾼다(작게 · 차례 반대). 화면은 옛 판으로 옮기려 한다 → 다시 읽는다
       const fresh = await readDash()
       const theirs = [['small', tableW, chartW]]
