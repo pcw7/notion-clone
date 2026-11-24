@@ -1,7 +1,7 @@
 /**
  * /developers — 공개 API 개발자 문서 (API-6 · F-09-15)
  *
- * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ① ~ ⑩ · 09-api-integrations.md F-09-15(최초 성공까지의 경로)
+ * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ① ~ ⑭ · 09-api-integrations.md F-09-15(최초 성공까지의 경로)
  *
  * **로그인 없이 연다** — 워크스페이스의 내용이 없는 정적인 글이고, 토큰을 만들기 전(또는 동료에게서 토큰을 받은 사람)에도 읽어야 한다.
  * 그래서 `/w/` 밑(로그인 · 멤버십)이 아니라 앱의 맨 위에 둔다 · `/v1` · `/api` 는 기계의 주소라 피한다(노션의 developers.notion.com 자리).
@@ -27,10 +27,16 @@ import {
   SDK_ERROR_SAMPLE,
   sdkSample,
 } from '@/lib/api/developer-docs'
-import { API_ENDPOINT_GROUPS, API_ENDPOINTS } from '@/lib/api/endpoints'
+import { API_ENDPOINT_GROUPS, API_ENDPOINTS, API_UNSUPPORTED, UNSUPPORTED_FAMILIES, type UnsupportedFamily } from '@/lib/api/endpoints'
 import { SCREEN_TITLES } from '@/lib/nav/screen-title'
 
 export const metadata: Metadata = { title: SCREEN_TITLES.developers }
+
+/** 받지 않는 주소를 까닭의 묶음으로 — 묶음의 차례는 `UNSUPPORTED_FAMILIES`. */
+const UNSUPPORTED_GROUPS = (Object.keys(UNSUPPORTED_FAMILIES) as UnsupportedFamily[]).map((family) => ({
+  family,
+  endpoints: API_UNSUPPORTED.filter((e) => e.family === family),
+}))
 
 const SECTIONS = [
   { id: 'quickstart', title: '빠른 시작' },
@@ -197,7 +203,8 @@ export default async function DevelopersPage() {
 
       <Section id="endpoints" title="주소">
         <p className={MUTED}>
-          {API_ENDPOINTS.length}개. 경로의 id 는 대시가 있든 없든 받습니다. 표에 없는 주소 · 메서드는 400 <Code>invalid_request_url</Code>입니다.
+          {API_ENDPOINTS.length}개. 경로의 id 는 대시가 있든 없든 받습니다. 표에 없는 주소 · 메서드는 400 <Code>invalid_request_url</Code>입니다 —
+          공식 SDK 에 있지만 받지 않는 주소는 400 <Code>validation_error</Code>로 까닭을 말합니다(맨 아래 표).
         </p>
         {API_ENDPOINT_GROUPS.map((group) => (
           <div key={group.title} className="overflow-x-auto">
@@ -227,6 +234,27 @@ export default async function DevelopersPage() {
             </table>
           </div>
         ))}
+        <div className="overflow-x-auto" data-testid="api-unsupported">
+          <h3 className="mt-2 text-sm font-semibold">받지 않는 주소(공식 SDK 에 있는 것)</h3>
+          <table className="mt-1 w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>무엇</th>
+                <th className={TH}>SDK</th>
+                <th className={TH}>까닭</th>
+              </tr>
+            </thead>
+            <tbody>
+              {UNSUPPORTED_GROUPS.map(({ family, endpoints }) => (
+                <tr key={family} data-testid="api-unsupported-row" data-family={family}>
+                  <td className={`${TD} whitespace-nowrap`}>{UNSUPPORTED_FAMILIES[family].title}</td>
+                  <td className={`${TD} font-mono text-xs ${MUTED}`}>{endpoints.map((e) => e.sdk).join(' · ')}</td>
+                  <td className={TD}>{UNSUPPORTED_FAMILIES[family].reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Section>
 
       <Section id="sdk" title="공식 SDK">

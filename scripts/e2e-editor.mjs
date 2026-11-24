@@ -38288,6 +38288,65 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 페이지 옮기기 (API-10 · F-09-01)')) { try {
+      // 공개 API 의 페이지 옮기기(정본 §3.1 [보강 API-1] ⑭ ①). 새 멤버가 토큰을 만들고 노션의 공식 SDK(`@notionhq/client`)의 `pages.move` 로 개인
+      // 페이지 하나를 다른 개인 페이지 밑으로 옮긴다(앱의 `movePage` — 사이드바의 옮기기와 같은 명령) → 그 사람의 브라우저에서 다시 열면 사이드바가
+      // 새 부모 밑에 그린다. 자손 밑으로는 SDK 의 validation_error · SDK 에 있지만 받지 않는 주소(pages.retrieveMarkdown)도 validation_error 로
+      // 까닭을 말한다(⑭ ②). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const sdkMod = await import('@notionhq/client')
+      const sdk = sdkMod.default ?? sdkMod
+      const { APIErrorCode, APIResponseError, isFullPage } = sdk
+      const pageMod = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { createApiToken } = await import(new URL('../src/lib/api/api-token.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`옮기는 사람 ${stamp}`), 'member')
+      const caught = async (fn) => {
+        try {
+          await fn()
+          return null
+        } catch (e) {
+          return e
+        }
+      }
+
+      try {
+        const token = await createApiToken(mate.ctx, { name: `옮기기 토큰 ${stamp}` })
+        if (!token.ok) throw new Error(`토큰: ${token.reason}`)
+        const notion = new sdk.Client({ auth: token.value.token, baseUrl: BASE, notionVersion: '2025-09-03', logLevel: sdk.LogLevel.ERROR })
+        const home = await pageMod.createPage(mate.ctx, { title: [textRun(`옮길 곳 ${stamp}`)], privateTop: true })
+        const stray = await pageMod.createPage(mate.ctx, { title: [textRun(`옮길 것 ${stamp}`)], privateTop: true })
+        const HOME = `/w/${workspaceId}/${home.id}`
+        const STRAY = `/w/${workspaceId}/${stray.id}`
+        // 옮길 것의 링크가 옮길 곳의 항목(li) 안에 있는가 — 지금 연 페이지의 조상은 사이드바가 펼친다
+        const NESTED = `!!document.querySelector('[data-testid="sidebar-private"] a[href="${HOME}"]')?.closest('li')?.querySelector('a[href="${STRAY}"]')`
+        const SHOWN = `!!document.querySelector('[data-testid="sidebar-private"] a[href="${STRAY}"]') && !!document.querySelector('[data-testid="sidebar-private"] a[href="${HOME}"]')`
+
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}${STRAY}` })
+        const apart = (await waitFor(SHOWN, 15000)) && !(await evaluate(NESTED))
+        check('전제 — 사이드바의 개인 페이지에 둘이 나란히(옮길 것은 옮길 곳 밖)', apart, String(await evaluate('location.pathname')))
+
+        const moved = await notion.pages.move({ page_id: stray.id, parent: { type: 'page_id', page_id: home.id } })
+        check('★ SDK pages.move — isFullPage · 부모가 옮길 곳(page_id)',
+          isFullPage(moved) && moved.id === stray.id && moved.parent?.type === 'page_id' && moved.parent?.page_id === home.id,
+          JSON.stringify(moved.parent ?? moved).slice(0, 300))
+
+        await send('Page.navigate', { url: `${BASE}${STRAY}` })
+        check('★ 다시 열면 사이드바가 옮긴 페이지를 새 부모 밑에 그린다', await waitFor(NESTED, 15000), String(await evaluate('location.pathname')))
+
+        const loop = await caught(() => notion.pages.move({ page_id: home.id, parent: { page_id: stray.id } }))
+        const markdown = await caught(() => notion.pages.retrieveMarkdown({ page_id: home.id }))
+        check('★ SDK 오류 — 자손 밑으로는 validation_error(400) · 받지 않는 SDK 주소(pages.retrieveMarkdown)도 validation_error 로 까닭',
+          APIResponseError.isAPIResponseError(loop) && loop.code === APIErrorCode.ValidationError && loop.status === 400
+            && APIResponseError.isAPIResponseError(markdown) && markdown.code === APIErrorCode.ValidationError && markdown.status === 400
+            && /pages\.retrieveMarkdown .* is not supported/.test(markdown.message),
+          JSON.stringify([loop?.code ?? String(loop), markdown?.code ?? String(markdown), markdown?.message]))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('개발자 문서 (API-6 · F-09-15)')) { try {
       // 개발자 문서(정본 §3.1 [보강 API-1] · 09 F-09-15) — 로그인 없이 열리는 공개 화면. 주소 표의 줄이 `/v1` 라우트 파일이 여는 것과 하나도
       // 다르지 않은지(단위 시험과 같은 셈을 화면에서) · "노션과 다른 점" 절 · 예제의 주소가 이 앱의 공개 주소인지 본다. 설정 → 내 계정 →

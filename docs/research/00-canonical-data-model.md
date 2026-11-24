@@ -2628,7 +2628,8 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 읽기도 소유자만(4y 가 이미 적어 둔 게이트) · 잠긴 페이지는 쓰기 거부.
 > 조각: API-1 토큰 · 인증 · 오류 · 제한 · `/v1/users/me` → API-2 페이지 → API-3 블록 → API-4 데이터 소스 · 질의 → API-4b 데이터베이스 · 데이터 소스 만들기 · 고치기 →
 > API-5 검색 · 코멘트 · 사용자 →
-> API-6 개발자 문서 · SDK 호환 검사 → API-7 파일 올리기 · 서명 주소(⑪) → API-8 웹훅 — 구독 · 확인 토큰 · 서명 · 배달(⑫) → API-9 웹훅 이벤트.
+> API-6 개발자 문서 · SDK 호환 검사 → API-7 파일 올리기 · 서명 주소(⑪) → API-8 웹훅 — 구독 · 확인 토큰 · 서명 · 배달(⑫) → API-9 웹훅 이벤트(⑬) →
+> API-10 페이지 옮기기 · SDK 대조 · 정리(⑭).
 > ⑥ **[API-2] 페이지에서 노션과 다르게 둔 것** — 내장 커버는 `null`(노션의 모양이 없다) · 올린 파일의 아이콘 · 커버 · files 속성은 노션처럼
 > `{type:'file', file:{url, expiry_time}}`(⑪ 의 서명 주소 — API-7 전에는 아이콘 · 커버가 `null`, files 가 `file_upload {id}` 였다 · 그 모양도
 > 계속 받는다 · 읽은 값을 그대로 다시 보내면 같은 값) · **없는 선택 옵션 이름은 거부한다**(노션은 새로
@@ -2802,6 +2803,52 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > 없다 — 데이터베이스를 옮기면 `database.moved`) · 데이터 소스 · 데이터베이스의 이름 · 아이콘 · 페이지의 아이콘 · 커버는 이벤트가 없다 · 관계의
 > 상대 행(거울상) 칸은 내지 않는다 · 목록 상한 100 · 자기 토큰이 한 일도 그 토큰의 구독에 간다(노션도 그렇다 — `authors` 로 거른다 · 09
 > *"자기 이벤트 필터"*).
+>
+> ⑭ **[API-10] 페이지 옮기기 · SDK 대조 · 정리** ⟨56번 트랙 · 09 F-09-01 · F-09-15 · 마이그레이션 없음⟩
+> ① **옮기기** `POST /v1/pages/{page_id}/move` `{ parent: { type:'page_id', page_id } }`(노션의 모양 · SDK `pages.move`) — **앱의 옮기기 명령
+> `movePage`**(사이드바 · 끌기 · "옮기기" 와 같은 함수 · 그 명령의 트랜잭션 하나 · 부모 본문의 참조 쓰기는 출처 `api`)를 토큰의 사람으로 부른다.
+> 앞의 읽기는 답을 고를 뿐이고 판정은 명령이 잠그고 다시 한다. 새 부모의 **맨 뒤**에 붙는다(노션의 move 도 자리를 받지 않는다) · 같은 부모면
+> 아무것도 바꾸지 않는다. 권한은 앱의 것(§3.2-18 · 7c-3 · 7c-7): 옮길 페이지는 `edit_content`, 새 부모는 `create_child` — 볼 수 없으면 404 ·
+> 볼 수만 있으면 403(만들기 ⑥ 과 같은 갈래) · 뿌리가 바뀌는 이동(워크스페이스 ↔ teamspace ↔ 개인)은 페이지의 전체 권한(아니면 403 · 글이
+> 까닭을 말한다). 자기 자신 · 자손 밑 400(I5) · 깊이 상한 400 · **휴지통의 페이지 · 휴지통의 부모는 400**(볼 수 있는 것 — 노션이 휴지통의
+> 블록을 고칠 때의 자리). **잠금은 막지 않는다**([보강] 잠금이 막는 것 ③ — 옮기기는 트리 연산이다 · 잠긴 페이지 · 잠긴 부모 모두 · 앱과 같다).
+> **받지 않는 부모** — `data_source_id` · `database_id`(페이지를 행으로 바꾸는 명령이 앱에 없다 · C-3: 행은 만들 때 `POST /v1/pages` 의
+> `data_source_id`) · `workspace`(노션도 받지 않는다 — SDK 5.30.0 의 타입에 없다 · 만들기 ⑥ 과 같다)는 400 `validation_error` · `block_id`
+> 는 모양이 틀린 것. **데이터베이스 행(데이터 소스의 페이지)은 옮기지 않는다**(400 — 행을 소스 밖으로 꺼내는 명령이 없다 · 앱의 화면도 행에
+> 옮기기를 두지 않는다 · R3). 응답은 옮긴 뒤의 페이지 객체(⑥) · 내보내기 정책 게이트. 웹훅 `page.moved` 는 명령의 목(⑬ ①)이 낸다 — 공개
+> API 의 길도 같은 줄(부모가 바뀔 때만 · `data.parent` 는 새 부모).
+> ② **SDK 대조** — `@notionhq/client` 5.30.0 의 `Client` 공개 메서드 65개: **✅ 33 · 400 29 · 해당 없음 3**. 받지 않는 주소는 표 하나
+> (`lib/api/endpoints.ts` 의 `API_UNSUPPORTED`)를 `v1InvalidUrl` 이 읽어 **400 `validation_error`** 로 SDK 메서드와 까닭을 말한다(라우트 파일의
+> 받지 않는 메서드든 그물 `[...path]` 든 — 404 · 405 가 아니다) · 표에 없는 주소는 그대로 `invalid_request_url`. 단위 시험이 SDK 의 `Client` 를
+> 걸어 메서드마다 실제로 보내는 메서드 · 주소를 잡아 두 표와 견준다(SDK 를 올리면 새 메서드가 시험을 깬다 · 개발자 문서의 "받지 않는 주소"
+> 표도 같은 목록). 이 조각이 연 작은 것 둘(앱의 명령에 그대로 닿는다): `customEmojis.list`(앱의 이모지 목록 — 이름 순 · `name` 은 앱의 이름
+> 규칙으로 고친 뒤 정확히 같은 이름 · `url` 은 ⑪ 의 서명 주소 · 내용이 아니라 내보내기 정책 게이트 없음) · `dataSources.listTemplates`(앱의
+> 템플릿 목록 — 소스의 `view` · 만든 차례 · **`is_default` 는 그 소스를 가진 데이터베이스의 공유 뷰 하나라도 기본으로 둔 것**(앱의 기본은
+> 뷰마다다 — 개인 뷰 · 붙인 데이터베이스의 뷰는 보지 않는다 · 둘 이상일 수 있다) · `name` 은 대소문자를 가리지 않는 부분 일치 · 내보내기
+> 정책 게이트 · 데이터베이스 id 는 ⑧ 의 404).
+>
+> | SDK | 우리 |
+> |---|---|
+> | `users.me` · `users.list` · `users.retrieve` | ✅ (⑩) |
+> | `pages.create` · `retrieve` · `update` · `properties.retrieve` · **`move`** | ✅ (⑥ · ⑭ ①) |
+> | `pages.retrieveMarkdown` · `pages.updateMarkdown` | 400 — 노션의 "enhanced markdown" 판이다 · 본문은 블록 API 로 |
+> | `blocks.retrieve` · `update` · `delete` · `children.list` · `children.append` | ✅ (⑦) |
+> | `blocks.meetingNotes.create` · `blocks.meetingNotes.query` | 400 — 앱에 회의록 블록이 없다 |
+> | `databases.create` · `retrieve` · `update` | ✅ (⑨) |
+> | `dataSources.create` · `retrieve` · `update` · `query` · **`listTemplates`** | ✅ (⑧ · ⑨ · ⑭ ②) |
+> | `search` | ✅ (⑩) |
+> | `comments.create` · `list` · `retrieve` · `update` · `delete` | ✅ (⑩) |
+> | `fileUploads.create` · `send` · `complete` · `retrieve` · `list` | ✅ (⑪ — `complete` 는 늘 400) |
+> | **`customEmojis.list`** | ✅ (⑭ ②) |
+> | `views.list` · `create` · `retrieve` · `update` · `delete` · `queries.create` · `queries.results` · `queries.delete` | 400 — 뷰는 앱의 화면에서 · 행은 데이터 소스 질의로 |
+> | `asyncTasks.retrieve` | 400 — 모든 쓰기는 응답 전에 끝난다 |
+> | `agents.*`(7) · `sessions.*`(6) · `plugins.list` · `plugins.retrieve` · `skills.retrieve` | 400 — 노션 AI 의 에이전트 · 세션 · 플러그인 · 스킬(앱의 AI 는 화면에서만 — §3.10 [보강 AI-1]) |
+> | `oauth.token` · `oauth.introspect` · `oauth.revoke` | 해당 없음 — 공개 통합(OAuth 앱)이 없다(그래도 토큰이 맞으면 같은 400 · 아니면 401) |
+>
+> ③ **정리(API-8 의 남은 것)** — 폐기했거나 만료된 토큰의 구독은 멈춘 채(`disabled` · `token_revoked` / 만료는 읽을 때 판정) 영원히 남았다.
+> `data_retention` ⑪ 이 토큰의 **폐기 · 만료 중 이른 때가 30일**(`API_WEBHOOK_STOPPED_DAYS` — `lib/api/token-format.ts`) 지난 구독을 지운다 —
+> 기다리던 줄 · 끝난 줄은 FK CASCADE · 토큰 행은 지우지 않는다 · 한 판에 `RETENTION_BATCH`. 그때까지 화면은 "꺼짐 · 토큰 폐기" · "멈춤 · 토큰
+> 만료" 를 그대로 보인다(사람이 왜 멈췄는지 볼 시간 · 30일은 노션의 휴지통 기본(`TRASH_DAYS_DEFAULT`)과 같은 날).
 
 **정본 상수**
 

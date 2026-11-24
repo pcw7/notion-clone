@@ -1,7 +1,7 @@
 /**
  * 개발자 문서의 내용 — 오류 코드 · 제한 · 예제 · 노션과 다른 점 (API-6 · F-09-15 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ① ~ ⑪ · 09-api-integrations.md F-09-05 · F-09-08 · F-09-15
+ * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ① ~ ⑭ · 09-api-integrations.md F-09-05 · F-09-08 · F-09-15
  *
  * 숫자는 규약의 상수에서 읽는다(손으로 적은 숫자가 코드와 어긋나지 않게) — 요청 제한 · 본문 · 쪽 크기 · 블록 · 질의 상한 · 토큰 수 · 만료.
  * 오류 코드 표는 `ApiErrorCode` 의 모든 값을 가져야 한다(`satisfies` — 코드를 더하면 여기서 타입이 막는다). 화면은 `app/developers/page.tsx`.
@@ -12,7 +12,7 @@ import { MAX_UPLOAD_BYTES } from '../file/limits.ts'
 import { API_MAX_BLOCKS, API_MAX_CHILDREN, API_MAX_NESTING } from './block-json.ts'
 import { FILE_UPLOAD_TTL_SECONDS } from './file-upload-object.ts'
 import { FILE_URL_TTL_SECONDS } from './file-url.ts'
-import { API_TOKEN_DEFAULT_EXPIRY_DAYS, API_TOKEN_EXPIRY_DAYS, API_TOKEN_MAX_LIVE } from './token-format.ts'
+import { API_TOKEN_DEFAULT_EXPIRY_DAYS, API_TOKEN_EXPIRY_DAYS, API_TOKEN_MAX_LIVE, API_WEBHOOK_STOPPED_DAYS } from './token-format.ts'
 import { API_MAX_BODY_BYTES, API_MAX_PAGE_SIZE, API_RATE_RULE, NOTION_VERSION, type ApiErrorCode } from './v1-protocol.ts'
 
 export { NOTION_VERSION }
@@ -156,7 +156,8 @@ export const DIFFERENCES: readonly { readonly title: string; readonly items: rea
   {
     title: '토큰과 범위',
     items: [
-      '개인 토큰만 있다 — 통합(봇) · OAuth · 웹훅 · 뷰 · 페이지 옮기기는 없다(그런 주소는 400 invalid_request_url).',
+      '개인 토큰만 있다 — 통합(봇) · OAuth 는 없다. 공식 SDK 에 있지만 받지 않는 주소(뷰 · 페이지 마크다운 · AI 에이전트 등)는 400 validation_error 로 까닭을 말한다(주소 절의 "받지 않는 주소").',
+      `웹훅은 설정 → 내 계정 → API 토큰의 그 토큰 줄에서 만든다(API 로는 만들지 않는다) · 토큰을 폐기하거나 만료되면 구독은 멈추고 ${API_WEBHOOK_STOPPED_DAYS}일 뒤 지워진다.`,
       '토큰은 만든 사람 그대로다 — 노션은 개인 토큰의 사용자 목록을 막지만 여기서는 연다(앱의 멤버 화면과 같다).',
       `받는 판은 ${NOTION_VERSION} 하나다.`,
     ],
@@ -169,6 +170,15 @@ export const DIFFERENCES: readonly { readonly title: string; readonly items: rea
       '없는 선택 옵션 이름은 거부한다(노션은 새로 만든다) — 옵션은 데이터 소스 고치기로 만든다.',
       '잠긴 페이지에 쓰면 400 · 내보내기 정책이 꺼진 워크스페이스는 소유자만 읽고 쓴다.',
       'filter_properties 는 읽기(GET /v1/pages/{id} · 질의)에서만 듣는다 — 만들기 · 고치기의 응답은 모든 속성.',
+    ],
+  },
+  {
+    title: '페이지 옮기기 · 템플릿 · 이모지 (⑭)',
+    items: [
+      '옮기기의 부모는 page_id 만 — data_source_id(페이지를 행으로 바꾸기) · 워크스페이스 최상위 · 데이터베이스 행 옮기기는 400.',
+      '새 부모의 맨 뒤에 붙는다 · 잠긴 페이지도 옮긴다(앱처럼 — 잠금은 내용만 막는다) · 휴지통의 페이지 · 부모는 400.',
+      '다른 teamspace · 개인 페이지로 가는 것처럼 볼 수 있는 사람이 바뀌는 옮기기는 그 페이지의 전체 권한이 있어야 한다(아니면 403).',
+      '템플릿 목록의 is_default 는 그 데이터베이스의 공유 뷰가 기본으로 둔 템플릿이다(앱의 기본은 뷰마다라 둘 이상일 수 있다).',
     ],
   },
   {
