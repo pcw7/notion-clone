@@ -20,6 +20,8 @@ export const API_TOKEN_NAME_MAX = 100
 export const API_TOKEN_EXPIRY_DAYS = [7, 30, 90, 180, 365] as const
 export type ApiTokenExpiryDays = (typeof API_TOKEN_EXPIRY_DAYS)[number]
 export const API_TOKEN_DEFAULT_EXPIRY_DAYS: ApiTokenExpiryDays = 365
+/** 토큰이 폐기 · 만료된 뒤 그 웹훅 구독을 남기는 날 — 화면이 왜 멈췄는지 보일 시간 · 지나면 `data_retention` ⑪ 이 지운다(정본 ⑭ ③). */
+export const API_WEBHOOK_STOPPED_DAYS = 30
 
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 /** 62 의 배수 중 256 아래 가장 큰 것 — 그 위의 바이트는 버린다(나머지 치우침 없이). */

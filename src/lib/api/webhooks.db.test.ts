@@ -9,7 +9,7 @@
  *   ④ ★ 토큰 폐기 · 만료 · 사람이 빠지면 보내지 않는다(건너뜀) — 발급자는 그대로 둘(`resolveSessionContext({ apiTokenId })`)
  *   ⑤ ★ 남의 구독은 보이지도 바뀌지도 않는다 · 토큰 · 게스트는 못 만든다
  *   ⑥ ★ 상한 · 모양 · 스위치
- *   ⑦ ★ 비밀은 읽기 · 감사 어디에도 없다 · 다시 보내기의 간격 · 지우기 · 끝난 줄 지우기
+ *   ⑦ ★ 비밀은 읽기 · 감사 어디에도 없다 · 다시 보내기의 간격 · 지우기 · 끝난 줄 지우기 · 토큰이 폐기 · 만료된 지 30일 뒤 구독 지우기(API-10)
  */
 
 process.env.AUTH_SECRET ??= 'test-secret-only-for-unit-tests'
@@ -586,5 +586,30 @@ describe('⑦ 비밀 · 다시 보내기 · 지우기', () => {
     assert.deepEqual(await removeApiWebhook(mate.ctx, tokenId, hook.id), { ok: false, reason: 'not_found' })
     const deleted = await query(`SELECT 1 FROM audit_event WHERE workspace_id = $1 AND metadata->>'change' = 'api_webhook_deleted'`, [ws])
     assert.equal(deleted.length, 1)
+  })
+
+  test('★ 토큰이 폐기 · 만료된 지 30일이 지난 구독은 이벤트째 지운다 — 그 전 · 살아 있는 토큰의 구독은 남고 토큰 행도 남는다(API-10 · ⑭ ③)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, mate } = await team('웹훅 정리')
+    const revokedId = await mint(mate, '폐기할 토큰')
+    const expiringId = await mint(mate, '만료될 토큰')
+    const liveId = await mint(mate, '살아 있는 토큰')
+    const revokedHook = await activeHook(mate, revokedId)
+    const expiringHook = await activeHook(mate, expiringId)
+    const liveHook = await activeHook(mate, liveId)
+    // 만료될 토큰의 구독에 기다리는 줄 하나 — 끝나지 않은 줄이라 ⑩ 이 아니라 구독째 지울 때(CASCADE)만 사라진다
+    assert.ok((await sendApiWebhookTest(mate.ctx, expiringId, expiringHook.id)).ok)
+    assert.ok((await revokeApiToken(mate.ctx, revokedId)).ok)
+    await query(`UPDATE api_token SET expires_at = created_at + interval '1 second' WHERE id = $1`, [expiringId])
+    const run = (days: number) => runDataRetention(new Date(Date.now() + days * 86_400_000), { workspaces: [ws], partitions: false })
+
+    assert.equal((await run(29)).apiWebhookSubscriptions, 0)
+    assert.deepEqual((await events(expiringHook.id)).map((e) => e.status), ['pending'])
+    assert.equal((await run(31)).apiWebhookSubscriptions, 2)
+    const left = await query<{ id: string }>(`SELECT id FROM api_webhook_subscription WHERE workspace_id = $1`, [ws])
+    assert.deepEqual(left.map((r) => r.id), [liveHook.id])
+    assert.equal((await events(expiringHook.id)).length, 0)
+    assert.equal((await events(revokedHook.id)).length, 0)
+    assert.equal((await query(`SELECT 1 FROM api_token WHERE id = ANY($1::uuid[])`, [[revokedId, expiringId]])).length, 2)
   })
 })
