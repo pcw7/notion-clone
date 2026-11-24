@@ -19,6 +19,8 @@ import { asBlockId } from '@/lib/ids'
 import { requirePageVisitor } from '@/lib/auth/page-session'
 import { outsiderNoAccessState } from '@/lib/permissions/access-request'
 import { feedClock } from '@/lib/database/row-feed'
+import { currentChangeCursor } from '@/lib/database/change-log'
+import { RenderedChangeCursor } from '../db/[databaseId]/use-table-changes'
 import { NoAccess } from './no-access'
 import { PageContent } from './page-content'
 import { SCREEN_TITLES } from '@/lib/nav/screen-title'
@@ -53,6 +55,12 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
       </>
     )
   }
+  // 같은 뜻의 변경 기록 커서(RT-1) — 몸을 읽기 전에 받는다. 행 페이지의 속성 묶음 · 본문의 인라인 표가 구독할 때 들고 간다
+  const renderedCursor = await currentChangeCursor().catch(() => null)
   // 몸은 데이터베이스 화면의 피크와 함께 쓴다(8n-1 · `page-content.tsx`)
-  return <PageContent ctx={visitor.member} workspaceId={workspaceId} pageId={pageId} shareOpen={share === '1'} renderedAt={renderedAt} frame="page" />
+  return (
+    <RenderedChangeCursor cursor={renderedCursor}>
+      <PageContent ctx={visitor.member} workspaceId={workspaceId} pageId={pageId} shareOpen={share === '1'} renderedAt={renderedAt} frame="page" />
+    </RenderedChangeCursor>
+  )
 }

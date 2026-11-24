@@ -33,6 +33,16 @@ export function WithoutTableChanges({ children }: { readonly children: ReactNode
   return createElement(ChangesOff.Provider, { value: true }, children)
 }
 
+/**
+ * 서버 화면이 **읽기 전에** 받은 변경 기록의 커서(RT-1 · `currentChangeCursor`) — 구독할 때 `?after=` 로 들고 가면 서버가 구독이 붙기 전의
+ * 틈을 변경 기록(DB 의 xid)으로 판정한다(서버 프로세스가 여럿이어도 · 다시 떠도 같다). 없으면 옛 길(`since` — 렌더 시각)만 간다.
+ * 화면 한 장에 하나라 속성(`renderedAt`)처럼 컴포넌트마다 내리지 않고 서버 화면이 감싼다.
+ */
+const RenderedCursor = createContext<string | null>(null)
+export function RenderedChangeCursor({ cursor, children }: { readonly cursor: string | null; readonly children: ReactNode }) {
+  return createElement(RenderedCursor.Provider, { value: cursor }, children)
+}
+
 export function useTableChanges(
   workspaceId: string,
   dataSourceId: string,
@@ -46,16 +56,21 @@ export function useTableChanges(
     latest.current = handlers
   })
   const sinceAtMount = useRef(since)
+  // 렌더 커서도 마운트 때의 것만(렌더 시각과 같다 — 다시 그린 서버 화면이 새 커서를 주어도 열린 구독이 그 뒤를 받는다)
+  const renderedCursor = useContext(RenderedCursor)
+  const cursorAtMount = useRef(renderedCursor)
   const off = useContext(ChangesOff)
 
   useEffect(() => {
     if (!enabled || off || typeof EventSource === 'undefined') return
     let source: EventSource | null = null
     let revoked = false
-    const open = (at: number | undefined) => {
-      const opened = new EventSource(
-        `/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes${at === undefined ? '' : `?since=${Math.floor(at)}`}`,
-      )
+    const open = (at: number | undefined, cursor: string | null) => {
+      const query = new URLSearchParams()
+      if (at !== undefined) query.set('since', String(Math.floor(at)))
+      if (cursor !== null) query.set('after', cursor)
+      const qs = query.toString()
+      const opened = new EventSource(`/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes${qs === '' ? '' : `?${qs}`}`)
       let readyCount = 0
       opened.addEventListener('ready', () => {
         readyCount += 1
@@ -80,10 +95,10 @@ export function useTableChanges(
     }
     const onShow = (event: PageTransitionEvent) => {
       if (!event.persisted || revoked || source !== null) return
-      open(undefined)
+      open(undefined, null)
       latest.current.onChanged()
     }
-    open(sinceAtMount.current)
+    open(sinceAtMount.current, cursorAtMount.current)
     window.addEventListener('pagehide', onHide)
     window.addEventListener('pageshow', onShow)
     return () => {

@@ -64,6 +64,7 @@ import type { ReactNode } from 'react'
 import { isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { feedClock } from '@/lib/database/row-feed'
+import { currentChangeCursor } from '@/lib/database/change-log'
 import { getDatabase, listDatabaseAncestors, type DatabaseAccess, type DatabaseDetail } from '@/lib/database/database'
 import { databaseLockState, type LockState } from '@/lib/permissions/lock'
 import type { SessionContext } from '@/lib/auth/session-context'
@@ -81,6 +82,7 @@ import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { usesRelativeDate } from '@/lib/database/relative-date'
 import { ViewerTodaySync } from './viewer-today-sync'
 import { SearchTermProvider } from './search-term'
+import { RenderedChangeCursor } from './use-table-changes'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -165,6 +167,8 @@ export default async function DatabasePage({
   const { v, q, m, w, peek, view: widgetParam } = await searchParams
   // 읽기 전의 시각 — 화면이 구독할 때 들고 가 그 사이의 변경을 메운다(#250 · `use-table-changes.ts`)
   const renderedAt = feedClock()
+  // 같은 뜻의 변경 기록 커서(RT-1) — 서버가 여럿이어도 · 다시 떠도 맞는 판정. 얻지 못하면 옛 길(`renderedAt`)만
+  const renderedCursor = await currentChangeCursor().catch(() => null)
   // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
   const search = normalizeSearch(Array.isArray(q) ? q[0] : q)
 
@@ -287,7 +291,9 @@ export default async function DatabasePage({
   const offline = await mayDownloadOffline(ctx)
 
   return (
-    // 맞은 글자 강조(V-3) — 지금의 검색어를 칸 · 카드 제목에 내려 준다
+    // 읽기 전에 받은 변경 기록의 커서(RT-1) — 표 · 보드 · 행 페이지의 구독이 들고 간다(`use-table-changes.ts`)
+    <RenderedChangeCursor cursor={renderedCursor}>
+    {/* 맞은 글자 강조(V-3) — 지금의 검색어를 칸 · 카드 제목에 내려 준다 */}
     <SearchTermProvider term={search}>
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
       {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름(피크로 연 행이 있어도 그대로) */}
@@ -393,6 +399,7 @@ export default async function DatabasePage({
       {content}
     </main>
     </SearchTermProvider>
+    </RenderedChangeCursor>
   )
 }
 
