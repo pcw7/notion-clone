@@ -38159,6 +38159,132 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 API — 웹훅 이벤트 (API-9 · F-09-09)')) { try {
+      // 공개 API 웹훅의 이벤트(정본 §3.1 [보강 API-1] ⑬ · 09 F-09-09). 새 멤버의 토큰에 확인을 마친 구독(page.created · page.content_updated ·
+      // page.deleted · comment.created)을 이 판의 받는 서버로 건다(설정 화면은 API-8 절이 본다 — 여기서는 서버 함수로). 그 사람이 **브라우저에서**
+      // 사이드바의 "+ 새 페이지" → 본문에 글자를 친다(협업 update — 투영은 미룬다) → 코멘트를 남긴다 → 페이지 메뉴의 "휴지통으로 이동".
+      // **워커 대신 이 판이 보내기를 부른다**(묶는 창이 지난 시각으로 — API-8 절과 같다) → 받는 서버가 page.created · 묶인 page.content_updated
+      // 하나(친 블록의 id) · comment.created · page.deleted 를 받는다 — 모두 X-Notion-Signature 가 확인 토큰의 HMAC · authors 가 그 사람.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const { runApiWebhookDelivery } = await import(new URL('../src/lib/api/webhook-deliver.ts', import.meta.url).href)
+      const { createApiToken } = await import(new URL('../src/lib/api/api-token.ts', import.meta.url).href)
+      const { createApiWebhook, verifyApiWebhook } = await import(new URL('../src/lib/api/webhooks.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { createServer } = await import('node:http')
+      const { createHmac } = await import('node:crypto')
+      const stamp = Date.now()
+      const hookPath = `/api9/${stamp}`
+      const received = []
+      const receiver = createServer((req, res) => {
+        const chunks = []
+        req.on('data', (c) => chunks.push(c))
+        req.on('end', () => {
+          received.push({ path: req.url, headers: req.headers, body: Buffer.concat(chunks).toString('utf8') })
+          res.writeHead(200).end('ok')
+        })
+      })
+      await new Promise((r) => receiver.listen(HOOK_PORT, '127.0.0.1', r))
+      const savedAllow = process.env.OUTBOUND_ALLOW_HOSTS
+      process.env.OUTBOUND_ALLOW_HOSTS = `127.0.0.1:${HOOK_PORT}` // 확인 · 보내기는 이 판에서 부른다
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`이벤트의 사람 ${stamp}`), 'member')
+      const hits = () => received.filter((r) => r.path === hookPath)
+      const typed = `웹훅 본문 ${stamp}`
+      const said = `웹훅 코멘트 ${stamp}`
+
+      try {
+        const token = await createApiToken(mate.ctx, { name: `이벤트 토큰 ${stamp}` })
+        if (!token.ok) throw new Error(`토큰: ${token.reason}`)
+        const tokenId = token.value.summary.id
+        const made = await createApiWebhook(mate.ctx, tokenId, {
+          url: `http://127.0.0.1:${HOOK_PORT}${hookPath}`,
+          eventTypes: ['page.created', 'page.content_updated', 'page.deleted', 'comment.created'],
+        })
+        if (!made.ok) throw new Error(`구독: ${made.reason}`)
+        const secret = String(JSON.parse(hits()[0]?.body ?? '{}').verification_token)
+        const verified = await verifyApiWebhook(mate.ctx, tokenId, made.value.id, secret)
+        check('전제 — 확인을 마친 구독(page.created · content_updated · deleted · comment.created)', verified.ok && hits().length === 1,
+          JSON.stringify({ verified: verified.ok ? 'ok' : verified.reason, hits: hits().length }))
+        const eventsOf = () => dbQuery(`SELECT type, data FROM api_webhook_event WHERE subscription_id = $1 ORDER BY seq`, [made.value.id])
+
+        // ① 브라우저에서 — 사이드바의 "+ 새 페이지"
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '+ 새 페이지')`, 15000)
+        let pageId = null
+        for (let i = 0; i < 6 && pageId === null; i += 1) {
+          await clickText('+ 새 페이지')
+          if (await waitFor(`/^\\/w\\/[^/]+\\/[0-9a-f-]{36}$/.test(location.pathname)`, 4000)) pageId = await evaluate(`location.pathname.split('/').pop()`)
+        }
+        check('★ 사이드바의 "+ 새 페이지" 로 만든다 — 그 페이지로 간다', typeof pageId === 'string', String(await evaluate('location.pathname')))
+
+        // ② 본문에 친다 — 협업 서버가 update 를 쌓는다(투영은 미룬다)
+        await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'
+          && document.querySelector('section[aria-label="본문"]')?.dataset.online === 'true'`, 15000)
+        let focused = false
+        for (let i = 0; i < 20 && !focused; i += 1) {
+          await clickSelector(`.blk-editor ${i % 2 === 0 ? 'p' : ''}`.trim())
+          focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror')`, 500)
+        }
+        await typeText(typed)
+        const BLOCK_OF = `[...document.querySelectorAll('.blk-editor [data-block-id]')].find((e) => e.textContent.includes(${JSON.stringify(typed)}))?.dataset.blockId ?? null`
+        await waitFor(`!!(${BLOCK_OF})`, 8000)
+        const blockId = await evaluate(BLOCK_OF)
+        let queued = false
+        for (const until = Date.now() + 15000; !queued && Date.now() < until; await sleep(300)) {
+          queued = (await eventsOf()).some((e) => e.type === 'page.content_updated' && (e.data.updated_blocks ?? []).some((b) => b.id === blockId))
+        }
+        check('★ 친 글자가 협업으로 쌓이면 page.content_updated 가 그 블록과 함께 묶는 줄에 들어간다', focused && typeof blockId === 'string' && queued,
+          JSON.stringify({ focused, blockId, events: (await eventsOf()).map((e) => e.type) }))
+
+        // ③ 코멘트
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim().startsWith('코멘트'))`, 10000)
+        await clickText('코멘트')
+        await waitFor(`!!document.querySelector('textarea[aria-label="새 코멘트"]')`, 8000)
+        await clickSelector('textarea[aria-label="새 코멘트"]')
+        await typeText(said)
+        await clickText('코멘트 남기기')
+        const commented = await waitFor(`[...document.querySelectorAll('[role="dialog"][aria-label="코멘트"] article')].some((a) => a.textContent.includes(${JSON.stringify(said)}))`, 8000)
+        check('★ 코멘트를 남긴다 — 패널에 스레드로', commented)
+        await key('Escape')
+
+        // ④ 페이지 메뉴의 "휴지통으로 이동"
+        await evaluate(`window.confirm = () => true`)
+        await waitHydrated('[data-testid="page-delete"]')
+        await clickSelector('[data-testid="page-delete"]')
+        let trashed = false
+        for (const until = Date.now() + 15000; !trashed && Date.now() < until; await sleep(300)) {
+          trashed = (await dbQuery(`SELECT lifecycle::text AS lifecycle FROM block WHERE id = $1`, [pageId]))[0]?.lifecycle === 'trashed'
+        }
+        check('★ 페이지 메뉴로 휴지통에 보낸다', trashed, String(await evaluate('location.pathname')))
+
+        // ⑤ 보내기 — 워커 대신 이 판이(묶는 창이 지난 시각으로)
+        const before = hits().length
+        const pass = await runApiWebhookDelivery(new Date(Date.now() + 3 * 60_000), { workspaces: [workspaceId] })
+        const got = hits().slice(before).map((h) => ({ h, e: JSON.parse(h.body) }))
+        const ofType = (type) => got.filter(({ e }) => e.type === type && (type === 'comment.created' ? e.data?.page_id === pageId : e.entity?.id === pageId))
+        const signedByMate = got.every(({ h, e }) =>
+          h.headers['x-notion-signature'] === `sha256=${createHmac('sha256', secret).update(h.body, 'utf8').digest('hex')}`
+            && e.subscription_id === made.value.id && e.authors?.[0]?.id === mate.userId && e.authors?.[0]?.type === 'person')
+        check('★ 받는 서버가 page.created · 묶인 page.content_updated 하나 · comment.created · page.deleted 를 받는다',
+          ofType('page.created').length === 1 && ofType('page.content_updated').length === 1 && ofType('comment.created').length === 1 && ofType('page.deleted').length === 1,
+          JSON.stringify({ pass, got: got.map(({ e }) => `${e.type}:${e.entity?.id === pageId ? 'page' : e.entity?.type}`) }))
+        check('★ 묶인 본문 이벤트는 친 블록을 싣는다 — updated_blocks · 부모는 그 자리',
+          (ofType('page.content_updated')[0]?.e.data?.updated_blocks ?? []).some((b) => b.id === blockId && b.type === 'block')
+            && typeof ofType('page.content_updated')[0]?.e.data?.parent?.type === 'string',
+          JSON.stringify(ofType('page.content_updated')[0]?.e.data ?? null))
+        check('★ 모두 확인 토큰의 HMAC 서명 · authors 는 그 사람 · 휴지통의 페이지도 그 ACL 로 간다',
+          got.length >= 4 && signedByMate && ofType('comment.created')[0]?.e.entity?.type === 'comment',
+          JSON.stringify(got.map(({ e }) => ({ type: e.type, authors: e.authors }))))
+      } finally {
+        await browseAs(session)
+        if (savedAllow === undefined) delete process.env.OUTBOUND_ALLOW_HOSTS
+        else process.env.OUTBOUND_ALLOW_HOSTS = savedAllow
+        receiver.closeAllConnections()
+        await new Promise((r) => receiver.close(() => r()))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('개발자 문서 (API-6 · F-09-15)')) { try {
       // 개발자 문서(정본 §3.1 [보강 API-1] · 09 F-09-15) — 로그인 없이 열리는 공개 화면. 주소 표의 줄이 `/v1` 라우트 파일이 여는 것과 하나도
       // 다르지 않은지(단위 시험과 같은 셈을 화면에서) · "노션과 다른 점" 절 · 예제의 주소가 이 앱의 공개 주소인지 본다. 설정 → 내 계정 →

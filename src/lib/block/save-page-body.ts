@@ -75,6 +75,7 @@ import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
 import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
 import { openPageBody } from './body-write.ts'
+import { emitNodeEventIn } from '../api/webhook-emit.ts'
 import { docToPm } from '../editor/pm-adapter.ts'
 import {
   projectDocument,
@@ -653,6 +654,8 @@ async function projectRows(
       }
       throw e
     }
+    // 웹훅 — 부모가 바뀌었다(API-9 · 본문에서 끌어 옮긴 것도 옮기기다 · 투영이 거부되면 savepoint 와 함께 버려진다)
+    if (b.parentId !== row.parent_id) await emitNodeEventIn(tx, ctx, 'moved', row.id, row.type === DATABASE_TYPE ? 'database' : 'page')
   }
 
   // 남은 자식 페이지(순서만 바뀐 것)는 임시 키에 있다. 키만 확정한다.

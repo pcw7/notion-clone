@@ -55,6 +55,7 @@ import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { recordActivity, recordCoalescedActivity, type ActivityActor } from '../notification/activity.ts'
+import { apiPropertyIdsOf, emitNodeEventIn, emitPropertiesChangedIn } from '../api/webhook-emit.ts'
 import { notifyAssigned } from '../notification/fanout.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
@@ -649,6 +650,8 @@ async function insertRowIn(
     if (!isTemplate) await recordActivity(tx, actor, { pageId: rowId, type: 'page.created' })
     // DB automation — 행이 생겼다(5b-2 · 같은 트랜잭션 · 템플릿은 받지 않는다)
     if (!isTemplate) await routeRowAdded(tx, { dataSourceId, pageId: rowId, origin: options.origin })
+    // 웹훅 — 행(페이지)이 생겼다 · 그 소스의 행이 바뀌었다(API-9 · 폼 응답 · 자동화 · 공개 API 도 이 길이다)
+    if (!isTemplate) await emitNodeEventIn(tx, actor, 'created', rowId, 'page')
 
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared, options.filledBy)
@@ -774,6 +777,11 @@ export async function updateCellsIn(
       await bumpRow(tx, ctx, rowId)
       // 활동 — 셀을 고쳤다(4d-2 · 같은 사람 · 같은 행 5분 안이면 접는다)
       await recordCoalescedActivity(tx, ctx, { pageId: rowId, type: 'property.updated' })
+      // 웹훅 — 행의 속성 · 그 소스의 행이 바뀌었다(API-9 · 묶는다)
+      await emitPropertiesChangedIn(tx, ctx, rowId, apiPropertyIdsOf(prepared.map((cell) => cell.propertyId), gate.titlePropertyId), {
+        dataSourceId: row.data_source_id,
+        isTemplate: row.is_template,
+      })
     }
 
     // 옮길 행들 — 같은 트랜잭션 · 같은 행위자, 평범한 셀 쓰기와 같은 길(사이드카 · 버전 · 활동)
@@ -1023,6 +1031,8 @@ export async function trashRow(ctx: SessionContext, rowId: string): Promise<RowR
     )
     // 활동 — 버렸다(4d-2 · 행은 제 묶음의 루트다)
     await recordActivity(tx, ctx, { pageId: rowId, type: 'page.trashed' })
+    // 웹훅 — 행(페이지)이 휴지통으로 · 그 소스의 행이 바뀌었다(API-9)
+    await emitNodeEventIn(tx, ctx, 'deleted', rowId, 'page')
     return { ok: true, value: null } as const
   })
 }

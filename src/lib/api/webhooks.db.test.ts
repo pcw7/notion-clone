@@ -300,13 +300,14 @@ describe('③ 아웃박스 — API-9 의 길', () => {
   test('★ 고른 종류 · 켜진 구독에만 쓴다 · 대상마다 차례(앞 줄이 기다리면 뒤 줄도) · 다른 대상은 막히지 않는다 · 볼 수 없는 대상은 건너뜀', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ws, boss, mate } = await team('웹훅 아웃박스')
+    // 페이지는 구독보다 먼저 만든다 — 만들기가 진짜 page.created 를 낸다(API-9). 이 절은 아웃박스 쓰기를 직접 본다
+    const a = await createPage(mate.ctx, { title: [textRun('가')], privateTop: true })
+    const b = await createPage(mate.ctx, { title: [textRun('나')], privateTop: true })
+    const secret = await createPage(boss.ctx, { title: [textRun('대표만')], privateTop: true })
     const tokenId = await mint(mate)
     const hook = await activeHook(mate, tokenId, ['page.created', 'page.content_updated'])
     const pending = await createApiWebhook(mate.ctx, tokenId, { url: HOOK, eventTypes: ['page.created'] }, { send: receiver().send })
     assert.ok(pending.ok)
-    const a = await createPage(mate.ctx, { title: [textRun('가')], privateTop: true })
-    const b = await createPage(mate.ctx, { title: [textRun('나')], privateTop: true })
-    const secret = await createPage(boss.ctx, { title: [textRun('대표만')], privateTop: true })
     const T0 = new Date('2030-03-01T00:00:00Z')
     const emit = (type: string, entityId: string, offset: number) =>
       withTransaction((tx) =>

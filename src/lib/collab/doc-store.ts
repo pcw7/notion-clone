@@ -105,6 +105,8 @@ import { recordVersionIfDue, type VersionIntent } from '../history/record.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
 import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } from './ydoc.ts'
+import { emitBodyChangedIn } from '../api/webhook-emit.ts'
+import { collectChangedBlocks } from './changed-blocks.ts'
 
 /** 정본 `doc_update.origin` 의 CHECK 값 — `ai` 는 AI 가 서버에서 쓴 본문(AI-4 번역본 · 0147). */
 export const DOC_ORIGINS = ['editor', 'api', 'automation', 'restore', 'import', 'external_sync', 'ai'] as const
@@ -257,6 +259,10 @@ export async function openBodyDoc(
   const changes: Uint8Array[] = []
   const collect = (change: Uint8Array): void => void changes.push(change)
   ydoc.on('update', collect)
+  // 웹훅(API-9) — 이 세션이 바꾼 블록. 쌓으면 `page.content_updated` 로 낸다(모든 출처가 여기를 지난다 · 구독이 없으면 조회 하나).
+  const touchedBlocks = new Set<string>()
+  const trackBlocks = (transaction: Y.Transaction): void => collectChangedBlocks(transaction, touchedBlocks)
+  ydoc.on('afterTransaction', trackBlocks)
   let status: 'open' | 'broken' | 'committed' = 'open'
   let touchedPageRefs = false
   let touchedMentions = false
@@ -322,6 +328,7 @@ export async function openBodyDoc(
         throw new Error(`고친 하위 페이지 참조를 Y.Doc 에 쓰지 못했다(${repaired.reason}): ${pageId}`)
       }
       const repair = repaired.kind === 'repaired' ? repaired.update : null
+      ydoc.off('afterTransaction', trackBlocks)
       if (repair !== null) changes.push(repair)
       if (changes.length === 0) return { appended: false, seq: state.seq }
 
@@ -331,6 +338,8 @@ export async function openBodyDoc(
          VALUES ($1, $2, $3, $4, $5, now())`,
         [pageId, seq, Buffer.from(changes.length === 1 ? changes[0] : Y.mergeUpdates(changes)), options.actorId, options.origin],
       )
+      // 웹훅 — 본문이 바뀌었다(API-9 · 정본 ⑬). 행위자는 쌓은 사람(자동화의 위임이면 만든 사람)
+      await emitBodyChangedIn(tx, { workspaceId: ctx.workspaceId, userId: options.actorId }, pageId, touchedBlocks)
 
       const compactEvery = options.compactEvery ?? COMPACT_EVERY
       if (BigInt(seq) - BigInt(lockedMergedSeq) >= BigInt(compactEvery)) {

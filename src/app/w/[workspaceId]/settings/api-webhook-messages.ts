@@ -113,5 +113,6 @@ export const API_WEBHOOK_NOTE =
 /** 지우기를 묻는 말. */
 export const API_WEBHOOK_REMOVE_CONFIRM = '지우면 기다리던 이벤트와 배달 기록도 사라집니다.'
 
-/** 이벤트를 내보내는 조각이 아직이다(API-9) — 고를 수는 있다. */
-export const API_WEBHOOK_EVENTS_NOTE = '페이지 · 데이터베이스 · 댓글 이벤트는 곧 보내기 시작합니다. 지금은 "테스트 보내기" 로 받는 쪽을 확인하세요.'
+/** 고르는 칸 밑의 말 — 묶어 보내는 것과 곧바로 보내는 것(API-9 · 정본 ⑬). */
+export const API_WEBHOOK_EVENTS_NOTE =
+  '본문 · 속성 · 행 · 구조가 바뀐 것은 마지막 변경 뒤 15초(길어도 2분) 모아 한 번에 보내고, 만들기 · 옮기기 · 휴지통 · 잠금 · 댓글은 곧바로 보냅니다.'

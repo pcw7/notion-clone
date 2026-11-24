@@ -14,6 +14,7 @@ import type { Tx } from '../db/tx.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { recordActivity } from '../notification/activity.ts'
+import { emitNodeEventIn } from '../api/webhook-emit.ts'
 
 /**
  * 이 페이지를 버리거나 되살리거나 옮길 수 있는가 — HANDOFF §3.2-18.
@@ -77,6 +78,8 @@ export async function trashSubtreeRows(tx: Tx, ctx: SessionContext, pageId: stri
 
   // 활동 — 버렸다(4d-2). 묶음의 루트에만 — 함께 들어간 자손에는 남기지 않는다(정본 §3.8 [보강] 활동 기록 ①)
   await recordActivity(tx, ctx, { pageId, type: 'page.trashed' })
+  // 웹훅 — `page.deleted` · `database.deleted`(API-9 · 루트에만 — 활동과 같다 · 명령과 본문에서 지운 참조가 같은 길이다)
+  await emitNodeEventIn(tx, ctx, 'deleted', pageId)
 
   return { purgeAfter: moved.purge_after, trashedDescendants: descendants.length }
 }

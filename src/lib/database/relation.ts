@@ -69,6 +69,7 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { emitRowPropertyChangedIn } from '../api/webhook-emit.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
@@ -80,6 +81,7 @@ import { escapeLike, type FilterNode } from './filter.ts'
 import { filterRelationPrefill } from './filter-prefill.ts'
 import {
   bumpSchema,
+  schemaChange,
   checkPropertySlots,
   insertPropertyIn,
   isSchemaFailure,
@@ -211,10 +213,14 @@ export async function addRelationPropertyIn(
       config: { target_data_source_id: dataSourceId, synced_property_id: propertyId },
     })
     if (isSchemaFailure(inverse)) return inverse
-    if (!self) await bumpSchema(tx, targetId)
+    if (!self) await bumpSchema(tx, targetId, schemaChange(ctx, 'created', syncedPropertyId))
   }
 
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(
+    tx,
+    dataSourceId,
+    schemaChange(ctx, 'created', propertyId, ...(self && syncedPropertyId !== null && inverseName !== undefined ? [syncedPropertyId] : [])),
+  )
   return {
     ok: true,
     value: { schema: await readSchema(tx, dataSourceId), propertyId, syncedPropertyId },
@@ -312,7 +318,7 @@ export async function setRelationLimit(
       dataSourceId,
       JSON.stringify(next),
     ])
-    await bumpSchema(tx, dataSourceId)
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId))
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
 }
@@ -598,6 +604,8 @@ export async function linkRowsIn(
       `UPDATE block SET version = version + 1, last_edited_by = $2, last_edited_at = now() WHERE id = $1`,
       [rowId, ctx.userId],
     )
+    // 웹훅 — 이 행의 관계 칸이 바뀌었다(API-9 · 상대 행의 거울상은 내지 않는다 — 버전과 같은 규칙)
+    await emitRowPropertyChangedIn(tx, ctx, rowId, propertyId)
     const summary = await readRow(tx, rowId)
     return summary === null ? fail('not_found') : ({ ok: true, value: summary } as const)
   }

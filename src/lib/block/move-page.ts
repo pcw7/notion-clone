@@ -82,6 +82,7 @@ import { appendPageRef, removePageRef } from './page-refs.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { readPageIcon, type PageIcon } from './page-icon.ts'
 import { recordActivity } from '../notification/activity.ts'
+import { emitNodeEventIn } from '../api/webhook-emit.ts'
 
 export type MoveErrorCode =
   /** 옮길 페이지가 없거나 다른 워크스페이스거나 휴지통에 있거나 볼 수 없다. */
@@ -428,6 +429,8 @@ export async function movePage(
     )
     // 활동 — 옮겼다(4d-2 · 어디서 어디로 — id 만)
     await recordActivity(tx, ctx, { pageId: moving.id, type: 'page.moved', payload: { from: moving.parent_id, to: final.parent_id } })
+    // 웹훅 — `page.moved` · `database.moved`(API-9 · 부모가 바뀌었을 때만 — 같은 부모 안의 순서는 옮기기가 아니다)
+    if (final.parent_id !== moving.parent_id) await emitNodeEventIn(tx, ctx, 'moved', moving.id, moving.type === 'database' ? 'database' : 'page')
 
     return {
       pageId: asBlockId(moving.id),

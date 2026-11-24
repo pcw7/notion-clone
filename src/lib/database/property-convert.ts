@@ -31,7 +31,7 @@ import { orderKeysBetween } from '../block/order-key.ts'
 import { readCell } from './cell-format.ts'
 import { operatorsFor, withoutRules, type FilterNode } from './filter.ts'
 import { readOptionsOf } from './options.ts'
-import { bumpSchema, isSchemaFailure, lockSchema, readSchema, type PropertyFailure, type SchemaSnapshot } from './property.ts'
+import { bumpSchema, isSchemaFailure, lockSchema, readSchema, schemaChange, type PropertyFailure, type SchemaSnapshot } from './property.ts'
 import {
   OPTION_COLORS,
   STATUS_DEFAULT_OPTIONS,
@@ -236,6 +236,6 @@ export async function convertPropertyIn(
     ])
   }
 
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId))
   return { ok: true, value: { schema: await readSchema(tx, dataSourceId), converted, lost, filtersRemoved } } as const
 }

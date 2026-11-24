@@ -12,6 +12,7 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
+import { emitRowPropertyChangedIn } from '../api/webhook-emit.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
@@ -115,6 +116,8 @@ export async function verifyRow(
         dedupeKey: verificationExpireDedupeKey(rowId, propertyId, until.toISOString()),
       })
     }
+    // 웹훅 — 검증 칸이 바뀌었다(API-9)
+    await emitRowPropertyChangedIn(tx, ctx, rowId, propertyId)
     const cell = toVerificationCell(value, now)
     return { ok: true, value: cell as VerificationCell } as const
   })
@@ -126,6 +129,7 @@ export async function unverifyRow(ctx: SessionContext, rowId: string, propertyId
     const blocked = await gate(tx, ctx, rowId, propertyId)
     if (blocked !== null) return blocked
     await tx.query(`DELETE FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [rowId, propertyId])
+    await emitRowPropertyChangedIn(tx, ctx, rowId, propertyId)
     return { ok: true, value: null } as const
   })
 }

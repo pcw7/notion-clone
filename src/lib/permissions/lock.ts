@@ -26,6 +26,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { effectiveCaps } from './effective.ts'
 import { can, type Capability } from './levels.ts'
+import { emitNodeEventIn } from '../api/webhook-emit.ts'
 
 /** 잠그는 노드의 종류 — `node_lock.kind` 와 같다(블록의 type · 0034 트리거). */
 export type LockKind = 'page' | 'database'
@@ -124,6 +125,8 @@ async function setLockIn(tx: Tx, ctx: SessionContext, nodeId: string, kind: Lock
         [nodeId, ctx.userId, kind],
       )
     : await tx.query<{ node_id: string }>(`DELETE FROM node_lock WHERE node_id = $1 RETURNING node_id`, [nodeId])
+  // 웹훅 — `page.locked` · `page.unlocked`(API-9 · 데이터베이스의 구조 잠금에는 노션의 이벤트가 없다)
+  if (rows.length > 0 && kind === 'page') await emitNodeEventIn(tx, ctx, locked ? 'locked' : 'unlocked', nodeId, 'page')
   return { ok: true, value: { changed: rows.length > 0 } } as const
 }
 

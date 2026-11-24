@@ -71,6 +71,7 @@ import { relocateSubtree, type MovingRow } from './move-page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf } from './body-write.ts'
 import { insertPageRefAfter, removePageRef } from './page-refs.ts'
 import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
+import { emitNodeEventIn } from '../api/webhook-emit.ts'
 
 export type TrashErrorCode =
   /** 페이지가 없거나 다른 워크스페이스거나 상태가 맞지 않거나 볼 수 없다. */
@@ -308,6 +309,8 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
       )
       await finishOrThrow(ownerBody)
     }
+    // 웹훅 — `page.undeleted` · `database.undeleted`(API-9 · 행이면 그 소스의 행도 바뀌었다). 최상위로 올린 것은 옮기기가 아니다
+    await emitNodeEventIn(tx, ctx, 'undeleted', target.id, target.type === 'database' ? 'database' : 'page')
 
     return {
       pageId: asBlockId(target.id),

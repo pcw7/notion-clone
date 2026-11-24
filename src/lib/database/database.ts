@@ -52,6 +52,7 @@ import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { listAncestors, lockParentPage, nextSiblingKey, PageError, titleFromPlainText, plainTitleOf, type PageSummary } from '../block/page.ts'
 import { openPageBody } from '../block/body-write.ts'
+import { emitDataSourceEventIn, emitNodeEventIn } from '../api/webhook-emit.ts'
 import { appendPageRef, placePageRefAt } from '../block/page-refs.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
@@ -234,8 +235,15 @@ export async function createDatabase(
     else if (teamspaceId === null) await inheritFromWorkspace(tx, ctx, id)
 
     const value = await insertDatabaseRows(tx, { id, name, isInline: false })
+    await emitDatabaseCreatedIn(tx, ctx, id, value.dataSourceId)
     return { ok: true, value: { ...value, teamspaceId, ownerUserId } } as const
   })
+}
+
+/** 웹훅 — 데이터베이스와 그것이 가진 첫 소스가 생겼다(API-9 · 정본 ⑬). 붙인 소스(linked)는 새 소스가 아니다. */
+async function emitDatabaseCreatedIn(tx: Tx, ctx: SessionContext, databaseId: string, ownedDataSourceId: string | null): Promise<void> {
+  await emitNodeEventIn(tx, ctx, 'created', databaseId, 'database')
+  if (ownedDataSourceId !== null) await emitDataSourceEventIn(tx, ctx, 'created', ownedDataSourceId)
 }
 
 /**
@@ -404,6 +412,7 @@ export async function createInlineDatabaseIn(
   const result = await parentBody.finish()
   if (!result.ok && result.reason === 'page_ref_too_deep') return { ok: false, reason: 'too_deep' } as const
   if (!result.ok) throw new Error(`본문 투영이 인라인 데이터베이스 생성을 거부했다(${result.reason}): ${placement.parentId}`)
+  await emitDatabaseCreatedIn(tx, ctx, id, linked === null ? value.dataSourceId : null)
   return { ok: true, value: { ...value, teamspaceId: null, ownerUserId: null } } as const
 }
 

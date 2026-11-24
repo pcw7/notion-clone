@@ -45,6 +45,7 @@ import { readableScopes } from '../permissions/effective.ts'
 import { isUuid } from '../ids.ts'
 import {
   bumpSchema,
+  schemaChange,
   insertPropertyIn,
   isSchemaFailure,
   lockSchema,
@@ -162,7 +163,7 @@ export async function addRollupPropertyIn(
   })
   if (isSchemaFailure(propertyId)) return propertyId
 
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'created', propertyId))
   return { ok: true, value: { schema: await readSchema(tx, dataSourceId), propertyId } } as const
 }
 
@@ -270,7 +271,7 @@ export async function updateRollupPropertyIn(
     dataSourceId,
     JSON.stringify(next),
   ])
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId))
   return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 

@@ -30,9 +30,43 @@ export type Tx = {
   ): Promise<T | null>
   /** 부분 롤백이 필요할 때. 이름은 호출자가 관리한다. */
   savepoint<R>(name: string, fn: () => Promise<R>): Promise<R>
+  /**
+   * 커밋 직전에 할 쓰기를 미룬다(API-9 — 웹훅 아웃박스). 같은 `key` 의 것은 모아 `flush` 한 번으로 · 키는 처음 미룬 차례로 · 콜백이 정상
+   * 반환한 뒤 COMMIT 바로 앞에서. `savepoint` 가 되돌려지면 그 안에서 미룬 것도 버린다 — 되돌린 일은 아무것도 남기지 않는다. 거부 · 롤백이면
+   * 돌지 않는다. 읽기 전용 트랜잭션에는 없다.
+   */
+  readonly defer?: <T>(key: object, item: T, flush: (tx: Tx, items: readonly T[]) => Promise<void>) => void
 }
 
-function wrap(client: PoolClient, readOnly = false): Tx {
+/** 미룬 쓰기 — 한 판에 다 비운다. 비우는 일이 또 미루면 다음 판(다섯 판까지). */
+type Deferred = { readonly key: object; readonly item: unknown }
+
+function wrap(client: PoolClient, readOnly = false): { readonly tx: Tx; readonly flushDeferred: () => Promise<void> } {
+  const deferred: Deferred[] = []
+  const flushers = new Map<object, (tx: Tx, items: readonly unknown[]) => Promise<void>>()
+  const tx = wrapClient(client, readOnly, deferred, flushers)
+  const flushDeferred = async (): Promise<void> => {
+    for (let round = 0; deferred.length > 0; round += 1) {
+      if (round >= 5) throw new Error('미룬 쓰기가 끝나지 않는다')
+      const batch = deferred.splice(0)
+      const byKey = new Map<object, unknown[]>()
+      for (const d of batch) {
+        const list = byKey.get(d.key)
+        if (list === undefined) byKey.set(d.key, [d.item])
+        else list.push(d.item)
+      }
+      for (const [key, items] of byKey) await flushers.get(key)!(tx, items)
+    }
+  }
+  return { tx, flushDeferred }
+}
+
+function wrapClient(
+  client: PoolClient,
+  readOnly: boolean,
+  deferred: Deferred[],
+  flushers: Map<object, (tx: Tx, items: readonly unknown[]) => Promise<void>>,
+): Tx {
   // 계측(`PERF_SQL=1` · pool.ts) — 트랜잭션의 쿼리는 `tx:` 표지로
   const run = async <T extends QueryResultRow>(sql: string, params: readonly unknown[]): Promise<T[]> => {
     if (!perfSqlEnabled) return (await client.query<T>(sql, params as unknown[])).rows
@@ -70,6 +104,7 @@ function wrap(client: PoolClient, readOnly = false): Tx {
       if (!/^[a-z_][a-z0-9_]*$/.test(name)) {
         throw new Error(`savepoint 이름은 [a-z_][a-z0-9_]* 여야 합니다: ${name}`)
       }
+      const mark = deferred.length
       await client.query(`SAVEPOINT ${name}`)
       try {
         const r = await fn()
@@ -77,9 +112,19 @@ function wrap(client: PoolClient, readOnly = false): Tx {
         return r
       } catch (e) {
         await client.query(`ROLLBACK TO SAVEPOINT ${name}`)
+        // 되돌린 일이 미룬 쓰기도 버린다
+        deferred.length = mark
         throw e
       }
     },
+    ...(readOnly
+      ? {}
+      : {
+          defer<T>(key: object, item: T, flush: (tx: Tx, items: readonly T[]) => Promise<void>): void {
+            if (!flushers.has(key)) flushers.set(key, flush as (tx: Tx, items: readonly unknown[]) => Promise<void>)
+            deferred.push({ key, item })
+          },
+        }),
   }
 }
 
@@ -91,7 +136,9 @@ export async function withTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T>
   const client = await getPool().connect()
   try {
     await client.query('BEGIN')
-    const result = await fn(wrap(client))
+    const { tx, flushDeferred } = wrap(client)
+    const result = await fn(tx)
+    await flushDeferred()
     await client.query('COMMIT')
     return result
   } catch (e) {
@@ -186,7 +233,7 @@ export async function withReadTransaction<T>(fn: (tx: Tx) => Promise<T>): Promis
   const client = await getPool().connect()
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
-    const result = await fn(wrap(client, true))
+    const result = await fn(wrap(client, true).tx)
     await client.query('COMMIT')
     return result
   } catch (e) {

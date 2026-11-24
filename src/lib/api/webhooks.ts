@@ -422,12 +422,12 @@ export async function verifyApiWebhook(
 
 // ── 멈추기 · 지우기 · 테스트 ──────────────────────────────────────────
 
-/** 기다리던 이벤트를 건너뛴 것으로 — 멈추기 · 끄기 · 토큰 폐기가 같은 트랜잭션에서 부른다. */
+/** 기다리던 이벤트를 건너뛴 것으로 — 멈추기 · 끄기 · 토큰 폐기가 같은 트랜잭션에서 부른다. 묶는 중인 줄은 창도 닫는다(API-9). */
 export async function skipPendingApiWebhookEventsIn(tx: Pick<Tx, 'query'>, subscriptionIds: readonly string[], reason: string): Promise<void> {
   if (subscriptionIds.length === 0) return
   await tx.query(
     `UPDATE api_webhook_event
-        SET status = 'skipped', skip_reason = $2, next_attempt_at = NULL, finished_at = now()
+        SET status = 'skipped', skip_reason = $2, next_attempt_at = NULL, finished_at = now(), window_started_at = NULL
       WHERE subscription_id = ANY($1::uuid[]) AND status = 'pending'`,
     [subscriptionIds, reason],
   )
