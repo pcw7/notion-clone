@@ -2918,7 +2918,7 @@ CREATE TABLE data_source (                    -- 스키마와 행 집합의 소�
   name                  text NOT NULL,
   origin                origin_kind NOT NULL DEFAULT 'native',  -- <15 R3>
   schema_version        bigint NOT NULL DEFAULT 1,              -- stale 스키마 쓰기 차단
-  change_seq            bigint NOT NULL DEFAULT 0,              -- [X-5] ds 채널 gap 감지 축
+  change_seq            bigint NOT NULL DEFAULT 0,              -- [X-5] ~~ds 채널 gap 감지 축~~ [대체됨 RT-1] 쓰지 않는다 — 쓰기마다 올리면 한 표의 모든 쓰기가 이 한 행의 잠금에 커밋까지 줄을 선다. gap 감지 축은 §3.7 `data_source_change`(쌓기만 하는 기록 · 커서 = xid 지평). 열은 0013 에 남아 있다(0 · 읽는 곳 없음)
   unique_id_counter     bigint NOT NULL DEFAULT 0,              -- UPDATE...RETURNING 으로만 발급
   unique_id_prefix      text NULL,                              -- [보강] 대문자 영숫자 2~7자 · 카운터와 함께 data source 의 것(0050 · 아래 [보강] 고유 ID)
   -- [보강] 수명주기(0043 · 8e-3a) — 블록과 같은 세 값 · 같은 시각 열. X-3 은 블록의 축이고 data source 는 블록이 아니다(아래 [보강] ⑩)
@@ -3821,7 +3821,7 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
 > 소스를 여럿 가지면 소스 이름으로 가른다. 내보내기는 소유한 소스마다 표 한 벌이다 — 하나면 전과 같이 `이름.csv` + `이름/`, 여럿이면
 > `이름/` 안에 `소스.csv` + `소스/`(이름 규칙은 페이지와 같다). 템플릿 화면은 템플릿 자신의 소스(`page.data_source_id`)의 첫 뷰로 그린다.
 > ⑧ **아직 아닌 것** — 노션의 "뷰만 지우기"(주인 없는 소스) ·
-> ~~다른 데이터베이스의 소스 붙이기(linked · F-04-13)~~ **2l-1 에서 들였다(아래 ⑪)** · 소스를 다른 데이터베이스로 옮기기 · 소스의 아이콘 · ~~`ds:{data_source_id}` 실시간 채널~~ **0단계(2k · X-5 [보강])**.
+> ~~다른 데이터베이스의 소스 붙이기(linked · F-04-13)~~ **2l-1 에서 들였다(아래 ⑪)** · 소스를 다른 데이터베이스로 옮기기 · 소스의 아이콘 · ~~`ds:{data_source_id}` 실시간 채널~~ **0단계(2k · X-5 [보강]) · 1단계 서버(RT-1 — 변경 기록 · 델타)**.
 > ⑪ **연결된 소스(2l-1 · F-04-13)** — 붙이기는 **부착 행 하나 + 그 소스를 보는 뷰 하나**다(새 표 없음 — DS2 의 `is_linked` 가 그대로 그 뜻이다).
 > 붙이려면 이 데이터베이스의 `edit_structure` 와 **원본을 볼 수 있어야** 한다(아니면 없는 것과 같은 답). 권한은 둘로 갈린다 — 행 · 스키마는
 > **원본**의 것(행 · 셀 · 속성의 게이트가 `owner_database_id` 로 묻는다 · 링크로 오르지 않는다), 뷰는 **붙인 데이터베이스**의 것(뷰 게이트가
@@ -5299,13 +5299,18 @@ ds:{data_source_id}    -> SET<connection_id>        -- 행/셀/스키마/뷰 변
 layout:{data_source_id}-> SET<connection_id>        -- 레이아웃 브로드캐스트 <16 R13>
 conn:{connection_id}   -> { user_id, workspace_id, device_id, session_id,
                             subscribed_docs SET<uuid>, last_seq_by_doc MAP,
-                            subscribed_ds SET<uuid>,  last_change_seq_by_ds MAP }
+                            subscribed_ds SET<uuid>,  change_cursor_by_ds MAP }   -- [RT-1] last_change_seq → 커서(xid 지평)
 presence:{page_id}     -> HASH, TTL 30s             -- 또는 Yjs awareness
 
 -- 와이어 봉투 2종. 한 채널에 두 종류를 섞지 않는다.
 doc 채널:    { doc_id, seq, kind: 'update'|'awareness', payload: bytes, origin: client_id }
 ds  채널:    { ds_id, change_seq, kind: 'row_upsert'|'row_removed'|'schema_changed'|'view_changed',
                payload: <적용 가능한 값(post-image)> }
+-- [보강 RT-1] ds 채널은 지금 두 겹이다(아래 X-5 [보강] "X-5 의 단계" — 1단계):
+--   신호(SSE)  { dataSourceId, cursor }  — 'ready' | 'changed' (0단계의 봉투 그대로 + 커서)
+--   델타(GET)  { cursor, reset, behind, schemaChanged, viewChanged, orderChanged,
+--                rows: [{ kind: 'row_upsert', inView, ...행(post-image) } | { id, kind: 'row_delete', inView: false }] }
+--   change_seq 는 쓰지 않는다 — 커서는 `data_source_change` 의 xid 지평이다
 ```
 
 - 구독 시점 권한검사 + **권한 회수 시 서버 강제 unsubscribe**. push 모델의 권한 경계는 채널 join 과 update 수신 두 지점이다.
@@ -5325,8 +5330,41 @@ ds  채널:    { ds_id, change_seq, kind: 'row_upsert'|'row_removed'|'schema_cha
   합쳐지고 넣기는 보류되자, 그 반쪽 문서를 수선(`empty_container_lifted`)이 고쳐 나중에 합쳐진 표가 걷힌 자리에 들어가 보이지 않았다
   (클라이언트는 그 수선을 받아 표를 잃었다) ⓑ Hocuspocus 는 보류된 update 도 메모리 문서에 적용해 그 지우기를 퍼뜨린다 — "메모리 문서는
   로그의 부분집합" 이 깨진다. update 를 통째로 들고 기다려도 ⓑ 는 남는다. 순서를 지키는 쪽(클라이언트)에서 막는다.
-- `seq` / `change_seq` gap 감지 → 클라이언트가 `state_vector`(doc) 또는 `last_change_seq`(ds)를 보내고 서버가 **delta 만** 회신. full refetch 가 아니다.
-- ds 채널 페이로드는 반드시 **적용 가능한 값**이어야 한다. "재조회하라"는 신호를 실으면 C-11 이 폐기한 pull 모델이 되살아난다. **[보강] 0단계는 유예한다 — 아래 X-5 [보강] "X-5 의 단계"(2k-1).**
+- `seq` / ~~`change_seq`~~ gap 감지 → 클라이언트가 `state_vector`(doc) 또는 ~~`last_change_seq`~~ **커서**(ds · [보강 RT-1] — `data_source_change` 의 xid 지평)를 보내고 서버가 **delta 만** 회신. full refetch 가 아니다(커서가 24시간 창 밖이거나 바뀐 행이 상한을 넘으면 `reset` — F-05-06 *"보존기간 초과 · 델타가 수천 op → snapshot"*).
+- ds 채널 페이로드는 반드시 **적용 가능한 값**이어야 한다. "재조회하라"는 신호를 실으면 C-11 이 폐기한 pull 모델이 되살아난다. **[보강] 0단계는 유예했다 — 아래 X-5 [보강] "X-5 의 단계"(2k-1). 1단계(RT-1)는 적용 가능한 값을 커서 델타로 준다(신호는 커서를 싣는다).**
+
+**[보강 RT-1] 표의 변경 기록 `data_source_change`** ⟨DB 실시간 동기화 RT-1조각 · F-05-16 · F-05-06 / 마이그레이션 0153⟩ — 판결 X-5 의
+gap 감지 축(`data_source.change_seq`)을 대신한다. 근거 · 정확성은 아래 X-5 [보강] "X-5 의 단계" — 1단계.
+
+```sql
+CREATE TABLE data_source_change (            -- 쌓기만 한다(UPDATE 는 트리거가 거부) · 보관 정리만 지운다
+  seq            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,   -- 넣은 차례 — 지우기의 차례. 커서가 아니다
+  data_source_id uuid NOT NULL,              -- FK 없음 — 지운 행 · 표도 알린다 · 쓰기마다 data_source 에 KEY SHARE 를 걸지 않는다
+  kind           text NOT NULL CHECK (kind IN ('row_upsert','row_delete','position','reminder','schema','view','layout')),
+  row_id         uuid NULL,                  -- (row_id IS NOT NULL) = kind ∈ {row_upsert,row_delete,position,reminder}
+  view_id        uuid NULL,                  -- (view_id IS NOT NULL) = kind ∈ {view,position}
+  xid            xid8 NOT NULL DEFAULT pg_current_xact_id(),   -- 쓴 트랜잭션(최상위) — 커서의 축
+  at             timestamptz NOT NULL DEFAULT now()            -- 지우기의 기준(24시간)
+);
+CREATE UNIQUE INDEX ux_data_source_change_once
+  ON data_source_change (data_source_id, xid, kind, row_id, view_id) NULLS NOT DISTINCT;  -- 읽기(표 · xid 범위) + 한 트랜잭션의 겹침 버리기
+
+CREATE TABLE data_source_change_floor (      -- 표마다 보관 정리가 지운 가장 큰 xid — 쓰기는 건드리지 않는다
+  data_source_id uuid PRIMARY KEY,
+  purged_through xid8 NOT NULL,
+  updated_at     timestamptz NOT NULL DEFAULT now()
+);
+```
+
+- **누가 쓰는가** — 0063 의 신호 트리거들이 신호와 함께 한 줄을 넣는다(`db_rows_log` — `ON CONFLICT DO NOTHING`): 행의 넣기 · 바꾸기 →
+  `row_upsert` · 행의 지우기 · 다른 표로 옮기기 · 행 블록이 살아 있지 않게 됨(휴지통) → `row_delete` · 속성 · 옵션 → `schema` · 뷰 →
+  `view`(그 뷰) · 보드의 손으로 둔 순서(`row_position`) → `position`(그 뷰의 그 행) · 레이아웃 머리(0067) → `layout` · 리마인더(0109) →
+  `reminder`(그 행). 신호와 같은 조건이다 — 신호가 나가는 쓰기는 기록도 남긴다(구독이 붙기 전의 틈 판정이 기록 하나로 서려면).
+- **겹침** — 같은 트랜잭션 · 같은 표 · 같은 종류 · 같은 대상은 한 줄이다(UNIQUE 의 열쇠에 xid 가 있어 다른 트랜잭션끼리는 부딪치지 않는다 —
+  기다림이 없다). 다른 문장에서 같은 행을 여러 번 고쳐도 기록은 한 줄.
+- **지우기** — 보관 정리(`data_retention` ⑫)가 `at` 이 24시간 지난 줄을 앞(seq)에서부터 지우고, 같은 문장에서 표마다 지운 가장 큰 xid 를
+  `data_source_change_floor` 에 올린다. 경계는 "창 안의 가장 작은 seq" — 그 앞의 줄만 지운다(창 안의 줄은 지우지 않는다). 없어진 표의 자리는
+  기록이 다 지워진 뒤 지운다.
 
 **presence (U-9)** — DB 에 저장하지 않는다.
 
@@ -7564,9 +7602,12 @@ project(page_id):                                   -- 디바운스 실행. 페�
 1. **섞지 않는다**: 각 채널의 봉투는 단일 `kind` 집합을 가지며 서로 침범하지 않는다.
 2. **되당김 신호를 실지 않는다**: `ds:` 봉투는 반드시 **적용 가능한 post-image 값**을 싣는다. `{row_id, changed}` 같은 무효화 신호를 실으면 pull 모델이 되살아난다.
 
-gap 감지 축은 `data_source.change_seq`(단조 증가)이며, 재동기는 `WHERE change_seq > :last` 델타 조회다.
+~~gap 감지 축은 `data_source.change_seq`(단조 증가)이며, 재동기는 `WHERE change_seq > :last` 델타 조회다.~~ **[RT-1 로 대체]** gap 감지 축은
+표의 변경 기록 `data_source_change`(§3.7 — 쌓기만 한다)이고 커서는 **쓴 트랜잭션의 xid 지평**이다. 재동기는 `after <= xid < 지평` 델타 조회다.
+카운터를 버린 까닭과 정확성의 근거는 아래 [보강] "X-5 의 단계" — 1단계.
 
-**[보강] X-5 의 단계 — 0단계는 "다시 읽어라" 한 종류** ⟨DB 심화 2k-1조각 · F-04-24 / 마이그레이션 0063⟩
+**[보강] X-5 의 단계 — 0단계는 "다시 읽어라" 한 종류 · 1단계(서버)는 변경 기록과 커서 델타** ⟨DB 심화 2k-1조각 · F-04-24 / 마이그레이션 0063 ·
+DB 실시간 동기화 RT-1조각 · F-05-16 · F-05-06 / 마이그레이션 0153⟩
 
 조건 2(post-image)를 **0단계에서 유예한다.** 0단계의 `ds` 채널은 봉투가 `changed` **한 종류**다 — 무엇이 바뀌었는지 싣지 않고 받는
 화면이 뷰 질의로 다시 읽는다. 근거:
@@ -7586,12 +7627,14 @@ gap 감지 축은 `data_source.change_seq`(단조 증가)이며, 재동기는 `W
   때만 다시 그린다 — 16 F-16-12 *"페이로드는 version 만 보내고 클라이언트가 재조회"* 와 같은 모양이다. 채널을 나누는 것은 1단계(봉투가
   무엇이 바뀌었나를 실을 때)와 함께다.
 - **구독이 붙기 전의 틈** ⟨#250⟩ — 화면은 서버 렌더로 읽은 **뒤에** SSE 를 연다. 그 사이의 신호는 이미 지나갔다(Postgres 는 신호를 쌓아
-  두지 않는다). 0단계는 `change_seq` 없이 메운다: 서버 렌더가 **읽기 전의 시각**(`since`)을 화면에 주고, 화면은 그것을 들고 구독한다.
+  두지 않는다). 0단계는 `change_seq` 없이 메웠다: 서버 렌더가 **읽기 전의 시각**(`since`)을 화면에 주고, 화면은 그것을 들고 구독한다.
   서버의 신호 허브는 표마다 마지막 신호를 받은 시각과 **듣기 시작한 시각**(LISTEN 이 걸린 때 — 다시 붙으면 새로)을 기억하고, `ready`
   바로 뒤에 `since` 이후 그 표가 바뀌었으면 — 또는 그 시각에 듣고 있지 않았으면(모르면 바뀐 것으로 친다) — `changed` 를 보낸다. 거짓
   양성(이미 읽은 것을 한 번 더 읽음)은 허용한다. `change_seq` 를 쓰기마다 올리면 한 표의 모든 쓰기가 `data_source` 한 행의 잠금에 줄을
-  선다 — gap 감지 축은 1단계(post-image)에서 다시 본다. 시각은 서버 프로세스의 시계 하나다(인스턴스가 여럿이면 그 사이의 시계 차만큼
-  틈이 남는다 — 그때도 1단계의 `change_seq` 가 답이다).
+  선다. 시각은 서버 프로세스의 시계 하나다(인스턴스가 여럿이면 그 사이의 시계 차만큼 틈이 남는다). **[RT-1] 1단계가 이 판정을 변경 기록으로
+  바꿨다** — 서버 렌더가 읽기 전에 **커서**도 받아 화면에 주고(`RenderedChangeCursor`), 화면은 `?after=` 로 들고 구독한다. 서버는 구독을
+  붙인 **뒤에** "커서 뒤로 이 표에 커밋된 기록이 있는가"를 DB 에 묻는다(`changedSinceCursor` — 지운 자리 아래 · 지평보다 앞선 커서는 "모른다
+  = 바뀌었다"). DB 의 xid 하나로 판정하므로 서버가 여럿이어도 · 다시 떠도 같은 답이다. 커서가 없는 옛 화면은 `since` 의 옛 판정 그대로다.
 - **화면이 뒤로 가기 캐시(bfcache)에 들면 구독을 닫고, 돌아오면 다시 열며 한 번 다시 읽는다** ⟨10n-7⟩ — 얼어 있는 화면의 SSE 가 열린 채
   남으면 화면을 몇 번 옮겨 다니는 사이 호스트당 연결 수(HTTP/1.1 은 6)를 다 차지해 새 화면의 요청이 서버에 닿지 못한다. 닫은 동안의
   신호는 지나갔으므로 돌아오면 다시 읽는다 — `since` 로 묻지 않는다(숨은 때를 브라우저의 시계로 재면 서버의 시계와 어긋나 놓칠 수 있다 ·
@@ -7600,8 +7643,53 @@ gap 감지 축은 `data_source.change_seq`(단조 증가)이며, 재동기는 `W
   저장이 커밋되기 전에 DB 를 읽은 결과가, 저장 응답(새 `version`)으로 이미 바뀐 화면의 행보다 늦게 온다. 화면은 행마다 `version` 을
   비교해 더 새 것을 지킨다(`mergeReloaded` — 셀 저장 응답의 "늦게 온 응답은 버린다" 와 같은 규칙 · 같은 `version` 이면 다시 읽은 것).
   `version` 은 행의 단조 증가 값이다(X-6). 이 규칙이 없으면 서버에는 새 값 · 칸에는 옛 값이 다음 신호까지 남는다(e2e 8c-3a 가 보았다).
-- **1단계(X-5 그대로)가 목표다**: `data_source.change_seq`(gap 감지) · 행의 post-image(`row_upsert` · `row_removed` — 행의 읽기 모델은 보는
-  사람과 무관하다) · 서버의 구독별 멤버십 판정. 0단계의 연결 · 권한 규칙은 그대로 두고 봉투만 바꾼다. 그때 이 [보강]을 지운다.
+- ~~**1단계(X-5 그대로)가 목표다**: `data_source.change_seq`(gap 감지) · 행의 post-image(`row_upsert` · `row_removed` — 행의 읽기 모델은 보는
+  사람과 무관하다) · 서버의 구독별 멤버십 판정. 0단계의 연결 · 권한 규칙은 그대로 두고 봉투만 바꾼다. 그때 이 [보강]을 지운다.~~
+  **[RT-1] 1단계의 서버에 닿았다 — 카운터가 아니라 변경 기록으로.** 화면의 합치기(RT-2)가 남았으므로 이 [보강]은 지우지 않는다.
+
+**1단계 — 변경 기록 · 커서 델타 (RT-1 · 서버)**
+
+- ① **카운터(`change_seq`) 대신 쌓기만 하는 기록이다** — `data_source_change`(§3.7). 카운터는 쓰기마다 `data_source` 한 행을 고쳐 한 표의
+  모든 쓰기를 그 행의 잠금에 **커밋까지** 줄 세운다(HANDOFF 3zn). 기록은 넣기만 한다 — 쓰기끼리 같은 행을 고치지 않고(FK 도 없다 ·
+  `data_source` 에 KEY SHARE 도 걸지 않는다), 겹침 버리기의 UNIQUE 열쇠에 xid 가 있어 다른 트랜잭션끼리 부딪치지 않는다. 새 행 잠금의
+  병목은 없다(검사: 한 표에 열린 쓰기가 있어도 다른 쓰기가 기다리지 않고 커밋한다). 대가는 쓰기의 행마다 넣기 한 번 — 재어 보니 한 행
+  문장 0.42 → 0.46ms(+~19µs) · 2,000행을 한 문장으로 고치면 행마다 +~13µs(트리거 함수 · 인덱스 둘). 셀 저장 한 번(여러 문장 + 커밋 —
+  수 ms)에는 1% 안팎이다. `data_source.change_seq` 열은 0013 에 남지만 쓰지 않는다(§3.5 [대체됨]).
+- ② **커서는 seq 가 아니라 xid 지평이다 — 정확성의 근거 전부.** identity(`seq`)의 차례는 커밋 차례가 아니다: A 가 seq 10 을 받고 열린 채
+  B 가 11 을 받아 커밋하면 "11 까지 읽었다"는 커서는 나중에 커밋되는 10 을 영영 건너뛴다. "xid 가 지평 아래인 기록만 주고 커서는 준 것의
+  가장 큰 seq" 로 고쳐도 모자란다 — C 가 xid 99 로 먼저 시작해 다른 것을 쓰고, A 가 xid 100 으로 seq 10 을 받고, C 가 seq 11 로 커밋하면
+  지평(100) 아래의 C(11)를 주고 커서가 11 이 되어 A(10)를 잃는다. 그래서 **커서 자체를 지평으로 둔다**: 읽는 문장의 스냅샷에서
+  H = `pg_snapshot_xmin(pg_current_snapshot())`(아직 도는 가장 오래된 xid)이면 ⓐ xid < H 인 트랜잭션은 모두 끝났다 — 커밋했으면 이
+  스냅샷에 보인다 ⓑ 앞으로 생길 기록의 xid 는 H 이상이다(도는 것은 H 이상 · 새것은 그보다 크다 · 기록의 xid 는 최상위 트랜잭션의 것
+  `pg_current_xact_id()`). 따라서 `after <= xid < H` 를 주고 다음 커서를 H 로 하면 두 읽기 사이에 **빠지는 기록도 두 번 오는 기록도 없다**.
+  H 는 시간에 따라 줄지 않는다. 지평 · 지운 자리 · 기록은 **한 문장**에서 읽는다(같은 스냅샷). 검사(`change-log.db.test.ts` ②)가 두 경우를
+  그대로 세운다 — (a) A 가 열린 동안 B 를 주지 않고(`behind`) 커서가 A 를 넘지 않으며 A 가 끝나면 둘 다 (b) C 만 주고 A 가 끝나면 A 를 준다.
+- ③ **대가 — 오래 열린 쓰기 트랜잭션이 지평을 붙잡는다.** 그 뒤에 커밋된 기록은 그것이 끝날 때까지 델타에 나오지 않는다. 응답의
+  `behind`(지평 이상의 기록이 이미 커밋돼 있다)가 "곧 다시 물어라"를 알린다. 읽기 전용 트랜잭션은 xid 가 없어 지평을 붙잡지 않는다.
+- ④ **커서의 뜻** — "이 커서를 받은 **뒤에** 시작한 읽기는 커서 아래의 모든 변경을 본다". 그래서 처음부터 다시 읽는 화면은 다시 읽기
+  **전에** 받은 커서(`ready` · `changed` · reset 응답의 것)부터 이어 물으면 된다 — 그 사이의 것은 두 번 올 수 있고, 행은 post-image 라 두 번
+  받아도 같다(화면은 `version` 으로 더 새 것을 지킨다 · #468). 커서는 `c1.<xid>` — 화면은 열어 보지 않는다.
+- ⑤ **델타** — `GET …/data-sources/[id]/changes/delta?after=<커서>&view=<뷰>&q=<뷰 검색어>`(따로 둔 JSON 주소 — SSE 연결은 신호만 싣는다).
+  C-11 이 폐기한 레코드 단위 pull(`syncRecordValues`)이 아니다 — 표 하나 · 커서 하나의 요청이고, Yjs 의 state vector 교환(커서를 보내면
+  그 뒤의 것만)과 같은 모양이다. 멤버십은 보는 사람마다 다르므로(개인 필터 2h-1 · 행 권한) 묻는 사람의 눈으로 서버가 판정한다.
+  권한은 변경 알림과 같다(표를 열 수 있다 — "만들기만" 포함 · 아니면 404) + 그 표의 뷰를 열 수 있다. 기록은 "어느 행이 바뀌었나"만 주고
+  값 · 멤버십은 **지금의 것을 서버의 질의로** 다시 읽는다(기록 줄의 순서에 기대지 않는다): 살아 있고 볼 수 있는 행은 `row_upsert` + 표의
+  다시 읽기와 같은 모양(`rowJson`) + `inView`(그 뷰의 필터 · 검색어 · 하위 항목 범위에 서는가 — 행 질의를 `id = ANY(바뀐 행)` 으로 좁혀
+  부른다 · `rowsStandingInView` · 필터 평가기를 두 벌 만들지 않는다 — 위 ①). 이 표에서 빠진 행(휴지통 · 옮김)은 **볼 수 있는 것만**
+  `{ id, kind: 'row_delete', inView: false }` — 술어는 행 질의의 것(`restrictedRowsSql`). 볼 수 없는 행 · 블록이 없어진 행(완전 삭제 — 휴지통을
+  거친 뒤라 화면은 이미 뺐다)은 **id 도 싣지 않는다**. 템플릿은 어느 쪽에도 없다(R1). 그 밖에 `schemaChanged`(속성 · 옵션) ·
+  `viewChanged`(이 뷰) · `orderChanged`(이 뷰의 손으로 둔 순서).
+- ⑥ **reset — 처음부터 다시 읽어라** (F-05-06 *"보존기간 초과 시 snapshot · 델타가 수천 op → snapshot"*): 커서가 없다 · 모양이 틀리다 ·
+  지평보다 앞선다(이 DB 가 준 것이 아니다 — 볼륨을 다시 만들었다) · 지운 자리(`data_source_change_floor`) 이하다(24시간 창 밖) · 바뀐 행이
+  100(행 질의 한 번의 상한)을 넘는다 · 훑은 기록 줄이 2,000 을 넘는다. reset 도 이어 물을 커서를 준다(④).
+- ⑦ **보관 — 24시간.** 보관 정리(`data_retention` ⑫ · 한 시간마다)가 지운다. 창이 길수록 기록 표가 크고, 짧을수록 탭을 오래 숨겼다
+  돌아온 화면이 reset 을 받는다. 하루 안에 돌아온 화면은 델타를 받는다. bfcache 에서 돌아온 화면 · 끊겼다 다시 붙은 구독은 지금처럼
+  다시 읽는다(화면의 합치기 RT-2 가 커서를 들고 다니게 되면 델타로 바뀐다).
+- ⑧ **신호는 커서를 싣는다** — SSE 의 `ready` · `changed` 가 `{ dataSourceId, cursor }`(0단계의 봉투 그대로 + 커서 · 옛 화면은 커서를 보지
+  않는다). `changed` 의 커서는 최근 것을 나눠 쓴다(구독 수만큼 질의하지 않게 · 250ms — 오래된 커서도 ④ 의 뜻으로 안전하다). `changed` 는
+  `ready` 보다 먼저 가지 않는다.
+- ⑨ **남은 것(RT-2)** — 화면이 `changed` 를 받으면 델타를 물어 행을 갈아 끼우고(`inView` 가 거짓이면 빼되 내가 고친 행은 남기는
+  `mergeReloaded` 의 규칙), reset · `schemaChanged` · `viewChanged` 면 지금처럼 다시 읽는다. 그때 조건 2(적용 가능한 값)가 화면까지 선다.
 
 ---
 

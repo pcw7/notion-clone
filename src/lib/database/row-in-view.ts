@@ -15,7 +15,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { query } from '../db/pool.ts'
 import { queryRows } from './query.ts'
 import { normalizeSearch } from './search.ts'
-import { getView } from './view.ts'
+import { getView, type ViewDetail } from './view.ts'
 import { nestsSubItems, subItemPairOf } from './view-columns.ts'
 
 /** 이 사람이 보는 그 뷰에 그 행이 서는가. 판정할 수 없으면 null(뷰를 볼 수 없다 · 다른 data source 의 뷰다). */
@@ -32,16 +32,32 @@ export async function rowStandsInView(
   // 그 뷰가 보는 data source 의 행인가 — 아니면 "서지 않는다" 가 아니라 물을 수 없는 것이다
   const owner = await query<{ data_source_id: string }>(`SELECT data_source_id FROM page WHERE id = $1`, [rowId])
   if (owner[0]?.data_source_id !== view.value.dataSourceId) return null
+  const standing = await rowsStandingInView(ctx, view.value, [rowId], rawSearch, today)
+  return standing === null ? null : standing.has(rowId)
+}
+
+/**
+ * 이 행들 가운데 이 사람이 보는 그 뷰에 서는 것 — 위의 판정을 여러 행에 한 번의 질의로(표의 델타 RT-1 · `row-delta.ts` 의 `inView`).
+ * 뷰는 부르는 쪽이 이미 열었다(권한 · 대시보드가 아님). 행은 `MAX_QUERY_LIMIT` 개까지. 판정할 수 없으면 null.
+ */
+export async function rowsStandingInView(
+  ctx: SessionContext,
+  view: ViewDetail,
+  rowIds: readonly string[],
+  rawSearch: unknown = null,
+  today: string | null = null,
+): Promise<ReadonlySet<string> | null> {
+  if (rowIds.length === 0) return new Set()
   // 하위 항목이 켜진 표 · 목록 — 트리면 표시 범위의 맞춤(P-1), 평평한 목록이면 포함(P-3)
-  const pair = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
-  const scope = pair === null ? null : { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope }
-  const page = await queryRows(ctx, view.value.dataSourceId, {
-    filter: view.value.effectiveFilter,
+  const pair = nestsSubItems(view.type) ? subItemPairOf(view.columns) : null
+  const scope = pair === null ? null : { parentPropertyId: pair.parentPropertyId, scope: view.subItemFilterScope }
+  const page = await queryRows(ctx, view.dataSourceId, {
+    filter: view.effectiveFilter,
     search: normalizeSearch(rawSearch),
-    ...(scope === null ? {} : view.value.subItemDisplay === 'flattened' ? { flatScope: scope } : { treeScope: scope }),
-    onlyRowIds: [rowId],
-    limit: 1,
+    ...(scope === null ? {} : view.subItemDisplay === 'flattened' ? { flatScope: scope } : { treeScope: scope }),
+    onlyRowIds: rowIds,
+    limit: rowIds.length,
     today,
   })
-  return page.ok ? page.value.rows.length > 0 : null
+  return page.ok ? new Set(page.value.rows.map((r) => r.id)) : null
 }

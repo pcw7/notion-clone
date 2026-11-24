@@ -91,6 +91,8 @@ const EXPECTED_TABLES = [
   'api_file_upload',
   // 공개 API 의 웹훅 구독 · 아웃박스 API-8 (0151)
   'api_webhook_subscription', 'api_webhook_event',
+  // 표의 변경 기록 RT-1 (0153)
+  'data_source_change', 'data_source_change_floor',
   // AI 1차 기반 AI-1 (0146)
   'workspace_ai_setting', 'ai_usage', 'ai_grant', 'ai_daily_usage',
   // AI 채팅 · 내 AI 지시 AI-6 (0148)
@@ -6516,6 +6518,79 @@ try {
     if (['version_gc', 'automation_webhook', 'verification_expire', 'api_webhook_deliver'].every((k) => kindDef.includes(`'${k}'`))) ok('앞의 일의 종류도 그대로 있다')
     else fail(`일의 종류가 어긋났다: ${kindDef}`)
     await rejectsBy('★ 모르는 일의 종류(0151 뒤에도)', putJob, [randomUUID(), 'api_webhook_explode', null], 'ck_scheduled_job_kind')
+  }
+
+  console.log('\n[101] 표의 변경 기록 — 종류 · 행 · 뷰의 짝 · 한 트랜잭션에 한 줄 · 쌓기만 · 트리거 (0153 / §3.7 [보강] X-5 의 단계 — 1단계 · RT-1조각)')
+  {
+    const probe = async (label, sql, params, expect) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        const got = e.constraint ?? e.code
+        if (got === expect) ok(`${label} — ${expect} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${expect} 가 아니라 ${got} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const put = `INSERT INTO data_source_change (data_source_id, kind, row_id, view_id) VALUES ($1, $2, $3, $4)`
+    const ds = randomUUID()
+    const row = randomUUID()
+    const view = randomUUID()
+    for (const [kind, r, v] of [
+      ['row_upsert', row, null], ['row_delete', row, null], ['position', row, view], ['reminder', row, null],
+      ['schema', null, null], ['view', null, view], ['layout', null, null],
+    ]) {
+      await client.query(put, [ds, kind, r, v])
+    }
+    ok('data_source_change 정상 삽입 — 일곱 종류(행 넷 · 구조 · 뷰 · 레이아웃) · 표 · 행 · 뷰에 FK 가 없다(지운 것도 알린다)')
+    await probe('★ 모르는 종류', put, [ds, 'row_exploded', row, null], 'ck_data_source_change_kind')
+    await probe('★ 행의 종류인데 행이 없다', put, [ds, 'row_upsert', null, null], 'ck_data_source_change_row')
+    await probe('구조의 종류인데 행이 있다', put, [ds, 'schema', randomUUID(), null], 'ck_data_source_change_row')
+    await probe('★ 보드 순서인데 뷰가 없다', put, [ds, 'position', randomUUID(), null], 'ck_data_source_change_view')
+    await probe('뷰의 종류인데 뷰가 없다', put, [ds, 'view', null, null], 'ck_data_source_change_view')
+    await probe('행의 종류인데 뷰가 있다', put, [ds, 'row_upsert', randomUUID(), view], 'ck_data_source_change_view')
+    await probe('★ 한 트랜잭션 · 같은 표 · 같은 종류 · 같은 행은 한 줄(겹침을 버리지 않고 넣으면)', put, [ds, 'row_upsert', row, null], 'ux_data_source_change_once')
+    await probe('★ 행이 없는 종류도 한 줄(NULLS NOT DISTINCT)', put, [ds, 'schema', null, null], 'ux_data_source_change_once')
+    await probe('★ 기록을 고친다(쌓기만)', `UPDATE data_source_change SET view_id = view_id WHERE data_source_id = $1`, [ds], '23001')
+    await probe('seq 를 손으로 준다(GENERATED ALWAYS)', `INSERT INTO data_source_change (seq, data_source_id, kind) VALUES (1, $1, 'schema')`, [randomUUID()], '428C9')
+    const def = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_data_source_change_once'`)).rows[0]?.indexdef ?? ''
+    if (/UNIQUE INDEX .*\(data_source_id, xid, kind, row_id, view_id\) NULLS NOT DISTINCT/.test(def)) ok('ux_data_source_change_once — 읽기(표 · xid 범위)와 한 트랜잭션의 겹침 버리기')
+    else fail(`ux_data_source_change_once 가 틀렸다 — ${def || '없다'}`)
+    const xid = (await client.query(`SELECT DISTINCT xid = pg_current_xact_id() AS mine FROM data_source_change WHERE data_source_id = $1`, [ds])).rows
+    if (xid.length === 1 && xid[0].mine === true) ok('★ xid 는 쓴 트랜잭션(최상위)의 것 — 커서의 축')
+    else fail(`xid 가 쓴 트랜잭션의 것이 아니다: ${JSON.stringify(xid)}`)
+
+    // 트리거가 실제로 쌓는다 — 3계층 + 행 + 속성 + 뷰(0063 · 0067 · 0109 의 트리거 · 0153 의 함수)
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const source = randomUUID()
+    const rowId = randomUUID()
+    const blockSql = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, 'zrt1', $6, $7, '{}'::jsonb, '{}'::jsonb, now(), now())` // 앞 절의 형제와 겹치지 않는 자리
+    await client.query(blockSql, [root, wsId, 'page', 'workspace', wsId, [], root])
+    await client.query(blockSql, [dbBlock, wsId, 'database', 'block', root, [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '기록 프로브', now(), now())`, [source, dbBlock])
+    await client.query(blockSql, [rowId, wsId, 'page', 'data_source', source, [root, dbBlock], dbBlock])
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowId, source])
+    await client.query(`UPDATE page SET properties_cache = '{}'::jsonb WHERE id = $1`, [rowId]) // 같은 트랜잭션의 같은 행 — 한 줄
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at) VALUES ($1, $2, '수량', 'number', 'b0', now(), now())`,
+      ['r'.padEnd(21, '1'), source], // nanoid(21) 자리 흉내
+    )
+    await client.query(`UPDATE block SET lifecycle = 'trashed', trashed_at = now(), trash_root_id = id WHERE id = $1`, [rowId])
+    const kinds = (await client.query(`SELECT kind, row_id FROM data_source_change WHERE data_source_id = $1 ORDER BY seq`, [source])).rows
+    const want = [['row_upsert', rowId], ['schema', null], ['row_delete', rowId]]
+    if (JSON.stringify(kinds.map((k) => [k.kind, k.row_id])) === JSON.stringify(want)) ok('★ 트리거 — 행 넣기 · 고치기(한 줄) · 속성 · 휴지통이 맞는 종류로 쌓인다')
+    else fail(`트리거가 쌓은 것이 틀렸다: ${JSON.stringify(kinds)}`)
+
+    // 지운 자리 — 표마다 하나
+    await client.query(`INSERT INTO data_source_change_floor (data_source_id, purged_through) VALUES ($1, '100')`, [source])
+    ok('data_source_change_floor 정상 삽입')
+    await probe('★ 표마다 지운 자리는 하나', `INSERT INTO data_source_change_floor (data_source_id, purged_through) VALUES ($1, '200')`, [source], 'pk_data_source_change_floor')
   }
 
   await client.query('ROLLBACK')

@@ -8,9 +8,16 @@
  * 읽는 길이 권한 · 필터를 본다). 그래서 이 연결로는 볼 수 없는 것이 새지 않는다 — 새는 것은 "그 표가 바뀌었다"는 사실 하나이고, 그것도
  * 그 표를 볼 수 있는 사람에게만 간다.
  *
- *   event: ready     구독했다 — 주소에 `?since=`(화면이 서버에서 읽기 전의 시각 · ms)가 있고 그 뒤에 이 표가 바뀌었으면 곧바로 `changed`
- *                    가 따른다(구독이 붙기 전의 틈 · #250 — `rowsChangedSince`)
- *   event: changed   그 표의 행 · 속성 · 뷰가 바뀌었다(250ms 모아서 한 번 — 일괄 편집이 신호를 여러 번 보내도 한 번 다시 읽는다)
+ *   event: ready     구독했다 — `{ dataSourceId, cursor }`. 화면이 서버에서 읽은 뒤 이 구독이 붙기 전에 이 표가 바뀌었으면 곧바로
+ *                    `changed` 가 따른다(구독이 붙기 전의 틈 · #250). 판정은 주소의 `?after=`(서버 화면이 읽기 전에 받은 커서 · RT-1)가
+ *                    있으면 변경 기록으로(`changedSinceCursor` — DB 의 xid 하나라 서버가 여럿이어도 · 다시 떠도 같다), 없으면 옛 길
+ *                    `?since=`(읽기 전의 시각 ms · 이 프로세스의 기억 — `rowsChangedSince`)
+ *   event: changed   그 표의 행 · 속성 · 뷰가 바뀌었다(250ms 모아서 한 번 — 일괄 편집이 신호를 여러 번 보내도 한 번 다시 읽는다) —
+ *                    `{ dataSourceId, cursor }`
+ *
+ *   cursor           변경 기록의 커서(정본 §3.7 [보강] X-5 의 단계 — 1단계 · RT-1). 뜻: "이것을 받은 **뒤에** 시작한 읽기는 이 커서 아래의
+ *                    변경을 모두 본다". 처음부터 다시 읽는 화면(옛 화면 · reset)은 다시 읽기 전에 받은 커서부터 델타(`…/changes/delta`)를
+ *                    이어 물으면 된다. 커서를 얻지 못하면(DB 가 잠깐 없다) 싣지 않는다 — 신호는 그대로 간다
  *   event: revoked   더 볼 수 없다 — 닫는다(다시 붙지 마라)
  *   event: reconnect 세션이 바뀌었다 — 닫는다(다시 붙으면 다시 확인한다)
  *   : ping           25초마다 — 중간 장치가 조용한 연결을 끊지 않게
@@ -24,6 +31,7 @@ import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { withReadTransaction } from '@/lib/db/tx'
 import { rowsAccessForDataSource } from '@/lib/database/row-access'
 import { rowsChangedSince, subscribeRows } from '@/lib/database/row-feed'
+import { changedSinceCursor, currentChangeCursor, decodeChangeCursor, recentChangeCursor } from '@/lib/database/change-log'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/changes'>
 
@@ -37,6 +45,9 @@ function sinceOf(request: Request): number | null {
   return raw !== null && /^\d{1,16}$/.test(raw) ? Number(raw) : null
 }
 
+/** 커서를 얻지 못하면 싣지 않는다 — 신호가 커서보다 중요하다(머리말). */
+const cursorOrNull = (cursor: Promise<string>): Promise<string | null> => cursor.catch(() => null)
+
 export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, dataSourceId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
@@ -44,6 +55,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   if (!isUuid(dataSourceId)) return Response.json({ error: 'not_found' }, { status: 404 })
   const sessionCtx = session.ctx
   const since = sinceOf(request)
+  const after = decodeChangeCursor(new URL(request.url).searchParams.get('after'))
   const canView = () => withReadTransaction(async (tx) => (await rowsAccessForDataSource(tx, sessionCtx, dataSourceId)) !== null)
   if (!(await canView())) return Response.json({ error: 'not_found' }, { status: 404 })
 
@@ -55,6 +67,9 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       let closed = false
       let coalesce: ReturnType<typeof setTimeout> | null = null
       let unsubscribe: (() => void) | null = null
+      // `ready` 를 보낸 뒤에 열린다 — 구독이 붙은 뒤 `ready` 를 보내기까지(틈 판정 · 커서) 온 신호의 `changed` 가 앞지르지 않게
+      let openReadyGate: () => void = () => undefined
+      const readyGate = new Promise<void>((resolve) => (openReadyGate = resolve))
       const write = (chunk: string) => {
         if (closed) return
         try {
@@ -89,7 +104,10 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
             if (coalesce !== null) return
             coalesce = setTimeout(() => {
               coalesce = null
-              send('changed', { dataSourceId })
+              // 커서는 지금의 것(최근 것을 나눠 쓴다 — 오래된 커서도 안전하다 · `recentChangeCursor`). `ready` 보다 먼저 가지 않는다
+              void Promise.all([readyGate, cursorOrNull(recentChangeCursor())]).then(([, cursor]) =>
+                send('changed', { dataSourceId, ...(cursor === null ? {} : { cursor }) }),
+              )
             }, COALESCE_MS)
           },
           onAccess() {
@@ -120,9 +138,19 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
         unsubscribe()
         return
       }
-      send('ready', { dataSourceId })
-      // 화면이 읽은 뒤 · 이 구독이 붙기 전에 바뀌었으면 곧바로 다시 읽게 한다(머리말) — 붙은 뒤의 신호는 위의 구독이 받는다
-      if (since !== null && rowsChangedSince(dataSourceId, since)) send('changed', { dataSourceId })
+      // 화면이 읽은 뒤 · 이 구독이 붙기 전에 바뀌었나(머리말) — 구독을 붙인 **뒤에** 묻는다(그 뒤의 커밋은 위의 구독이 신호로 받는다).
+      // 커서가 있으면 변경 기록으로, 없으면 옛 길(이 프로세스의 기억). 기록을 묻지 못하면 바뀐 것으로 친다(거짓 양성은 허용한다)
+      const [missed, cursor] = await Promise.all([
+        after !== null
+          ? changedSinceCursor(dataSourceId, after).catch(() => true)
+          : Promise.resolve(since !== null && rowsChangedSince(dataSourceId, since)),
+        cursorOrNull(currentChangeCursor()),
+      ])
+      if (closed) return
+      const withCursor = cursor === null ? {} : { cursor }
+      send('ready', { dataSourceId, ...withCursor })
+      if (missed) send('changed', { dataSourceId, ...withCursor })
+      openReadyGate()
     },
     cancel() {
       stop()

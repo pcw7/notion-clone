@@ -21,6 +21,8 @@
  *   ⑩ 끝난 공개 API 웹훅 이벤트 — 끝난 지 `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(API-8 · 정본 [보강 API-1] ⑫ — 페이지 웹훅과 같은 날)
  *   ⑪ 멈춘 공개 API 웹훅 구독 — 토큰이 폐기 · 만료된 지 `API_WEBHOOK_STOPPED_DAYS` 일이 지나면 구독째 지운다(API-10 · 정본 ⑭ ③ — 남은
  *      이벤트는 FK CASCADE · 그때까지 화면은 "꺼짐 · 토큰 폐기" · "멈춤 · 토큰 만료" 를 보인다 · 토큰 행은 지우지 않는다)
+ *   ⑫ 표의 변경 기록 — `CHANGE_LOG_WINDOW_MS`(24시간)가 지난 줄을 지우고 표마다 지운 자리(xid)를 남긴다(RT-1 · 정본 §3.7 [보강] X-5 의
+ *      단계 — 1단계 · `change-log.ts` · 그 아래의 커서는 델타 대신 reset)
  *
  * 감사 기록(`audit_event`)은 지우지 않는다(F-11-12). 기간은 코드 상수다 — 관리자 화면은 없다(노션에도 없다).
  */
@@ -28,6 +30,7 @@
 import { query } from '../db/pool.ts'
 import { AUDIT_RETENTION_DAYS } from '../audit/audit.ts'
 import { API_WEBHOOK_STOPPED_DAYS } from '../api/token-format.ts'
+import { collectChangeLog } from '../database/change-log.ts'
 
 /** 읽었거나 보관한 알림을 남기는 날(그 뒤). */
 export const PROCESSED_NOTIFICATION_DAYS = 180
@@ -60,6 +63,8 @@ export type RetentionResult = {
   readonly auditEvents: number
   readonly apiWebhookEvents: number
   readonly apiWebhookSubscriptions: number
+  /** 지운 표의 변경 기록 줄(⑫). */
+  readonly changeLog: number
   /** 그 해마다 파티션이 어떻게 됐나 — `created` · `exists` · `blocked`. */
   readonly partitions: Readonly<Record<number, string>>
   /** 한 종류라도 한 판이 꽉 찼다 — 더 남았을 수 있다. */
@@ -226,6 +231,18 @@ export async function runDataRetention(
     [new Date(now.getTime() - API_WEBHOOK_STOPPED_DAYS * DAY), batch, ws],
   )
 
+  // ⑫ 표의 변경 기록 — 워크스페이스를 주면 그 워크스페이스가 가진 표의 것만
+  const changeSources =
+    ws === null
+      ? null
+      : (
+          await query<{ id: string }>(
+            `SELECT ds.id FROM data_source ds JOIN block b ON b.id = ds.owner_database_id WHERE b.workspace_id = ANY($1::uuid[])`,
+            [ws],
+          )
+        ).map((r) => r.id)
+  const changeLog = await collectChangeLog(now, { batch, dataSources: changeSources })
+
   // ⑤ 파티션 — 올해 · 다음 해(UTC). 검사는 끈다(위 `options.partitions`)
   const partitions: Record<number, string> = {}
   if (options.partitions !== false) {
@@ -245,6 +262,7 @@ export async function runDataRetention(
     auditEvents.length,
     apiWebhookEvents.length,
     apiWebhookSubscriptions.length,
+    changeLog,
   ]
   return {
     processedNotifications: processed.length,
@@ -257,6 +275,7 @@ export async function runDataRetention(
     auditEvents: auditEvents.length,
     apiWebhookEvents: apiWebhookEvents.length,
     apiWebhookSubscriptions: apiWebhookSubscriptions.length,
+    changeLog,
     partitions,
     more: counts.some((n) => n === batch),
   }
