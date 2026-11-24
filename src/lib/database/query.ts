@@ -45,6 +45,7 @@ import {
   propertyIdsIn,
   withRowTimestamps,
   ParamBag,
+  type CompiledSort,
   type FilterNode,
   type PropertyTypes,
   type SortKey,
@@ -209,89 +210,10 @@ export async function queryRows(
   await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(input.filter ?? null, sorts))
 
   return withReadTransaction(async (tx) => {
-    // ── ① 권한. 필터보다 먼저다 ──
-    const ds = await tx.queryMaybe<{ container_id: string }>(
-      `SELECT ds.owner_database_id AS container_id
-         FROM data_source ds
-         JOIN block b ON b.id = ds.owner_database_id
-        WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
-      [dataSourceId, ctx.workspaceId],
-    )
-    if (ds === null) return { ok: false, reason: 'not_found' } as const
-    // 못 보는 사람에게는 존재를 알리지 않는다. "만들기만" 이면 자기가 열 수 있는 행만(6f-2b-1).
-    const access = await rowsAccessIn(tx, ctx, await effectiveCaps(tx, ctx, ds.container_id))
-    if (access === null) return { ok: false, reason: 'not_found' } as const
-
-    // 행 자신의 시각(API-4 — 노션의 `timestamp` 필터 · 정렬)도 같은 길로
-    const types = withRowTimestamps(await readPropertyTypes(tx, dataSourceId))
-
-    // ── ② 컴파일. `$1` 은 dataSourceId 가 쓰므로 2번부터 발급한다 ──
-    const params = new ParamBag(2)
-    const accessSql = restrictedRowsSql(access, params)
-    // "나"(6g-2c)는 이 세션의 사람이다
-    const filterSql = compileFilter(input.filter ?? null, types, params, { me: ctx.userId, today: todayOrUtc(input.today) })
-    const sorted = compileSorts(sorts, types, params)
-    // 살아 있는 정렬이 없으면 이 뷰의 수동 순서(10n-59) — 지워진 속성의 정렬 키는 `compileSorts` 가 이미 뺐다
-    const compiledSort =
-      sorted.keys.length === 0 && input.manualOrderViewId !== undefined ? compileManualOrder(params.bind(input.manualOrderViewId)) : sorted
-
-    // 커서는 정렬 키 값 + order_key 를 담는다. 정렬 구성이 바뀌면 길이가 달라져
-    // `compileCursor` 가 `null` 을 주고, 그때는 처음부터 읽는다 —
-    // 손상된 커서를 던지지 않는 `pagination.ts` 의 태도와 같다.
-    const cursorValues = decodeCursorValues(input.cursor)
-    const cursorSql =
-      cursorValues === null ? null : compileCursor(compiledSort, cursorValues, params)
-
-    const treeSql = input.tree === undefined ? null : compileTree(input.tree, params)
-    // relation 의 제목(V-2)은 보는 사람이 읽을 수 있는 대상만 — 검색어가 있을 때만 범위를 묻는다
-    const searchSql =
-      input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params, await readableScopes(tx, ctx))
-    const onlySql = input.onlyRowIds === undefined ? null : `p.id = ANY(${params.bind([...input.onlyRowIds])}::uuid[])`
-
-    // 행의 바탕 — 같은 표 · 템플릿 아님 · 살아 있음 · 권한
-    const base = [
-      'p.data_source_id = $1',
-      'p.is_template = false', // 불변식 R1
-      input.trashed === true ? "b.lifecycle = 'trashed'" : "b.lifecycle = 'live'",
-      accessSql, // 권한이 필터보다 먼저다(F-03-17)
-    ].filter((s): s is string => s !== null)
-
-    // 하위 항목 트리의 맞춤(H-1 · P-1) — 범위가 필터를 거는 층을 정한다: 문(gate — 설 수 있는가)과 맞음(match — 결과인가). 맞음이 있으면
-    // 맞은 행(sx_hit)과 그 위로 설 수 있는 조상(sx_up)을 먼저 모으고, 층의 질의는 둘 중 하나에 든 행을 고르며 어느 쪽인지 싣는다.
-    // 맞춤 밖이면 예전 그대로 — 필터 · 검색어를 모든 행에.
-    const scoped = input.treeScope === undefined ? null : compileTreeScope(input.treeScope, filterSql, searchSql, params)
-    const visible = scoped === null ? [...base, ...(filterSql === null ? [] : [filterSql])] : [...base, ...(scoped.gate === null ? [] : [scoped.gate])]
-    const matchSql = scoped === null ? null : scoped.match
-    const withSql =
-      scoped === null || matchSql === null
-        ? ''
-        : `WITH RECURSIVE sx_hit AS (
-             SELECT p.id FROM page p JOIN block b ON b.id = p.id WHERE ${[...visible, matchSql].join(' AND ')}
-           ), sx_up AS (
-             SELECT p.id FROM sx_hit sh
-               JOIN relation_edge se ON se.from_page_id = sh.id AND se.property_id = ${scoped.parent}
-               JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
-              WHERE ${visible.join(' AND ')}
-             UNION
-             SELECT p.id FROM sx_up su
-               JOIN relation_edge se ON se.from_page_id = su.id AND se.property_id = ${scoped.parent}
-               JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
-              WHERE ${visible.join(' AND ')}
-           ) `
-    const hitColumns =
-      withSql === '' ? '' : ', p.id IN (SELECT id FROM sx_hit) AS tree_matched, p.id IN (SELECT id FROM sx_up) AS tree_below'
-
-    // 평평한 목록의 포함(P-3) — 범위의 층에 든 행만
-    const flatSql = input.flatScope === undefined ? null : levelSql(input.flatScope, params)
-
-    const where = [
-      ...visible,
-      scoped === null ? searchSql : withSql === '' ? null : '(p.id IN (SELECT id FROM sx_hit) OR p.id IN (SELECT id FROM sx_up))',
-      treeSql,
-      flatSql,
-      onlySql,
-      cursorSql,
-    ].filter((s): s is string => s !== null)
+    const compiled = await compileRowsQuery(tx, ctx, dataSourceId, { ...input, sorts })
+    if (compiled === null) return { ok: false, reason: 'not_found' } as const
+    const { params, compiledSort, withSql, hitColumns, cursorSql } = compiled
+    const where = cursorSql === null ? compiled.where : [...compiled.where, cursorSql]
 
     // 정렬 값을 함께 꺼낸다 — 다음 커서를 만들려면 마지막 행의 정렬 값이 필요하고,
     // 애플리케이션이 다시 계산할 수 없다(EAV 의 값이기 때문이다).
@@ -334,6 +256,154 @@ export async function queryRows(
         complete: true,
       },
     } as const
+  })
+}
+
+/** 행 질의의 컴파일 결과 — 행 읽기(`queryRows`)와 이웃 묻기(`queryRowNeighbors`)가 같은 것을 쓴다(정렬 · 필터를 두 벌 두지 않는다). */
+type CompiledRowsQuery = {
+  readonly params: ParamBag
+  readonly compiledSort: CompiledSort
+  readonly withSql: string
+  readonly hitColumns: string
+  /** 커서를 뺀 술어 전부(`page p` · `block b` 를 전제한다). */
+  readonly where: readonly string[]
+  /** "이 행은 커서보다 뒤다" — 커서가 없거나 이 정렬에 맞지 않으면(길이가 다르다 · 손상) null. */
+  readonly cursorSql: string | null
+}
+
+/** 권한 · 컴파일(`queryRows` 의 ① ②). 표를 볼 수 없으면 null. `$1` 은 dataSourceId 다. */
+async function compileRowsQuery(tx: Tx, ctx: SessionContext, dataSourceId: string, input: QueryRowsInput): Promise<CompiledRowsQuery | null> {
+  // ── ① 권한. 필터보다 먼저다 ──
+  const ds = await tx.queryMaybe<{ container_id: string }>(
+    `SELECT ds.owner_database_id AS container_id
+       FROM data_source ds
+       JOIN block b ON b.id = ds.owner_database_id
+      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
+    [dataSourceId, ctx.workspaceId],
+  )
+  if (ds === null) return null
+  // 못 보는 사람에게는 존재를 알리지 않는다. "만들기만" 이면 자기가 열 수 있는 행만(6f-2b-1).
+  const access = await rowsAccessIn(tx, ctx, await effectiveCaps(tx, ctx, ds.container_id))
+  if (access === null) return null
+
+  // 행 자신의 시각(API-4 — 노션의 `timestamp` 필터 · 정렬)도 같은 길로
+  const types = withRowTimestamps(await readPropertyTypes(tx, dataSourceId))
+
+  // ── ② 컴파일. `$1` 은 dataSourceId 가 쓰므로 2번부터 발급한다 ──
+  const params = new ParamBag(2)
+  const accessSql = restrictedRowsSql(access, params)
+  // "나"(6g-2c)는 이 세션의 사람이다
+  const filterSql = compileFilter(input.filter ?? null, types, params, { me: ctx.userId, today: todayOrUtc(input.today) })
+  const sorted = compileSorts(input.sorts ?? [], types, params)
+  // 살아 있는 정렬이 없으면 이 뷰의 수동 순서(10n-59) — 지워진 속성의 정렬 키는 `compileSorts` 가 이미 뺐다
+  const compiledSort =
+    sorted.keys.length === 0 && input.manualOrderViewId !== undefined ? compileManualOrder(params.bind(input.manualOrderViewId)) : sorted
+
+  // 커서는 정렬 키 값 + order_key 를 담는다. 정렬 구성이 바뀌면 길이가 달라져
+  // `compileCursor` 가 `null` 을 주고, 그때는 처음부터 읽는다 —
+  // 손상된 커서를 던지지 않는 `pagination.ts` 의 태도와 같다.
+  const cursorValues = decodeCursorValues(input.cursor)
+  const cursorSql =
+    cursorValues === null ? null : compileCursor(compiledSort, cursorValues, params)
+
+  const treeSql = input.tree === undefined ? null : compileTree(input.tree, params)
+  // relation 의 제목(V-2)은 보는 사람이 읽을 수 있는 대상만 — 검색어가 있을 때만 범위를 묻는다
+  const searchSql =
+    input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params, await readableScopes(tx, ctx))
+  const onlySql = input.onlyRowIds === undefined ? null : `p.id = ANY(${params.bind([...input.onlyRowIds])}::uuid[])`
+
+  // 행의 바탕 — 같은 표 · 템플릿 아님 · 살아 있음 · 권한
+  const base = [
+    'p.data_source_id = $1',
+    'p.is_template = false', // 불변식 R1
+    input.trashed === true ? "b.lifecycle = 'trashed'" : "b.lifecycle = 'live'",
+    accessSql, // 권한이 필터보다 먼저다(F-03-17)
+  ].filter((s): s is string => s !== null)
+
+  // 하위 항목 트리의 맞춤(H-1 · P-1) — 범위가 필터를 거는 층을 정한다: 문(gate — 설 수 있는가)과 맞음(match — 결과인가). 맞음이 있으면
+  // 맞은 행(sx_hit)과 그 위로 설 수 있는 조상(sx_up)을 먼저 모으고, 층의 질의는 둘 중 하나에 든 행을 고르며 어느 쪽인지 싣는다.
+  // 맞춤 밖이면 예전 그대로 — 필터 · 검색어를 모든 행에.
+  const scoped = input.treeScope === undefined ? null : compileTreeScope(input.treeScope, filterSql, searchSql, params)
+  const visible = scoped === null ? [...base, ...(filterSql === null ? [] : [filterSql])] : [...base, ...(scoped.gate === null ? [] : [scoped.gate])]
+  const matchSql = scoped === null ? null : scoped.match
+  const withSql =
+    scoped === null || matchSql === null
+      ? ''
+      : `WITH RECURSIVE sx_hit AS (
+           SELECT p.id FROM page p JOIN block b ON b.id = p.id WHERE ${[...visible, matchSql].join(' AND ')}
+         ), sx_up AS (
+           SELECT p.id FROM sx_hit sh
+             JOIN relation_edge se ON se.from_page_id = sh.id AND se.property_id = ${scoped.parent}
+             JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
+            WHERE ${visible.join(' AND ')}
+           UNION
+           SELECT p.id FROM sx_up su
+             JOIN relation_edge se ON se.from_page_id = su.id AND se.property_id = ${scoped.parent}
+             JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
+            WHERE ${visible.join(' AND ')}
+         ) `
+  const hitColumns =
+    withSql === '' ? '' : ', p.id IN (SELECT id FROM sx_hit) AS tree_matched, p.id IN (SELECT id FROM sx_up) AS tree_below'
+
+  // 평평한 목록의 포함(P-3) — 범위의 층에 든 행만
+  const flatSql = input.flatScope === undefined ? null : levelSql(input.flatScope, params)
+
+  const where = [
+    ...visible,
+    scoped === null ? searchSql : withSql === '' ? null : '(p.id IN (SELECT id FROM sx_hit) OR p.id IN (SELECT id FROM sx_up))',
+    treeSql,
+    flatSql,
+    onlySql,
+  ].filter((s): s is string => s !== null)
+
+  return { params, compiledSort, withSql, hitColumns, where, cursorSql }
+}
+
+/** 평평한 목록에서 한 행의 자리 — 바로 앞 · 바로 뒤 행(그 뷰의 차례 · 없으면 null)과 페이지 커서보다 뒤인가. */
+export type RowNeighbors = { readonly before: string | null; readonly after: string | null; readonly beyond: boolean }
+
+export type NeighborsResult =
+  | { readonly ok: true; readonly value: ReadonlyMap<string, RowNeighbors> }
+  | { readonly ok: false; readonly reason: QueryFailure | 'stale_page' }
+
+/**
+ * 이 행들의 이웃 — 행 읽기와 **같은** 필터 · 정렬 · 수동 순서 · 검색어 · 권한으로 줄 세운 평평한 목록에서 바로 앞 · 바로 뒤 행
+ * (화면의 바뀐 행만 합치기 RT-2 · `row-delta.ts`). 목록에 서지 않는 행은 결과에 없다.
+ *
+ * `pageCursor` 는 화면이 "더 보기"로 이어 읽을 커서(행 읽기의 `nextCursor`)다 — 주면 행마다 그 커서보다 뒤인가(`beyond` — 화면이 아직 읽지
+ * 않은 범위)를 행 읽기의 keyset 술어 그대로 판정한다. 커서가 이 정렬에 맞지 않으면(정렬이 바뀌었다 · 손상) `stale_page`.
+ *
+ * 트리(`tree` · `treeScope`) · `onlyRowIds` · `cursor` · `limit` 는 보지 않는다 — 평평한 목록 하나의 차례다. 창 함수는 목록 전체를 한 번
+ * 정렬한다(첫 페이지 읽기와 같은 정렬 — `ORDER BY … LIMIT` 도 키를 모두 구한다).
+ */
+export async function queryRowNeighbors(
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: Omit<QueryRowsInput, 'tree' | 'treeScope' | 'onlyRowIds' | 'cursor' | 'limit'>,
+  rowIds: readonly string[],
+  pageCursor: string | null = null,
+): Promise<NeighborsResult> {
+  if (rowIds.length === 0) return { ok: true, value: new Map() }
+  const sorts = (input.sorts ?? []).slice()
+  await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(input.filter ?? null, sorts))
+  return withReadTransaction(async (tx) => {
+    const compiled = await compileRowsQuery(tx, ctx, dataSourceId, { ...input, sorts, cursor: pageCursor })
+    if (compiled === null) return { ok: false, reason: 'not_found' } as const
+    const { params, compiledSort, where, cursorSql } = compiled
+    if (pageCursor !== null && cursorSql === null) return { ok: false, reason: 'stale_page' } as const
+    const idsParam = params.bind([...rowIds])
+    const rows = await tx.query<{ id: string; before: string | null; after: string | null; beyond: boolean }>(
+      `SELECT o.id, o.before, o.after, o.beyond FROM (
+         SELECT b.id, lag(b.id) OVER w AS before, lead(b.id) OVER w AS after, ${cursorSql ?? 'false'} AS beyond
+           FROM page p
+           JOIN block b ON b.id = p.id
+          WHERE ${where.join(' AND ')}
+         WINDOW w AS (ORDER BY ${compiledSort.orderBy})
+       ) o
+       WHERE o.id = ANY(${idsParam}::uuid[])`,
+      [dataSourceId, ...params.values],
+    )
+    return { ok: true, value: new Map(rows.map((r) => [r.id, { before: r.before, after: r.after, beyond: r.beyond === true }])) } as const
   })
 }
 

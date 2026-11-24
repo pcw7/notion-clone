@@ -13,6 +13,11 @@
  *
  * 권한은 변경 알림과 같다(표를 열 수 있다 — "만들기만" 포함 · 못 열면 404) + 뷰를 열 수 있다 + 행마다 행 질의의 술어. 볼 수 없는 행은
  * id 도 싣지 않는다. `q` 는 화면의 뷰 검색어(표의 다시 읽기와 같다 · `inView` 가 그것으로 거른다).
+ *
+ * 화면의 합치기(RT-2)가 함께 묻는 것:
+ *   place=1   뷰에 서는 행마다 `place: { before, after, beyond }`(그 뷰의 차례로 바로 앞 · 바로 뒤 행) + `placed`(줄 수 있었는가)
+ *   page=     화면이 "더 보기"로 이어 읽을 커서 — `beyond`(아직 읽지 않은 범위인가)를 그것으로 판정한다
+ *   calc=1    바뀐 행이 있으면 `calculations`(열 집계 — 행 읽기의 첫 페이지와 같다)
  */
 
 import { isUuid } from '@/lib/ids'
@@ -35,6 +40,9 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     search: params.get('q'),
     // 보는 사람의 오늘(R-1) — 상대 날짜 필터의 `inView` 가 표의 다시 읽기와 같은 날로 거른다
     today: await readViewerToday(),
+    place: params.get('place') === '1',
+    page: params.get('page'),
+    calculations: params.get('calc') === '1',
   })
   if (!delta.ok) return Response.json({ error: delta.reason }, { status: delta.reason === 'forbidden' ? 403 : 404 })
   return Response.json({ ok: true, ...delta.value }, { headers: { 'cache-control': 'no-store' } })

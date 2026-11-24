@@ -13,10 +13,16 @@
  *                판정할 수 없는 행은 싣지 않는다(id 도 새지 않는다 · 완전 삭제는 휴지통을 거친 뒤라 화면은 이미 그 행을 뺐다)
  *
  * 템플릿은 어느 쪽에도 없다(R1 — 뷰에 선 적이 없다). 볼 수 없는 행은 기록에 있어도 없는 것과 같다(권한이 필터보다 먼저다 · F-03-17).
+ *
+ * **자리(RT-2 · `place`)** — 화면이 바뀐 행만 합치려면 정렬된 뷰에서 그 행이 **어디에** 서는지 알아야 한다. 화면이 정렬을 다시 평가하지
+ * 않게(평가기 두 벌 — 정본 X-5 [보강] ①) 서버가 행 읽기와 같은 질의로 줄 세워 뷰에 서는 행마다 바로 앞 · 바로 뒤 행(`before` · `after`)과
+ * 화면이 아직 읽지 않은 범위인가(`beyond` — 화면의 "더 보기" 커서 `page` 뒤)를 준다(`queryRowNeighbors`). 평평한 목록만이다 — 하위 항목을
+ * 펴는 트리 · 카드의 부모만(갤러리)은 `placed: false`(화면은 다시 읽는다). 열 집계(`calc`)는 바뀐 행이 있을 때만 싣는다.
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
+import { computeCalculations, type Calculations } from './calculate.ts'
 import {
   changedRowIds,
   currentChangeHorizon,
@@ -28,13 +34,15 @@ import {
 } from './change-log.ts'
 import { ParamBag } from './filter.ts'
 import { rowJson, type RowJson } from './http.ts'
-import { queryRows } from './query.ts'
+import { queryRowNeighbors, queryRows, type QueryRowsInput, type RowNeighbors } from './query.ts'
 import { restrictedRowsSql, rowsAccessForDataSource, type RowsAccess } from './row-access.ts'
 import { rowsStandingInView } from './row-in-view.ts'
-import { getView } from './view.ts'
+import { normalizeSearch } from './search.ts'
+import { getView, type ViewDetail } from './view.ts'
+import { cardParentsOnlyPair, nestsSubItems, showsParentsOnly, subItemPairOf } from './view-columns.ts'
 
 export type DeltaRow =
-  | (RowJson & { readonly kind: 'row_upsert'; readonly inView: boolean })
+  | (RowJson & { readonly kind: 'row_upsert'; readonly inView: boolean; readonly place?: RowNeighbors })
   | { readonly id: string; readonly kind: 'row_delete'; readonly inView: false }
 
 export type RowDelta = {
@@ -53,6 +61,13 @@ export type RowDelta = {
   readonly viewChanged: boolean
   /** 이 뷰의 손으로 둔 순서(보드 · 수동 정렬)가 바뀌었다. 그 행들은 `rows` 에도 있다. */
   readonly orderChanged: boolean
+  /**
+   * 자리를 물었을 때(`place`)만 — 뷰에 서는 행마다 `place` 를 실었다. 거짓이면 이 뷰는 자리를 줄 수 없다(하위 항목 트리 · 카드의 부모만 ·
+   * 화면의 "더 보기" 커서가 이 정렬에 맞지 않는다) — 화면은 처음부터 다시 읽는다.
+   */
+  readonly placed?: boolean
+  /** 열 집계를 물었고(`calc`) 바뀐 행이 있을 때만 — 행 읽기의 첫 페이지가 싣는 것과 같다. */
+  readonly calculations?: Calculations
 }
 
 export type RowDeltaResult =
@@ -68,7 +83,16 @@ export async function readRowDelta(
   dataSourceId: string,
   viewId: string,
   afterRaw: unknown,
-  options: { readonly search?: unknown; readonly today?: string | null } = {},
+  options: {
+    readonly search?: unknown
+    readonly today?: string | null
+    /** 뷰에 서는 행마다 자리를 싣는다(RT-2 — 머리말). */
+    readonly place?: boolean
+    /** 화면이 "더 보기"로 이어 읽을 커서 — 주면 `place.beyond` 를 판정한다. 없으면 화면이 목록을 끝까지 들고 있다. */
+    readonly page?: string | null
+    /** 바뀐 행이 있으면 열 집계를 싣는다. */
+    readonly calculations?: boolean
+  } = {},
 ): Promise<RowDeltaResult> {
   const access = await withReadTransaction((tx) => rowsAccessForDataSource(tx, ctx, dataSourceId))
   if (access === null) return { ok: false, reason: 'not_found' }
@@ -89,7 +113,7 @@ export async function readRowDelta(
   const viewChanged = window.entries.some((e) => e.kind === 'view' && e.viewId === viewId)
   const orderChanged = window.entries.some((e) => e.kind === 'position' && e.viewId === viewId)
   const base = { cursor: encodeChangeCursor(window.horizon), reset: false, behind: window.behind, schemaChanged, viewChanged, orderChanged }
-  if (ids.length === 0) return { ok: true, value: { ...base, rows: [] } }
+  if (ids.length === 0) return { ok: true, value: { ...base, rows: [], ...(options.place === true ? { placed: true } : {}) } }
 
   // 살아 있고 볼 수 있는 행 — 값(필터 없이) · 그 가운데 뷰에 서는 것(필터 · 검색어 · 범위)
   const live = await queryRows(ctx, dataSourceId, { onlyRowIds: ids, limit: ids.length })
@@ -100,14 +124,67 @@ export async function readRowDelta(
   const liveSet = new Set(liveIds)
   const left = new Set(await visibleLeftRows(ctx, access, dataSourceId, ids.filter((id) => !liveSet.has(id))))
 
+  // 자리(RT-2) — 뷰에 서는 행의 이웃. 줄 수 없으면 `placed: false`
+  let places: ReadonlyMap<string, RowNeighbors> | null = null
+  if (options.place === true) {
+    const listing = flatListInput(view.value)
+    const standingIds = liveIds.filter((id) => standing.has(id))
+    if (listing !== null) {
+      const neighbors = await queryRowNeighbors(
+        ctx,
+        dataSourceId,
+        { ...listing, search: normalizeSearch(options.search ?? null), today: options.today ?? null },
+        standingIds,
+        typeof options.page === 'string' && options.page !== '' ? options.page : null,
+      )
+      // 뷰에 서는 행은 모두 이웃이 있어야 한다 — 두 질의 사이에 바뀌었으면(다른 스냅샷) 자리를 주지 않는다
+      if (neighbors.ok && standingIds.every((id) => neighbors.value.has(id))) places = neighbors.value
+    }
+  }
+
   const byId = new Map(live.value.rows.map((r) => [r.id, r]))
   const rows: DeltaRow[] = []
   for (const id of ids) {
     const row = byId.get(id)
-    if (row !== undefined) rows.push({ ...rowJson(row), kind: 'row_upsert', inView: standing.has(id) })
+    const inView = standing.has(id)
+    const place = inView ? places?.get(id) : undefined
+    if (row !== undefined) rows.push({ ...rowJson(row), kind: 'row_upsert', inView, ...(place === undefined ? {} : { place }) })
     else if (left.has(id)) rows.push({ id, kind: 'row_delete', inView: false })
   }
-  return { ok: true, value: { ...base, rows } }
+  const calculations =
+    options.calculations === true && rows.length > 0 ? await deltaCalculations(ctx, view.value, options.search ?? null, options.today ?? null) : undefined
+  return {
+    ok: true,
+    value: {
+      ...base,
+      rows,
+      ...(options.place === true ? { placed: places !== null } : {}),
+      ...(calculations === undefined ? {} : { calculations }),
+    },
+  }
+}
+
+/**
+ * 평평한 목록의 행 질의 입력 — 행 읽기(`/views/[id]/rows`)와 같은 필터 · 정렬 · 수동 순서 · 표시 범위(P-3). 하위 항목을 펴는 트리 ·
+ * 카드의 부모만(갤러리)은 null — 그 차례는 층마다라 한 줄의 이웃으로 말할 수 없다(화면은 다시 읽는다).
+ */
+function flatListInput(view: ViewDetail): Pick<QueryRowsInput, 'filter' | 'sorts' | 'manualOrderViewId' | 'flatScope'> | null {
+  const nest = nestsSubItems(view.type) ? subItemPairOf(view.columns) : null
+  if (nest !== null && view.subItemDisplay === 'nested') return null
+  if (showsParentsOnly(view.type) && cardParentsOnlyPair(view.columns, view.subItemDisplay) !== null) return null
+  return {
+    filter: view.effectiveFilter,
+    sorts: view.effectiveSorts,
+    manualOrderViewId: view.id,
+    ...(nest === null ? {} : { flatScope: { parentPropertyId: nest.parentPropertyId, scope: view.subItemFilterScope } }),
+  }
+}
+
+/** 열 집계 — 행 읽기의 첫 페이지와 같은 입력(트리면 표시 범위의 층 · P-1 ⑤). */
+function deltaCalculations(ctx: SessionContext, view: ViewDetail, search: unknown, today: string | null): Promise<Calculations> {
+  const nest = nestsSubItems(view.type) ? subItemPairOf(view.columns) : null
+  return computeCalculations(ctx, view.dataSourceId, view.effectiveFilter, view.columns, normalizeSearch(search), today,
+    nest === null ? null : { parentPropertyId: nest.parentPropertyId, scope: view.subItemFilterScope })
 }
 
 function resetDelta(horizon: bigint, reason: ResetReason): RowDelta {

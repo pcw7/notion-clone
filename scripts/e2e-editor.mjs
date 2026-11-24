@@ -17610,6 +17610,139 @@ async function main() {
       check('★ 캘린더 — 다른 곳에서 행을 더하면 그 날에 막대가 선다', await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ma}"]')`, 8000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('DB 실시간 — 바뀐 행만 (RT-2 · F-05-16)')) { try {
+      // 두 탭(같은 사람) — A(둘째 탭)가 고치고 B(주 탭)가 따라온다. B 의 표가 `data-sync`(마지막 맞추기가 델타였나 다시 읽기였나)와 센 수를
+      // 단다 — "이번 것은 바뀐 행만 받았다(다시 읽지 않았다)"를 시간 재기 없이 본다. 뷰는 수량 오름차순 · 수량 > 1(B 가 열기 전에 건다 — 뷰가
+      // 바뀌면 다시 읽는다).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `바뀐 행만 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const cellsOf = (t, n) => [
+        ...(t === null ? [] : [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }]),
+        ...(n === null ? [] : [{ propertyId: qty, value: { type: 'number', number: n } }]),
+      ]
+      const ga = (await api('POST', `/views/${view}/rows`, { cells: cellsOf('가', 3) })).body.row.id
+      const na = (await api('POST', `/views/${view}/rows`, { cells: cellsOf('나', 30) })).body.row.id
+      const da = (await api('POST', `/views/${view}/rows`, { cells: cellsOf('다', 12) })).body.row.id
+      await api('PATCH', `/views/${view}`, { sorts: [{ property_id: qty, direction: 'asc' }], filter: { property_id: qty, operator: 'greater_than', value: 1 } })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const titles = () => evaluate(titlesJs)
+      const syncJs = `(() => { const t = document.querySelector('[data-testid="db-table"]'); return t ? { last: t.dataset.sync ?? null, delta: Number(t.dataset.syncDelta), full: Number(t.dataset.syncFull) } : null })()`
+      const sync = () => evaluate(syncJs)
+      // 델타로 맞췄고 그동안 다시 읽지 않았다 — 기준(`base`)보다 델타가 늘고 다시 읽기는 그대로
+      const byDelta = (base) => `(() => { const s = ${syncJs}; return !!s && s.last === 'delta' && s.delta > ${base.delta} && s.full === ${base.full} })()`
+      const seen = async () => JSON.stringify({ titles: await titles(), sync: await sync() })
+      // 맞추기 한 번을 치르고 기준을 잡는다 — 렌더 커서(읽기 전의 xid 지평)가 다른 트랜잭션에 묶여 앞선 쓰기(뷰 · 속성)를 아직 넘지 못했으면
+      // 첫 델타가 그것을 실어 와 다시 읽기가 된다(맞는 동작이다). 나의 수량만 올린다 — 차례 · 제목은 그대로
+      let warm = 31
+      const settleB = async () => {
+        const before = await sync()
+        await api('PATCH', `/rows/${na}`, { cells: cellsOf(null, warm++) })
+        return waitFor(`(() => { const s = ${syncJs}; return !!s && s.delta + s.full > ${before.delta + before.full} })()`, 10000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`${titlesJs} === '가,다,나'`, 15000)
+      await sleep(800) // 구독이 붙을 때까지
+      check('전제 — B 가 맞추기를 한 번 치렀다', await settleB(), await seen())
+
+      // A — 둘째 탭이 같은 표를 연다(앞에 선다 · 화면으로 칸을 고친다)
+      const tabA = await openTab(`${BASE}/w/${workspaceId}/db/${db.id}`)
+      try {
+        await tabA.waitFor(`${titlesJs} === '가,다,나'`, 15000)
+        await sleep(800)
+        const apiA = (method, path, body) => tabA.evaluate(`fetch(${JSON.stringify(`/api/workspaces/${workspaceId}${path}`)}, {
+          method: ${JSON.stringify(method)}, headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))},
+        }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))`)
+        const keyA = async (name) => {
+          const [vk, code] = { Enter: [13, 'Enter'] }[name]
+          const k = { key: name, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }
+          await tabA.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...k })
+          await tabA.send('Input.dispatchKeyEvent', { type: 'keyUp', ...k })
+        }
+        const clickA = async (selector) => {
+          const p = await tabA.evaluate(`(() => {
+            const e = document.querySelector(${JSON.stringify(selector)})
+            if (!e) return null
+            e.scrollIntoView({ block: 'center' })
+            const r = e.getBoundingClientRect()
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+          })()`)
+          if (!p) return false
+          await tabA.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y })
+          await tabA.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', buttons: 1, clickCount: 1 })
+          await tabA.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', buttons: 0, clickCount: 1 })
+          return true
+        }
+
+        // ── ① A 가 칸을 고친다 → B 가 새 값을 델타로 ──
+        const base1 = await sync()
+        await clickA(`tr[data-row-id="${da}"] td[data-property-id="${titleProp}"]`)
+        await keyA('Enter')
+        const editingA = await tabA.waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
+        if (editingA) {
+          await tabA.evaluate(`document.querySelector('[data-testid="db-cell-input"]').select()`)
+          await tabA.send('Input.insertText', { text: '다!' })
+          await keyA('Enter')
+        }
+        check('전제 — A 의 화면에서 칸을 고쳤다', editingA && (await tabA.waitFor(`${titlesJs} === '가,다!,나'`, 8000)), String(await tabA.evaluate(titlesJs)))
+        await send('Page.bringToFront') // B 가 프레임을 받는다
+        check('★ A 가 칸을 고치면 B 에 새 값이 선다 — 바뀐 행만(data-sync=delta · 다시 읽지 않았다)',
+          await waitFor(`${titlesJs} === '가,다!,나' && ${byDelta(base1)}`, 10000), await seen())
+
+        // ── ② A 가 행을 더한다 → 정렬된 B 의 제자리(다! 12 와 나 30 사이)에 ──
+        const base2 = await sync()
+        const ra = (await apiA('POST', `/views/${view}/rows`, { cells: cellsOf('라', 20) })).body?.row?.id
+        check('★ A 가 더한 행이 정렬된 B 의 제자리에 선다(수량 20 — 12 와 30 사이) — 델타',
+          !!ra && (await waitFor(`${titlesJs} === '가,다!,라,나' && ${byDelta(base2)}`, 10000)), await seen())
+
+        // ── ③ A 가 행을 B 의 필터 밖으로 고친다 → B 에서 빠진다 ──
+        const base3 = await sync()
+        await apiA('PATCH', `/rows/${ga}`, { cells: cellsOf(null, 0) })
+        check('★ A 가 필터 밖으로 고친 행은 B 에서 빠진다 — 델타',
+          await waitFor(`!document.querySelector('tr[data-row-id="${ga}"]') && ${titlesJs} === '다!,라,나' && ${byDelta(base3)}`, 10000), await seen())
+
+        // ── ④ A 가 스키마를 바꾼다 → B 는 처음부터 다시 읽는다(표가 새로 선다) ──
+        const base4 = await sync()
+        await apiA('POST', props, { name: '메모', type: 'rich_text' })
+        check('★ A 가 속성을 더하면 B 는 다시 읽는다(data-sync=full · 머리에 메모)',
+          await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].some((th) => th.textContent.includes('메모'))
+            && (() => { const s = ${syncJs}; return !!s && s.last === 'full' && s.full > ${base4.full} })()`, 15000), await seen())
+        await waitFor(`${titlesJs} === '다!,라,나'`, 8000)
+        await sleep(800) // 새로 선 표의 구독이 자리를 잡을 때까지
+        check('전제 — 새로 선 B 가 맞추기를 한 번 치렀다', await settleB(), await seen())
+
+        // ── ⑤ B 가 오프라인인 동안 A 가 두 행을 고친다 → 돌아오면 B 는 밀린 것만(델타) ──
+        const base5 = await sync()
+        await evaluate(`(() => { window.__rt2Online = 0; addEventListener('online', () => { window.__rt2Online += 1 }); return true })()`)
+        await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 })
+        try {
+          await waitFor(`navigator.onLine === false`, 3000)
+          await apiA('PATCH', `/rows/${da}`, { cells: cellsOf('다2', null) })
+          await apiA('PATCH', `/rows/${ra}`, { cells: cellsOf('라2', null) })
+          await sleep(1500)
+          check('전제 — 오프라인인 동안 B 는 따라오지 않는다', (await titles()) === '다!,라,나', await seen())
+        } finally {
+          await send('Network.emulateNetworkConditions', { offline: false, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        }
+        check('★ 돌아오면 B 는 밀린 두 행을 델타로 받는다(다시 읽지 않았다 · F-05-06)',
+          await waitFor(`${titlesJs} === '다2,라2,나' && ${byDelta(base5)}`, 15000),
+          `${await seen()} · online 사건 ${await evaluate('window.__rt2Online')}`)
+      } finally {
+        await send('Network.emulateNetworkConditions', { offline: false, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 }).catch(() => undefined)
+        await tabA.close()
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('연결된 데이터베이스 — 서버 (2l-1 · F-04-13)')) { try {
       // 다른 데이터베이스의 소스를 붙이면 그 소스를 보는 뷰가 생기고 원본의 행이 보인다 · 두 번 붙이면 409 · 떼면 뷰와 함께 빠진다 · 제 소스는 떼지 않는다.
       // 권한(원본을 못 보면 붙일 수 없음 · 이름을 가림 · 링크로 권한이 오르지 않음)은 DB 검사가 본다.

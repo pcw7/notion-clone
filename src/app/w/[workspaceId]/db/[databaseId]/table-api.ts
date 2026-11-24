@@ -34,6 +34,7 @@ import type { PageSettings } from '@/lib/database/page-settings'
 import type { DateReminderJson } from '@/lib/database/reminder'
 import type { VerificationCell } from '@/lib/database/verification-cell'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
+import { parseDelta, type DeltaJson } from '@/lib/database/delta-merge'
 import { buttonActionProblemMessage } from './button-messages'
 import { automationProblemMessage } from './automation-messages'
 
@@ -366,6 +367,24 @@ export function loadRows(
       ...(Array.isArray(body.columns) ? { columns: body.columns as ViewColumn[] } : {}),
     }),
   )
+}
+
+/**
+ * 표의 델타(RT-2 · `…/changes/delta`) — 커서(`after`) 뒤로 바뀐 행만, 이 뷰의 눈으로. 자리(`place`)를 늘 묻는다. `page` 는 화면이 "더 보기"로
+ * 이어 읽을 커서(목록을 끝까지 들고 있으면 null). 모양이 틀린 응답은 `null`(부르는 쪽은 다시 읽는다 — `parseDelta`).
+ */
+export function loadDelta(
+  workspaceId: string,
+  dataSourceId: string,
+  viewId: string,
+  after: string,
+  options: { readonly search?: string | null; readonly page?: string | null; readonly calculations?: boolean } = {},
+): Promise<ApiResult<DeltaJson | null>> {
+  const query = new URLSearchParams({ after, view: viewId, place: '1' })
+  if (options.search) query.set('q', options.search)
+  if (options.page) query.set('page', options.page)
+  if (options.calculations === true) query.set('calc', '1')
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/changes/delta?${query}`, { method: 'GET', cache: 'no-store' }, parseDelta)
 }
 
 // ── 보드 (4b) ──────────────────────────────────────────────────────────
