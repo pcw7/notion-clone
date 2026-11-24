@@ -61,6 +61,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { emitDataSourceEventIn } from '../api/webhook-emit.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
@@ -308,6 +309,8 @@ export async function addDataSourceIn(
     `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
     [databaseId, ctx.userId],
   )
+  // 웹훅 — 소스가 생겼다(API-9 · 데이터베이스를 만들 때의 첫 소스는 `database.ts` 가 낸다)
+  await emitDataSourceEventIn(tx, ctx, 'created', dataSourceId)
   return {
     ok: true,
     value: {
@@ -451,6 +454,8 @@ export async function trashDataSource(
             [dataSourceId, ctx.workspaceId, ctx.userId, purge_after, rows.map((r) => r.id)],
           )
     await touchDatabase(tx, ctx, source.owner_database_id)
+    // 웹훅 — 소스가 휴지통으로(API-9 · 함께 간 행은 따로 내지 않는다 — 루트에만)
+    await emitDataSourceEventIn(tx, ctx, 'deleted', dataSourceId)
     return {
       ok: true,
       value: { dataSourceId, trashedRows: rows.length + below.length, purgeAfter: purge_after },
@@ -481,6 +486,7 @@ export async function restoreDataSource(
       [dataSourceId, ctx.workspaceId],
     )
     await touchDatabase(tx, ctx, source.owner_database_id)
+    await emitDataSourceEventIn(tx, ctx, 'undeleted', dataSourceId)
     return { ok: true, value: { dataSourceId, restoredRows: restored.length } } as const
   })
 }

@@ -33,7 +33,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { firstOrderKey, orderKeysBetween } from '../block/order-key.ts'
 import { planOrder } from './layout-order.ts'
-import { bumpSchema, isSchemaFailure, lockSchema } from './property.ts'
+import { bumpSchema, isSchemaFailure, lockSchema, schemaChange } from './property.ts'
 import { MAX_PINNED_PROPERTIES } from './limits.ts'
 import { canPlaceInPanel, GROUP_MODULE } from './layout-modules.ts'
 import { canViewDataSource } from './relation.ts'
@@ -379,8 +379,8 @@ async function applyIn(
         WHERE p.id = x.id AND p.data_source_id = $1`,
       [dataSourceId, moves.map((m) => m.id), moves.map((m) => m.key)],
     )
-    // 스키마 순서를 고쳤다 — 스키마를 들고 있는 화면의 낙관적 잠금이 이것을 알아야 한다.
-    await bumpSchema(tx, dataSourceId)
+    // 스키마 순서를 고쳤다 — 스키마를 들고 있는 화면의 낙관적 잠금이 이것을 알아야 한다. 순서만이라 웹훅은 내지 않는다(속성 없음).
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated'))
   }
   if (settingsChanged) {
     await tx.query(

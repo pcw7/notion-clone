@@ -27,6 +27,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import {
   bumpSchema,
+  schemaChange,
   checkPropertySlots,
   insertPropertyIn,
   isSchemaFailure,
@@ -109,7 +110,7 @@ export async function enableSubItems(
     })
     if (isSchemaFailure(children)) return children
 
-    await bumpSchema(tx, dataSourceId)
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'created', parentPropertyId, childrenPropertyId))
     return { ok: true, value: { schema: await readSchema(tx, dataSourceId), parentPropertyId, childrenPropertyId } } as const
   })
 }
@@ -145,7 +146,7 @@ export async function disableSubItems(
     )
     await tx.query(`UPDATE relation_edge SET role = role WHERE property_id = $1 AND role IS NOT NULL`, [pair.parentPropertyId])
 
-    await bumpSchema(tx, dataSourceId)
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', ...ids))
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
 }

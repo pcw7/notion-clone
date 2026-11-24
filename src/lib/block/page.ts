@@ -38,6 +38,7 @@ import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
 import { recordActivity, recordCoalescedActivity } from '../notification/activity.ts'
+import { emitNodeEventIn, emitPropertiesChangedIn } from '../api/webhook-emit.ts'
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
@@ -542,6 +543,8 @@ export async function createPageIn(
       // 투영이 자리(부모 · 순서 키 · 경로)를 문서 위치로 매긴다 — 돌려줄 것은 다시 읽는다. 토글 안이면 부모가 그 토글이다.
       current = await tx.queryOne<PageRow>(`SELECT ${PAGE_COLUMNS} FROM block WHERE id = $1`, [id])
     }
+    // 웹훅 — 만들었다(API-9 · 복제 · 가져오기 · AI · 공개 API 가 모두 이 길이다)
+    await emitNodeEventIn(tx, ctx, 'created', id, 'page')
 
     return toDetail(current)
   }
@@ -738,6 +741,8 @@ export async function renamePageIn(
     await indexPageTitle(tx, pageId, detail.plainTitle)
     // 활동 — 제목도 사람이 친 글이다(4d-2 · 본문 편집과 같은 종류 · 같은 접기)
     await recordCoalescedActivity(tx, ctx, { pageId, type: 'block.updated' })
+    // 웹훅 — 제목은 페이지의 속성이다(API-9 · 노션의 `title`)
+    await emitPropertiesChangedIn(tx, ctx, pageId, ['title'])
 
     return detail
   }

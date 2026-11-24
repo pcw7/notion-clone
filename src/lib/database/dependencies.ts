@@ -15,6 +15,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import {
   bumpSchema,
+  schemaChange,
   checkPropertySlots,
   insertPropertyIn,
   isSchemaFailure,
@@ -89,7 +90,7 @@ export async function enableDependencies(
     })
     if (isSchemaFailure(blocking)) return blocking
 
-    await bumpSchema(tx, dataSourceId)
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'created', blockedByPropertyId, blockingPropertyId))
     return { ok: true, value: { schema: await readSchema(tx, dataSourceId), blockedByPropertyId, blockingPropertyId } } as const
   })
 }
@@ -113,7 +114,7 @@ export async function disableDependencies(
     )
     await tx.query(`UPDATE relation_edge SET role = role WHERE property_id = $1 AND role IS NOT NULL`, [pair.blockedByPropertyId])
 
-    await bumpSchema(tx, dataSourceId)
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', pair.blockedByPropertyId, pair.blockingPropertyId))
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
 }

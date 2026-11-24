@@ -56,6 +56,7 @@ import { randomUUID } from 'node:crypto'
 import type * as Y from 'yjs'
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { emitCommentEventIn } from '../api/webhook-emit.ts'
 import { readBodyState } from '../collab/doc-store.ts'
 import { readBodyYDoc } from '../collab/ydoc.ts'
 import {
@@ -282,6 +283,8 @@ export async function createDiscussion(
       mentioned,
     })
     await notifyMentions(tx, ctx, { pageId: input.pageId, blockId, userIds: mentioned, comment: { discussionId, commentId } })
+    // 웹훅 — 댓글이 달렸다(API-9 · 묶지 않는다)
+    await emitCommentEventIn(tx, ctx, 'created', { id: commentId, pageId: input.pageId, blockId })
     return { ok: true, discussionId, commentId } as const
   })
 }
@@ -353,6 +356,7 @@ export async function replyToDiscussion(
         [discussionId],
       )
     }
+    await emitCommentEventIn(tx, ctx, 'created', { id: commentId, pageId: row.page_id, blockId: row.parent_block_id })
     return { ok: true, commentId, reopened: row.resolved } as const
   })
 }
@@ -438,6 +442,7 @@ export async function editComment(
       userIds: mentionedUsers(text.value).filter((id) => !before.has(id)),
       comment: { discussionId: row.discussion_id, commentId },
     })
+    await emitCommentEventIn(tx, ctx, 'updated', { id: commentId, pageId: row.page_id, blockId: row.parent_block_id })
     return { ok: true } as const
   })
 }
@@ -461,6 +466,8 @@ export async function deleteComment(
 
     await tx.query(`UPDATE comment SET rich_text = '[]'::jsonb, deleted_at = now() WHERE id = $1`, [commentId])
     await tx.query(`DELETE FROM reaction WHERE target_kind = 'comment' AND target_id = $1`, [commentId])
+    // 웹훅 — 지웠다(API-9). 자리는 지금 준다 — 마지막 글이면 아래에서 스레드째 사라진다
+    await emitCommentEventIn(tx, ctx, 'deleted', { id: commentId, pageId: row.page_id, blockId: row.parent_block_id })
 
     const remaining = await tx.queryOne<{ n: string }>(
       `SELECT count(*) AS n FROM comment WHERE discussion_id = $1 AND deleted_at IS NULL`,

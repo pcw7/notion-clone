@@ -2747,8 +2747,8 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > `resolveSessionContext({ apiTokenId })` 가 토큰 값 대신 행 id 로 같은 질의 · 같은 게이트(폐기 · 만료 · 지웠거나 멈춘 사람 · 멤버십 · 게스트 ·
 > SSO · 지운 워크스페이스)를 지난다(마지막 사용 시각은 쓰지 않는다 · 워커의 코드만 부른다). 안 되면 그 구독의 기다리던 줄을 모두 `skipped`
 > (까닭 — `token_revoked` · `token_expired` · `access_lost` …) — 실패가 아니라 잇단 실패에 세지 않는다. 대상이 있는 이벤트는 그 사람이 **지금**
-> 대상을 볼 수 있는지 묻는다(페이지 · 블록 · 데이터베이스는 그 노드 · 데이터 소스는 가진 데이터베이스의 `view` · 댓글은 API-9 가 더한다 —
-> 그때까지는 닫는다) — 아니면 그 줄만 `entity_not_visible`. 워커가 보내다 죽으면 임대가 지나 다시 보낸다 — **적어도 한 번**(노션은 "많아야
+> 대상을 볼 수 있는지 묻는다(페이지 · 블록 · 데이터베이스는 그 노드 · 데이터 소스는 가진 데이터베이스의 `view` · 댓글은 ⑬ ⑤) — 아니면 그
+> 줄만 `entity_not_visible`. 워커가 보내다 죽으면 임대가 지나 다시 보낸다 — **적어도 한 번**(노션은 "많아야
 > 한 번") · 받는 쪽은 `id` 로 거른다.
 > **토큰**을 폐기하면 같은 트랜잭션에서 그 구독이 꺼지고(`token_revoked`) 기다리던 줄은 건너뛴다. 만료는 읽을 때 판정한다(화면의 칩 "멈춤 · 토큰
 > 만료" · 보내지 않는다 · 만들기 · 테스트 · 다시 보내기는 400). 사람이 빠지면 구독은 그대로 두고 보내지 않는다(다시 들어오면 이어 간다).
@@ -2759,7 +2759,49 @@ CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WH
 > `data_retention` ⑩ 이 지운다. 화면의 배달 기록은 최근 20줄(시각 · 종류 · 시도 n/8 · 상태 코드 또는 까닭). 만들기 · 확인 · 지우기는 감사
 > 로그(`account.security_changed` — 토큰 id · 구독 id · 주소의 힌트만).
 > **노션과 다른 점**: 구독이 통합이 아니라 개인 토큰의 것 · 주소를 봉인하고 힌트만 보인다 · `test` 이벤트 · 잇단 실패 셋이면 끈다 · 적어도 한 번 ·
-> 대상마다 차례를 지킨다(노션은 순서를 보장하지 않는다) · `accessible_by` 없음 · 묶기(aggregation)는 API-9 가 정한다 · 재전송(replay) 단추 없음.
+> 대상마다 차례를 지킨다(노션은 순서를 보장하지 않는다) · `accessible_by` 없음 · 묶기(aggregation)는 ⑬ · 재전송(replay) 단추 없음.
+>
+> ⑬ **[API-9] 웹훅 이벤트 내보내기** ⟨56번 트랙 · 09 F-09-09 · 마이그레이션 0152⟩ — 앱이 하는 일이 ⑫ 의 아웃박스에 이벤트를 쌓는다. 사람이 앱에서
+> 하든 · 공개 API · 자동화(위임) · AI · 가져오기 · 템플릿 · 복제가 하든 **같은 명령의 목(choke point)** 을 지나므로 같은 이벤트가 난다.
+> ① **목** — 본문: `collab/doc-store.ts` 본문 세션의 `commit`(`doc_update` 를 쓰는 유일한 곳 — 협업 update · 서버 명령 · 본문 저장 · 밀린 투영의
+> 수선 · 모든 출처) · 페이지 · 데이터베이스 만들기: `createPageIn` · 행 넣기(`insertRowIn` — 폼 응답 포함) · `createDatabase` ·
+> `createInlineDatabaseIn` · 데이터베이스 복제 · 옮기기: `movePage` 와 본문 투영의 재배치(부모가 바뀔 때만) · 휴지통: `trashSubtreeRows`(명령과
+> 본문에서 지운 참조가 같은 길 — 루트에만) · `trashRow` · 되살리기: `restorePage` · 잠금: `setLockIn`(페이지만 — 데이터베이스의 구조 잠금에는
+> 노션의 이벤트가 없다) · 속성 값: `updateCellsIn` · `renamePageIn`(제목 = `title`) · 관계 `linkRowsIn` · 검증 · 구조: `bumpSchema`("스키마를
+> 고쳤으면 반드시 부른다" — 무엇을 고쳤는지 받는다 · 순서만 바꾼 것은 내지 않는다) · 데이터 소스: `addDataSourceIn` · `trashDataSource` ·
+> `restoreDataSource`(데이터베이스를 만들 때의 첫 소스는 만들기가) · 댓글: `createDiscussion` · `replyToDiscussion` · `editComment` ·
+> `deleteComment`. 행(데이터베이스의 페이지 — C-3)이 생기거나 · 휴지통에 가거나 · 돌아오거나 · 칸이 바뀌면 그 소스의 `data_source.content_updated`
+> 도 낸다. 템플릿은 내지 않는다.
+> ② **모양**(노션 2025-09-03) — `entity` 는 `page` · `database` · `data_source` · `comment`. `data.parent` 는 `{ id, type }` — 페이지 ·
+> 데이터베이스 · 본문 블록 · 행의 부모는 데이터 소스(`data_source`) · 워크스페이스와 teamspace 최상위는 `space`(id = 워크스페이스).
+> `page.*` · `database.*` 는 `{ parent }`(옮기기는 옮긴 뒤의 부모) · `page.content_updated` 는 `updated_blocks: [{ id, type:'block' }]`(그 세션이
+> 바꾼 블록 — 글자 · 속성을 바꾼 블록 · 넣거나 지운 블록) · `page.properties_updated` 는 `updated_properties: [공개 API 의 속성 id]`(제목은
+> `title`) · `data_source.*` 는 `{ parent: 데이터베이스 }` · `data_source.content_updated` 는 `updated_blocks`(바뀐 행) ·
+> `data_source.schema_updated` 는 `updated_properties: [{ id, name, action: created|updated|deleted }]` · `comment.*` 는 `{ page_id, parent:
+> 페이지 또는 본문 블록 }`. `authors` 는 일을 한 사람(`{id, type:'person'}`) — 자동화의 위임이면 만든 사람(앱이 적는 사람) · 익명 폼은 빈 목록.
+> ③ **묶기** — `page.content_updated` · `page.properties_updated` · `data_source.content_updated` · `data_source.schema_updated` 넷만(나머지와
+> 댓글은 일어난 대로 — 노션 *"댓글 이벤트는 집계되지 않는다"*). 구독 · 대상 · 종류마다 묶는 줄 하나(`window_started_at` · 부분 UNIQUE)에
+> 합친다 — 목록은 처음 나온 차례 · 겹침은 하나 · 100 까지 · 저자는 합집합(20 까지) · 구조 변경은 속성마다 "가장 의미 있는 결과"(만들고 고치면
+> created · 지우면 deleted · 지우고 되살리면 updated). **다음 시도는 마지막 변경 + 15초, 창을 연 뒤 2분을 넘지 않는다**(CHECK) — 잇달아 고치는
+> 페이지도 2분마다 나간다(노션 "통상 1분 미만"). 워커는 묶는 줄을 보내기 직전에 **봉인**한다(창을 비우고 합친 내용을 다시 읽는다 — 합치던
+> 쓰기가 줄을 잡고 있으면 그 커밋을 기다린다) — 봉인 뒤의 변경은 새 줄이다(보낸 것에 합쳐 사라지지 않는다). 대상마다 차례(⑫)는 그대로 —
+> 묶는 줄 뒤의 `page.deleted` 는 그 줄이 나간 뒤에 나간다.
+> ④ **쓰기 · 값** — 아웃박스 쓰기는 명령의 트랜잭션 안 · **커밋 직전**(`tx.defer` — `db/tx.ts`): 같은 트랜잭션의 같은 (종류, 대상)은 메모리에서
+> 먼저 합치고 · 묶는 줄의 잠금은 트랜잭션의 맨 끝에 (종류, 대상) 차례로만 잡는다(명령의 행 · 블록 잠금과 엇갈려 교착하지 않는다) · 구독 행은
+> `FOR KEY SHARE` 로 먼저(워커의 임대는 `FOR NO KEY UPDATE` 로 낮췄다 — 서로 막지 않는다) · 되돌린 savepoint(투영 거부 · 자동화 단계)와
+> 거부 · 롤백한 명령은 아무것도 남기지 않는다. **구독이 없으면 조회 하나** — 트랜잭션마다 · 워크스페이스마다 켜진 구독을 한 번 묻고
+> (`ix_api_webhook_workspace`) 그 트랜잭션 안에서 기억한다 · 고른 구독이 없으면 아무것도 읽거나 쓰지 않는다(협업 update 한 번 = 웹훅 질의 1개 —
+> db 검사가 센다). `data`(부모)는 쓸 때 만든다 — 명령이 끝난 뒤의 자리다.
+> ⑤ **보낼 때의 보기**(⑫ 의 다시 보기에 더한다) — 댓글은 그 댓글이 사는 페이지(`data.page_id` — 마지막 댓글을 지우면 스레드째 사라지므로 줄이
+> 든다)의 `view` · 제안의 스레드는 댓글이 아니다(공개 API 와 같다). **휴지통의 노드는 그 ACL 로 본다**(휴지통은 ACL 을 지우지 않는다 · 공개
+> API 가 휴지통의 페이지를 `in_trash` 로 주는 것과 같다) — 그래서 `page.deleted` 는 버리기 전에 볼 수 있던 사람에게 가고 · 버리기 전의 댓글
+> 이벤트도 간다(공개 API 의 댓글 목록은 휴지통의 페이지를 없는 것으로 본다 — 웹훅은 지난 일을 알린다 · 받는 쪽이 되읽어 404 면 정상 흐름 —
+> 09 *"삭제된 참조"*). 영구 삭제한 것 · 템플릿은 없는 것이다.
+> ⑥ **노션과 다른 점** — 묶지 않는 종류는 "만들고 곧 지우면 0건" 처럼 접지 않는다(둘 다 나간다) · 휴지통에 함께 간 자손 · 소스와 함께 간 행 ·
+> 복제한 데이터베이스의 행은 따로 내지 않는다(루트의 이벤트 하나) · `data_source.moved` 는 내지 않는다(소스를 다른 데이터베이스로 옮기는 명령이
+> 없다 — 데이터베이스를 옮기면 `database.moved`) · 데이터 소스 · 데이터베이스의 이름 · 아이콘 · 페이지의 아이콘 · 커버는 이벤트가 없다 · 관계의
+> 상대 행(거울상) 칸은 내지 않는다 · 목록 상한 100 · 자기 토큰이 한 일도 그 토큰의 구독에 간다(노션도 그렇다 — `authors` 로 거른다 · 09
+> *"자기 이벤트 필터"*).
 
 **정본 상수**
 
@@ -6461,6 +6503,8 @@ CREATE TABLE api_webhook_event (               -- 웹훅 아웃박스 — 구독
   last_error text NULL,                        -- 200자 이하 — 응답 본문은 두지 않는다
   skip_reason text NULL,                       -- skipped 일 때만
   finished_at timestamptz NULL,                -- pending 이 아닐 때만 · 7일 뒤 지운다
+  window_started_at timestamptz NULL,          -- 묶는 중(API-9 · 0152 · [보강 API-1] ⑬) — 묶는 종류 넷 · pending · 시도 전 ·
+                                               --   next_attempt_at ≤ 창 + 2분 · (subscription_id, entity_id, type) 마다 하나(부분 UNIQUE)
   created_at timestamptz NOT NULL
 );
 

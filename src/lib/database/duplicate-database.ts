@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
+import { emitDataSourceEventIn, emitNodeEventIn } from '../api/webhook-emit.ts'
 import { asBlockId, isUuid } from '../ids.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps, teamspaceCaps } from '../permissions/effective.ts'
@@ -269,6 +270,12 @@ async function duplicateCore(
       const result = await inlineBody.finish()
       if (!result.ok && result.reason === 'page_ref_too_deep') return { ok: false, reason: 'too_deep' } as const
       if (!result.ok) throw new Error(`본문 투영이 데이터베이스 복제를 거부했다(${result.reason}): ${databaseId}`)
+    }
+    // 웹훅 — 사본 데이터베이스와 그 소스가 생겼다(API-9 · 복사한 행은 따로 내지 않는다 — 정본 ⑬)
+    await emitNodeEventIn(tx, ctx, 'created', id, 'database')
+    for (const s of sources) {
+      const copied = ids.get(String(s.id))
+      if (copied !== undefined) await emitDataSourceEventIn(tx, ctx, 'created', copied)
     }
 
     const first = views.find((v) => v.owner_kind === 'database_view')

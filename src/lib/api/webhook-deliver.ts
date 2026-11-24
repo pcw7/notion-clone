@@ -9,7 +9,9 @@
  *   ① 잡기 — 때가 된 줄이 있는 구독을 `FOR UPDATE SKIP LOCKED` 로 잡아 **구독 행에** 임대를 걸고 커밋한다 — 한 구독에 동시에 하나만
  *     보낸다. 지운 워크스페이스의 구독은 건드리지 않는다(되살리면 이어 간다 · AD-1 ③).
  *   ② 차례 — 구독 안에서 때가 된 줄 중 **같은 대상의 앞선 줄이 기다리는 중이 아닌** 것을 차례로(대상마다 순서를 지킨다 · 다른 대상은
- *     앞의 실패에 막히지 않는다). 한 판에 구독마다 열까지.
+ *     앞의 실패에 막히지 않는다). 한 판에 구독마다 열까지. 묶는 중인 줄(API-9 · `window_started_at`)이면 **먼저 봉인한다** — 창을 비우고
+ *     그 순간의 합친 내용을 다시 읽는다. 합치던 쓰기가 줄을 잡고 있으면 그 커밋을 기다린다 · 봉인한 뒤의 변경은 새 줄로 간다(보낸 것에
+ *     합쳐 사라지지 않는다).
  *   ③ 다시 보기 — **보내기 전마다** 구독의 상태(멈춤 · 꺼짐 · 확인 전) · 워크스페이스 스위치(10n-70) · **토큰의 컨텍스트**를 다시 얻는다
  *     (`resolveSessionContext({ apiTokenId })` — 발급자는 그대로 둘 · 폐기 · 만료 · 사람 · 멤버십 · 게스트 · SSO 를 같은 게이트로). 안 되면
  *     그 구독의 기다리던 줄을 모두 `skipped`(까닭). 대상 이벤트는 그 사람이 지금 대상을 볼 수 있는지 묻는다 — 아니면 그 줄만 `skipped`.
@@ -23,7 +25,7 @@
 
 import { resolveSessionContext, type SessionContext, type SessionDenialReason } from '../auth/session-context.ts'
 import { query, queryMaybe } from '../db/pool.ts'
-import { withReadTransaction, withTransaction } from '../db/tx.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { unsealWebhookSecret, unsealWebhookUrl } from '../net/url-seal.ts'
 import { webhooksAllowedIn } from '../notification/webhook-switch.ts'
 import { can } from '../permissions/levels.ts'
@@ -66,6 +68,7 @@ type Head = {
   data: unknown
   occurred_at: Date
   attempts: number
+  window_started_at: Date | null
 }
 
 type Skip =
@@ -88,21 +91,47 @@ function skipOfDenial(reason: SessionDenialReason): Skip {
 
 /**
  * 그 사람이 지금 대상을 볼 수 있는가 — `test` 의 대상은 구독 자신. 페이지 · 블록 · 데이터베이스는 그 노드의, 데이터 소스는 그것을
- * 가진 데이터베이스의 `view`. 댓글은 API-9 가 판정을 더한다 — 그때까지는 닫는다(fail-closed).
+ * 가진 데이터베이스의 `view`. 댓글(API-9)은 그 댓글이 사는 페이지(`data.page_id` — 마지막 댓글을 지우면 스레드째 사라지므로 줄이 든다)의
+ * `view` · 제안의 스레드는 댓글이 아니다(공개 API 의 댓글 읽기와 같다).
+ *
+ * **휴지통의 노드도 그 ACL 로 본다**(정본 ⑬ — 휴지통은 ACL 을 지우지 않는다 · 공개 API 의 페이지 읽기가 휴지통의 페이지를 `in_trash` 로
+ * 주는 것과 같다) — 그래서 `page.deleted` 는 버리기 전에 볼 수 있던 사람에게 간다. 영구 삭제한 것 · 템플릿은 없는 것이다.
  */
 async function entityVisible(ctx: SessionContext, subscriptionId: string, head: Head): Promise<boolean> {
+  const nodeVisible = async (tx: Tx, nodeId: string): Promise<boolean> => {
+    const node = await tx.queryMaybe<{ lifecycle: string; is_template: boolean | null }>(
+      `SELECT b.lifecycle::text AS lifecycle, p.is_template FROM block b LEFT JOIN page p ON p.id = b.id WHERE b.id = $1 AND b.workspace_id = $2`,
+      [nodeId, ctx.workspaceId],
+    )
+    if (node === null || node.lifecycle === 'purged' || node.is_template === true) return false
+    return can(await effectiveCaps(tx, ctx, nodeId), 'view')
+  }
   switch (head.entity_type) {
     case 'webhook_subscription':
       return head.entity_id === subscriptionId
     case 'page':
     case 'block':
     case 'database':
-      return withReadTransaction(async (tx) => can(await effectiveCaps(tx, ctx, head.entity_id), 'view'))
+      return withReadTransaction((tx) => nodeVisible(tx, head.entity_id))
     case 'data_source':
       return withReadTransaction(async (tx) => {
-        const owner = await tx.queryMaybe<{ db: string }>(`SELECT owner_database_id AS db FROM data_source WHERE id = $1`, [head.entity_id])
-        return owner !== null && can(await effectiveCaps(tx, ctx, owner.db), 'view')
+        const owner = await tx.queryMaybe<{ db: string; lifecycle: string }>(
+          `SELECT owner_database_id AS db, lifecycle::text AS lifecycle FROM data_source WHERE id = $1`,
+          [head.entity_id],
+        )
+        return owner !== null && owner.lifecycle !== 'purged' && (await nodeVisible(tx, owner.db))
       })
+    case 'comment': {
+      const pageId = (head.data as { page_id?: unknown } | null)?.page_id
+      if (typeof pageId !== 'string') return false
+      return withReadTransaction(async (tx) => {
+        const suggestion = await tx.queryMaybe<{ one: number }>(
+          `SELECT 1 AS one FROM comment c JOIN suggestion s ON s.thread_id = c.discussion_id WHERE c.id = $1 LIMIT 1`,
+          [head.entity_id],
+        )
+        return suggestion === null && (await nodeVisible(tx, pageId))
+      })
+    }
     default:
       return false
   }
@@ -163,8 +192,8 @@ async function deliverSubscription(
 ): Promise<boolean> {
   for (let handled = 0; handled < EVENTS_PER_SUBSCRIPTION; handled += 1) {
     // ② 차례 — 같은 대상의 앞선 줄이 기다리는 중이면 뒤의 줄은 기다린다
-    const head = await queryMaybe<Head>(
-      `SELECT e.id, e.event_id, e.type, e.entity_id, e.entity_type, e.authors, e.data, e.occurred_at, e.attempts
+    const found = await queryMaybe<Head>(
+      `SELECT e.id, e.event_id, e.type, e.entity_id, e.entity_type, e.authors, e.data, e.occurred_at, e.attempts, e.window_started_at
          FROM api_webhook_event e
         WHERE e.subscription_id = $1 AND e.status = 'pending' AND e.next_attempt_at <= $2
           AND NOT EXISTS (SELECT 1 FROM api_webhook_event p
@@ -173,7 +202,19 @@ async function deliverSubscription(
         LIMIT 1`,
       [subscriptionId, now],
     )
-    if (head === null) return false
+    if (found === null) return false
+    // 묶는 중이면 봉인한다 — 합치던 쓰기의 커밋을 기다리고 그 내용으로 보낸다(머리말 ②)
+    let head = found
+    if (found.window_started_at !== null) {
+      const sealed = await queryMaybe<{ authors: unknown; data: unknown; occurred_at: Date }>(
+        `UPDATE api_webhook_event SET window_started_at = NULL
+          WHERE id = $1 AND status = 'pending' AND window_started_at IS NOT NULL
+          RETURNING authors, data, occurred_at`,
+        [found.id],
+      )
+      if (sealed === null) continue
+      head = { ...found, ...sealed, window_started_at: null }
+    }
 
     // ③ 다시 보기
     const sub = await queryMaybe<{
@@ -260,8 +301,11 @@ async function deliverSubscription(
   return true
 }
 
-/** 내 임대인가 — 같은 트랜잭션에서 구독 행을 잠그고 본다(그 사이 다른 워커 · 명령이 끼지 않게). */
-const HOLDS_LEASE = `SELECT 1 FROM api_webhook_subscription WHERE id = $1 AND locked_until = $2 FOR UPDATE`
+/**
+ * 내 임대인가 — 같은 트랜잭션에서 구독 행을 잠그고 본다(그 사이 다른 워커 · 명령이 끼지 않게). `FOR NO KEY UPDATE` 다(API-9) — 이벤트를
+ * 쓰는 명령의 FK 검사 · `FOR KEY SHARE`(`webhook-emit.ts`)는 막지 않는다. 막으면 묶는 줄을 잡은 명령과 서로 기다릴 수 있다.
+ */
+const HOLDS_LEASE = `SELECT 1 FROM api_webhook_subscription WHERE id = $1 AND locked_until = $2 FOR NO KEY UPDATE`
 
 /** 한 줄을 끝내거나(보냄 · 건너뜀) 다음 시도로 미룬다. 적었으면 참. */
 async function finishOne(

@@ -6472,6 +6472,37 @@ try {
     await rejectsBy('★ 한 구독에 같은 이벤트 두 번', insertEvent, ev({ event: sharedEvent }), 'uq_api_webhook_event_once')
     await rejectsBy('없는 구독의 줄', insertEvent, ev({ sub: randomUUID() }), 'api_webhook_event_subscription_id_fkey')
 
+    // 묶기의 창(0152 · API-9 · §3.1 [보강 API-1] ⑬) — 묶는 종류 넷 · 기다림 · 시도 전에만 · 창 ≤ 일어난 시각 · 다음 시도 ≤ 창 + 2분 ·
+    // 한 구독 · 대상 · 종류에 묶는 줄은 하나
+    {
+      const ixDef = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_api_webhook_event_collecting'`)).rows[0]?.indexdef ?? ''
+      if (/UNIQUE INDEX .*\(subscription_id, entity_id, type\) WHERE \(window_started_at IS NOT NULL\)/.test(ixDef)) ok('ux_api_webhook_event_collecting — 묶는 줄은 (구독, 대상, 종류)마다 하나')
+      else fail(`ux_api_webhook_event_collecting 가 틀렸다 — ${ixDef || '없다'}`)
+      const insertWindow = `INSERT INTO api_webhook_event (id, subscription_id, workspace_id, event_id, type, entity_id, entity_type, data, occurred_at,
+                                                           status, attempts, next_attempt_at, last_attempt_at, last_http_status, finished_at, window_started_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, $8, $9, $10, $11, $12, $13, $14, $15)`
+      const opened = '2026-11-24T01:00:00Z'
+      const win = (over = {}) => {
+        const e = {
+          type: 'page.content_updated', entity: pageEntity, entityType: 'page', occurred: '2026-11-24T01:00:10Z', status: 'pending', attempts: 0,
+          next: '2026-11-24T01:00:25Z', last: null, http: null, finished: null, window: opened, ...over,
+        }
+        return [randomUUID(), activeId, wsId, randomUUID(), e.type, e.entity, e.entityType, e.occurred, e.status, e.attempts, e.next, e.last, e.http, e.finished, e.window]
+      }
+      await client.query(insertWindow, win())
+      await client.query(insertWindow, win({ window: null }))
+      await client.query(insertWindow, win({ type: 'data_source.schema_updated', entityType: 'data_source' }))
+      await client.query(insertWindow, win({ type: 'page.properties_updated', next: '2026-11-24T01:02:00Z' }))
+      ok('api_webhook_event 묶는 줄 정상 삽입 (본문 · 같은 열쇠의 묶지 않는 줄 · 구조 · 상한 끝 2분)')
+      await rejectsBy('★ 묶지 않는 종류(page.created)의 창', insertWindow, win({ type: 'page.created', entity: randomUUID() }), 'ck_api_webhook_event_window')
+      await rejectsBy('★ 댓글의 창(댓글은 묶지 않는다)', insertWindow, win({ type: 'comment.created', entity: randomUUID(), entityType: 'comment' }), 'ck_api_webhook_event_window')
+      await rejectsBy('★ 보낸 줄의 창', insertWindow, win({ entity: randomUUID(), status: 'delivered', attempts: 1, next: null, last: opened, http: 200, finished: opened }), 'ck_api_webhook_event_window')
+      await rejectsBy('★ 시도한 줄의 창(봉인 뒤에만 시도한다)', insertWindow, win({ entity: randomUUID(), attempts: 1, last: opened }), 'ck_api_webhook_event_window')
+      await rejectsBy('일어난 시각보다 늦은 창', insertWindow, win({ entity: randomUUID(), occurred: '2026-11-24T00:59:59Z' }), 'ck_api_webhook_event_window_order')
+      await rejectsBy('★ 창 + 2분을 넘는 다음 시도(잇달아 고쳐도 2분이면 나간다)', insertWindow, win({ entity: randomUUID(), next: '2026-11-24T01:02:01Z' }), 'ck_api_webhook_event_window_cap')
+      await rejectsBy('★ 같은 구독 · 대상 · 종류에 묶는 줄 둘', insertWindow, win(), 'ux_api_webhook_event_collecting')
+    }
+
     // 구독을 지우면 그 줄들도(FK CASCADE)
     await client.query(`DELETE FROM api_webhook_subscription WHERE id = $1`, [activeId])
     const left = (await client.query(`SELECT count(*)::int AS n FROM api_webhook_event WHERE subscription_id = $1`, [activeId])).rows[0].n

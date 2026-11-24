@@ -43,6 +43,8 @@ import { randomBytes, randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import type { SchemaAction } from '../api/webhook-aggregate.ts'
+import { emitSchemaChangedIn, type WebhookActor } from '../api/webhook-emit.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
@@ -261,13 +263,31 @@ function isFailure(v: DataSourceRow | PropertyResult<never>): v is PropertyResul
   return 'ok' in v
 }
 
-/** 스키마를 고쳤으면 반드시 부른다. 이것이 stale 쓰기 차단의 유일한 축이다. */
-export async function bumpSchema(tx: Tx, dataSourceId: string): Promise<string> {
+/**
+ * 무엇을 고쳤나 — 웹훅 `data_source.schema_updated` 의 `updated_properties`(API-9 · 정본 ⑬). 속성이 없으면(순서만 바꿨다) 내지 않는다.
+ * 행위자는 고친 사람이다.
+ */
+export type SchemaBump = {
+  readonly actor: WebhookActor
+  readonly properties: readonly { readonly propertyId: string; readonly action: SchemaAction }[]
+}
+
+/** `SchemaBump` 를 짧게 — 한 동작의 속성들. */
+export function schemaChange(actor: WebhookActor, action: SchemaAction, ...propertyIds: readonly string[]): SchemaBump {
+  return { actor, properties: propertyIds.map((propertyId) => ({ propertyId, action })) }
+}
+
+/**
+ * 스키마를 고쳤으면 반드시 부른다. 이것이 stale 쓰기 차단의 유일한 축이다 — 그래서 구조가 바뀌었다는 웹훅의 목이기도 하다(API-9 —
+ * 무엇을 고쳤는지는 부르는 쪽이 `change` 로 말한다).
+ */
+export async function bumpSchema(tx: Tx, dataSourceId: string, change: SchemaBump): Promise<string> {
   const row = await tx.queryOne<{ schema_version: string }>(
     `UPDATE data_source SET schema_version = schema_version + 1, updated_at = now()
       WHERE id = $1 RETURNING schema_version`,
     [dataSourceId],
   )
+  if (change.properties.length > 0) await emitSchemaChangedIn(tx, change.actor, dataSourceId, change.properties)
   return row.schema_version
 }
 
@@ -456,7 +476,7 @@ export async function addPropertyIn(
     await fillUniqueIds(tx, dataSourceId)
   }
 
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'created', inserted))
   return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
@@ -690,7 +710,7 @@ export async function updatePropertyIn(
     ],
   )
 
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId))
   return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
@@ -747,7 +767,8 @@ export async function moveProperty(
       orderKeyBetween(prev, next),
     ])
 
-    await bumpSchema(tx, dataSourceId)
+    // 순서만 바꿨다 — 노션의 구조 변경이 아니다(웹훅을 내지 않는다)
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated'))
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
 }
@@ -811,7 +832,7 @@ export async function deletePropertyIn(
     [propertyId, dataSourceId],
   )
 
-  await bumpSchema(tx, dataSourceId)
+  await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'deleted', propertyId))
   return { ok: true, value: await readSchema(tx, dataSourceId) } as const
 }
 
@@ -888,7 +909,8 @@ export async function restoreProperty(
       if (bad !== null) return fail(bad)
     }
 
-    await bumpSchema(tx, dataSourceId)
+    // 되살린 속성은 받는 쪽에게 다시 생긴 것이다
+    await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'created', propertyId))
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
 }
@@ -993,7 +1015,7 @@ export async function addSelectOptionIn(
       value: {
         option: toSelectOption({ ...inserted, group_kind: groupKind }),
         created: true,
-        schemaVersion: await bumpSchema(tx, dataSourceId),
+        schemaVersion: await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId)),
       },
     } as const
   }
@@ -1133,7 +1155,10 @@ export async function updateSelectOptionIn(
   )
   return {
     ok: true,
-    value: { option: toSelectOption({ ...updated, group_kind: nextGroup }), schemaVersion: await bumpSchema(tx, dataSourceId) },
+    value: {
+      option: toSelectOption({ ...updated, group_kind: nextGroup }),
+      schemaVersion: await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId)),
+    },
   } as const
 }
 
@@ -1238,7 +1263,7 @@ export async function deleteSelectOptionIn(
     value: {
       clearedCells: cleared.length,
       ...(defaultOptionId !== undefined ? { defaultOptionId } : {}),
-      schemaVersion: await bumpSchema(tx, dataSourceId),
+      schemaVersion: await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId)),
     },
   } as const
 }

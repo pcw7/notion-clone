@@ -4,8 +4,8 @@
  * 정본: 00-canonical-data-model.md §3.1 [보강 API-1] ⑫ · 마이그레이션 0151 `ck_api_webhook_event_types` · `ck_api_webhook_event_type`
  *       09-api-integrations.md F-09-09 *"이벤트 타입 전량"*
  *
- * 노션의 이름 그대로(2025-09-03 — 데이터 소스 판). 고를 수 있는 것은 아래 21개 — **내보내는 것은 API-9** 다(이 조각은 구독 · 서명 ·
- * 배달 · `test` 까지). 노션이 deprecated 로 둔 `database.content_updated` · `database.schema_updated` 는 처음부터 `data_source.*` 로 낸다.
+ * 노션의 이름 그대로(2025-09-03 — 데이터 소스 판). 고를 수 있는 것은 아래 21개 — **내보내는 것은 API-9**(`webhook-emit.ts` · 정본 ⑬ —
+ * `data_source.moved` 만은 그 명령이 없어 나지 않는다). 노션이 deprecated 로 둔 `database.content_updated` · `database.schema_updated` 는 처음부터 `data_source.*` 로 낸다.
  * 문서가 어긋나는 `file_upload.*` · `view.*` 는 넣지 않는다. `test` 는 노션에 없다 — "테스트 보내기" 만 내고 고를 수 없다.
  * 목록을 바꾸면 마이그레이션의 두 CHECK 도 함께 바꾼다.
  */
