@@ -12,6 +12,8 @@ import { createContext } from 'react'
 
 import type { RowJson } from '@/lib/database/http'
 import type { DropTarget } from '@/lib/database/board-drag'
+import type { Calculations } from '@/lib/database/calculate'
+import type { DeltaRowJson } from '@/lib/database/delta-merge'
 
 /** 포인터의 자리(화면). */
 export type LanePoint = { readonly x: number; readonly y: number }
@@ -92,3 +94,37 @@ export type BoardLane = {
 
 /** 하위 그룹이 있는 보드 밖에서는 없다. */
 export const BoardLanesContext = createContext<GroupLanes<BoardLane> | null>(null)
+
+// ── 그룹 표의 덩이 맞추기 (DB 실시간 동기화 RT-5 · 정본 X-5 의 단계 ㉔ ㉕) ─────────
+
+/** 덩이가 델타를 물을 때의 모습 — "더 보기" 커서 · 남았는가 · 이 덩이의 쓰기 수(묻는 사이 바뀌었으면 그 답을 쓰지 않는다). */
+export type GroupChunkPage = { readonly cursor: string | null; readonly hasMore: boolean; readonly writes: number }
+
+/** 그룹 표의 덩이 하나 — 바깥(`grouped-rows.tsx`)이 그룹 델타를 묻고 덩이마다 제 몫을 넘긴다. */
+export type GroupChunkSync = {
+  /** 지금의 모습 — 바쁘면(편집 · 추가 · 더 보기 · 맞추는 중) null(그 덩이는 끝난 뒤 제 그룹을 다시 읽는다). */
+  readonly page: () => GroupChunkPage | null
+  /** 이 덩이의 몫(`deltaForGroup`)을 합친다 — 물을 때의 모습(`sent`)이 그대로이고 이웃이 맞으면 참. 아니면 제 그룹을 다시 읽고 거짓. */
+  readonly apply: (rows: readonly DeltaRowJson[], sent: GroupChunkPage | null, calculations: Calculations | undefined) => boolean
+}
+
+export type GroupSyncs = {
+  register(key: string, sync: GroupChunkSync): () => void
+  get(key: string): GroupChunkSync | undefined
+}
+
+export function createGroupSyncs(): GroupSyncs {
+  const syncs = new Map<string, GroupChunkSync>()
+  return {
+    register(key, sync) {
+      syncs.set(key, sync)
+      return () => {
+        if (syncs.get(key) === sync) syncs.delete(key)
+      }
+    },
+    get: (key) => syncs.get(key),
+  }
+}
+
+/** 그룹 표 밖에서는 없다 — 덩이는 바깥이 나눠 주는 신호(`liveTick`)로만 다시 읽는다. */
+export const GroupSyncContext = createContext<GroupSyncs | null>(null)

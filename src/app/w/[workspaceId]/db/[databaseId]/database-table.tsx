@@ -173,7 +173,7 @@ import {
   stepTarget,
   type RowBox,
 } from '@/lib/database/row-drag'
-import { GroupLanesContext, type GroupLane } from './group-lanes'
+import { GroupLanesContext, GroupSyncContext, type GroupLane } from './group-lanes'
 import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
 import { ColumnMenu } from './column-menu'
 import { ButtonCell } from './button-cell'
@@ -1952,6 +1952,35 @@ export function DatabaseTable(props: {
         refreshRollups([row.id])
       },
       reload: () => void reload(),
+    })
+  })
+
+  // 그룹 표의 덩이 맞추기(RT-5 · 정본 ㉔ ㉕) — 바깥이 그룹 델타를 묻고 제 몫(그 그룹 안의 자리)을 넘긴다. 바쁘거나 묻는 사이 쓰거나 더 읽었거나
+  // 이웃이 어긋나면 제 그룹만 다시 읽는다(다른 덩이는 합친다)
+  const groupSyncs = useContext(GroupSyncContext)
+  useEffect(() => {
+    if (groupSyncs === null || !props.group) return
+    return groupSyncs.register(props.group.key, {
+      page: () => (blocked() || syncing.current ? null : { ...pageRef.current, writes: localWrites.current }),
+      apply: (deltaRows, sent, calc) => {
+        const page = pageRef.current
+        if (sent === null || blocked() || syncing.current || sent.writes !== localWrites.current || sent.cursor !== page.cursor || sent.hasMore !== page.hasMore) {
+          reload()
+          return false
+        }
+        const merged = mergeDelta({ previous: rowsRef.current, outside: outsideRef.current, touched: touched.current, rows: deltaRows, hasMore: page.hasMore })
+        if (!merged.ok) {
+          reload()
+          return false
+        }
+        if (merged.changed) {
+          applyRows(merged.rows, merged.outside, { quiet: false, now: true })
+          refreshRollups(merged.rows.map((r) => r.id))
+        }
+        if (calc !== undefined) setCalculations(calc)
+        if (deltaRows.length > 0) setReminderTick((tick) => tick + 1)
+        return true
+      },
     })
   })
 

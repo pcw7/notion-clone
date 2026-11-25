@@ -21,12 +21,33 @@
  *   place=1   뷰에 서는 행마다 `place: { before, after, beyond }`(그 뷰의 차례로 바로 앞 · 바로 뒤 행) + `placed`(줄 수 있었는가)
  *   page=     화면이 "더 보기"로 이어 읽을 커서 — `beyond`(아직 읽지 않은 범위인가)를 그것으로 판정한다
  *   calc=1    바뀐 행이 있으면 `calculations`(열 집계 — 행 읽기의 첫 페이지와 같다)
+ *
+ * 그룹 화면(보드 · 그룹 표 · 목록 — RT-5)이 함께 묻는 것:
+ *   group=1   뷰에 서는 행마다 `group: { key, before, after, beyond }`(그 그룹 안의 이웃) + `groupPlaced` + `groups`(그룹 머리) —
+ *             `calc=1` 이면 `groupCalculations`(덩이마다 열 집계)
+ *   pages=    `{"그룹 키": "더 보기 커서"}` JSON — 그룹마다 `beyond` 를 판정한다(50개까지 · 넘거나 모양이 틀리면 `groupPlaced: false`)
+ *   covers=1  뷰에 서는 바뀐 행의 카드 미리보기(갤러리)
  */
 
 import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
+import { MAX_GROUP_PAGES } from '@/lib/database/grouped-delta-merge'
 import { readRowDelta } from '@/lib/database/row-delta'
 import { readViewerToday } from '@/lib/settings/time-zone-cookie'
+
+/** `pages=` — 그룹 키 → 커서(문자열만 · 상한까지). 없으면 undefined · 틀리면 null. */
+function parsePages(raw: string | null): Readonly<Record<string, string>> | null | undefined {
+  if (raw === null || raw === '') return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+    const entries = Object.entries(parsed as Record<string, unknown>)
+    if (entries.length > MAX_GROUP_PAGES || entries.some(([, v]) => typeof v !== 'string')) return null
+    return Object.fromEntries(entries) as Record<string, string>
+  } catch {
+    return null
+  }
+}
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/changes/delta'>
 
@@ -46,6 +67,9 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     place: params.get('place') === '1',
     page: params.get('page'),
     calculations: params.get('calc') === '1',
+    group: params.get('group') === '1',
+    pages: parsePages(params.get('pages')),
+    covers: params.get('covers') === '1',
   })
   if (!delta.ok) return Response.json({ error: delta.reason }, { status: delta.reason === 'forbidden' ? 403 : 404 })
   return Response.json({ ok: true, ...delta.value }, { headers: { 'cache-control': 'no-store' } })

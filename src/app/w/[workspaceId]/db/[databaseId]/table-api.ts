@@ -379,12 +379,22 @@ export function loadDelta(
   dataSourceId: string,
   viewId: string,
   after: string,
-  options: { readonly search?: string | null; readonly page?: string | null; readonly calculations?: boolean } = {},
+  options: {
+    readonly search?: string | null
+    readonly page?: string | null
+    readonly calculations?: boolean
+    /** 그룹 안의 자리(RT-5 — 보드 · 그룹 표) — 그룹마다의 "더 보기" 커서와 함께. 주면 평평한 자리(`place`) 대신 묻는다. */
+    readonly pages?: Readonly<Record<string, string>>
+    /** 새로 선 카드의 미리보기(갤러리 — RT-5). */
+    readonly covers?: boolean
+  } = {},
 ): Promise<ApiResult<DeltaJson | null>> {
-  const query = new URLSearchParams({ after, view: viewId, place: '1' })
+  const query = new URLSearchParams({ after, view: viewId, ...(options.pages === undefined ? { place: '1' } : { group: '1' }) })
   if (options.search) query.set('q', options.search)
   if (options.page) query.set('page', options.page)
+  if (options.pages !== undefined && Object.keys(options.pages).length > 0) query.set('pages', JSON.stringify(options.pages))
   if (options.calculations === true) query.set('calc', '1')
+  if (options.covers === true) query.set('covers', '1')
   return call(`${base(workspaceId)}/data-sources/${dataSourceId}/changes/delta?${query}`, { method: 'GET', cache: 'no-store' }, parseDelta)
 }
 
