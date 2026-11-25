@@ -14,8 +14,9 @@
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { makeFixture, probeDatabase, type Fixture } from '../testing/db-fixtures.ts'
+import { createBareWorkspace, createUser, joinAs, makeFixture, probeDatabase, type Fixture } from '../testing/db-fixtures.ts'
 import { textRun } from '../contracts/rich-text.ts'
+import { grantAccess } from '../permissions/acl.ts'
 import { createDatabase } from './database.ts'
 import { addProperty, getSchema } from './property.ts'
 import type { MvpPropertyType } from './property-types.ts'
@@ -89,10 +90,10 @@ async function settledCursor(ds: string): Promise<string> {
   return encodeChangeCursor(horizon)
 }
 
-/** 바라는 행이 다 올 때까지 다시 묻는다 — 지평이 지나가야 준다. */
-async function deltaWith(read: () => Promise<RowDelta>, want: readonly string[]): Promise<RowDelta> {
+/** 바라는 행이 다 올 때까지(그리고 `also` 가 참일 때까지) 다시 묻는다 — 지평이 지나가야 준다. */
+async function deltaWith(read: () => Promise<RowDelta>, want: readonly string[], also: (d: RowDelta) => boolean = () => true): Promise<RowDelta> {
   let last = await read()
-  for (let t = 0; t < 8000 && !want.every((id) => last.rows.some((r) => r.id === id)); t += 100) {
+  for (let t = 0; t < 8000 && !(want.every((id) => last.rows.some((r) => r.id === id)) && also(last)); t += 100) {
     await sleep(100)
     last = await read()
   }
@@ -141,6 +142,31 @@ describe('① 정렬된 뷰', () => {
     order.forEach((id, i) => {
       assert.deepEqual(all.get(id), { before: order[i - 1] ?? null, after: order[i + 1] ?? null, beyond: false }, `${i}번째 행`)
     })
+  })
+
+  test('★ 볼 수 없는 행은 이웃으로 세지 않는다 — "만들기만" 에게 대표의 행은 이웃의 id 로도 오지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const ws = await createBareWorkspace('자리 권한')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const maker = await joinAs(ws, await createUser('제출자'), 'member')
+    const db = unwrap(await createDatabase(boss.ctx, { name: `자리 권한 ${Date.now()}`, privateTop: true }))
+    const ds = db.dataSourceId
+    const titleId = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.type === 'title')!.id
+    const title = (s: string) => [{ propertyId: titleId, value: { type: 'title', title: [textRun(s)] } as never }]
+    const sorts: SortKey[] = [{ property_id: titleId, direction: 'asc' }]
+    const a = unwrap(await createRow(boss.ctx, ds, { cells: title('a') })).id
+    const c = unwrap(await createRow(boss.ctx, ds, { cells: title('c') })).id
+    assert.ok((await grantAccess(boss.ctx, db.id, { type: 'user', id: maker.userId }, 'create')).ok)
+    const b = unwrap(await createRow(maker.ctx, ds, { cells: title('b') })).id
+
+    const theirs = unwrap(await queryRowNeighbors(boss.ctx, ds, { sorts, manualOrderViewId: db.defaultViewId }, [b]))
+    assert.deepEqual(theirs.get(b), { before: a, after: c, beyond: false }, '전제 — 대표에게 b 는 a 와 c 사이')
+    const seen = await listing(maker.ctx, ds, { sorts, viewId: db.defaultViewId })
+    assert.ok(!seen.includes(a) && !seen.includes(c), `전제 — "만들기만" 은 대표의 행을 보지 못한다: ${JSON.stringify(seen)}`)
+    const mine = unwrap(await queryRowNeighbors(maker.ctx, ds, { sorts, manualOrderViewId: db.defaultViewId }, [b]))
+    const place = mine.get(b)
+    assert.ok(place === undefined || (place.before !== a && place.after !== c), `★ 볼 수 없는 a · c 가 이웃으로 새지 않는다: ${JSON.stringify(place)}`)
+    assert.ok(!JSON.stringify([...mine]).includes(a) && !JSON.stringify([...mine]).includes(c), '★ 결과 어디에도 그 id 가 없다')
   })
 
   test('내림차순 · 같은 값으로 고친 행은 동률 안에서 order_key 의 자리', async (t) => {
@@ -254,7 +280,8 @@ describe('⑤ 자리를 줄 수 없는 뷰', () => {
     assert.equal(placeOf(plain, a), undefined)
 
     unwrap(await enableSubItems(ctx, tb.ds))
-    const tree = await deltaWith(() => readRowDelta(ctx, tb.ds, tb.viewId, start, { place: true }).then(unwrap), [a])
+    // 스키마 기록이 지평 아래로 들어올 때까지 — 다른 검사의 열린 트랜잭션이 지평을 붙잡으면 a 만 먼저 온다
+    const tree = await deltaWith(() => readRowDelta(ctx, tb.ds, tb.viewId, start, { place: true }).then(unwrap), [a], (d) => d.schemaChanged)
     assert.equal(tree.schemaChanged, true)
     assert.equal(tree.placed, false, '하위 항목을 펴는 트리는 층마다라 한 줄의 이웃이 없다')
   })
