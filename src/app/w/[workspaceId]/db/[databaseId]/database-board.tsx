@@ -104,7 +104,11 @@ import type { DateReminderJson } from '@/lib/database/reminder'
 import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functions'
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import type { FormulaValue } from '@/lib/formula/formula'
-import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
+import { useAdoptServerValue } from './use-table-changes'
+import { useViewDeltaSync } from './use-view-delta-sync'
+import { groupedDeltaFallback, groupPages, mergeGroupedDelta } from '@/lib/database/grouped-delta-merge'
+import { ownWrites } from '@/lib/database/remote-cells'
+import { CARD_FLASH_LAYER, flashablePropertyIds, useCardFlash } from './card-flash'
 import { BoardLanesContext, type BoardLane, type LanePoint } from './group-lanes'
 import { insertRow } from '@/lib/database/row-drag'
 import { Highlighted } from './search-term'
@@ -258,7 +262,10 @@ export function DatabaseBoard(props: {
    * (`database-table.tsx` 의 `modeRef` 와 같은 이유 — 이벤트 여러 개가 렌더 전의 상태를 보면 두 번 적용된다).
    */
   const groupsRef = useRef(groups)
+  /** 화면의 카드를 바꾼 횟수 — 델타를 묻는 사이 바뀌었으면 그 답(옛 목록의 것)을 버리고 다시 묻는다(RT-5). */
+  const localSeq = useRef(0)
   const update = (next: (current: readonly BoardGroupJson[]) => readonly BoardGroupJson[]) => {
+    localSeq.current += 1
     groupsRef.current = next(groupsRef.current)
     setGroupsState(groupsRef.current)
   }
@@ -268,10 +275,14 @@ export function DatabaseBoard(props: {
     setEditingState(next)
   }
 
-  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 새 그룹을 받아들인다. 끌기 · 편집 · 만들기 · 더 보기
-  // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
+  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 바뀐 카드만 그룹 안의 자리에 합친다(RT-5 · 아래 `useViewDeltaSync`). 확신이 없으면
+  // 서버 렌더를 다시 부르고 새 그룹을 받아들인다. 끌기 · 편집 · 만들기 · 더 보기 중이면 끝난 뒤에. 다시 읽으면 "더 보기"로 더 읽은 카드는
+  // 첫 페이지로 돌아간다(§7).
   const boardBusy = draggingId !== null || editing !== null || busyKey !== null || loadingKey !== null
-  useLiveServerRefresh(workspaceId, dataSourceId, boardBusy, props.renderedAt, props.live !== false)
+  const boardBusyRef = useRef(boardBusy)
+  useEffect(() => {
+    boardBusyRef.current = boardBusy
+  })
   useAdoptServerValue(props.groups, boardBusy, (next) => update(() => next))
 
   /** 머리 값을 다시 받은 횟수 — 늦게 온 옛 답을 버린다(머리말). */
@@ -528,6 +539,8 @@ export function DatabaseBoard(props: {
     if (moved === null) return
     setError(null)
     setNotice(null)
+    // 이 탭의 쓰기 — 돌아온 델타에서 이 카드를 칠하지 않는다(RT-5 ㉖ · `remote-cells.ts`)
+    ownWrites.note(rowId)
     update(() => moved.columns)
 
     const result = await api.moveCard(workspaceId, viewId, {
@@ -564,6 +577,7 @@ export function DatabaseBoard(props: {
     if (findRow(rowId) === null) return
     setError(null)
     setNotice(null)
+    ownWrites.note(rowId)
     update((current) =>
       current.map((g) => (g.rows.some((r) => r.id === rowId) ? { ...g, count: Math.max(0, g.count - 1), rows: g.rows.filter((r) => r.id !== rowId) } : g)),
     )
@@ -649,6 +663,7 @@ export function DatabaseBoard(props: {
       return
     }
     const { row } = result.value
+    ownWrites.note(row.id)
     update((current) =>
       current.map((g) => (g.key === group.key ? { ...g, rows: [...g.rows, row], count: g.count + 1 } : g)),
     )
@@ -682,8 +697,10 @@ export function DatabaseBoard(props: {
       properties: { ...r.properties, [titleColumn.propertyId]: value },
     })
     update((current) => mapRow(current, e.rowId, (r) => withValue(r, parsed.value)))
+    ownWrites.note(e.rowId, titleColumn.propertyId)
     // 뷰를 실어 보낸다 — 고친 카드가 조건 밖이면 곧 빠지므로 그 까닭을 말한다(10n-16)
     const result = await api.updateCellInView(workspaceId, e.rowId, titleColumn.propertyId, parsed.value, { id: viewId, search: props.search ?? null })
+    ownWrites.note(e.rowId, titleColumn.propertyId)
     if (!result.ok) {
       update((current) => mapRow(current, e.rowId, (r) => withValue(r, previous)))
       setError(result.message)
@@ -734,8 +751,58 @@ export function DatabaseBoard(props: {
   const { names: peopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, groups.flatMap((g) => g.rows), columns)
   // rollup 칸의 값(10n-33) — 카드의 배지. 신호로 서버 렌더를 다시 부르면 다시 계산된 것을 받아들인다(카드와 같은 때 · `use-rollup-values.ts` ③)
   const serverRollups = props.rollupValues ?? EMPTY_ROLLUP_PAGE
-  const { page: rollups, adopt: adoptRollups } = useRollupValues(workspaceId, dataSourceId, serverRollups, groups.flatMap((g) => g.rows), columns)
+  const { page: rollups, adopt: adoptRollups, refresh: refreshRollups } = useRollupValues(
+    workspaceId,
+    dataSourceId,
+    serverRollups,
+    groups.flatMap((g) => g.rows),
+    columns,
+  )
   useAdoptServerValue(serverRollups, boardBusy, adoptRollups)
+
+  // ── 바뀐 카드만(RT-5 · 정본 X-5 의 단계 ㉒~㉖) ──
+  // 서버가 카드마다 그룹 키 · 그 그룹 안의 이웃 · 그룹 머리를 준다 — 그룹마다 평평한 합치기(`grouped-delta-merge.ts`). 어느 그룹이든 어긋나면
+  // 보드 전체를 다시 읽는다. 여러 값 그룹(다중 선택 — 한 카드가 여러 열에 선다) · 가로줄(하위 그룹)은 묻지 않고 다시 읽는다(㉓).
+  const cardFlash = useCardFlash(boardRef)
+  const syncStats = useViewDeltaSync({
+    workspaceId,
+    dataSourceId,
+    viewId,
+    busy: boardBusy,
+    enabled: props.live !== false,
+    renderedAt: props.renderedAt,
+    deltaCapable: property.type !== 'multi_select' && !props.lane,
+    server: props.groups,
+    attempt: async (after) => {
+      const at = localSeq.current
+      const pages = groupPages(groupsRef.current)
+      if (pages === null) return { kind: 'full', cursor: null }
+      const result = await api.loadDelta(workspaceId, dataSourceId, viewId, after, { search: props.search ?? null, pages })
+      // 묻는 사이 이 화면에서 옮기거나 더 읽었다 — 그 답은 옛 목록의 것이다
+      if (localSeq.current !== at || boardBusyRef.current) return { kind: 'retry' }
+      if (!result.ok || result.value === null) return { kind: 'full', cursor: null }
+      const delta = result.value
+      if (groupedDeltaFallback(delta, groupsRef.current) !== null) return { kind: 'full', cursor: delta.cursor }
+      if (delta.rows.length > 0) {
+        const merged = mergeGroupedDelta(groupsRef.current, delta.rows)
+        if (merged === null) return { kind: 'full', cursor: delta.cursor }
+        const heads = new Map((delta.groups ?? []).map((h) => [h.key, h]))
+        const previous = groupsRef.current.flatMap((g) => g.rows)
+        // 머리(개수 · 계산)는 서버의 것으로 — 다시 읽지 않는다(㉔)
+        update((current) =>
+          current.map((g) => {
+            const head = heads.get(g.key)
+            const rows = merged.rows.get(g.key) ?? g.rows
+            return head === undefined ? { ...g, rows } : { ...g, rows, count: head.count, calculation: head.calculation }
+          }),
+        )
+        const next = groupsRef.current.flatMap((g) => g.rows)
+        cardFlash.flash(previous, next, flashablePropertyIds([...(titleColumn === null ? [] : [titleColumn]), ...badgeColumns]))
+        refreshRollups(next.map((r) => r.id))
+      }
+      return { kind: 'applied', cursor: delta.cursor, behind: delta.behind }
+    },
+  })
   // 수식 칸의 값(10n-34) — 카드의 배지. 그 카드의 칸으로 여기서 계산한다(표와 같은 함수 — 열을 옮겨 칸이 바뀌면 따라 바뀐다)
   const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
   const formulaValues = useMemo(() => formulaValuesByRow(formulas, groups.flatMap((g) => g.rows), columns), [formulas, groups, columns])
@@ -810,6 +877,10 @@ export function DatabaseBoard(props: {
         ref={boardRef}
         data-testid="db-board"
         data-manual-order={manualOrder}
+        // 마지막 맞추기가 델타였나 다시 읽기였나 · 센 수(RT-5 — 검사용 · 그리지 않는다)
+        data-sync={syncStats.last ?? undefined}
+        data-sync-delta={syncStats.delta}
+        data-sync-full={syncStats.full}
         className={`flex items-start gap-3 overflow-x-auto pb-3 ${draggingId !== null ? 'select-none' : ''}`}
       >
         {visible.map((group) => {
@@ -899,6 +970,7 @@ export function DatabaseBoard(props: {
                     formulaErrors={formulas?.errors}
                     reminders={reminders[row.id]}
                     dragging={draggingId === row.id}
+                    flashed={cardFlash.flashed.get(row.id)}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
                     canDrag={canMoveCards}
@@ -988,6 +1060,10 @@ export function DatabaseBoard(props: {
           {notice}
         </p>
       )}
+      {/* 남이 바꾼 카드(RT-5 ㉖) — 낭독기에는 카드마다가 아니라 한 줄로 */}
+      <p role="status" className="sr-only">
+        {cardFlash.summary}
+      </p>
     </section>
   )
 }
@@ -1010,6 +1086,7 @@ function BoardCard({
   formulaErrors,
   reminders,
   dragging,
+  flashed,
   dropBefore,
   editing,
   canDrag,
@@ -1040,6 +1117,8 @@ function BoardCard({
   formulaErrors: Readonly<Record<string, string | null>> | undefined
   reminders: Readonly<Record<string, DateReminderJson>> | undefined
   dragging: boolean
+  /** 남이 바꾼 카드의 칠한 차례(RT-5 ㉖) — 없으면 칠하지 않았다. */
+  flashed: number | undefined
   dropBefore: boolean
   editing: Editing | null
   canDrag: boolean
@@ -1063,6 +1142,7 @@ function BoardCard({
         data-row-id={row.id}
         data-testid="db-board-card"
         data-dragging={dragging || undefined}
+        data-remote-changed={flashed}
         tabIndex={0}
         onPointerDown={(e) => onPointerDown(row, groupKey, e)}
         onPointerMove={onPointerMove}
@@ -1070,10 +1150,11 @@ function BoardCard({
         onPointerCancel={onPointerCancel}
         onContextMenu={onContextMenu}
         // 터치 — 길게 누르는 동안 글자를 고르거나 기기의 미리 보기를 띄우지 않는다(10m-1)
-        className={`flex flex-col gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-2 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch:select-none [-webkit-touch-callout:none] dark:border-neutral-700 dark:bg-neutral-950 ${
+        className={`relative flex flex-col gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-2 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch:select-none [-webkit-touch-callout:none] dark:border-neutral-700 dark:bg-neutral-950 ${
           canDrag ? 'cursor-grab' : ''
         } ${dragging ? 'opacity-40' : ''}`}
       >
+        {flashed !== undefined && <span aria-hidden data-card-flash={flashed} className={CARD_FLASH_LAYER} />}
         {editing !== null ? (
           <input
             ref={inputRef}

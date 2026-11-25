@@ -53,7 +53,11 @@ import { useRowReminders } from './use-row-reminders'
 import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functions'
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import { usePeopleNames } from './use-people-names'
-import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
+import { useAdoptServerValue } from './use-table-changes'
+import { useViewDeltaSync } from './use-view-delta-sync'
+import { deltaFallback, mergeDelta } from '@/lib/database/delta-merge'
+import { ownWrites } from '@/lib/database/remote-cells'
+import { CARD_FLASH_LAYER, flashablePropertyIds, useCardFlash } from './card-flash'
 import {
   cardDropBefore,
   cardDropMark,
@@ -132,7 +136,18 @@ export function DatabaseGallery(props: {
   // 뷰 안의 일(카드의 차례 · 기본 템플릿)은 그릇의 권한이다(N-2) — 소유한 소스의 뷰는 `access` 와 같다.
   const viewAccess: ViewAccess = props.viewAccess ?? access
   const router = useRouter()
-  const [rows, setRows] = useState<readonly RowJson[]>(props.rows)
+  const [rows, setRowsState] = useState<readonly RowJson[]>(props.rows)
+  /**
+   * 지금 카드의 동기 사본 · 바꾼 횟수(RT-5) — 모든 갱신이 여기를 거친다(보드의 `update` 와 같다). 델타를 묻는 사이 바뀌었으면 그 답(옛 목록의
+   * 것)을 버리고 다시 묻는다.
+   */
+  const rowsRef = useRef(rows)
+  const localSeq = useRef(0)
+  const setRows = (next: readonly RowJson[] | ((current: readonly RowJson[]) => readonly RowJson[])) => {
+    localSeq.current += 1
+    rowsRef.current = typeof next === 'function' ? next(rowsRef.current) : next
+    setRowsState(rowsRef.current)
+  }
   const [cursor, setCursor] = useState<string | null>(props.hasMore ? props.nextCursor : null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -147,10 +162,16 @@ export function DatabaseGallery(props: {
   /** 불러오다 깨진 이미지 — 빈 자리로 돌린다(같은 주소를 다시 묻지 않는다). */
   const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set())
   const markBroken = (src: string) => setBroken((current) => (current.has(src) ? current : new Set(current).add(src)))
-  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 첫 페이지 · 미리보기를 받아들인다. 만들기 · 편집 · 더 보기
-  // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
+  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 바뀐 카드만 합친다(RT-5 · 아래 `useViewDeltaSync`). 확신이 없으면 서버 렌더를 다시
+  // 부르고 첫 페이지 · 미리보기를 받아들인다. 만들기 · 편집 · 더 보기 중이면 끝난 뒤에. 다시 읽으면 "더 보기"로 더 읽은 카드는 첫 페이지로
+  // 돌아간다(§7).
   const galleryBusy = loadingMore || busy || editing !== null || pendingMoves > 0
-  useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy, props.renderedAt, props.live !== false)
+  const galleryBusyRef = useRef(galleryBusy)
+  const cursorRef = useRef(cursor)
+  useEffect(() => {
+    galleryBusyRef.current = galleryBusy
+    cursorRef.current = cursor
+  })
   useAdoptServerValue(props.rows, galleryBusy, (next) => {
     setRows(next)
     setCursor(props.hasMore ? props.nextCursor : null)
@@ -176,10 +197,53 @@ export function DatabaseGallery(props: {
   const { names: peopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, rows, columns)
   // rollup 칸의 값(10n-33) — 카드의 배지. 신호로 서버 렌더를 다시 부르면 다시 계산된 것을 받아들인다(카드와 같은 때)
   const serverRollups = props.rollupValues ?? EMPTY_ROLLUP_PAGE
-  const { page: rollups, adopt: adoptRollups } = useRollupValues(workspaceId, dataSourceId, serverRollups, rows, columns)
+  const { page: rollups, adopt: adoptRollups, refresh: refreshRollups } = useRollupValues(workspaceId, dataSourceId, serverRollups, rows, columns)
   // 카드의 날짜 종(10n-76) — 서버가 다시 그릴 때마다(`renderedAt`) 다시 읽는다
   const [reminders] = useRowReminders(workspaceId, dataSourceId, rows, columns.some((c) => c.type === 'date'), props.renderedAt)
   useAdoptServerValue(serverRollups, galleryBusy, adoptRollups)
+
+  // ── 바뀐 카드만(RT-5 · 정본 X-5 의 단계 ㉑ ㉖) ──
+  // 묶지 않은 갤러리는 평평한 목록이다 — 표와 같은 자리(`place` · 더 보기 커서)와 합치기(`mergeDelta`). 새로 선 카드의 미리보기는 델타가
+  // 싣는다. 카드의 부모만(하위 항목)은 서버가 자리를 주지 않는다(`placed: false` → 다시 읽기). 그룹 덩이는 바깥이 다시 읽는다(G-3a).
+  const gridRef = useRef<HTMLUListElement>(null)
+  const cardFlash = useCardFlash(gridRef)
+  const syncStats = useViewDeltaSync({
+    workspaceId,
+    dataSourceId,
+    viewId,
+    busy: galleryBusy,
+    enabled: props.live !== false,
+    renderedAt: props.renderedAt,
+    deltaCapable: !props.group,
+    server: props.rows,
+    attempt: async (after) => {
+      const at = localSeq.current
+      const page = cursorRef.current
+      const result = await api.loadDelta(workspaceId, dataSourceId, viewId, after, { search: props.search ?? null, page, covers: showCover })
+      // 묻는 사이 이 화면에서 바꾸거나 더 읽었다 — 그 답은 옛 목록의 것이다
+      if (localSeq.current !== at || cursorRef.current !== page || galleryBusyRef.current) return { kind: 'retry' }
+      if (!result.ok || result.value === null) return { kind: 'full', cursor: null }
+      const delta = result.value
+      if (deltaFallback(delta) !== null) return { kind: 'full', cursor: delta.cursor }
+      if (delta.rows.length > 0) {
+        const previous = rowsRef.current
+        // 빠진 카드는 남기지 않는다(조건 밖 표시가 없다 — 고친 카드는 안내만 · 10n-16)
+        const merged = mergeDelta({ previous, outside: new Set(), touched: new Set(), rows: delta.rows, hasMore: page !== null })
+        if (!merged.ok) return { kind: 'full', cursor: delta.cursor }
+        if (delta.covers !== undefined) {
+          const more = delta.covers
+          setCovers((current) => ({ ...current, ...more }))
+        }
+        if (merged.changed) {
+          rowsRef.current = merged.rows
+          setRowsState(merged.rows)
+          cardFlash.flash(previous, merged.rows, flashablePropertyIds(columns))
+          refreshRollups(merged.rows.map((r) => r.id))
+        }
+      }
+      return { kind: 'applied', cursor: delta.cursor, behind: delta.behind }
+    },
+  })
   // 수식 칸의 값(10n-34) — 카드의 배지. 그 카드의 칸으로 여기서 계산한다(표와 같은 함수)
   const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
   const formulaValues = useMemo(() => formulaValuesByRow(formulas, rows, columns), [formulas, rows, columns])
@@ -230,6 +294,8 @@ export function DatabaseGallery(props: {
       return
     }
     const { row } = result.value
+    // 이 탭의 쓰기 — 돌아온 델타에서 이 카드를 칠하지 않는다(RT-5 ㉖)
+    ownWrites.note(row.id)
     setRows((current) => [...current, row])
     setNotice(templateRowNote(result.value.skippedPages, result.value.skippedLinks))
     // ★ 초안은 그 카드의 **지금 제목**이다 — 템플릿이 준 제목을 빈 글자로 덮지 않는다(표 · 보드와 같은 이유).
@@ -258,8 +324,10 @@ export function DatabaseGallery(props: {
       properties: { ...r.properties, [titleColumn.propertyId]: value },
     })
     setRows((current) => current.map((r) => (r.id === e.rowId ? withValue(r, parsed.value) : r)))
+    ownWrites.note(e.rowId, titleColumn.propertyId)
     // 뷰를 실어 보낸다 — 고친 카드가 조건 밖이면 곧 빠지므로 그 까닭을 말한다(10n-16)
     const result = await api.updateCellInView(workspaceId, e.rowId, titleColumn.propertyId, parsed.value, { id: viewId, search: props.search ?? null })
+    ownWrites.note(e.rowId, titleColumn.propertyId)
     if (!result.ok) {
       setRows((current) => current.map((r) => (r.id === e.rowId ? withValue(r, previous) : r)))
       setError(result.message)
@@ -283,7 +351,6 @@ export function DatabaseGallery(props: {
   // ── 카드 끌기(10n-61 · F-04-01 · HANDOFF §3.2-297) ─────────────────
   /** 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 정렬이 없다(서버 렌더가 `manualOrder` 로 준다 · 서버도 `sorted` 로 거부). */
   const canReorder = viewAccess.canEditContent && props.manualOrder === true
-  const gridRef = useRef<HTMLUListElement>(null)
   /** 잡은 카드 · 잡은 자리 · 끌기가 시작됐는가 · 지금 표시를 그리게 한 다른 덩이(G-3b — 떠나면 그 표시를 지운다). */
   const cardGrab = useRef<{ id: string; x: number; y: number; active: boolean; lane: GroupLane | null } | null>(null)
   /** 그룹 덩이들이 서로를 찾는 자리(G-3b) — 그룹 화면 밖이면 null. */
@@ -321,6 +388,7 @@ export function DatabaseGallery(props: {
    */
   const moveCardToLane = (rowId: string, key: string, lane: GroupLane, before: string | null) => {
     if (!rows.some((r) => r.id === rowId)) return
+    ownWrites.note(rowId)
     setRows((current) => current.filter((r) => r.id !== rowId))
     setPendingMoves((n) => n + 1)
     moveChain.current = moveChain.current.then(async () => {
@@ -443,6 +511,10 @@ export function DatabaseGallery(props: {
         data-card-size={layout.cover_size}
         ref={gridRef}
         aria-busy={pendingMoves > 0 || undefined}
+        // 마지막 맞추기가 델타였나 다시 읽기였나 · 센 수(RT-5 — 검사용 · 그리지 않는다)
+        data-sync={syncStats.last ?? undefined}
+        data-sync-delta={syncStats.delta}
+        data-sync-full={syncStats.full}
         className={`relative grid gap-3 ${CARD_GRID[layout.cover_size]}`}
       >
         {/* 놓을 자리 — 이 덩이의 카드를 끌 때(`cardMark`) · 다른 덩이의 카드를 이리로 끌 때(`laneMark` · G-3b) */}
@@ -460,9 +532,13 @@ export function DatabaseGallery(props: {
             data-row-id={row.id}
             data-testid="db-gallery-card"
             data-dragging={draggingCard === row.id ? 'true' : undefined}
+            data-remote-changed={cardFlash.flashed.get(row.id)}
             style={draggingCard === row.id ? { opacity: 0.5 } : undefined}
             className="group relative flex min-h-24 flex-col overflow-hidden rounded-md border border-neutral-200 bg-white text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-950"
           >
+            {cardFlash.flashed.has(row.id) && (
+              <span aria-hidden data-card-flash={cardFlash.flashed.get(row.id)} className={`z-20 ${CARD_FLASH_LAYER}`} />
+            )}
             {canReorder && (
               // 끌기 손잡이(10n-61) — 마우스를 올리면 선다(터치는 늘). 글리프는 CSS(표의 손잡이와 같다). 키보드는 제목에서 Alt+← · Alt+→
               <button
@@ -599,6 +675,10 @@ export function DatabaseGallery(props: {
           {notice}
         </p>
       )}
+      {/* 남이 바꾼 카드(RT-5 ㉖) — 낭독기에는 한 줄로 */}
+      <p role="status" className="sr-only">
+        {cardFlash.summary}
+      </p>
     </section>
   )
 }

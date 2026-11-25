@@ -18,6 +18,10 @@
  * 않게(평가기 두 벌 — 정본 X-5 [보강] ①) 서버가 행 읽기와 같은 질의로 줄 세워 뷰에 서는 행마다 바로 앞 · 바로 뒤 행(`before` · `after`)과
  * 화면이 아직 읽지 않은 범위인가(`beyond` — 화면의 "더 보기" 커서 `page` 뒤)를 준다(`queryRowNeighbors`). 평평한 목록만이다 — 하위 항목을
  * 펴는 트리 · 카드의 부모만(갤러리)은 `placed: false`(화면은 다시 읽는다). 열 집계(`calc`)는 바뀐 행이 있을 때만 싣는다.
+ *
+ * **그룹 안의 자리(RT-5 · `group`)** — 보드 · 그룹 표 · 목록은 행마다 그룹 키와 **그 그룹 안의** 이웃(`group`)과 그룹 머리(`groups` — 개수 ·
+ * 머리의 계산)를 받는다. 그룹 읽기와 같은 컴파일이다(`group.ts` 의 `queryGroupPlaces`). 여러 값 · 하위 그룹 · 부모만은 `groupPlaced: false`.
+ * 갤러리는 새로 선 카드의 미리보기(`covers`)도 받는다(정본 X-5 의 단계 ㉑~㉔).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -34,6 +38,8 @@ import {
   type ResetReason,
 } from './change-log.ts'
 import { ParamBag } from './filter.ts'
+import { readGalleryCovers, type CardCovers } from './gallery-covers.ts'
+import { queryGroupColumnCalculations, queryGroupPlaces, type GroupHead, type GroupPlace } from './group.ts'
 import { rowJson, type RowJson } from './http.ts'
 import { queryRowNeighbors, queryRows, type QueryRowsInput, type RowNeighbors } from './query.ts'
 import { restrictedRowsSql, rowsAccessForDataSource, type RowsAccess } from './row-access.ts'
@@ -43,7 +49,7 @@ import { getView, type ViewDetail } from './view.ts'
 import { cardParentsOnlyPair, nestsSubItems, showsParentsOnly, subItemPairOf } from './view-columns.ts'
 
 export type DeltaRow =
-  | (RowJson & { readonly kind: 'row_upsert'; readonly inView: boolean; readonly place?: RowNeighbors })
+  | (RowJson & { readonly kind: 'row_upsert'; readonly inView: boolean; readonly place?: RowNeighbors; readonly group?: GroupPlace })
   | { readonly id: string; readonly kind: 'row_delete'; readonly inView: false }
 
 export type RowDelta = {
@@ -74,6 +80,17 @@ export type RowDelta = {
   readonly placed?: boolean
   /** 열 집계를 물었고(`calc`) 바뀐 행이 있을 때만 — 행 읽기의 첫 페이지가 싣는 것과 같다. */
   readonly calculations?: Calculations
+  /**
+   * 그룹 자리를 물었을 때(`group`)만 — 뷰에 서는 행마다 `group` 을 실었다. 거짓이면 이 뷰는 그룹 안의 자리를 줄 수 없다(여러 값 · 하위 그룹 ·
+   * 부모만 · 그룹이 없다 · 커서가 정렬에 맞지 않는다 · 두 질의가 어긋났다) — 화면은 다시 읽는다.
+   */
+  readonly groupPlaced?: boolean
+  /** 그룹 머리(RT-5) — 그룹 자리를 줬고 바뀐 행이 있을 때만. 그룹 읽기의 머리와 같은 목록 · 차례 · 개수 · 머리의 계산. */
+  readonly groups?: readonly GroupHead[]
+  /** 덩이마다 열 집계(그룹 표 — `calc` · `group` 을 함께 물었고 바뀐 행이 있을 때만) — 그룹 키 → 그 그룹의 행 전부의 집계. */
+  readonly groupCalculations?: Readonly<Record<string, Calculations>>
+  /** 뷰에 서는 바뀐 행의 카드 미리보기(갤러리 — `covers`) — 행 읽기의 것과 같다. */
+  readonly covers?: CardCovers
 }
 
 export type RowDeltaResult =
@@ -96,8 +113,14 @@ export async function readRowDelta(
     readonly place?: boolean
     /** 화면이 "더 보기"로 이어 읽을 커서 — 주면 `place.beyond` 를 판정한다. 없으면 화면이 목록을 끝까지 들고 있다. */
     readonly page?: string | null
-    /** 바뀐 행이 있으면 열 집계를 싣는다. */
+    /** 바뀐 행이 있으면 열 집계를 싣는다(그룹 자리를 물으면 덩이마다). */
     readonly calculations?: boolean
+    /** 뷰에 서는 행마다 그룹 안의 자리 · 그룹 머리를 싣는다(RT-5 — 머리말). `place` 대신 묻는다. */
+    readonly group?: boolean
+    /** 화면이 그룹마다 "더 보기"로 이어 읽을 커서 — `group.beyond` 를 판정한다. null 이면 모양이 틀렸다(그룹 자리를 주지 않는다). */
+    readonly pages?: Readonly<Record<string, string>> | null
+    /** 뷰에 서는 바뀐 행의 카드 미리보기를 싣는다(갤러리 — RT-5). */
+    readonly covers?: boolean
   } = {},
 ): Promise<RowDeltaResult> {
   const access = await withReadTransaction((tx) => rowsAccessForDataSource(tx, ctx, dataSourceId))
@@ -133,7 +156,12 @@ export async function readRowDelta(
     orderChanged,
     personalChanged,
   }
-  if (ids.length === 0) return { ok: true, value: { ...base, rows: [], ...(options.place === true ? { placed: true } : {}) } }
+  if (ids.length === 0) {
+    return {
+      ok: true,
+      value: { ...base, rows: [], ...(options.place === true ? { placed: true } : {}), ...(options.group === true ? { groupPlaced: true } : {}) },
+    }
+  }
 
   // 살아 있고 볼 수 있는 행 — 값(필터 없이) · 그 가운데 뷰에 서는 것(필터 · 검색어 · 범위)
   const live = await queryRows(ctx, dataSourceId, { onlyRowIds: ids, limit: ids.length })
@@ -162,17 +190,46 @@ export async function readRowDelta(
     }
   }
 
+  // 그룹 안의 자리(RT-5) — 그룹 질의의 멤버십이 `inView` 와 같아야 한다(다른 스냅샷이면 자리를 주지 않는다 · 정본 ㉒)
+  let grouped: { readonly places: ReadonlyMap<string, GroupPlace>; readonly heads: readonly GroupHead[] } | null = null
+  if (options.group === true && view.value.groupBy !== null && options.pages !== null) {
+    const found = await queryGroupPlaces(ctx, viewId, liveIds, {
+      search: normalizeSearch(options.search ?? null),
+      today: options.today ?? null,
+      ...(options.pages === undefined ? {} : { pages: options.pages }),
+    })
+    if (found.ok && found.value.placed) {
+      const { places: groupPlaces, heads } = found.value
+      if (liveIds.every((id) => groupPlaces.has(id) === standing.has(id))) grouped = { places: groupPlaces, heads }
+    }
+  }
+
   const byId = new Map(live.value.rows.map((r) => [r.id, r]))
   const rows: DeltaRow[] = []
   for (const id of ids) {
     const row = byId.get(id)
     const inView = standing.has(id)
     const place = inView ? places?.get(id) : undefined
-    if (row !== undefined) rows.push({ ...rowJson(row), kind: 'row_upsert', inView, ...(place === undefined ? {} : { place }) })
-    else if (left.has(id)) rows.push({ id, kind: 'row_delete', inView: false })
+    const group = inView ? grouped?.places.get(id) : undefined
+    if (row !== undefined) {
+      rows.push({ ...rowJson(row), kind: 'row_upsert', inView, ...(place === undefined ? {} : { place }), ...(group === undefined ? {} : { group }) })
+    } else if (left.has(id)) rows.push({ id, kind: 'row_delete', inView: false })
   }
+  const search = options.search ?? null
+  const today = options.today ?? null
   const calculations =
-    options.calculations === true && rows.length > 0 ? await deltaCalculations(ctx, view.value, options.search ?? null, options.today ?? null) : undefined
+    options.calculations === true && options.group !== true && rows.length > 0 ? await deltaCalculations(ctx, view.value, search, today) : undefined
+  // 덩이마다 열 집계(그룹 표) — 그룹 행 라우트의 첫 페이지와 같은 질의
+  const groupCalculations =
+    options.calculations === true && grouped !== null && rows.length > 0
+      ? await queryGroupColumnCalculations(ctx, viewId, view.value.columns, { search: normalizeSearch(search), today })
+      : null
+  // 새로 선 카드의 미리보기(갤러리) — 뷰에 서는 바뀐 행의 것
+  const coverIds = rows.filter((r) => r.kind === 'row_upsert' && r.inView).map((r) => r.id)
+  const covers =
+    options.covers === true && view.value.gallery.cover !== 'none' && coverIds.length > 0
+      ? await readGalleryCovers(ctx, view.value.gallery.cover, coverIds)
+      : undefined
   return {
     ok: true,
     value: {
@@ -180,6 +237,10 @@ export async function readRowDelta(
       rows,
       ...(options.place === true ? { placed: places !== null } : {}),
       ...(calculations === undefined ? {} : { calculations }),
+      ...(options.group === true ? { groupPlaced: grouped !== null } : {}),
+      ...(grouped === null ? {} : { groups: grouped.heads }),
+      ...(groupCalculations?.ok === true ? { groupCalculations: groupCalculations.value } : {}),
+      ...(covers === undefined ? {} : { covers }),
     },
   }
 }

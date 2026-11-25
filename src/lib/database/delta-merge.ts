@@ -43,13 +43,19 @@
  */
 
 import type { Calculations } from './calculate.ts'
+import type { CalculationResult } from './calculations.ts'
+import type { CardCovers } from './gallery-covers.ts'
 import type { RowJson } from './http.ts'
 import { MAX_QUERY_PAGINATION } from './limits.ts'
 
 export type DeltaPlace = { readonly before: string | null; readonly after: string | null; readonly beyond: boolean }
+/** 그룹 안의 자리(RT-5 · `grouped-delta-merge.ts`) — 그 행의 그룹 키와 그 그룹 안의 이웃. */
+export type DeltaGroupPlace = DeltaPlace & { readonly key: string }
+/** 그룹 머리(RT-5) — 그룹 읽기의 머리와 같은 목록 · 차례 · 개수 · 머리의 계산. */
+export type DeltaGroupHead = { readonly key: string; readonly count: number; readonly hidden: boolean; readonly calculation: CalculationResult | null }
 
 export type DeltaRowJson =
-  | (RowJson & { readonly kind: 'row_upsert'; readonly inView: boolean; readonly place?: DeltaPlace })
+  | (RowJson & { readonly kind: 'row_upsert'; readonly inView: boolean; readonly place?: DeltaPlace; readonly group?: DeltaGroupPlace })
   | { readonly id: string; readonly kind: 'row_delete'; readonly inView: false }
 
 /** 델타 응답(`…/changes/delta` — `row-delta.ts` 의 `RowDelta`)의 화면 쪽 모양. */
@@ -65,6 +71,12 @@ export type DeltaJson = {
   readonly placed?: boolean
   readonly rows: readonly DeltaRowJson[]
   readonly calculations?: Calculations
+  /** 그룹 자리를 물었을 때(RT-5) — 뷰에 서는 행마다 `group` 이 있다. */
+  readonly groupPlaced?: boolean
+  readonly groups?: readonly DeltaGroupHead[]
+  readonly groupCalculations?: Readonly<Record<string, Calculations>>
+  /** 새로 선 카드의 미리보기(갤러리 — RT-5). */
+  readonly covers?: CardCovers
 }
 
 const isPlace = (v: unknown): v is DeltaPlace => {
@@ -73,6 +85,13 @@ const isPlace = (v: unknown): v is DeltaPlace => {
   const idOrNull = (x: unknown) => x === null || typeof x === 'string'
   return idOrNull(p.before) && idOrNull(p.after) && typeof p.beyond === 'boolean'
 }
+const isGroupPlace = (v: unknown): v is DeltaGroupPlace => isPlace(v) && typeof (v as Record<string, unknown>).key === 'string'
+const isGroupHead = (v: unknown): v is DeltaGroupHead => {
+  if (typeof v !== 'object' || v === null) return false
+  const h = v as Record<string, unknown>
+  return typeof h.key === 'string' && typeof h.count === 'number' && typeof h.hidden === 'boolean' && (h.calculation === null || typeof h.calculation === 'object')
+}
+const isRecord = (v: unknown): v is Record<string, never> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
  * 응답 → 델타. 모양이 틀리면 null — 커서가 없다 · 모르는 종류의 행 · 깃발이 불리언이 아니다. 부르는 쪽은 다시 읽는다(모르는 것을 반쯤
@@ -85,6 +104,8 @@ export function parseDelta(body: Record<string, unknown>): DeltaJson | null {
   }
   if (body.placed !== undefined && typeof body.placed !== 'boolean') return null
   if (body.personalChanged !== undefined && typeof body.personalChanged !== 'boolean') return null
+  if (body.groupPlaced !== undefined && typeof body.groupPlaced !== 'boolean') return null
+  if (body.groups !== undefined && !(Array.isArray(body.groups) && body.groups.every(isGroupHead))) return null
   if (!Array.isArray(body.rows)) return null
   const rows: DeltaRowJson[] = []
   for (const raw of body.rows as unknown[]) {
@@ -97,6 +118,7 @@ export function parseDelta(body: Record<string, unknown>): DeltaJson | null {
     }
     if (row.kind !== 'row_upsert' || typeof row.inView !== 'boolean' || typeof row.version !== 'string') return null
     if (row.place !== undefined && !isPlace(row.place)) return null
+    if (row.group !== undefined && !isGroupPlace(row.group)) return null
     rows.push(row as unknown as DeltaRowJson)
   }
   return {
@@ -110,6 +132,10 @@ export function parseDelta(body: Record<string, unknown>): DeltaJson | null {
     ...(body.placed === undefined ? {} : { placed: body.placed as boolean }),
     rows,
     ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
+    ...(body.groupPlaced === undefined ? {} : { groupPlaced: body.groupPlaced as boolean }),
+    ...(body.groups === undefined ? {} : { groups: body.groups as DeltaGroupHead[] }),
+    ...(isRecord(body.groupCalculations) ? { groupCalculations: body.groupCalculations as Record<string, Calculations> } : {}),
+    ...(isRecord(body.covers) ? { covers: body.covers as CardCovers } : {}),
   }
 }
 
@@ -166,6 +192,7 @@ function rowOf(delta: DeltaRowJson & { kind: 'row_upsert' }): RowJson {
   delete row.kind
   delete row.inView
   delete row.place
+  delete row.group
   return row as unknown as RowJson
 }
 

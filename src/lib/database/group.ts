@@ -1290,6 +1290,81 @@ export async function queryGroupRows(
   })
 }
 
+// ── 그룹 안의 자리 (DB 실시간 동기화 RT-5 · 정본 X-5 의 단계 ㉒ ㉓) ──────────
+
+/** 바뀐 행의 그룹 자리 — 그룹 키 · 그 그룹 안의 바로 앞 · 뒤 행 · 그 그룹의 "더 보기" 커서보다 뒤인가. */
+export type GroupPlace = { readonly key: string; readonly before: string | null; readonly after: string | null; readonly beyond: boolean }
+
+/** 그룹 머리 하나 — `queryGroups` 의 그룹에서 행을 뺀 것(같은 목록 · 차례 · 숨김 · 빈 그룹 숨기기 · 개수 · 머리의 계산). */
+export type GroupHead = { readonly key: string; readonly count: number; readonly hidden: boolean; readonly calculation: CalculationResult | null }
+
+/** 그룹 자리를 줄 수 없는 까닭(㉓) — 화면은 다시 읽는다. */
+export type GroupUnplaced = 'multi_value' | 'sub_group' | 'sub_items' | 'stale_page'
+
+export type GroupPlaces =
+  | { readonly placed: true; readonly heads: readonly GroupHead[]; readonly places: ReadonlyMap<string, GroupPlace> }
+  | { readonly placed: false; readonly why: GroupUnplaced }
+
+/**
+ * 이 행들의 그룹 안 자리와 그룹 머리(RT-5 — 화면의 바뀐 행만 합치기 · `row-delta.ts`). 그룹 읽기와 **같은** 컴파일(`compileBoard` — 권한 ·
+ * 필터 · 검색어 · 그룹 키 식 · 차례)로 고른 행에 그룹마다 창 함수를 건다 — 볼 수 없는 행은 WHERE 에 없어 이웃 · 개수 어디에도 오지 않는다.
+ * 그룹에 서지 않는 행(필터 밖 · 휴지통 · 볼 수 없음)은 결과에 없다. `pages` 는 화면이 그룹마다 "더 보기"로 이어 읽을 커서(그룹 행 라우트의
+ * `nextCursor`) — 그 keyset 술어 그대로 `beyond` 를 판정한다(그룹 행 라우트의 더 보기와 어긋나지 않는다).
+ *
+ * 한 줄의 이웃으로 말할 수 없는 그룹(여러 값 · 하위 그룹 · 하위 항목의 부모만) · 이 정렬에 맞지 않는 커서는 `placed: false`.
+ */
+export async function queryGroupPlaces(
+  ctx: SessionContext,
+  viewId: string,
+  rowIds: readonly string[],
+  input: BoardReadInput & { readonly pages?: Readonly<Record<string, string>> } = {},
+): Promise<GroupResult<GroupPlaces>> {
+  await refreshDerivedForView(ctx, viewId)
+  return withReadTransaction(async (tx) => {
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
+    if (isFailure(board)) return board
+    const unplaced = (why: GroupUnplaced) => ({ ok: true, value: { placed: false, why } }) as const
+    // 한 행이 한 그룹 · 한 줄에만 서야 이웃으로 말할 수 있다
+    if (board.propertyType === 'multi_select') return unplaced('multi_value')
+    if (board.sub !== null) return unplaced('sub_group')
+    // 부모만(최상위) — 부모의 휴지통 · 되살리기가 자식의 기록 없이 멤버십을 바꾼다(㉑)
+    if (board.subItemsParent !== null) return unplaced('sub_items')
+
+    // 머리 — `queryGroups` 와 같은 개수 질의 · 목록 · 숨김 · 빈 그룹 숨기기(같은 트랜잭션이라 자리와 한 스냅샷)
+    const counted = await readGroupCounts(tx, board)
+    const hidden = new Set(board.groupBy.hidden ?? [])
+    const heads: GroupHead[] = catalogOf(board, counted)
+      .map((g) => ({ key: g.key, count: counted.get(g.key)?.n ?? 0, hidden: hidden.has(g.key), calculation: groupCalculationOf(board, counted.get(g.key)) }))
+      .filter((g) => !(board.groupBy.hide_empty && g.count === 0))
+    if (rowIds.length === 0) return { ok: true, value: { placed: true, heads, places: new Map() } } as const
+
+    const params = new ParamBag(2)
+    const q = compileBoard(board, params)
+    // 그룹마다의 "더 보기" 커서 — 그 그룹의 행에만 그 keyset 술어
+    const beyond: string[] = []
+    for (const [key, cursor] of Object.entries(input.pages ?? {})) {
+      const values = decodeCursorValues(cursor)
+      const sql = values === null ? null : compileCursor(q.order, values, params)
+      if (sql === null) return unplaced('stale_page')
+      beyond.push(`WHEN ${params.bind(key)} THEN ${sql}`)
+    }
+    const beyondSql = beyond.length === 0 ? 'false' : `coalesce(CASE ${q.keyExpr} ${beyond.join(' ')} ELSE false END, false)`
+    const idsParam = params.bind([...rowIds])
+    const rows = await tx.query<{ id: string; key: string; before: string | null; after: string | null; beyond: boolean | null }>(
+      `SELECT o.id, o.key, o.before, o.after, o.beyond FROM (
+         SELECT b.id, ${q.keyExpr} AS key, lag(b.id) OVER w AS before, lead(b.id) OVER w AS after, ${beyondSql} AS beyond
+           ${q.from}
+          WHERE ${q.where}
+         WINDOW w AS (PARTITION BY ${q.keyExpr} ORDER BY ${q.order.orderBy})
+       ) o
+       WHERE o.id = ANY(${idsParam}::uuid[])`,
+      [board.dataSourceId, ...params.values],
+    )
+    const places = new Map(rows.map((r) => [r.id, { key: r.key, before: r.before, after: r.after, beyond: r.beyond === true }]))
+    return { ok: true, value: { placed: true, heads, places } } as const
+  })
+}
+
 // ── 이동 ──────────────────────────────────────────────────────────────
 
 /**

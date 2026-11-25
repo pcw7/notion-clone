@@ -344,7 +344,8 @@ function connect(url) {
   const requests = new Map()
   // Next 의 링크 미리받기 요청 수(`next-router-prefetch` 머리) — 보이는 링크마다 미리받지 않는지 본다(10n-7)
   let prefetches = 0
-  // 화면의 다시 읽기(미리받기가 아닌 RSC 요청 — `_rsc=`)가 시작된 수 — 떠나기 전 대기를 본다(10n-9)
+  // 화면의 다시 읽기(미리받기가 아닌 RSC 요청 — `_rsc=` · 바뀐 행만 묻는 델타 — `/changes/delta` · RT-5 부터 보드 · 갤러리도)가 시작된 수 —
+  // 떠나기 전 대기를 본다(10n-9)
   let rscStarted = 0
   // 붙잡힌 요청(`Fetch.enable` 의 패턴에 걸린 것) — 검사가 놓아 줄 때까지 서버에 닿지 않는다(표 변경 알림의 구독 전 틈 · #250)
   const paused = []
@@ -357,7 +358,7 @@ function connect(url) {
       requests.set(msg.params.requestId, { type: msg.params.type, path: String(msg.params.request.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 160) })
       const prefetch = Object.keys(msg.params.request.headers ?? {}).some((k) => k.toLowerCase() === 'next-router-prefetch')
       if (prefetch) prefetches += 1
-      else if (String(msg.params.request.url).includes('_rsc=')) rscStarted += 1
+      else if (/_rsc=|\/changes\/delta\?/.test(String(msg.params.request.url))) rscStarted += 1
       if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') {
         inflight.add(msg.params.requestId)
         // 신호 뒤의 다시 읽기가 시작됐다 — 이제 진행 중인 요청으로 기다린다. 링크의 미리받기는 다시 읽기가 아니다(올려 둔 링크가 미리받으면
@@ -18082,6 +18083,169 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('DB 실시간 — 보드 · 갤러리 · 그룹 (RT-5 · F-05-16)')) { try {
+      // 같은 사람의 두 탭 — 주 탭 A 가 보고, 둘째 탭 B 가 다른 곳에서 바꾼다(B 의 fetch). 화면마다 `data-sync`(마지막 맞추기가 델타였나 다시
+      // 읽기였나 · 센 수)를 단다 — "이번 것은 바뀐 카드만 받았다(서버 화면을 다시 부르지 않았다)"를 시간 재기 없이 본다. 보드 · 갤러리 · 그룹
+      // 표는 순서 오름차순. 다중 선택으로 묶은 보드는 그룹 안의 한 줄로 말할 수 없어 다시 읽는다(정본 X-5 의 단계 ㉓).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `그룹 델타 ${stamp}` })).body.database
+      const tableView = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const status = (await api('POST', props, { name: '상태', type: 'select' })).body.property.id
+      const order = (await api('POST', props, { name: '순서', type: 'number' })).body.property.id
+      const tags = (await api('POST', props, { name: '태그', type: 'multi_select' })).body.property.id
+      const memo = (await api('POST', props, { name: '메모', type: 'rich_text' })).body.property.id
+      const option = async (prop, name) => (await api('POST', `${props}/${prop}/options`, { name })).body.option.id
+      const todo = await option(status, '할 일')
+      const doing = await option(status, '진행')
+      const done = await option(status, '완료')
+      const red = await option(tags, '빨강')
+      const blue = await option(tags, '파랑')
+      const titleProp = (await api('GET', `/views/${tableView}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const title = (t) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } })
+      const num = (n) => ({ propertyId: order, value: { type: 'number', number: n } })
+      const sel = (id) => ({ propertyId: status, value: { type: 'select', select: { id } } })
+      const tagsOf = (ids) => ({ propertyId: tags, value: { type: 'multi_select', multi_select: ids.map((id) => ({ id })) } })
+      const rowOf = async (t, s, n, tg) => (await api('POST', `/views/${tableView}/rows`, { cells: [title(t), sel(s), num(n), tagsOf(tg)] })).body.row.id
+      const r1 = await rowOf('하나', todo, 1, [red])
+      const r2 = await rowOf('둘', todo, 2, [red])
+      const r3 = await rowOf('셋', doing, 3, [blue])
+      const r4 = await rowOf('넷', doing, 4, [blue])
+      const sorts = [{ property_id: order, direction: 'asc' }]
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '보드', groupBy: { property_id: status } })).body.view.id
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery', name: '갤러리' })).body.view.id
+      const tagBoard = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '태그 보드', groupBy: { property_id: tags } })).body.view.id
+      for (const v of [board, gallery, tagBoard]) await api('PATCH', `/views/${v}`, { sorts })
+      await api('PATCH', `/views/${tableView}`, { sorts, groupBy: { property_id: status } })
+
+      const syncOf = (sel) => `(() => { const t = document.querySelector('${sel}'); return t ? { last: t.dataset.sync ?? null, delta: Number(t.dataset.syncDelta), full: Number(t.dataset.syncFull) } : null })()`
+      // 델타로 맞췄고 그동안 다시 읽지 않았다 — 기준보다 델타가 늘고 다시 읽기는 그대로
+      const byDelta = (sel, base) => `(() => { const s = ${syncOf(sel)}; return !!s && s.last === 'delta' && s.delta > ${base.delta} && s.full === ${base.full} })()`
+      const BOARD = '[data-testid="db-board"]'
+      const GALLERY = '[data-testid="db-gallery"]'
+      const GROUPED = '[data-testid="db-grouped"]'
+      const cardsJs = (key) => `[...document.querySelectorAll('[data-testid="db-board-column"][data-group-key="${key}"] [data-testid="db-board-card"]')].map((c) => c.dataset.rowId).join(',')`
+      const countJs = (key) => `document.querySelector('[data-testid="db-board-column"][data-group-key="${key}"] [data-testid="db-board-count"]')?.textContent`
+      const seen = async (sel) => JSON.stringify({ sync: await evaluate(syncOf(sel)), todo: await evaluate(cardsJs(todo)), doing: await evaluate(cardsJs(doing)), done: await evaluate(cardsJs(done)) })
+      // 맞추기 한 번을 치르고 기준을 잡는다 — 렌더 커서가 앞선 쓰기(뷰 · 속성)를 아직 넘지 못했으면 첫 델타가 그것을 실어 와 다시 읽기가 된다
+      // (맞는 동작이다 · RT-2 절과 같다). 넷의 메모만 바꾼다 — 어느 화면에서도 차례 · 그룹이 그대로다
+      let warm = 0
+      const settle = async (sel) => {
+        const before = await evaluate(syncOf(sel))
+        warm += 1
+        await apiB('PATCH', `/rows/${r4}`, { cells: [{ propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(`w${warm}`)] } }] })
+        return waitFor(`(() => { const s = ${syncOf(sel)}; return !!s && s.delta + s.full > ${before.delta + before.full} })()`, 10000)
+      }
+      // 칠한 카드를 모은다(RT-5 ㉖) — 한순간이라도 칠해졌으면 잡는다
+      const record = () => evaluate(`(() => {
+        window.__rt5Marks = new Set()
+        window.__rt5Observer?.disconnect()
+        const note = (el) => window.__rt5Marks.add(el.dataset.rowId ?? '?')
+        window.__rt5Observer = new MutationObserver((list) => {
+          for (const m of list) {
+            if (m.type === 'attributes' && m.target instanceof HTMLElement && m.target.hasAttribute('data-remote-changed')) note(m.target)
+            for (const n of m.addedNodes) if (n instanceof HTMLElement) n.querySelectorAll('[data-remote-changed][data-row-id]').forEach(note)
+          }
+        })
+        window.__rt5Observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-remote-changed'] })
+        return true
+      })()`)
+      const marks = () => evaluate(`[...(window.__rt5Marks ?? [])].sort().join(' ')`)
+
+      // B — 둘째 탭(같은 사람의 다른 곳) · fetch 로 바꾼다
+      const tabB = await openTab(`${BASE}/w/${workspaceId}/db/${db.id}`)
+      let apiB = null
+      try {
+        await tabB.waitFor(`document.readyState === 'complete'`, 15000)
+        apiB = (method, path, body) => tabB.evaluate(`fetch(${JSON.stringify(`/api/workspaces/${workspaceId}${path}`)}, {
+          method: ${JSON.stringify(method)}, headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))},
+        }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))`)
+        await send('Page.bringToFront')
+
+        // ── 보드 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board}` })
+        await waitFor(`${cardsJs(todo)} === '${r1},${r2}' && ${cardsJs(doing)} === '${r3},${r4}'`, 15000)
+        await sleep(800) // 구독이 붙을 때까지
+        check('전제 — 보드가 맞추기를 한 번 치렀다', await settle(BOARD), await seen(BOARD))
+
+        // ① B 가 카드를 다른 열로 옮긴다 → A 의 보드가 그 카드를 옮긴다(정렬 — 순서 1 이라 진행의 맨 앞) · 머리의 개수도
+        const base1 = await evaluate(syncOf(BOARD))
+        const moved = await apiB('POST', `/views/${board}/groups`, { action: 'move', rowId: r1, groupKey: doing, beforeRowId: null })
+        check('전제 — B 가 카드를 옮겼다', moved.status === 200, JSON.stringify(moved.body))
+        check('★ B 가 다른 열로 옮긴 카드가 A 의 보드에서 옮겨 선다 — 바뀐 카드만(data-sync=delta · 서버 화면을 다시 부르지 않았다)',
+          await waitFor(`${cardsJs(todo)} === '${r2}' && ${cardsJs(doing)} === '${r1},${r3},${r4}' && ${byDelta(BOARD, base1)}`, 10000), await seen(BOARD))
+        check('★ 열 머리의 개수도 델타의 머리로 맞는다(할 일 1 · 진행 3)',
+          (await evaluate(countJs(todo))) === '1' && (await evaluate(countJs(doing))) === '3', `${await evaluate(countJs(todo))} · ${await evaluate(countJs(doing))}`)
+
+        // ② B 가 열 안에서 정렬 값을 바꾼다 → 그 열 안에서 옮겨 선다
+        const base2 = await evaluate(syncOf(BOARD))
+        await apiB('PATCH', `/rows/${r4}`, { cells: [num(0)] })
+        check('★ B 가 정렬 값을 바꾼 카드가 A 의 열 안에서 옮겨 선다(넷 → 진행의 맨 앞) — 델타',
+          await waitFor(`${cardsJs(doing)} === '${r4},${r1},${r3}' && ${byDelta(BOARD, base2)}`, 10000), await seen(BOARD))
+
+        // ③ B 가 카드의 제목을 바꾼다 → A 에서 그 카드만 칠한다(카드에 보이는 속성 · ㉖)
+        await sleep(2200) // 앞의 칠하기가 떨어질 때까지
+        await record()
+        const base3 = await evaluate(syncOf(BOARD))
+        await apiB('PATCH', `/rows/${r3}`, { cells: [title('셋!')] })
+        check('★ B 가 제목을 바꾼 카드는 A 에서 새 제목 · 그 카드만 칠한다(data-remote-changed)',
+          await waitFor(`document.querySelector('[data-row-id="${r3}"] [data-testid="db-board-card-title"]')?.textContent === '셋!' && ${byDelta(BOARD, base3)}`, 10000)
+            && (await waitFor(`window.__rt5Marks?.has('${r3}') === true`, 3000)) && (await marks()) === r3,
+          `${await seen(BOARD)} · 칠한 카드 ${await marks()}`)
+        check('★ 칠하기는 2초 뒤 떨어진다', await waitFor(`!document.querySelector('[data-testid="db-board-card"][data-remote-changed]')`, 5000))
+
+        // ── 갤러리(묶지 않은) — 평평한 목록 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery}` })
+        const galleryJs = `[...document.querySelectorAll('[data-testid="db-gallery-card"]')].map((c) => c.querySelector('[data-testid="db-gallery-card-title"]')?.textContent ?? '').join(',')`
+        await waitFor(`${galleryJs} === '넷,하나,둘,셋!'`, 15000)
+        await sleep(800)
+        check('전제 — 갤러리가 맞추기를 한 번 치렀다', await settle(GALLERY), JSON.stringify(await evaluate(syncOf(GALLERY))))
+        const base4 = await evaluate(syncOf(GALLERY))
+        await apiB('PATCH', `/rows/${r2}`, { cells: [title('둘!')] })
+        check('★ B 가 고친 카드가 A 의 갤러리에 새 값으로 선다 — 바뀐 카드만(data-sync=delta)',
+          await waitFor(`${galleryJs} === '넷,하나,둘!,셋!' && ${byDelta(GALLERY, base4)}`, 10000), `${await evaluate(galleryJs)} · ${JSON.stringify(await evaluate(syncOf(GALLERY)))}`)
+        const base5 = await evaluate(syncOf(GALLERY))
+        const r5 = (await apiB('POST', `/views/${tableView}/rows`, { cells: [title('다섯'), sel(todo), num(2.5), tagsOf([red])] })).body?.row?.id
+        check('★ B 가 더한 카드가 정렬된 A 의 갤러리 제자리(둘! 과 셋! 사이)에 선다 — 델타',
+          !!r5 && (await waitFor(`${galleryJs} === '넷,하나,둘!,다섯,셋!' && ${byDelta(GALLERY, base5)}`, 10000)), `${await evaluate(galleryJs)} · ${JSON.stringify(await evaluate(syncOf(GALLERY)))}`)
+
+        // ── 그룹 표 — 덩이마다 합친다 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${tableView}` })
+        const chunkJs = (key) => `[...document.querySelectorAll('[data-testid="db-group"][data-group-key="${key}"] tr[data-row-id]')].map((tr) => tr.dataset.rowId).join(',')`
+        const groupCountJs = (key) => `document.querySelector('[data-testid="db-group"][data-group-key="${key}"] [data-testid="db-group-count"]')?.textContent`
+        const chunks = async () => JSON.stringify({ sync: await evaluate(syncOf(GROUPED)), todo: await evaluate(chunkJs(todo)), doing: await evaluate(chunkJs(doing)), done: await evaluate(chunkJs(done)) })
+        await waitFor(`${chunkJs(todo)} === '${r2},${r5}' && ${chunkJs(doing)} === '${r4},${r1},${r3}'`, 15000)
+        await sleep(800)
+        check('전제 — 그룹 표가 맞추기를 한 번 치렀다', await settle(GROUPED), await chunks())
+        const base6 = await evaluate(syncOf(GROUPED))
+        await apiB('PATCH', `/rows/${r2}`, { cells: [sel(done)] })
+        check('★ B 가 그룹 속성을 바꾼 행이 A 의 그룹 표에서 다른 덩이로 옮겨 선다(할 일 → 완료) — 바뀐 행만(data-sync=delta)',
+          await waitFor(`${chunkJs(todo)} === '${r5}' && ${chunkJs(done)} === '${r2}' && ${byDelta(GROUPED, base6)}`, 10000), await chunks())
+        check('★ 덩이 머리의 개수도 델타의 머리로 맞는다(할 일 1 · 완료 1)',
+          (await evaluate(groupCountJs(todo))) === '1' && (await evaluate(groupCountJs(done))) === '1', `${await evaluate(groupCountJs(todo))} · ${await evaluate(groupCountJs(done))}`)
+
+        // ── 다중 선택으로 묶은 보드 — 한 카드가 여러 열에 선다 → 다시 읽는다 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${tagBoard}` })
+        await waitFor(`${cardsJs(red)}.split(',').length === 3 && ${cardsJs(blue)}.split(',').length === 2`, 15000)
+        await sleep(800)
+        const base7 = await evaluate(syncOf(BOARD))
+        await apiB('PATCH', `/rows/${r3}`, { cells: [tagsOf([red, blue])] })
+        check('★ 다중 선택 보드는 다시 읽는다(data-sync=full) — 셋이 빨강 · 파랑 두 열에 선다',
+          await waitFor(`${cardsJs(red)}.includes('${r3}') && ${cardsJs(blue)}.includes('${r3}')
+            && (() => { const s = ${syncOf(BOARD)}; return !!s && s.last === 'full' && s.full > ${base7.full} })()`, 15000),
+          JSON.stringify({ sync: await evaluate(syncOf(BOARD)), red: await evaluate(cardsJs(red)), blue: await evaluate(cardsJs(blue)) }))
+      } finally {
+        await evaluate(`window.__rt5Observer?.disconnect()`).catch(() => undefined)
+        await tabB.close().catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('연결된 데이터베이스 — 서버 (2l-1 · F-04-13)')) { try {
       // 다른 데이터베이스의 소스를 붙이면 그 소스를 보는 뷰가 생기고 원본의 행이 보인다 · 두 번 붙이면 409 · 떼면 뷰와 함께 빠진다 · 제 소스는 떼지 않는다.
       // 권한(원본을 못 보면 붙일 수 없음 · 이름을 가림 · 링크로 권한이 오르지 않음)은 DB 검사가 본다.
@@ -24356,10 +24520,13 @@ async function main() {
       check('★ 빈 것은 서지 않고 0 은 선다 — 연결 없는 카드: 합 0 · 평균 없음',
         await evaluate(`${badge('db-board-badge', lonely, '시간 합')} === '0' && ${badge('db-board-badge', lonely, '시간 평균')} === null`),
         `${await evaluate(badge('db-board-badge', lonely, '시간 합'))} / ${await evaluate(badge('db-board-badge', lonely, '시간 평균'))}`)
-      // 다른 곳에서 연결을 하나 더 — 표 변경 신호로 서버 렌더를 다시 부르면 카드와 함께 다시 계산된 값을 받아들인다(라우트는 여전히 막혀 있다)
+      // 다른 곳에서 연결을 하나 더 — 보드는 바뀐 카드만 합치고 그 카드들의 rollup 을 값 라우트로 다시 묻는다(RT-5 · 표의 델타와 같은 길 —
+      // 서버 화면을 다시 부르지 않는다). 그래서 이제는 라우트를 연다(막아 두면 옛 값에 머문다 — 서버 렌더 쪽은 위 첫 화면 · 아래 갤러리가 본다)
+      await send('Network.setBlockedURLs', { urls: [] })
       await api('POST', `/rows/${linkedA}/relations/${made.syncedPropertyId}`, { add: [t3] })
-      check('★ 신호로 다시 그리면 다시 계산된 값으로 — 2 · 4 · 6 → 12',
+      check('★ 신호로 바뀐 카드를 합치면 다시 계산된 값으로 — 2 · 4 · 6 → 12',
         await waitFor(`${badge('db-board-badge', linkedA, '시간 합')} === '12'`, 15000), String(await evaluate(badge('db-board-badge', linkedA, '시간 합'))))
+      await send('Network.setBlockedURLs', { urls: ['*/rollup-values*'] })
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}?v=${gallery.id}` })
       check('★ 갤러리 카드에도 — 12 · 연결 없는 카드의 평균은 서지 않는다',
         (await waitFor(`${badge('db-gallery-badge', linkedA, '시간 합')} === '12'`, 15000))
