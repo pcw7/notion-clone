@@ -74,6 +74,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
+import { flushSync } from 'react-dom'
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
@@ -148,13 +149,20 @@ import {
   afterDelta,
   afterFullRead,
   createSyncLedger,
+  crossedAbove,
   deltaFallback,
   fullReadCursor,
+  heldPlaceIn,
   mergeDelta,
   noteSignal,
+  pinHeld,
+  releaseEntry,
   strongerSync,
+  type DeltaRowJson,
   type SyncMode,
 } from '@/lib/database/delta-merge'
+import { ownWrites, remoteChanges, REMOTE_FLASH_MS } from '@/lib/database/remote-cells'
+import { reducesMotion } from '@/lib/settings/device-preferences'
 import {
   foreignDropBefore,
   foreignDropLineY,
@@ -176,6 +184,11 @@ import type { DateReminderJson } from '@/lib/database/reminder'
 
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
 const samePos = (a: CellPos, b: CellPos): boolean => a.row === b.row && a.col === b.col
+/**
+ * 남이 바꾼 칸의 바탕(RT-4 · 정본 X-5 의 단계 ⑳) — `data-remote-changed` 가 있는 동안. 움직이면 효과가 이 색에서 투명으로 흐리고, 움직임
+ * 줄이기면 이대로 2초 가만히 있다가 표시가 떨어진다. 전역 CSS 를 건드리지 않으려 애니메이션은 Web Animations 로 한다.
+ */
+const REMOTE_CELL = 'data-[remote-changed]:bg-amber-100 dark:data-[remote-changed]:bg-amber-400/20'
 
 /**
  * `record` 에서 **값이 놓이는 자리**. 켜지면 값만 감싸고, 꺼지면 아무것도 감싸지 않는다.
@@ -306,16 +319,18 @@ export function DatabaseTable(props: {
    */
   const touched = useRef(new Set<string>())
   const localWrites = useRef(0)
-  const markTouched = (rowId: string) => {
+  /** 고친다 — 칸이면 그 칸, 없으면 행 전체를 이 탭의 쓰기로 적는다(RT-4 — 돌아온 델타에서 내 칸을 칠하지 않는다 · `remote-cells.ts`). */
+  const markTouched = (rowId: string, propertyId?: string) => {
     touched.current.add(rowId)
     localWrites.current += 1
+    ownWrites.note(rowId, propertyId)
   }
   /** 다시 읽은 결과에는 없지만 내가 고쳐서 남긴 행 — 제목 옆에 "조건 밖"을 단다. */
   const [outside, setOutside] = useState<ReadonlySet<string>>(new Set())
 
   // 검증 칸이 바뀌었다(VF-2) — 고르개가 서버의 답을 준다(풀었으면 null). 칸만 갈아 끼운다 — 검증은 행의 마지막 편집을 올리지 않는다
   const putVerification = (rowId: string, propertyId: string, next: VerificationCell | null, known: PeopleNames) => {
-    markTouched(rowId)
+    markTouched(rowId, propertyId)
     addPeopleNames(known)
     setRows((current) =>
       current.map((row) => {
@@ -381,11 +396,19 @@ export function DatabaseTable(props: {
 
   const size = { rows: rows.length, cols: columns.length }
 
+  /** 합치기가 편집 칸의 행 번호만 옮겼다(RT-4 · 정본 ⑲) — 같은 칸이니 캐럿을 끝으로 보내지 않는다. */
+  const editRenumbered = useRef(false)
   // 선택이 옮겨지면 그 칸으로 포커스를 옮긴다(roving tabindex).
   useEffect(() => {
     if (mode.kind === 'selected') cellRefs.current.get(keyOf(mode.at))?.focus()
     if (mode.kind === 'editing') {
       const input = editorRef.current
+      // 남의 변경으로 행 번호만 바뀌었다 — 치던 자리를 그대로 둔다(포커스가 빠졌으면 돌려만 놓는다)
+      if (editRenumbered.current) {
+        editRenumbered.current = false
+        if (input && document.activeElement !== input) input.focus()
+        return
+      }
       if (input) {
         input.focus()
         // 캐럿을 끝에 둔다. `type="date"` 는 선택 범위를 지원하지 않아 던진다.
@@ -438,10 +461,12 @@ export function DatabaseTable(props: {
     })
 
     setError(null)
-    markTouched(rowId)
+    markTouched(rowId, column.propertyId)
     setRows((current) => current.map((row) => (row.id === rowId ? withValue(row, next) : row)))
 
     const result = await send()
+    // 느린 요청이어도 돌아온 델타가 내 칸을 칠하지 않게 — 답을 받은 때부터 다시 센다
+    ownWrites.note(rowId, column.propertyId)
     if (!result.ok) {
       // 그 칸만 되돌린다. 그사이 같은 칸을 또 고쳤다면(값이 `next` 가 아니면) 두지 않는다.
       setRows((current) =>
@@ -834,8 +859,8 @@ export function DatabaseTable(props: {
    * 셀 쓰기와 같은 버전 거르기를 탄다(머리말). 제목을 **먼저** 넣지 않으면 칩이 한 번 "제목 없음"으로 깜빡인다 —
    * 같은 배치라 순서는 상관없지만, 맵에 넣지 않으면 훅이 그 id 를 서버에 다시 묻는다.
    */
-  const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>, knownIcons: RelationIcons) => {
-    markTouched(row.id)
+  const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>, knownIcons: RelationIcons, propertyId?: string) => {
+    markTouched(row.id, propertyId)
     addLabels(known, knownIcons)
     setRows((current) => current.map((r) => (r.id === row.id && notOlder(row.version, r.version) ? row : r)))
     // ★ 이 행이 **무엇을 모으는지**가 바뀌었다 — rollup 은 연결을 타고 계산한다. 그 행만 다시 묻는다.
@@ -850,7 +875,7 @@ export function DatabaseTable(props: {
       setError(result.message)
       return
     }
-    onRelationChange(result.value, {}, {})
+    onRelationChange(result.value, {}, {}, propertyId)
   }
 
   // ── 행 · 컬럼 ──────────────────────────────────────────────────────
@@ -1271,9 +1296,11 @@ export function DatabaseTable(props: {
   // 없으면 처음부터 다시 읽는다 — reset · 스키마 · 이 뷰가 바뀜 · 자리 없음 · 이웃이 어긋남 · 요청 실패 · 커서를 모름. 그룹 덩이(바깥이 신호를
   // 나눠 준다)와 하위 항목 트리(층마다라 한 줄의 이웃으로 말할 수 없다)는 늘 다시 읽는다.
   //
-  // 다시 읽기는 지금 보이는 만큼이다(최상위 행 수만큼 페이지를 읽고 · 펼쳐 둔 행의 자식도). 편집 · 추가 · 더 보기 중이면 미뤘다가 끝나면
-  // 맞춘다. 다른 사람이 컬럼(속성 · 보임 · 순서 · 집계)을 바꿨으면 행만 맞추지 않고 화면을 새로 세운다(`router.refresh()` — 다시 마운트
-  // 기준에 컬럼이 있다). 내가 고친 행이 조건 밖이 되면 남긴다(`live-rows.ts` · `delta-merge.ts` — 같은 규칙).
+  // 다시 읽기는 지금 보이는 만큼이다(최상위 행 수만큼 페이지를 읽고 · 펼쳐 둔 행의 자식도). 추가 · 더 보기 중이면 미뤘다가 끝나면
+  // 맞춘다. 편집 중이면 평평한 표 · 목록은 그 행만 붙들고(자리 · 뷰 밖이어도 남긴다) 나머지를 맞추며, 편집이 끝나면 그 행을 서버의 자리로
+  // 놓는다(RT-4 · 정본 ⑲) — 그룹 덩이 · 트리는 지금처럼 다 미룬다. 다른 사람이 컬럼(속성 · 보임 · 순서 · 집계)을 바꿨으면 행만 맞추지 않고
+  // 화면을 새로 세운다(`router.refresh()` — 다시 마운트 기준에 컬럼이 있다 · 편집 중이면 끝난 뒤에). 내가 고친 행이 조건 밖이 되면 남긴다
+  // (`live-rows.ts` · `delta-merge.ts` — 같은 규칙). 남이 바꾼 칸은 잠깐 칠한다(⑳ · `remote-cells.ts`).
 
   const rowsRef = useRef(rows)
   const depthRef = useRef(depthOf)
@@ -1288,13 +1315,85 @@ export function DatabaseTable(props: {
     pageRef.current = { cursor, hasMore }
   })
   const syncWanted = useRef<SyncMode>('none')
+  /** 미뤄 둔 다시 읽기가 칠하지 않는 것이다(reset · 스키마 · 이 뷰 · 개인 설정 — RT-4 ⑳ ⓑ). 다시 청한 다시 읽기도 그 뜻을 잇는다. */
+  const quietWanted = useRef(false)
   const syncing = useRef(false)
   const busyRef = useRef(false)
-  useEffect(() => {
-    busyRef.current = mode.kind === 'editing' || addingRow || loadingMore || loadingChildren !== null
-  })
   /** 바뀐 행만 합칠 수 있는 화면 — 평평한 표 · 목록 하나(머리말). */
   const deltaCapable = variant !== 'record' && props.group == null && props.liveTick === undefined && subItems === null
+  useEffect(() => {
+    // 편집 중이면 — 평평한 표 · 목록은 그 행만 붙들고 맞춘다(RT-4 ⑲) · 다른 화면(그룹 덩이 · 트리)은 지금처럼 다 미룬다
+    busyRef.current = (mode.kind === 'editing' && !deltaCapable) || addingRow || loadingMore || loadingChildren !== null
+  })
+  /** 칸 편집기가 열린 행(RT-4 ⑲) — 평평한 표 · 목록에서만 붙든다. */
+  const heldRow = (): string | null => {
+    const current = modeRef.current
+    return deltaCapable && current.kind === 'editing' ? (rowsRef.current[current.at.row]?.id ?? null) : null
+  }
+  /** 붙든 행의 서버 쪽 기록(델타의 줄 · 다시 읽은 자리) — 그 행이 떠 있다. 편집이 끝나면 이 자리로 놓는다. */
+  const heldPending = useRef<{ readonly id: string; readonly entry: DeltaRowJson } | null>(null)
+  /** 지금 붙든 행 — 바뀌면(편집이 끝났다 · 다른 행으로) 앞의 것을 놓는다. */
+  const holding = useRef<string | null>(null)
+  /** 붙든 행을 위로 건너간 행의 새 키(RT-4 ⑲ ⓔ) — 키가 바뀌면 React 가 그 줄을 새로 넣고 붙든 행의 줄을 옮기지 않는다. */
+  const [rowGen, setRowGen] = useState<ReadonlyMap<string, number>>(new Map())
+
+  // ── 남이 바꾼 칸(RT-4 · 정본 X-5 의 단계 ⑳) ──
+  /** 칠한 칸(`행 id/속성 id` → 칠한 차례) — 칸의 `data-remote-changed` 가 그 차례다. */
+  const [remoteCells, setRemoteCells] = useState<ReadonlyMap<string, number>>(new Map())
+  const [remoteSummary, setRemoteSummary] = useState('')
+  const [flashStamp, setFlashStamp] = useState(0)
+  const flashSeq = useRef(0)
+  const flashTimers = useRef(new Set<number>())
+  useEffect(() => {
+    const timers = flashTimers.current
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [])
+  /**
+   * 합치기 앞뒤를 견줘 남이 바꾼 칸을 칠한다 — 값이 저장되고 보이는 칸만(수식 · rollup · 고유 ID · 만든 · 고친 것 · 버튼은 따라 바뀐다) ·
+   * 이 탭이 쓴 칸은 빼고 · 너무 많으면(대량) 칠하지 않는다(`remote-cells.ts`). 2초 뒤 뗀다.
+   */
+  const flashRemote = (previous: readonly RowJson[], next: readonly RowJson[]) => {
+    const propertyIds = columns.filter((c) => isCellColumn(c) || c.type === 'relation' || c.type === 'verification').map((c) => c.propertyId)
+    const found = remoteChanges({ previous, next, propertyIds, isOwn: ownWrites.isOwn })
+    if (found.size === 0) return
+    flashSeq.current += 1
+    const stamp = flashSeq.current
+    const keys = [...found].flatMap(([rowId, cells]) => cells.map((propertyId) => `${rowId}/${propertyId}`))
+    setRemoteCells((current) => {
+      const marked = new Map(current)
+      for (const key of keys) marked.set(key, stamp)
+      return marked
+    })
+    setFlashStamp(stamp)
+    // 화면 낭독기에는 칸마다 알리지 않고 한 줄로(polite)
+    setRemoteSummary(`다른 곳에서 바뀐 칸 ${keys.length}개`)
+    const timer = window.setTimeout(() => {
+      flashTimers.current.delete(timer)
+      setRemoteCells((current) => {
+        const left = new Map(current)
+        for (const key of keys) if (left.get(key) === stamp) left.delete(key)
+        return left
+      })
+      setRemoteSummary((text) => (flashSeq.current === stamp ? '' : text))
+    }, REMOTE_FLASH_MS)
+    flashTimers.current.add(timer)
+  }
+  // 새로 칠한 칸을 흐린다 — 움직임 줄이기면 가만히 둔다(바탕색은 칸의 클래스 · 떼는 것은 위의 시계)
+  useEffect(() => {
+    if (flashStamp === 0) return
+    if (reducesMotion(document.documentElement.dataset.motion, window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)) return
+    for (const cell of scrollRef.current?.querySelectorAll<HTMLElement>(`td[data-remote-changed="${flashStamp}"]`) ?? []) {
+      if (typeof cell.animate !== 'function') continue
+      for (const running of cell.getAnimations()) running.cancel()
+      cell.animate([{ backgroundColor: getComputedStyle(cell).backgroundColor }, { backgroundColor: 'transparent' }], {
+        duration: REMOTE_FLASH_MS,
+        easing: 'ease-in',
+        fill: 'forwards',
+      })
+    }
+  }, [flashStamp])
   // 화면이 아는 커서(`delta-merge.ts` 의 장부) — 마운트 때의 렌더 커서로 시작한다(다시 그린 서버 화면이 새 커서를 주어도 이 상태의 것이 아니다)
   const renderedCursor = useRenderedChangeCursor()
   const [ledger] = useState(() => createSyncLedger(renderedCursor))
@@ -1353,9 +1452,48 @@ export function DatabaseTable(props: {
   }
 
   /**
-   * 처음부터 다시 읽는다. `before` 는 읽기를 **시작하기 전에** 받아 둔 커서 — 다 읽으면 화면이 그 커서까지 안다(정본 X-5 1단계 ④).
+   * 맞춘 목록을 화면에 — 델타 · 다시 읽기 · 놓기가 같이 쓴다(RT-4). 남이 바꾼 칸을 칠하고(`quiet` 면 아니다 · ⑳), 선택 · 편집 칸은 행으로
+   * 지키고, 붙든 행을 위로 건너간 행은 새로 그린다(⑲ ⓔ). `more` 는 같이 그릴 다른 상태. 맞추기(비동기)에서는 한 번에 그린다 — 행 번호가
+   * 바뀐 목록과 편집 칸이 따로 그려지는 틈에 친 키가 옛 번호로 다른 행을 고치지 않게(놓기는 효과 안이라 그대로 둔다).
    */
-  const fullReload = async (before: string | null): Promise<void> => {
+  const applyRows = (next: RowJson[], nextOutside: Set<string>, options: { readonly quiet: boolean; readonly now: boolean; readonly more?: () => void }) => {
+    const write = () => {
+      const previous = rowsRef.current
+      if (!options.quiet) flashRemote(previous, next)
+      const current = modeRef.current
+      if (current.kind === 'editing') {
+        const id = previous[current.at.row]?.id
+        const at = id === undefined ? -1 : next.findIndex((r) => r.id === id)
+        const crossed = id === undefined ? [] : crossedAbove(previous, next, id)
+        if (crossed.length > 0) {
+          setRowGen((gen) => {
+            const bumped = new Map(gen)
+            for (const rowId of crossed) bumped.set(rowId, (gen.get(rowId) ?? 0) + 1)
+            return bumped
+          })
+        }
+        // 편집하던 행이 빠졌다 — 붙드는 화면에서는 생기지 않는다(다른 화면은 편집 중에 맞추지 않는다)
+        if (at < 0) setMode({ kind: 'idle' })
+        else if (at !== current.at.row) {
+          editRenumbered.current = true
+          setMode({ kind: 'editing', at: { row: at, col: current.at.col } })
+        }
+      } else keepSelection(next)
+      rowsRef.current = next
+      outsideRef.current = nextOutside
+      setRows(next)
+      setOutside(nextOutside)
+      options.more?.()
+    }
+    if (options.now) flushSync(write)
+    else write()
+  }
+
+  /**
+   * 처음부터 다시 읽는다. `before` 는 읽기를 **시작하기 전에** 받아 둔 커서 — 다 읽으면 화면이 그 커서까지 안다(정본 X-5 1단계 ④).
+   * `quiet` 면 바뀐 칸을 칠하지 않는다(목록이 통째로 바뀐 까닭 — reset · 스키마 · 이 뷰 · 개인 설정 · RT-4 ⑳ ⓑ).
+   */
+  const fullReload = async (before: string | null, quiet = false): Promise<void> => {
     const writesAtStart = localWrites.current
     const want = Math.max(1, rowsRef.current.filter((r) => (depthRef.current.get(r.id) ?? 0) === 0).length)
     const top: RowJson[] = []
@@ -1371,6 +1509,12 @@ export function DatabaseTable(props: {
         // 다른 사람이 컬럼을 바꿨다 — 행만 맞추지 않고 화면을 새로 세운다
         const serverColumns = page.value.columns
         if (serverColumns !== undefined && shapeOf(listColumns(variant, serverColumns.filter((c) => c.visible))) !== shapeOf(columns)) {
+          // 편집 중이면 끝난 뒤에 — 새로 서면 편집 칸과 초안이 사라진다(RT-4 — 편집 중에도 행은 맞추지만 이것은 미룬다)
+          if (modeRef.current.kind === 'editing') {
+            columnsPending.current = true
+            syncWanted.current = strongerSync(syncWanted.current, 'full')
+            return
+          }
           setSyncStats(noteSync(viewId, 'full'))
           router.refresh()
           return
@@ -1388,6 +1532,7 @@ export function DatabaseTable(props: {
     // 읽는 사이 이 화면에서 고쳤다 — 이 결과는 고치기 전의 서버 것일 수 있다. 버리고 다시 읽는다(곧 그 쓰기의 알림이 온다).
     if (localWrites.current !== writesAtStart) {
       syncWanted.current = strongerSync(syncWanted.current, 'full')
+      if (quiet) quietWanted.current = true
       return
     }
     const merged = mergeReloaded({
@@ -1402,20 +1547,25 @@ export function DatabaseTable(props: {
         ? {}
         : { parentOf: (row: RowJson) => readRelationValue(row.properties[subItems.parentPropertyId]).relation[0]?.id ?? null }),
     })
-    keepSelection(merged.rows)
+    // 편집 중인 행은 옛 자리에 두고(뷰 밖이어도) 읽은 목록의 자리를 받아 둔다 — 편집이 끝나면 그리로(RT-4 ⑲ ⓑ)
+    const held = heldRow()
+    const shownRows = held === null ? merged.rows : pinHeld(rowsRef.current, merged.rows, held)
+    if (held !== null) heldPending.current = { id: held, entry: heldPlaceIn(top, held) }
     noteHits([...top, ...[...childrenOf.values()].flat()])
-    rowsRef.current = merged.rows
-    outsideRef.current = merged.outside
     pageRef.current = { cursor: next, hasMore: next !== null }
-    setRows(merged.rows)
-    setDepthOf(merged.depthOf)
-    setExpanded(merged.expanded)
-    setOutside(merged.outside)
-    setCursor(next)
-    setHasMore(next !== null)
-    if (calc !== undefined) setCalculations(calc)
+    applyRows(shownRows, merged.outside, {
+      quiet,
+      now: true,
+      more: () => {
+        setDepthOf(merged.depthOf)
+        setExpanded(merged.expanded)
+        setCursor(next)
+        setHasMore(next !== null)
+        if (calc !== undefined) setCalculations(calc)
+      },
+    })
     // rollup 은 행에 없다 — 보이는 행 전부의 것을 다시 묻는다(그사이 연결된 행이 바뀌었을 수 있다)
-    refreshRollups(merged.rows.map((r) => r.id))
+    refreshRollups(shownRows.map((r) => r.id))
     // 리마인더도 행에 없다 — 걸기 · 풀기 · 울림의 신호(0109)로 온 다시 읽기면 행은 그대로다(10n-17)
     setReminderTick((tick) => tick + 1)
     afterFullRead(ledger, before)
@@ -1426,7 +1576,9 @@ export function DatabaseTable(props: {
    * 바뀐 행만 — 커서(`after`) 뒤의 델타를 합친다. 합칠 수 없으면 다시 읽을 커서와 함께 `full`(그 커서는 델타 응답의 것 — 다시 읽기보다 먼저
    * 받았다). 읽는 사이 이 화면에서 고쳤거나 더 읽었으면 버리고 다시 묻는다(커서는 그대로 — 그 결과는 옛 목록의 것이다).
    */
-  const syncDelta = async (after: string): Promise<{ readonly full: false } | { readonly full: true; readonly before: string | null }> => {
+  const syncDelta = async (
+    after: string,
+  ): Promise<{ readonly full: false } | { readonly full: true; readonly before: string | null; readonly quiet: boolean }> => {
     const writesAtStart = localWrites.current
     const page = pageRef.current
     const result = await api.loadDelta(workspaceId, dataSourceId, viewId, after, {
@@ -1435,26 +1587,33 @@ export function DatabaseTable(props: {
       // 열 집계는 표 모양만 그린다 — 집계가 걸린 열이 있을 때만 묻는다
       calculations: isGrid && columns.some((c) => c.calculation != null),
     })
-    // 묻는 사이 편집이 시작됐어도 미룬다 — 편집 칸은 행의 자리(번호)로 서 있다
-    if (localWrites.current !== writesAtStart || pageRef.current.cursor !== page.cursor || pageRef.current.hasMore !== page.hasMore || busyRef.current) {
+    // 묻는 사이 추가 · 더 보기가 시작됐으면 미룬다. 편집은 미루지 않는다 — 그 행만 붙들고 편집 칸의 번호를 옮긴다(RT-4 ⑲)
+    if (localWrites.current !== writesAtStart || pageRef.current.cursor !== page.cursor || pageRef.current.hasMore !== page.hasMore || blocked()) {
       syncWanted.current = strongerSync(syncWanted.current, 'delta')
       return { full: false }
     }
     // 요청 실패 · 모르는 모양 — 처음부터(그 전에 받은 신호의 커서로)
-    if (!result.ok || result.value === null) return { full: true, before: fullReadCursor(ledger) }
+    if (!result.ok || result.value === null) return { full: true, before: fullReadCursor(ledger), quiet: false }
     const delta = result.value
     const fallback = deltaFallback(delta)
     // 내 개인 설정이 다른 탭 · 기기에서 바뀌었다(RT-3 — 놓친 신호) — 도구줄(내 필터 칩)은 서버 화면이 그린다
     if (fallback === 'personal') refreshPersonal()
-    if (fallback !== null) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
-    const merged = mergeDelta({ previous: rowsRef.current, outside: outsideRef.current, touched: touched.current, rows: delta.rows, hasMore: page.hasMore })
-    if (!merged.ok) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
+    // 목록이 통째로 바뀐 까닭이면 칸을 칠하지 않는다(RT-4 ⑳ ⓑ) — 자리를 모를 뿐이면(unplaced) 델타 대신이라 칠한다
+    if (fallback !== null) return { full: true, before: fullReadCursor(ledger, delta.cursor), quiet: fallback !== 'unplaced' }
+    const held = heldRow()
+    const merged = mergeDelta({
+      previous: rowsRef.current,
+      outside: outsideRef.current,
+      touched: touched.current,
+      rows: delta.rows,
+      hasMore: page.hasMore,
+      held: held === null ? null : { id: held, floating: heldPending.current?.id === held },
+    })
+    if (!merged.ok) return { full: true, before: fullReadCursor(ledger, delta.cursor), quiet: false }
+    // 붙든 행의 기록이 왔다 — 떠 있다. 편집이 끝나면 이 자리로 놓는다
+    if (held !== null && merged.heldEntry !== undefined) heldPending.current = { id: held, entry: merged.heldEntry }
     if (merged.changed) {
-      keepSelection(merged.rows)
-      rowsRef.current = merged.rows
-      outsideRef.current = merged.outside
-      setRows(merged.rows)
-      setOutside(merged.outside)
+      applyRows(merged.rows, merged.outside, { quiet: false, now: true })
       // rollup 은 행에 없다 — 다시 읽기와 같이 보이는 행 전부의 것을 다시 묻는다
       refreshRollups(merged.rows.map((r) => r.id))
     }
@@ -1482,18 +1641,56 @@ export function DatabaseTable(props: {
     try {
       if (wanted === 'delta' && deltaCapable && ledger.applied !== null) {
         const outcome = await syncDelta(ledger.applied)
-        if (outcome.full) await fullReload(outcome.before)
-      } else await fullReload(fullReadCursor(ledger))
+        if (outcome.full) await fullReload(outcome.before, outcome.quiet)
+      } else {
+        const quiet = quietWanted.current
+        quietWanted.current = false
+        await fullReload(fullReadCursor(ledger), quiet)
+      }
     } finally {
       syncing.current = false
       if (syncWanted.current !== 'none') setSyncKick((n) => n + 1)
     }
   }
 
-  /** 맞추기를 청한다 — 편집 · 추가 · 더 보기 중이거나 이미 도는 중이면 미뤘다가 끝나면(아래 효과). */
+  /**
+   * 컬럼이 바뀐 것을 편집이 끝날 때까지 미뤘다(위 `fullReload` — 새로 서면 편집 칸이 사라진다). 그동안은 맞추지 않는다 — 다시 읽어도 또 미룰
+   * 뿐이다.
+   */
+  const columnsPending = useRef(false)
+  /** 맞추기를 미루는가 — 추가 · 더 보기 · 하위 항목 읽기(편집은 붙드는 화면이 아닐 때만) · 편집 중에 컬럼이 바뀌었다. */
+  const blocked = () => busyRef.current || (columnsPending.current && modeRef.current.kind === 'editing')
+
+  /** 맞추기를 청한다 — 추가 · 더 보기 중이거나(편집은 그 행만 붙든다 — RT-4) 이미 도는 중이면 미뤘다가 끝나면(아래 효과). */
   const requestSync = (kind: 'delta' | 'full') => {
     syncWanted.current = strongerSync(syncWanted.current, kind)
-    if (!busyRef.current && !syncing.current) void runSync()
+    if (!blocked() && !syncing.current) void runSync()
+  }
+
+  /**
+   * 놓기(RT-4 ⑲ ⓒ) — 편집이 끝난 행을 받아 둔 서버의 자리로. 값은 화면의 것 · 자리만 받은 것. 끼울 수 없으면(이웃이 어긋났다) 다시 읽는다.
+   * 받은 것이 없으면 그 행은 이미 서버의 자리다. 효과 안에서 부르므로 한 번에 그리지 않는다(편집은 이미 끝났다).
+   */
+  const releaseHeld = (id: string) => {
+    const pending = heldPending.current
+    heldPending.current = null
+    if (pending === null || pending.id !== id) return
+    const row = rowsRef.current.find((r) => r.id === id)
+    if (row === undefined) return
+    const next = heldRow()
+    const merged = mergeDelta({
+      previous: rowsRef.current,
+      outside: outsideRef.current,
+      touched: touched.current,
+      rows: [releaseEntry(row, pending.entry)],
+      hasMore: pageRef.current.hasMore,
+      held: next === null ? null : { id: next, floating: false },
+    })
+    if (!merged.ok) {
+      requestSync('full')
+      return
+    }
+    if (merged.changed) applyRows(merged.rows, merged.outside, { quiet: true, now: false })
   }
   /** 처음부터 다시 읽기 — 실패한 옮기기 · 바깥이 나눠 주는 신호(G-1 ④) 등. */
   const reload = () => requestSync('full')
@@ -1504,14 +1701,19 @@ export function DatabaseTable(props: {
    */
   const personalPending = useRef(false)
   const refreshPersonal = () => {
-    if (busyRef.current) personalPending.current = true
+    // 편집 중이면 늘 미룬다 — 붙드는 화면이어도(RT-4) 새로 서면 편집 칸이 사라진다
+    if (busyRef.current || modeRef.current.kind === 'editing') personalPending.current = true
     else router.refresh()
   }
 
-  // 미뤄 둔 맞추기 — 편집 · 추가 · 더 보기가 끝나면
+  // 미뤄 둔 맞추기 — 추가 · 더 보기가 끝나면 · 편집이 끝나면(붙든 행을 놓는다 — RT-4)
   useEffect(() => {
-    if (syncWanted.current !== 'none' && !busyRef.current && !syncing.current) void runSync()
-    if (personalPending.current && !busyRef.current) {
+    const held = heldRow()
+    if (holding.current !== null && holding.current !== held) releaseHeld(holding.current)
+    holding.current = held
+    if (columnsPending.current && modeRef.current.kind !== 'editing') columnsPending.current = false
+    if (syncWanted.current !== 'none' && !blocked() && !syncing.current) void runSync()
+    if (personalPending.current && !busyRef.current && modeRef.current.kind !== 'editing') {
       personalPending.current = false
       router.refresh()
     }
@@ -1863,7 +2065,8 @@ export function DatabaseTable(props: {
           <tbody role="rowgroup" className={isGrid ? undefined : 'block'}>
             {rows.map((row, r) => (
               <tr
-                key={row.id}
+                // 편집 중인 행을 위로 건너간 행은 새 키(RT-4 ⑲ ⓔ) — React 가 편집 중인 행의 줄을 옮기지 않는다
+                key={rowGen.has(row.id) ? `${row.id}~${rowGen.get(row.id)}` : row.id}
                 role="row"
                 data-row-id={row.id}
                 data-depth={subItems === null ? undefined : (depthOf.get(row.id) ?? 0)}
@@ -2097,6 +2300,8 @@ export function DatabaseTable(props: {
                       data-cell={keyOf(at)}
                       data-property-id={column.propertyId}
                       data-editing={isEditing || undefined}
+                      // 남이 바꾼 칸(RT-4 ⑳) — 칠한 차례. 바탕은 아래 클래스 · 흐리기는 효과가 한다
+                      data-remote-changed={remoteCells.get(`${row.id}/${column.propertyId}`)}
                       data-collapsed={collapsed || undefined}
                       title={isList && column.type !== 'title' ? column.name : undefined}
                       onMouseDown={(e) => onCellMouseDown(at, e)}
@@ -2108,7 +2313,7 @@ export function DatabaseTable(props: {
                               column.type === 'title' ? 'min-w-0 flex-1' : 'max-w-[16rem] flex-none'
                             } ${isEditing && column.type !== 'title' ? 'min-w-[11rem]' : ''} ${
                               isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
-                            }`
+                            } ${REMOTE_CELL}`
                           : isRecordRow
                             ? `flex ${isRecordModule ? 'w-full' : 'w-44 flex-none'} flex-col rounded outline-none ${
                                 isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
@@ -2120,7 +2325,7 @@ export function DatabaseTable(props: {
                             // 칸 — 디자인-6a(노션 실측: 오른쪽 · 아래 선만 · 옅은 따뜻한 회색 · 줄 37px — 겹친 선(border-collapse)은 칸 높이에 든다)
                             : `relative h-[37px] border-b border-r border-[rgba(42,28,0,0.07)] px-2 align-middle outline-none dark:border-[rgba(255,255,243,0.082)] ${
                                 isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
-                              }`
+                              } ${REMOTE_CELL}`
                       }
                     >
                       {/*
@@ -2220,7 +2425,7 @@ export function DatabaseTable(props: {
                             propertyName={column.name}
                             limit={cell.column.relation.limit}
                             align={isList ? 'right' : 'left'}
-                            onChange={onRelationChange}
+                            onChange={(next, known, knownIcons) => onRelationChange(next, known, knownIcons, column.propertyId)}
                             onDone={() => setMode({ kind: 'selected', at })}
                           />
                         </>
@@ -2298,6 +2503,12 @@ export function DatabaseTable(props: {
       {notice && (
         <p role="status" data-testid="db-notice" className="text-sm text-amber-700 dark:text-amber-300">
           {notice}
+        </p>
+      )}
+      {/* 남이 바꾼 칸의 한 줄 요약(RT-4 ⑳ ⓒ) — 칸마다 알리지 않는다. 늘 두어야 바뀐 글을 읽는다(붙는 순간의 글은 읽지 않는 낭독기가 있다) */}
+      {variant !== 'record' && (
+        <p role="status" className="sr-only" data-testid="db-remote-summary">
+          {remoteSummary}
         </p>
       )}
 

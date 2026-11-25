@@ -31,6 +31,15 @@
  * 내가 고친 행(`touched`)이 뷰 밖이 되면(`inView` 거짓 · 휴지통) 옛 자리에 남기고 "조건 밖"을 단다(`live-rows.ts` 의 `mergeReloaded` 와
  * 같다 — 04 F-04-24). 남이 고친 행은 뺀다. 화면의 행이 더 새 버전이면 그 값을 지킨다(#468 — 같은 버전이면 델타의 것). 내가 고친 행이
  * 아직 읽지 않은 범위로 옮겨 가면 다시 읽기에 맡긴다(그 규칙이 이미 있다).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 편집 중인 행 — 그 행만 붙든다 (RT-4 · 정본 ⑲)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 칸 편집기가 열린 행(H)의 기록이 델타에 오면 H 는 화면의 자리에 남고(값만 새것) **떠 있다** — 서버의 차례에 없는 행처럼 이웃을 셀 때
+ * 건너뛴다(조건 밖과 같다). 다른 행의 이웃이 H 면 같은 델타가 준 H 의 자리를 건너 잇는다(H 의 앞 · 뒤). 떠 있는 H 가 이번 델타에 없는데 남의
+ * 이웃이 H 면 서버의 H 자리를 모른다 — 다시 읽는다. 받은 H 의 기록(`heldEntry`)은 부르는 쪽이 들고 있다가 편집이 끝나면 그 자리로 놓는다
+ * (`releaseEntry` — 값은 화면의 것 · 자리만 받은 것). 다시 읽기는 `pinHeld` 로 H 를 옛 자리에 두고 `heldPlaceIn` 으로 서버의 자리를 받아 둔다.
  */
 
 import type { Calculations } from './calculate.ts'
@@ -134,8 +143,13 @@ export type MergedDelta =
       readonly outside: Set<string>
       /** 화면에서 무엇이든 바뀌었는가(행 · 자리 · 조건 밖 표시). */
       readonly changed: boolean
+      /** 붙든 행(`held`)의 기록이 이 델타에 왔다 — 놓을 때의 자리 · 뷰에 서는가(RT-4 · 머리말). */
+      readonly heldEntry?: DeltaRowJson
     }
   | { readonly ok: false; readonly reason: MergeFailure }
+
+/** 붙든 행 — 칸 편집기가 열린 행(RT-4 · 머리말). `floating` 은 앞선 합치기에서 이미 떠 있다(서버의 자리가 화면과 다를 수 있다). */
+export type HeldRow = { readonly id: string; readonly floating: boolean }
 
 /** `a` 가 `b` 보다 새 버전인가 — 버전은 정수 문자열(bigint)이다. 읽을 수 없으면 새롭다고 하지 않는다(델타의 것을 쓴다). */
 function newerVersion(a: string, b: string): boolean {
@@ -169,6 +183,7 @@ function keepNewer(current: RowJson | undefined, incoming: DeltaRowJson & { kind
  * @param input.rows     델타의 행 — 뷰에 서는 것은 `place` 가 있어야 한다(`deltaFallback` 이 먼저 본다)
  * @param input.hasMore  화면이 목록의 앞부분만 들고 있다("더 보기"가 남았다)
  * @param input.cap      목록의 상한(F-03-17 — 넘으면 다시 읽기가 상한까지 읽는다)
+ * @param input.held     칸 편집기가 열린 행(RT-4) — 자리를 지키고 떠 있을 수 있다(머리말)
  */
 export function mergeDelta(input: {
   readonly previous: readonly RowJson[]
@@ -177,6 +192,7 @@ export function mergeDelta(input: {
   readonly rows: readonly DeltaRowJson[]
   readonly hasMore: boolean
   readonly cap?: number
+  readonly held?: HeldRow | null
 }): MergedDelta {
   const cap = input.cap ?? MAX_QUERY_PAGINATION
   const shown = new Map(input.previous.map((row) => [row.id, row]))
@@ -184,7 +200,20 @@ export function mergeDelta(input: {
   const outside = new Set(input.outside)
   let changed = false
 
-  // ① 바뀐 행을 뺀다 — 뷰 밖이 된 내 행은 옛 자리에 남기고 "조건 밖"
+  // 붙든 행(RT-4) — 화면에 있을 때만. 이 델타에 그 기록이 왔으면 이제부터 떠 있다
+  const heldId = input.held != null && shown.has(input.held.id) ? input.held.id : null
+  const heldEntry = heldId === null ? undefined : byId.get(heldId)
+  const floating = heldId !== null && (input.held!.floating || heldEntry !== undefined)
+  // 떠 있는 H 의 서버 자리 — 같은 델타의 것만 믿는다(같은 스냅샷). 없으면 H 를 이웃으로 든 행은 끼울 수 없다
+  const heldPlace = heldEntry?.kind === 'row_upsert' && heldEntry.inView ? heldEntry.place : undefined
+  const STALE = Symbol('stale')
+  const skipHeld = (id: string | null, side: 'before' | 'after'): string | null | typeof STALE => {
+    if (!floating || id !== heldId) return id
+    if (heldPlace === undefined) return STALE
+    return heldPlace[side]
+  }
+
+  // ① 바뀐 행을 뺀다 — 뷰 밖이 된 내 행은 옛 자리에 남기고 "조건 밖" · 붙든 행은 값만 바꿔 제자리에
   const kept: RowJson[] = []
   for (const row of input.previous) {
     const delta = byId.get(row.id)
@@ -193,6 +222,10 @@ export function mergeDelta(input: {
       continue
     }
     changed = true
+    if (row.id === heldId) {
+      kept.push(delta.kind === 'row_upsert' ? keepNewer(row, delta) : row)
+      continue
+    }
     if (delta.inView) continue // ② 에서 제자리에 선다(또는 아직 읽지 않은 범위로 빠진다)
     if (input.touched.has(row.id)) {
       kept.push(delta.kind === 'row_upsert' ? keepNewer(row, delta) : row)
@@ -200,10 +233,10 @@ export function mergeDelta(input: {
     } else outside.delete(row.id)
   }
 
-  // ② 뷰에 서는 바뀐 행 — 아직 읽지 않은 범위는 빼고, 나머지는 자리에
+  // ② 뷰에 서는 바뀐 행 — 아직 읽지 않은 범위는 빼고, 나머지는 자리에(붙든 행을 이웃으로 들면 그 너머로)
   const placed = new Map<string, { readonly row: RowJson; readonly place: DeltaPlace }>()
   for (const delta of input.rows) {
-    if (delta.kind !== 'row_upsert' || !delta.inView) continue
+    if (delta.kind !== 'row_upsert' || !delta.inView || delta.id === heldId) continue
     const place = delta.place
     if (place === undefined) return { ok: false, reason: 'stale' }
     outside.delete(delta.id)
@@ -212,7 +245,10 @@ export function mergeDelta(input: {
       if (input.touched.has(delta.id) && shown.has(delta.id)) return { ok: false, reason: 'beyond_touched' }
       continue
     }
-    placed.set(delta.id, { row: keepNewer(shown.get(delta.id), delta), place })
+    const before = skipHeld(place.before, 'before')
+    const after = skipHeld(place.after, 'after')
+    if (before === STALE || after === STALE) return { ok: false, reason: 'stale' }
+    placed.set(delta.id, { row: keepNewer(shown.get(delta.id), delta), place: { before, after, beyond: false } })
     changed = true
   }
 
@@ -236,8 +272,8 @@ export function mergeDelta(input: {
   }
   if (chained.size !== placed.size) return { ok: false, reason: 'stale' }
 
-  // ④ 사슬의 앞뒤가 남은 목록에서도 이웃인가 — 조건 밖으로 남긴 행은 서버의 차례에 없으니 건너뛴다
-  const viewRows = kept.filter((row) => !outside.has(row.id))
+  // ④ 사슬의 앞뒤가 남은 목록에서도 이웃인가 — 조건 밖으로 남긴 행 · 떠 있는 붙든 행은 서버의 차례에 없으니 건너뛴다
+  const viewRows = kept.filter((row) => !outside.has(row.id) && !(floating && row.id === heldId))
   const indexInView = new Map(viewRows.map((row, i) => [row.id, i]))
   const keptIds = new Set(kept.map((row) => row.id))
   const after = new Map<string | null, string[]>()
@@ -264,7 +300,71 @@ export function mergeDelta(input: {
   }
   if (rows.length > cap) return { ok: false, reason: 'cap' }
   if (!changed && outside.size !== input.outside.size) changed = true
-  return { ok: true, rows, outside, changed }
+  return { ok: true, rows, outside, changed, ...(heldEntry === undefined ? {} : { heldEntry }) }
+}
+
+// ── 붙든 행 — 다시 읽기 · 놓기 · 그리기 (RT-4 · 정본 ⑲) ─────────────────
+
+/**
+ * 다시 읽은 목록에서 붙든 행을 옛 자리에 — 화면에서 바로 앞이던 행 중 남은 것의 뒤(없으면 맨 앞 · 조건 밖의 닻과 같다 · `live-rows.ts`).
+ * 값은 읽은 목록의 것(버전 거르기를 지난 것), 읽은 목록에 없으면(뷰 밖) 화면의 것.
+ */
+export function pinHeld(previous: readonly RowJson[], next: readonly RowJson[], heldId: string): RowJson[] {
+  const i = previous.findIndex((row) => row.id === heldId)
+  if (i < 0) return [...next]
+  const fresh = next.find((row) => row.id === heldId) ?? previous[i]!
+  const rest = next.filter((row) => row.id !== heldId)
+  let at = 0
+  for (let j = i - 1; j >= 0; j--) {
+    const k = rest.findIndex((row) => row.id === previous[j]!.id)
+    if (k >= 0) {
+      at = k + 1
+      break
+    }
+  }
+  rest.splice(at, 0, fresh)
+  return rest
+}
+
+/**
+ * 다시 읽은 목록(서버의 차례 그대로)에서 붙든 행의 자리 — 놓을 때 쓴다. 목록에 없으면 뷰 밖으로 친다(필터 밖 · 휴지통 · 읽지 않은 범위 —
+ * 놓을 때 내가 고친 행이면 조건 밖 · 아니면 빠지고 더 보기가 가져온다).
+ */
+export function heldPlaceIn(listed: readonly RowJson[], heldId: string): DeltaRowJson {
+  const k = listed.findIndex((row) => row.id === heldId)
+  if (k < 0) return { id: heldId, kind: 'row_delete', inView: false }
+  return {
+    ...listed[k]!,
+    kind: 'row_upsert',
+    inView: true,
+    place: { before: listed[k - 1]?.id ?? null, after: listed[k + 1]?.id ?? null, beyond: false },
+  }
+}
+
+/**
+ * 놓기 — 편집이 끝난 행을 받아 둔 기록의 자리로 옮길 델타 한 줄. 값은 **화면의 것**이다(그사이 내가 저장한 것 — 버전이 같으면 델타의 값이
+ * 이기므로 기록의 값을 실으면 덮는다) · 자리 · 뷰에 서는가만 받은 것.
+ */
+export function releaseEntry(current: RowJson, pending: DeltaRowJson): DeltaRowJson {
+  if (pending.kind === 'row_delete') return pending
+  return { ...current, kind: 'row_upsert', inView: pending.inView, ...(pending.place === undefined ? {} : { place: pending.place }) }
+}
+
+/**
+ * 붙든 행을 아래에서 위로 건너간 행 — 화면의 차례에서 그 행 뒤에 있다가 앞으로 온 것. React 는 이 행들 대신 붙든 행의 줄(DOM)을 옮기는데,
+ * 옮기면 그 안의 편집기가 포커스를 잃는다. 부르는 쪽이 이 행들을 새로 그린다(키를 바꾼다 — 새 줄을 넣는 것은 다른 줄을 옮기지 않는다).
+ */
+export function crossedAbove(previous: readonly RowJson[], next: readonly RowJson[], heldId: string): string[] {
+  const was = new Map(previous.map((row, i) => [row.id, i]))
+  const from = was.get(heldId)
+  if (from === undefined) return []
+  const crossed: string[] = []
+  for (const row of next) {
+    if (row.id === heldId) break
+    const i = was.get(row.id)
+    if (i !== undefined && i > from) crossed.push(row.id)
+  }
+  return crossed
 }
 
 // ── 커서 장부 ─────────────────────────────────────────────────────────

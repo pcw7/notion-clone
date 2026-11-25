@@ -17337,7 +17337,7 @@ async function main() {
 
     if (sectionIf('표 변경 알림 — 화면 (2k-2 · F-04-24)')) { try {
       // 다른 곳(API)에서 바꾸면 새로고침 없이 표가 맞춰진다 — 새 행 · 제목 · 집계 · 뷰 필터. 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖", 남이
-      // 고쳐 나간 행은 빠진다. 편집 중에는 미뤘다가 끝나면 맞춘다. 남이 속성을 더하면 표가 새로 선다.
+      // 고쳐 나간 행은 빠진다. 편집 중에도 다른 행은 맞추고 편집칸은 그대로다(RT-4 — 전에는 다 미뤘다). 남이 속성을 더하면 표가 새로 선다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
         const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -17402,19 +17402,18 @@ async function main() {
       await api('PATCH', `/rows/${na}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 1 } }] })
       check('★ 남이 고쳐 조건 밖이 된 행은 빠진다', await waitFor(`!document.querySelector('tr[data-row-id="${na}"]')`, 8000), await titles())
 
-      // ── 편집 중에는 미뤘다가 끝나면 맞춘다 ──
+      // ── 편집 중에도 다른 행은 맞춘다 — 그 행만 붙든다(RT-4 · 정본 X-5 의 단계 ⑲ · 전에는 편집이 끝날 때까지 다 미뤘다) ──
       await api('PATCH', `/views/${view}`, { filter: null })
       await waitFor(`!!document.querySelector('tr[data-row-id="${ga}"]')`, 8000)
       await clickOn(`tr[data-row-id="${ga}"] td[data-property-id="${titleProp}"]`)
       await key('Enter')
       const editing = await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
       const ra = await rowOf('라', 50)
-      await sleep(1500)
-      check('★ 편집 중에는 다시 읽지 않는다 — 편집칸이 그대로 · 새 행은 아직',
-        editing && (await evaluate(`document.activeElement?.matches('[data-testid="db-cell-input"]')`)) && !(await evaluate(`!!document.querySelector('tr[data-row-id="${ra}"]')`)),
+      check('★ 편집 중에도 다른 행은 맞춘다 — 새 행(라)이 서고 편집칸은 그대로(RT-4)',
+        editing && (await waitFor(`!!document.querySelector('tr[data-row-id="${ra}"]') && document.activeElement?.matches('[data-testid="db-cell-input"]') === true`, 8000)),
         await titles())
       await key('Escape')
-      check('편집이 끝나면 맞춘다 — 새 행(라)이 선다', await waitFor(`!!document.querySelector('tr[data-row-id="${ra}"]')`, 8000), await titles())
+      check('편집을 닫아도 새 행(라)은 그대로', await waitFor(`!document.querySelector('[data-testid="db-cell-input"]') && !!document.querySelector('tr[data-row-id="${ra}"]')`, 8000), await titles())
 
       // ── 남이 속성을 더하면 표가 새로 선다 ──
       await api('POST', props, { name: '메모', type: 'rich_text' })
@@ -17848,6 +17847,238 @@ async function main() {
         if (tabB !== null) await tabB.close().catch(() => undefined)
         if (tabAOpen) await tabA.close().catch(() => undefined)
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('DB 실시간 — 남이 바꾼 칸 · 편집 중인 행 (RT-4 · F-05-16)')) { try {
+      // 같은 사람의 두 탭 — 주 탭 A 가 보고 · 고치고, 둘째 탭 B 가 다른 곳에서 바꾼다(칠하기는 탭마다 — 같은 사람의 다른 탭은 남이다). 뷰는
+      // 순서 오름차순. ① B 가 칸 하나를 고치면 A 에서 그 칸만 칠했다가 뗀다 ② A 가 스스로 고친 칸은 칠하지 않는다 ③ A 가 둘의 칸 편집기를 연 채
+      // B 가 셋의 순서를 바꾸면 셋은 바로 옮기고 편집기 · 초안은 그대로 ④ B 가 둘의 순서를 바꾸면 둘은 편집 중에 제자리 · 닫으면 서버의 자리로.
+      // 칠한 칸은 MutationObserver 로 모은다 — 한순간이라도 이웃이 칠해졌으면 잡는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `남이 바꾼 칸 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const order = (await api('POST', props, { name: '순서', type: 'number' })).body.property.id
+      const memo = (await api('POST', props, { name: '메모', type: 'rich_text' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const memoValue = (s) => ({ type: 'rich_text', rich_text: [textRun(s)] })
+      const orderValue = (n) => ({ type: 'number', number: n })
+      const rowOf = async (t, n) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } },
+        { propertyId: order, value: orderValue(n) },
+      ] })).body.row.id
+      const r1 = await rowOf('하나', 1)
+      const r2 = await rowOf('둘', 2)
+      const r3 = await rowOf('셋', 3)
+      // 버튼 "적기" — 누르면 그 행의 메모를 '버튼으로'(값이 서버에서만 온다 — 화면이 먼저 칠해 두지 않는다)
+      const button = (await api('POST', props, { name: '적기', type: 'button' })).body.property.id
+      const buttonSet = await api('PUT', `${props}/${button}/actions`, { actions: [{ type: 'edit_property', config: { v: 1, cells: [{ propertyId: memo, value: memoValue('버튼으로') }] } }] })
+      await api('PATCH', `/views/${view}`, { sorts: [{ property_id: order, direction: 'asc' }] })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const syncJs = `(() => { const t = document.querySelector('[data-testid="db-table"]'); return t ? { last: t.dataset.sync ?? null, delta: Number(t.dataset.syncDelta), full: Number(t.dataset.syncFull) } : null })()`
+      const sync = () => evaluate(syncJs)
+      const synced = (base) => `(() => { const s = ${syncJs}; return !!s && s.delta + s.full > ${base.delta + base.full} })()`
+      const cellOf = (rowId, propertyId) => `tr[data-row-id="${rowId}"] td[data-property-id="${propertyId}"]`
+      const markedNowJs = `document.querySelectorAll('[data-testid="db-table"] td[data-remote-changed]').length`
+      const marks = () => evaluate(`[...(window.__rt4Marks ?? [])].sort().join(' ')`)
+      const marked = (rowId, propertyId) => `(window.__rt4Marks?.has(${JSON.stringify(`${rowId}/${propertyId}`)}) === true)`
+      // 칠한 칸을 모은다 — 속성이 바뀐 칸 · 칠한 채 새로 들어온 칸(새로 그린 줄) 모두. 낭독기 요약의 글도
+      const record = () => evaluate(`(() => {
+        window.__rt4Marks = new Set()
+        window.__rt4Summary = []
+        window.__rt4Observer?.disconnect()
+        const note = (td) => window.__rt4Marks.add((td.closest('tr')?.dataset.rowId ?? '?') + '/' + td.dataset.propertyId)
+        const said = (node) => {
+          const box = (node instanceof HTMLElement ? node : node.parentElement)?.closest('[data-testid="db-remote-summary"]')
+          if (box && box.textContent) window.__rt4Summary.push(box.textContent)
+        }
+        window.__rt4Observer = new MutationObserver((list) => {
+          for (const m of list) {
+            said(m.target)
+            if (m.type === 'attributes' && m.target instanceof HTMLElement && m.target.hasAttribute('data-remote-changed')) note(m.target)
+            for (const n of m.addedNodes) if (n instanceof HTMLElement) n.querySelectorAll('td[data-remote-changed]').forEach(note)
+          }
+        })
+        window.__rt4Observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-remote-changed'] })
+        return true
+      })()`)
+      const EDITOR = '[data-testid="db-cell-input"]'
+      const editorJs = `(() => { const e = document.querySelector('${EDITOR}'); return e ? { value: e.value, focused: document.activeElement === e } : null })()`
+      const editorHolds = (draft) => `(() => { const e = ${editorJs}; return !!e && e.focused && e.value === ${JSON.stringify(draft)} })()`
+      // A 의 칸 편집기를 연다 — 이미 고른 칸을 누르면 그 누르기가 곧 편집이다(Enter 로 저장하면 선택이 아래 칸으로 간다 · 그 칸이면 Enter 가 닫는다)
+      const openEditorA = async (selector) => {
+        await clickSelector(selector, { settle: false })
+        if (!(await evaluate(`document.activeElement?.matches('${EDITOR}') === true`))) await key('Enter')
+        return waitFor(`document.activeElement?.matches('${EDITOR}')`, 5000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`${titlesJs} === '하나,둘,셋'`, 15000)
+      await sleep(800) // 구독이 붙을 때까지
+      // 맞추기 한 번을 치른다 — 렌더 커서가 앞선 쓰기(속성 · 정렬)를 아직 넘지 못했으면 첫 델타가 그것을 실어 와 조용한 다시 읽기가 된다(RT-2 절과 같다)
+      const warm = await sync()
+      await api('PATCH', `/rows/${r3}`, { cells: [{ propertyId: memo, value: memoValue('준비') }] })
+      check('전제 — A 가 맞추기를 한 번 치렀고 칠한 것이 떨어졌다',
+        (await waitFor(synced(warm), 10000)) && (await waitFor(`${markedNowJs} === 0`, 8000)), JSON.stringify(await sync()))
+
+      const tabB = await openTab(`${BASE}/w/${workspaceId}/db/${db.id}`)
+      try {
+        await tabB.waitFor(`${titlesJs} === '하나,둘,셋'`, 15000)
+        await sleep(800)
+        const apiB = (method, path, body) => tabB.evaluate(`fetch(${JSON.stringify(`/api/workspaces/${workspaceId}${path}`)}, {
+          method: ${JSON.stringify(method)}, headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))},
+        }).then((r) => r.status)`)
+        const keyB = async (name) => {
+          const [vk, code] = { Enter: [13, 'Enter'] }[name]
+          const k = { key: name, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }
+          await tabB.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...k })
+          await tabB.send('Input.dispatchKeyEvent', { type: 'keyUp', ...k })
+        }
+        const clickB = async (selector) => {
+          const p = await tabB.evaluate(`(() => {
+            const e = document.querySelector(${JSON.stringify(selector)})
+            if (!e) return null
+            e.scrollIntoView({ block: 'center' })
+            const r = e.getBoundingClientRect()
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+          })()`)
+          if (!p) return false
+          await tabB.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y })
+          await tabB.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', buttons: 1, clickCount: 1 })
+          await tabB.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', buttons: 0, clickCount: 1 })
+          return true
+        }
+
+        // ── ① B 가 화면에서 둘의 메모를 고친다 → A 에서 그 칸만 칠했다가 뗀다 ──
+        await record()
+        const base1 = await sync()
+        await clickB(cellOf(r2, memo))
+        await keyB('Enter')
+        const editingB = await tabB.waitFor(`document.activeElement?.matches('${EDITOR}')`, 5000)
+        if (editingB) {
+          await tabB.send('Input.insertText', { text: 'B가 씀' })
+          await keyB('Enter')
+        }
+        check('전제 — B 가 화면에서 둘의 메모를 고쳤다', editingB && (await tabB.waitFor(`(document.querySelector('${cellOf(r2, memo)}')?.textContent ?? '').includes('B가 씀')`, 8000)))
+        await send('Page.bringToFront') // A 가 프레임을 받는다
+        check('★ A 에서 B 가 고친 그 칸만 칠한다(data-remote-changed) — 같은 행의 다른 칸 · 이웃 행은 아니다',
+          (await waitFor(`${marked(r2, memo)} && (document.querySelector('${cellOf(r2, memo)}')?.textContent ?? '').includes('B가 씀')`, 10000))
+            && (await marks()) === `${r2}/${memo}`,
+          `칠한 칸 ${await marks()} · ${JSON.stringify(await sync())}`)
+        check('★ 화면 낭독기에는 한 줄 요약만(role=status — 칸마다 알리지 않는다)',
+          (await evaluate(`document.querySelector('[data-testid="db-remote-summary"]')?.getAttribute('role') === 'status'
+            && window.__rt4Summary.length > 0 && window.__rt4Summary.every((t) => t === '다른 곳에서 바뀐 칸 1개')`)) === true,
+          String(await evaluate(`JSON.stringify(window.__rt4Summary)`)))
+        check('★ 칠한 것은 잠시 뒤 떨어진다(2초)', await waitFor(`${markedNowJs} === 0`, 6000))
+        check('★ 다 떨어질 때까지 다른 칸은 칠하지 않았다', (await marks()) === `${r2}/${memo}` && (await waitFor(synced(base1), 1000)), await marks())
+
+        // ── ② A 가 스스로 고친 칸은 칠하지 않는다 ──
+        await record()
+        const base2 = await sync()
+        const editingA = await openEditorA(cellOf(r1, memo))
+        if (editingA) {
+          await send('Input.insertText', { text: 'A가 씀' })
+          await key('Enter')
+        }
+        check('전제 — A 가 화면에서 하나의 메모를 고쳤고 B 에도 섰다',
+          editingA && (await tabB.waitFor(`(document.querySelector('${cellOf(r1, memo)}')?.textContent ?? '').includes('A가 씀')`, 10000)))
+        // 제 쓰기의 델타를 받아 합친 뒤에도
+        await waitFor(synced(base2), 10000)
+        await sleep(600)
+        check('★ A 가 스스로 고친 칸은 칠하지 않는다 — 돌아온 델타에도', (await marks()) === '', `칠한 칸 ${await marks()} · ${JSON.stringify({ base2, now: await sync() })}`)
+
+        // ── ②b 값이 서버에서만 오는 내 쓰기 — A 가 하나의 "적기" 버튼을 누른다. 화면은 메모를 먼저 바꿔 두지 않으므로(위 ② 와 다르다) 델타가
+        //    가져온 새 값을 "내 것" 으로 아는 길은 이 탭의 장부뿐이다. 대조로 B 가 셋에서 같은 버튼을 누르면 A 에는 칠한다 ──
+        await waitFor(`${markedNowJs} === 0`, 6000)
+        await record()
+        const base2b = await sync()
+        const pressedA = buttonSet.status < 300 && (await clickSelector(`${cellOf(r1, button)} [data-testid="db-button-cell"]`, { settle: false }))
+        check('전제 — A 가 하나의 "적기" 버튼을 눌렀고 메모가 델타로 서버의 값(버튼으로)이 됐다',
+          pressedA && (await waitFor(`${synced(base2b)} && (document.querySelector('${cellOf(r1, memo)}')?.textContent ?? '').includes('버튼으로')`, 10000)),
+          `동작 저장 ${buttonSet.status} · ${await evaluate(`document.querySelector('${cellOf(r1, memo)}')?.textContent ?? ''`)} · ${JSON.stringify(await sync())}`)
+        await sleep(600)
+        check('★ 내 버튼이 바꾼 칸은 칠하지 않는다 — 값이 델타로만 와도(이 탭의 장부 · 그 행 전체)', (await marks()) === '', `칠한 칸 ${await marks()}`)
+        const pressedB = await tabB.evaluate(`fetch(${JSON.stringify(`/api/workspaces/${workspaceId}/rows/${r3}/buttons/${button}`)}, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+        }).then((r) => r.status)`)
+        check('대조 — 같은 버튼을 B 가 셋에서 누르면 A 에서 셋의 메모를 칠한다', pressedB < 300 && (await waitFor(marked(r3, memo), 10000)),
+          `${pressedB} · 칠한 칸 ${await marks()}`)
+        await waitFor(`${markedNowJs} === 0`, 6000)
+
+        // ── ③ A 가 둘의 메모 편집기를 연 채 · B 가 셋의 순서를 0 으로 → 셋은 맨 앞으로, A 의 편집기 · 초안은 그대로 ──
+        const holding = await openEditorA(cellOf(r2, memo))
+        if (holding) {
+          await evaluate(`document.querySelector('${EDITOR}').select()`)
+          await send('Input.insertText', { text: '초안' })
+        }
+        check('전제 — A 가 둘의 칸 편집기를 열고 초안을 쳤다', holding && (await waitFor(editorHolds('초안'), 3000)), JSON.stringify(await evaluate(editorJs)))
+        // 편집칸이 포커스를 한 번이라도 잃었는가 — 편집 중인 줄을 옮기면 Chrome 이 그 자리에서 blur 를 쏜다(포커스가 돌아와도 한글 조합이 끊긴다)
+        await evaluate(`(() => { window.__rt4Blur = 0; document.querySelector('${EDITOR}').addEventListener('focusout', () => { window.__rt4Blur += 1 }); return true })()`)
+        await record()
+        const base3 = await sync()
+        check('전제 — B 가 셋의 순서를 0 으로', (await apiB('PATCH', `/rows/${r3}`, { cells: [{ propertyId: order, value: orderValue(0) }] })) === 200)
+        check('★ 편집 중에도 다른 행은 바로 옮긴다(셋이 맨 앞으로) — A 의 편집기는 열린 채 초안 그대로 · 포커스도',
+          await waitFor(`${titlesJs} === '셋,하나,둘' && ${editorHolds('초안')}`, 10000),
+          `${await evaluate(titlesJs)} · ${JSON.stringify(await evaluate(editorJs))} · ${JSON.stringify(await sync())}`)
+        check('★ 편집칸은 포커스를 한 번도 잃지 않았다 — 위로 건너간 셋을 새로 그리고 편집 중인 줄은 옮기지 않았다',
+          (await evaluate(`window.__rt4Blur`)) === 0, `focusout ${await evaluate(`window.__rt4Blur`)}번`)
+        check('★ 옮긴 셋의 순서 칸은 칠했다', (await marks()).includes(`${r3}/${order}`), await marks())
+        // 칠한 것이 떨어지기를 기다리는 동안에도 편집기는 그대로
+        await waitFor(`${markedNowJs} === 0`, 6000)
+        check('대조 — 그사이 맞추기를 치렀고(델타) 편집기는 그대로', (await waitFor(synced(base3), 1000)) && (await evaluate(editorHolds('초안'))) === true,
+          JSON.stringify({ base3, now: await sync(), editor: await evaluate(editorJs) }))
+
+        // ── ④ B 가 둘의 순서를 -1 로 → A 가 편집하는 동안 둘은 제자리 · 닫으면(Esc) 서버의 자리(맨 앞)로 ──
+        const base4 = await sync()
+        check('전제 — B 가 둘의 순서를 -1 로', (await apiB('PATCH', `/rows/${r2}`, { cells: [{ propertyId: order, value: orderValue(-1) }] })) === 200)
+        check('★ 편집 중인 둘은 값만 새것(-1) · 자리는 그대로(셋,하나,둘) · 편집기 · 초안 그대로',
+          await waitFor(`${synced(base4)} && (document.querySelector('${cellOf(r2, order)}')?.textContent ?? '').includes('-1')`, 10000)
+            && (await evaluate(titlesJs)) === '셋,하나,둘' && (await evaluate(editorHolds('초안'))) === true,
+          `${await evaluate(titlesJs)} · ${JSON.stringify(await evaluate(editorJs))} · ${JSON.stringify(await sync())}`)
+        await sleep(800)
+        check('대조 — 조금 더 기다려도 둘은 제자리 · 편집기 그대로 · 포커스를 잃은 적 없다',
+          (await evaluate(titlesJs)) === '셋,하나,둘' && (await evaluate(editorHolds('초안'))) === true && (await evaluate(`window.__rt4Blur`)) === 0,
+          `${await evaluate(titlesJs)} · ${JSON.stringify(await evaluate(editorJs))} · focusout ${await evaluate(`window.__rt4Blur`)}번`)
+        await key('Escape')
+        check('★ 편집기를 닫으면 둘이 서버의 자리(맨 앞)로 간다',
+          await waitFor(`!document.querySelector('${EDITOR}') && ${titlesJs} === '둘,셋,하나'`, 8000),
+          `${await evaluate(titlesJs)} · ${JSON.stringify(await evaluate(editorJs))}`)
+        check('대조 — 닫기는 취소였다(초안은 저장하지 않았다)', (await evaluate(`document.querySelector('${cellOf(r2, memo)}')?.textContent ?? ''`)).includes('B가 씀'))
+
+        // ── ⑤ 목록이 통째로 바뀐 다시 읽기는 칠하지 않는다(quiet) — A 가 오프라인인 동안 B 가 셋의 메모와 뷰의 정렬(모두에게 · 내림차순)을
+        //    바꾼다. 돌아온 A 의 델타는 viewChanged 라 처음부터 다시 읽고, 그 읽기가 가져온 셋의 새 메모를 칠하지 않는다. 스키마 변경(열 타입 ·
+        //    옵션 지우기)은 컬럼 모양이 바뀌어 표가 새로 서므로(첫 화면이라 어차피 칠하지 않는다) 이 규칙을 가르지 못한다 ──
+        await waitFor(`${markedNowJs} === 0`, 6000)
+        await record()
+        const base5 = await sync()
+        await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 })
+        try {
+          await waitFor(`navigator.onLine === false`, 3000)
+          const memoSet = await apiB('PATCH', `/rows/${r3}`, { cells: [{ propertyId: memo, value: memoValue('조용히') }] })
+          const sortSet = await apiB('PATCH', `/views/${view}`, { sorts: [{ property_id: order, direction: 'desc' }] })
+          check('전제 — A 가 오프라인인 동안 B 가 셋의 메모와 뷰의 정렬(내림차순)을 바꿨다', memoSet < 300 && sortSet < 300, `${memoSet} · ${sortSet}`)
+          await sleep(1500)
+        } finally {
+          await send('Network.emulateNetworkConditions', { offline: false, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 })
+        }
+        check('전제 — 돌아온 A 가 처음부터 다시 읽었다(data-sync=full · 내림차순 · 셋의 새 메모)',
+          await waitFor(`(() => { const s = ${syncJs}; return !!s && s.last === 'full' && s.full > ${base5.full} })() && ${titlesJs} === '하나,셋,둘'
+            && (document.querySelector('${cellOf(r3, memo)}')?.textContent ?? '').includes('조용히')`, 15000),
+          `${await evaluate(titlesJs)} · ${JSON.stringify(await sync())}`)
+        await sleep(600)
+        check('★ 뷰가 바뀌어 처음부터 다시 읽은 것은 바뀐 칸을 칠하지 않는다(목록이 통째로 바뀐다 — 소음)',
+          (await marks()) === '' && (await evaluate(markedNowJs)) === 0, `칠한 칸 ${await marks()}`)
+      } finally {
+        await send('Network.emulateNetworkConditions', { offline: false, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 }).catch(() => undefined)
+        await evaluate(`window.__rt4Observer?.disconnect()`).catch(() => undefined)
+        await tabB.close().catch(() => undefined)
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 

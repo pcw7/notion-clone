@@ -15,6 +15,7 @@
 
 import { useState } from 'react'
 
+import { ownWrites } from '@/lib/database/remote-cells'
 import { buttonRunMessage, type ButtonTone } from './button-messages'
 import * as api from './table-api'
 
@@ -44,7 +45,10 @@ export function ButtonCell({
     if (busy) return
     setBusy(true)
     setResult(null)
+    // 이 탭이 바꾼 행이다 — 돌아온 델타가 그 칸들을 "남이 바꿨다"고 칠하지 않게(RT-4 · 보내기 전과 답을 받은 뒤)
+    ownWrites.note(rowId)
     const pressed = await api.pressButton(workspaceId, rowId, propertyId)
+    ownWrites.note(rowId)
     setResult(pressed.ok ? buttonRunMessage(pressed.run) : buttonRunMessage(null, pressed.error))
     setBusy(false)
   }
