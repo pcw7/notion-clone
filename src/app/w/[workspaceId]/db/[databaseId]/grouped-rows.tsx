@@ -69,6 +69,8 @@ export function GroupedRows({
         setTick((n) => n + 1)
         router.refresh()
       },
+      // 내 개인 설정(RT-3)이 다른 탭에서 바뀌면 서버 화면째 — 새 필터면 덩이가 새로 선다
+      onPersonal: () => router.refresh(),
       onRevoked: () => router.refresh(),
     },
     true,

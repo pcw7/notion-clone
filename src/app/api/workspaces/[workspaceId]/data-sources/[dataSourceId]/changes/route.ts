@@ -14,6 +14,9 @@
  *                    `?since=`(읽기 전의 시각 ms · 이 프로세스의 기억 — `rowsChangedSince`)
  *   event: changed   그 표의 행 · 속성 · 뷰가 바뀌었다(250ms 모아서 한 번 — 일괄 편집이 신호를 여러 번 보내도 한 번 다시 읽는다) —
  *                    `{ dataSourceId, cursor }`
+ *   event: personal  **이 사람의** 이 표 뷰 개인 필터 · 정렬이 바뀌었다(RT-3 · 0154) — `{ dataSourceId, viewId, origin }`. 이 연결의 사람에게만
+ *                    간다(허브가 사람으로 가린다 · 남에게는 신호가 없다). `origin` 은 바꾼 탭 — 그 탭은 버린다. `ready` 에 `personal: true` 가
+ *                    실리면 렌더 커서(`?after=`) 뒤로 이미 바뀌었다(구독이 붙기 전의 틈 — `personalChangedSince`)
  *
  *   cursor           변경 기록의 커서(정본 §3.7 [보강] X-5 의 단계 — 1단계 · RT-1). 뜻: "이것을 받은 **뒤에** 시작한 읽기는 이 커서 아래의
  *                    변경을 모두 본다". 처음부터 다시 읽는 화면(옛 화면 · reset)은 다시 읽기 전에 받은 커서부터 델타(`…/changes/delta`)를
@@ -31,7 +34,7 @@ import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { withReadTransaction } from '@/lib/db/tx'
 import { rowsAccessForDataSource } from '@/lib/database/row-access'
 import { rowsChangedSince, subscribeRows } from '@/lib/database/row-feed'
-import { changedSinceCursor, currentChangeCursor, decodeChangeCursor, recentChangeCursor } from '@/lib/database/change-log'
+import { changedSinceCursor, currentChangeCursor, decodeChangeCursor, personalChangedSince, recentChangeCursor } from '@/lib/database/change-log'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/changes'>
 
@@ -110,6 +113,10 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
               )
             }, COALESCE_MS)
           },
+          onPersonal(viewId, origin) {
+            // 내 개인 설정(RT-3) — 모으지 않는다(드물다 · 뷰마다 다르다). `ready` 보다 먼저 가지 않는다
+            void readyGate.then(() => send('personal', { dataSourceId, viewId, origin }))
+          },
           onAccess() {
             // 권한이 바뀌었을 수 있다 — 다시 본다. 잃었으면 닫는다(정본 §3.7 "권한 회수 시 서버 강제 unsubscribe").
             void canView().then(
@@ -140,15 +147,17 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       }
       // 화면이 읽은 뒤 · 이 구독이 붙기 전에 바뀌었나(머리말) — 구독을 붙인 **뒤에** 묻는다(그 뒤의 커밋은 위의 구독이 신호로 받는다).
       // 커서가 있으면 변경 기록으로, 없으면 옛 길(이 프로세스의 기억). 기록을 묻지 못하면 바뀐 것으로 친다(거짓 양성은 허용한다)
-      const [missed, cursor] = await Promise.all([
+      const [missed, cursor, personal] = await Promise.all([
         after !== null
           ? changedSinceCursor(dataSourceId, after).catch(() => true)
           : Promise.resolve(since !== null && rowsChangedSince(dataSourceId, since)),
         cursorOrNull(currentChangeCursor()),
+        // 내 개인 설정도 렌더 뒤로 바뀌었나(RT-3) — 커서가 있을 때만(옛 화면은 묻지 않는다) · 묻지 못하면 모른 척한다(다음 신호 · 델타가 메운다)
+        after !== null ? personalChangedSince(dataSourceId, sessionCtx.userId, after).catch(() => false) : Promise.resolve(false),
       ])
       if (closed) return
       const withCursor = cursor === null ? {} : { cursor }
-      send('ready', { dataSourceId, ...withCursor })
+      send('ready', { dataSourceId, ...withCursor, ...(personal ? { personal: true } : {}) })
       if (missed) send('changed', { dataSourceId, ...withCursor })
       openReadyGate()
     },

@@ -452,7 +452,11 @@ describe('★ 필터·정렬 저장', () => {
       })).ok,
       true,
     )
+    // 정리 전의 옛 행(RT-3 전) — 지운 속성을 가리키는 AST 가 저장돼 있다. 지우기는 이제 그 조건을 빼므로(아래) 지운 뒤에 다시 심는다
     assert.equal((await deleteProperty(fx.owner.ctx, table.dataSourceId, n)).ok, true)
+    assert.equal(unwrap(await getView(fx.owner.ctx, table.defaultViewId)).filter, null, '[RT-3] 지우기가 그 조건을 뺀다(유일한 조건이면 필터 없음)')
+    const { query } = await import('../db/pool.ts')
+    await query(`UPDATE view SET filter = $2::jsonb WHERE id = $1`, [table.defaultViewId, JSON.stringify({ property_id: n, operator: 'equals', value: 1 })])
 
     // 뷰는 열리고 필터 AST 도 그대로 있다(화면이 "비활성" 배지를 그릴 수 있게).
     const view = unwrap(await getView(fx.owner.ctx, table.defaultViewId))

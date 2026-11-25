@@ -69,7 +69,7 @@ import { getDatabase, listDatabaseAncestors, type DatabaseAccess, type DatabaseD
 import { databaseLockState, type LockState } from '@/lib/permissions/lock'
 import type { SessionContext } from '@/lib/auth/session-context'
 import { readForm } from '@/lib/database/form'
-import { getView, listViews, type ViewDetail, type ViewSummary } from '@/lib/database/view'
+import { getView, listViewNotices, listViews, type ViewDetail, type ViewSummary } from '@/lib/database/view'
 import { readDashboard } from '@/lib/database/dashboard'
 import { createGate, dashboardGrid, widgetBodyPx, WIDGET_READ_CONCURRENCY, WIDGET_ROW_LIMIT, type Gate } from '@/lib/database/dashboard-grid'
 import { DashboardView, WidgetUnavailable } from './dashboard-view'
@@ -116,6 +116,7 @@ import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { ViewTabs } from './view-tabs'
 import { FormEditor } from './form-editor'
 import { ViewToolbar, type BoardSettings, type ChartSettings, type MapSettings } from './view-toolbar'
+import { FilterNoticeBanner } from './filter-notice-banner'
 import { DatabaseMap } from './database-map-lazy'
 import { mapTileUrl, MAX_MAP_PINS, resolveMapBy } from '@/lib/database/map'
 import { queryMapPins } from '@/lib/database/map-query'
@@ -836,6 +837,8 @@ async function renderView({
       ? null
       : await withReadTransaction((tx) => readLiveTemplate(tx, ctx, view.value.dataSourceId, defaultTemplateId))
   const defaultTemplate = defaultRow === null ? null : { id: defaultRow.id, title: defaultRow.title }
+  // 지운 속성의 조건을 뺀 알림 중 내가 아직 보지 않은 것(RT-3) — 대시보드 · 위젯은 필터가 없다
+  const filterNotices = isDashboard || widget ? [] : await listViewNotices(ctx, view.value.id)
 
   return (
     <>
@@ -878,6 +881,8 @@ async function renderView({
             rowTitles={filterRowTitles}
           />
           )}
+          {/* 지운 속성의 조건을 뺐다는 띠 — 한 번만(RT-3 · F-05-16). 늘 세운다(알림이 비어 와도 받은 것은 닫을 때까지 남는다) · 뷰마다 새로 */}
+          {!isDashboard && <FilterNoticeBanner key={view.value.id} workspaceId={workspaceId} viewId={view.value.id} notices={filterNotices} />}
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}
         {access.canEditStructure && (

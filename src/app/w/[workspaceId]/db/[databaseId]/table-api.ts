@@ -35,6 +35,7 @@ import type { DateReminderJson } from '@/lib/database/reminder'
 import type { VerificationCell } from '@/lib/database/verification-cell'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 import { parseDelta, type DeltaJson } from '@/lib/database/delta-merge'
+import { VIEW_ORIGIN_HEADER, viewOrigin } from '@/lib/database/view-origin'
 import { buttonActionProblemMessage } from './button-messages'
 import { automationProblemMessage } from './automation-messages'
 
@@ -882,6 +883,9 @@ export function updateFormula(
   )
 }
 
+/** 개인 설정 요청의 머리 — 이 탭의 id(RT-3). 나의 다른 탭은 신호를 받아 따라오고 이 탭은 버린다(저장 뒤 스스로 다시 그린다). */
+const originHeaders = (): Record<string, string> => ({ [VIEW_ORIGIN_HEADER]: viewOrigin() })
+
 /** 나에게만 적용하는 필터 · 정렬을 건다(2h-2 · F-04-17) — 볼 수 있으면 된다. `filter: null` 은 "필터 없음"(공유 필터를 끈다). */
 export function setPersonalView(
   workspaceId: string,
@@ -890,19 +894,28 @@ export function setPersonalView(
 ): Promise<ApiResult<null>> {
   return call(
     `${base(workspaceId)}/views/${viewId}/personal`,
-    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(patch) },
+    { method: 'PATCH', headers: { ...JSON_HEADERS, ...originHeaders() }, body: JSON.stringify(patch) },
     () => null,
   )
 }
 
 /** 나의 필터 · 정렬을 버리고 공유 것으로(2h-2). */
 export function resetPersonalView(workspaceId: string, viewId: string): Promise<ApiResult<null>> {
-  return call(`${base(workspaceId)}/views/${viewId}/personal`, { method: 'DELETE' }, () => null)
+  return call(`${base(workspaceId)}/views/${viewId}/personal`, { method: 'DELETE', headers: originHeaders() }, () => null)
 }
 
 /** 나의 필터 · 정렬을 모두에게 저장한다(2h-2 · Save for everyone) — 구조 권한. */
 export function publishPersonalView(workspaceId: string, viewId: string): Promise<ApiResult<null>> {
-  return call(`${base(workspaceId)}/views/${viewId}/personal`, { method: 'POST' }, () => null)
+  return call(`${base(workspaceId)}/views/${viewId}/personal`, { method: 'POST', headers: originHeaders() }, () => null)
+}
+
+/** 지운 속성의 조건을 뺀 알림을 띄웠다 — 다시 띄우지 않는다(RT-3 · F-05-16). */
+export function ackViewNotices(workspaceId: string, viewId: string, ids: readonly string[]): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/notices`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }) },
+    () => null,
+  )
 }
 
 /** 이 뷰에서 이 열의 집계 함수를 바꾼다(2d-2 · F-04-16). `null` 이면 지운다. 타입이 고를 수 없는 함수는 서버가 거부한다. */

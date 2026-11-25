@@ -1,13 +1,16 @@
 /**
  * 나에게만 적용하는 필터 · 정렬 — `/api/workspaces/[workspaceId]/views/[viewId]/personal` (DB 심화 2h-1 · F-04-17)
  *
- * 정본: 00-canonical-data-model.md §3.6 `view_user_override` · [보강] 개인 필터 · 정렬 · 04-database-views.md F-04-17
+ * 정본: 00-canonical-data-model.md §3.6 `view_user_override` · [보강] 개인 필터 · 정렬 · [보강 RT-3] · 04-database-views.md F-04-17
  *
  *   PATCH  { filter?, sorts? }  나의 필터 · 정렬을 건다(공유 것을 대체 · `filter: null` 은 "필터 없음") — 볼 수 있으면 된다
  *   DELETE                      나의 것을 버린다(공유 것으로)
  *   POST                        나의 것을 **모두에게** 저장한다(Save for everyone) — `edit_structure`
  *
  * 공유 필터 · 정렬을 바꾸는 것은 `PATCH /views/[viewId]` 다(편집자 · 그쪽은 자기 개인 것의 그 쪽을 지운다).
+ *
+ * 바꾸면 **나의 다른 탭 · 기기**가 따라온다(RT-3 — 0154 의 트리거가 나에게만 신호). 머리 `x-view-origin`(이 탭의 id)을 주면 그 탭은 신호를
+ * 버린다 — 저장 뒤 스스로 다시 그렸다. 판정에는 쓰지 않는다.
  */
 
 import { isUuid } from '@/lib/ids'
@@ -15,10 +18,13 @@ import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { publishPersonalView, resetPersonalView, setPersonalView, type ViewResult, type ViewDetail } from '@/lib/database/view'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import { viewFailureStatus } from '@/lib/database/http'
+import { readViewOrigin, VIEW_ORIGIN_HEADER } from '@/lib/database/view-origin'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/personal'>
 
 const notFound = () => Response.json({ error: 'not_found' }, { status: 404 })
+
+const originOf = (request: Request) => ({ origin: readViewOrigin(request.headers.get(VIEW_ORIGIN_HEADER)) })
 
 function respond(result: ViewResult<ViewDetail>): Response {
   if (!result.ok) {
@@ -40,25 +46,30 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   const body = (parsed.body ?? {}) as { filter?: unknown; sorts?: unknown }
   // ★ `filter: null`(필터 없음)과 "안 보냄"을 가른다 — `'filter' in body`.
   return respond(
-    await setPersonalView(session.ctx, viewId, {
-      ...('filter' in body ? { filter: body.filter as FilterNode | null } : {}),
-      ...('sorts' in body ? { sorts: body.sorts as SortKey[] } : {}),
-    }),
+    await setPersonalView(
+      session.ctx,
+      viewId,
+      {
+        ...('filter' in body ? { filter: body.filter as FilterNode | null } : {}),
+        ...('sorts' in body ? { sorts: body.sorts as SortKey[] } : {}),
+      },
+      originOf(request),
+    ),
   )
 }
 
-export async function DELETE(_request: Request, ctx: Ctx): Promise<Response> {
+export async function DELETE(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, viewId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
   if (!isUuid(viewId)) return notFound()
-  return respond(await resetPersonalView(session.ctx, viewId))
+  return respond(await resetPersonalView(session.ctx, viewId, originOf(request)))
 }
 
-export async function POST(_request: Request, ctx: Ctx): Promise<Response> {
+export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, viewId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
   if (!isUuid(viewId)) return notFound()
-  return respond(await publishPersonalView(session.ctx, viewId))
+  return respond(await publishPersonalView(session.ctx, viewId, originOf(request)))
 }

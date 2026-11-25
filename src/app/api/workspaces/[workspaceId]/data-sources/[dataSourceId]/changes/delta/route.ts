@@ -5,8 +5,11 @@
  *
  * 변경 알림(`…/changes` · SSE)이 `ready` · `changed` 에 커서를 싣는다. 화면은 자기가 가진 커서(`after`)를 들고 여기서 **바뀐 행만** 받는다:
  *
- *   { cursor, reset, behind, schemaChanged, viewChanged, orderChanged,
+ *   { cursor, reset, behind, schemaChanged, viewChanged, orderChanged, personalChanged,
  *     rows: [{ kind: 'row_upsert', inView, ...표의 다시 읽기와 같은 행 } | { id, kind: 'row_delete', inView: false }] }
+ *
+ *   personalChanged  **묻는 사람의** 이 뷰 개인 필터 · 정렬이 커서 뒤로 바뀌었다(RT-3 — 다른 탭 · 기기 · 놓친 신호). 화면은 도구줄까지 새로
+ *                    그린다
  *
  *   reset   델타를 줄 수 없다(커서 없음 · 이 DB 의 것이 아님 · 24시간 창 밖 · 바뀐 행이 상한 초과) — 처음부터 다시 읽고 `cursor` 부터
  *   behind  더 오래된 쓰기 트랜잭션이 끝나지 않아 그 뒤의 커밋을 아직 줄 수 없다 — 곧 다시 물어라

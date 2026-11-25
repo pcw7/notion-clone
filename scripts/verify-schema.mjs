@@ -93,6 +93,8 @@ const EXPECTED_TABLES = [
   'api_webhook_subscription', 'api_webhook_event',
   // 표의 변경 기록 RT-1 (0153)
   'data_source_change', 'data_source_change_floor',
+  // 개인 뷰 상태 · 지운 속성의 조건을 뺀 알림 RT-3 (0154)
+  'view_personal_change', 'view_filter_notice', 'view_filter_notice_seen',
   // AI 1차 기반 AI-1 (0146)
   'workspace_ai_setting', 'ai_usage', 'ai_grant', 'ai_daily_usage',
   // AI 채팅 · 내 AI 지시 AI-6 (0148)
@@ -6591,6 +6593,87 @@ try {
     await client.query(`INSERT INTO data_source_change_floor (data_source_id, purged_through) VALUES ($1, '100')`, [source])
     ok('data_source_change_floor 정상 삽입')
     await probe('★ 표마다 지운 자리는 하나', `INSERT INTO data_source_change_floor (data_source_id, purged_through) VALUES ($1, '200')`, [source], 'pk_data_source_change_floor')
+  }
+
+  console.log('\n[102] 개인 뷰 상태 · 지운 속성의 조건을 뺀 알림 — 신호의 표시 · 알림의 CHECK · cascade (0154 / §3.6 view_user_override [보강 RT-3] · RT-3조각)')
+  {
+    const probe = async (label, sql, params, expect) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        const got = e.constraint ?? e.code
+        if (got === expect) ok(`${label} — ${expect} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${expect} 가 아니라 ${got} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const source = randomUUID()
+    const view = randomUUID()
+    const prop = 'r'.padEnd(21, '3') // nanoid(21) 자리 흉내
+    const blockSql = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, 'zrt3', $6, $7, '{}'::jsonb, '{}'::jsonb, now(), now())` // 앞 절의 형제와 겹치지 않는 자리
+    await client.query(blockSql, [root, wsId, 'page', 'workspace', wsId, [], root])
+    await client.query(blockSql, [dbBlock, wsId, 'database', 'block', root, [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '개인 신호 프로브', now(), now())`, [source, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, source])
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at) VALUES ($1, $2, '단계', 'select', 'b0', now(), now())`,
+      [prop, source],
+    )
+    await client.query(
+      `INSERT INTO view (id, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at) VALUES ($1, $2, $3, 'table', 'a0', '{}'::jsonb, now(), now())`,
+      [view, dbBlock, source],
+    )
+
+    // ① 개인 설정의 넣기 · 고치기 · 지우기 → (뷰, 사람) 한 행에 그 트랜잭션의 xid · 변경 기록(모두의 델타)에는 쓰지 않는다
+    const logged = async () => (await client.query(`SELECT count(*)::int AS n FROM data_source_change WHERE data_source_id = $1`, [source])).rows[0].n
+    const logBefore = await logged()
+    await client.query(`INSERT INTO view_user_override (view_id, user_id, filter) VALUES ($1, $2, '{"op":"and","children":[]}'::jsonb)`, [view, userId])
+    await client.query(`UPDATE view_user_override SET sorts = '[]'::jsonb WHERE view_id = $1`, [view])
+    await client.query(`DELETE FROM view_user_override WHERE view_id = $1`, [view])
+    const marks = (await client.query(`SELECT xid = pg_current_xact_id() AS mine FROM view_personal_change WHERE view_id = $1 AND user_id = $2`, [view, userId])).rows
+    if (marks.length === 1 && marks[0].mine === true) ok('★ 트리거 — 개인 설정의 넣기 · 고치기 · 지우기가 (뷰, 사람) 한 행에 그 트랜잭션의 xid 를 남긴다(지워도 남는다)')
+    else fail(`개인 설정의 표시가 틀렸다: ${JSON.stringify(marks)}`)
+    if ((await logged()) === logBefore) ok('★ 개인 설정은 표의 변경 기록에 쓰지 않는다(쓰면 그 표를 보는 모두의 델타가 된다)')
+    else fail('개인 설정이 표의 변경 기록에 쓰였다')
+    await probe('(뷰, 사람)마다 표시는 하나', `INSERT INTO view_personal_change (view_id, user_id) VALUES ($1, $2)`, [view, userId], 'pk_view_personal_change')
+
+    // ② 알림의 CHECK
+    const putNotice = `INSERT INTO view_filter_notice (view_id, user_id, property_id, property_name, reason, filters, sorts) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+    const shared = (await client.query(`${putNotice} RETURNING id`, [view, null, prop, '단계', 'property_deleted', 1, 1])).rows[0].id
+    await client.query(putNotice, [view, userId, prop, '단계', 'type_changed', 2, 0])
+    ok('view_filter_notice 정상 삽입 — 공유 층(사람 없음) · 개인 층 · 지운 속성 · 타입 바꾸기')
+    await probe('★ 모르는 이유', putNotice, [view, null, prop, '단계', 'property_exploded', 1, 0], 'ck_view_filter_notice_reason')
+    await probe('★ 뺀 것이 없는 알림', putNotice, [view, null, prop, '단계', 'property_deleted', 0, 0], 'ck_view_filter_notice_counts')
+    await probe('뺀 수가 음수', putNotice, [view, null, prop, '단계', 'property_deleted', 2, -1], 'ck_view_filter_notice_counts')
+    await probe('★ 타입 바꾸기가 정렬을 뺐다(정렬은 남는다 — ⑤)', putNotice, [view, null, prop, '단계', 'type_changed', 0, 1], 'ck_view_filter_notice_type_sorts')
+    await probe('이름이 비었다', putNotice, [view, null, prop, '', 'property_deleted', 1, 0], 'ck_view_filter_notice_name')
+    await probe('이름이 속성 이름의 상한(200)을 넘는다', putNotice, [view, null, prop, '가'.repeat(201), 'property_deleted', 1, 0], 'ck_view_filter_notice_name')
+    await client.query(`INSERT INTO view_filter_notice_seen (notice_id, user_id) VALUES ($1, $2)`, [shared, userId])
+    await probe('★ 한 사람이 한 알림을 두 번 보지 않는다', `INSERT INTO view_filter_notice_seen (notice_id, user_id) VALUES ($1, $2)`, [shared, userId], 'pk_view_filter_notice_seen')
+
+    // ③ 뷰를 지우면 — 개인 설정의 cascade 가 트리거를 지나도 깨지지 않고(알릴 화면이 없다) 표시 · 알림 · 본 것이 함께 사라진다
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(`INSERT INTO view_user_override (view_id, user_id, sorts) VALUES ($1, $2, '[]'::jsonb)`, [view, userId])
+      await client.query(`DELETE FROM view WHERE id = $1`, [view])
+      const left = (await client.query(
+        `SELECT (SELECT count(*) FROM view_personal_change WHERE view_id = $1)::int + (SELECT count(*) FROM view_filter_notice WHERE view_id = $1)::int
+              + (SELECT count(*) FROM view_filter_notice_seen WHERE notice_id = $2)::int AS n`,
+        [view, shared],
+      )).rows[0].n
+      if (left === 0) ok('★ 뷰를 지우면 개인 설정 · 표시 · 알림 · 본 것이 함께 사라진다(트리거는 지워지는 뷰에 쓰지 않는다)')
+      else fail(`뷰를 지웠는데 ${left}개가 남았다`)
+    } catch (e) {
+      fail(`뷰 지우기의 cascade 가 깨졌다 (${e.constraint ?? e.code} — ${e.message})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
   }
 
   await client.query('ROLLBACK')

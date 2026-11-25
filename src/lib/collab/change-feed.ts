@@ -44,6 +44,11 @@ export type CollabSignal =
   | { readonly kind: 'session'; readonly userId: string }
   /** 그 표의 행 · 속성 · 뷰가 바뀌었다(2k-1). 무엇이 바뀌었는지는 싣지 않는다 — 받는 쪽이 다시 읽는다. */
   | { readonly kind: 'rows'; readonly dataSourceId: string }
+  /**
+   * 그 사람의 그 뷰 개인 설정이 바뀌었다(RT-3 · 0154 — `p:<표>:<뷰>:<사람>:<보낸 탭>`). 그 사람의 구독에게만 간다. `origin` 은 바꾼 탭(없으면
+   * null) — 그 탭은 이미 스스로 다시 그렸다.
+   */
+  | { readonly kind: 'personal'; readonly dataSourceId: string; readonly viewId: string; readonly userId: string; readonly origin: string | null }
 
 export type ChangeFeedHandlers = {
   /** 신호 하나. 받은 순서(= 커밋 순서)대로 동기로 부른다. */
@@ -82,7 +87,14 @@ export function parseCollabSignal(channel: string, payload: string | undefined):
     if (payload.startsWith('ws:') && isUuid(payload.slice(3))) return { kind: 'access', workspaceId: payload.slice(3) }
     if (payload.startsWith('user:') && isUuid(payload.slice(5))) return { kind: 'session', userId: payload.slice(5) }
   }
-  if (channel === ROWS_CHANNEL) return isUuid(payload) ? { kind: 'rows', dataSourceId: payload } : null
+  if (channel === ROWS_CHANNEL) {
+    if (payload.startsWith('p:')) {
+      const [dataSourceId = '', viewId = '', userId = '', origin = ''] = payload.slice(2).split(':')
+      if (!isUuid(dataSourceId) || !isUuid(viewId) || !isUuid(userId)) return null
+      return { kind: 'personal', dataSourceId, viewId, userId, origin: origin === '' ? null : origin }
+    }
+    return isUuid(payload) ? { kind: 'rows', dataSourceId: payload } : null
+  }
   return null
 }
 

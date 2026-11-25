@@ -216,7 +216,8 @@ export function DatabaseTimeline(props: {
   useTableChanges(
     workspaceId,
     props.dataSourceId,
-    { onChanged: () => void load(winRef.current), onRevoked: () => router.refresh() },
+    // 내 개인 설정(RT-3)이 다른 탭에서 바뀌면 서버 화면째(도구줄 · 막대)
+    { onChanged: () => void load(winRef.current), onPersonal: () => router.refresh(), onRevoked: () => router.refresh() },
     true,
     props.renderedAt,
   )

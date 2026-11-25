@@ -1443,7 +1443,10 @@ export function DatabaseTable(props: {
     // 요청 실패 · 모르는 모양 — 처음부터(그 전에 받은 신호의 커서로)
     if (!result.ok || result.value === null) return { full: true, before: fullReadCursor(ledger) }
     const delta = result.value
-    if (deltaFallback(delta) !== null) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
+    const fallback = deltaFallback(delta)
+    // 내 개인 설정이 다른 탭 · 기기에서 바뀌었다(RT-3 — 놓친 신호) — 도구줄(내 필터 칩)은 서버 화면이 그린다
+    if (fallback === 'personal') refreshPersonal()
+    if (fallback !== null) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
     const merged = mergeDelta({ previous: rowsRef.current, outside: outsideRef.current, touched: touched.current, rows: delta.rows, hasMore: page.hasMore })
     if (!merged.ok) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
     if (merged.changed) {
@@ -1495,9 +1498,23 @@ export function DatabaseTable(props: {
   /** 처음부터 다시 읽기 — 실패한 옮기기 · 바깥이 나눠 주는 신호(G-1 ④) 등. */
   const reload = () => requestSync('full')
 
+  /**
+   * 내 개인 필터 · 정렬이 다른 탭 · 기기에서 바뀌었다(RT-3) — 서버 화면을 다시 부른다(새 필터면 표가 새로 선다 · 도구줄의 칩도). 편집 ·
+   * 추가 · 더 보기 중이면 끝난 뒤에(새로 서면 편집 칸이 사라진다).
+   */
+  const personalPending = useRef(false)
+  const refreshPersonal = () => {
+    if (busyRef.current) personalPending.current = true
+    else router.refresh()
+  }
+
   // 미뤄 둔 맞추기 — 편집 · 추가 · 더 보기가 끝나면
   useEffect(() => {
     if (syncWanted.current !== 'none' && !busyRef.current && !syncing.current) void runSync()
+    if (personalPending.current && !busyRef.current) {
+      personalPending.current = false
+      router.refresh()
+    }
   })
 
   useTableChanges(
@@ -1508,6 +1525,7 @@ export function DatabaseTable(props: {
         noteSignal(ledger, signal.cursor)
         requestSync('delta')
       },
+      onPersonal: refreshPersonal,
       // 더 볼 수 없다 — 화면을 다시 읽으면 서버 렌더가 "없음"을 보인다
       onRevoked: () => router.refresh(),
     },
