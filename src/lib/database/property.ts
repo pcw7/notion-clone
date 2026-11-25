@@ -75,6 +75,7 @@ import { addPropertyToViews } from './view.ts'
 import { fillUniqueIds } from './unique-id.ts'
 import { normalizeUniqueIdPrefix } from './unique-id-format.ts'
 import { formulaGraphProblem } from './formula-graph.ts'
+import { pruneViewConditions } from './view-prune.ts'
 
 /**
  * data_source 당 프로퍼티 상한.
@@ -802,8 +803,8 @@ export async function deletePropertyIn(
   const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
   if (isFailure(ds)) return ds
 
-  const target = await tx.queryMaybe<{ type: string; config: Record<string, unknown> | null }>(
-    `SELECT type, config FROM property
+  const target = await tx.queryMaybe<{ name: string; type: string; config: Record<string, unknown> | null }>(
+    `SELECT name, type, config FROM property
       WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
     [propertyId, dataSourceId],
   )
@@ -831,6 +832,15 @@ export async function deletePropertyIn(
       WHERE id = $1 AND data_source_id = $2`,
     [propertyId, dataSourceId],
   )
+  // 이 속성을 가리키는 필터 · 정렬 조건만 뺀다 — 공유 층 · 모든 사람의 개인 층 · 알림(RT-3 · F-05-16 · `view-prune.ts`)
+  const own = (leaf: { readonly property_id: string }) => leaf.property_id === propertyId
+  await pruneViewConditions(tx, ctx, {
+    dataSourceId,
+    propertyId,
+    propertyName: target.name,
+    reason: 'property_deleted',
+    drop: { leaf: own, sort: own },
+  })
 
   await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'deleted', propertyId))
   return { ok: true, value: await readSchema(tx, dataSourceId) } as const

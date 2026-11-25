@@ -51,6 +51,8 @@ export type DeltaJson = {
   readonly schemaChanged: boolean
   readonly viewChanged: boolean
   readonly orderChanged: boolean
+  /** 내 개인 필터 · 정렬이 커서 뒤로 바뀌었다(RT-3 — 옛 서버는 싣지 않는다 · 없으면 거짓). */
+  readonly personalChanged?: boolean
   readonly placed?: boolean
   readonly rows: readonly DeltaRowJson[]
   readonly calculations?: Calculations
@@ -73,6 +75,7 @@ export function parseDelta(body: Record<string, unknown>): DeltaJson | null {
     if (typeof body[flag] !== 'boolean') return null
   }
   if (body.placed !== undefined && typeof body.placed !== 'boolean') return null
+  if (body.personalChanged !== undefined && typeof body.personalChanged !== 'boolean') return null
   if (!Array.isArray(body.rows)) return null
   const rows: DeltaRowJson[] = []
   for (const raw of body.rows as unknown[]) {
@@ -94,23 +97,26 @@ export function parseDelta(body: Record<string, unknown>): DeltaJson | null {
     schemaChanged: body.schemaChanged as boolean,
     viewChanged: body.viewChanged as boolean,
     orderChanged: body.orderChanged as boolean,
+    personalChanged: body.personalChanged === true,
     ...(body.placed === undefined ? {} : { placed: body.placed as boolean }),
     rows,
     ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
   }
 }
 
-export type FullReason = 'reset' | 'schema' | 'view' | 'unplaced'
+export type FullReason = 'reset' | 'schema' | 'view' | 'personal' | 'unplaced'
 
 /**
  * 델타로 합칠 수 없는 까닭 — 없으면 null. 처음부터 다시 읽는다:
  *   reset    서버가 델타를 줄 수 없다(커서 없음 · 24시간 창 밖 · 바뀐 행이 상한 초과)
  *   schema   속성 · 옵션이 바뀌었다 — 컬럼을 다시 세워야 한다
  *   view     이 뷰(필터 · 정렬 · 컬럼)가 바뀌었다 — 목록의 차례 자체가 바뀐다
+ *   personal 내 개인 필터 · 정렬이 바뀌었다(RT-3 — 다른 탭 · 기기) — 차례가 바뀌고 도구줄(내 필터 칩)도 새로 그린다
  *   unplaced 뷰에 서는 행의 자리가 없다(하위 항목 트리 · 카드의 부모만 · 더 보기 커서가 정렬에 맞지 않는다)
  * 손으로 둔 순서(`orderChanged`)는 까닭이 아니다 — 옮긴 행이 `rows` 에 자리와 함께 온다.
  */
 export function deltaFallback(delta: DeltaJson): FullReason | null {
+  if (delta.personalChanged === true) return 'personal'
   if (delta.reset) return 'reset'
   if (delta.schemaChanged) return 'schema'
   if (delta.viewChanged) return 'view'

@@ -17743,6 +17743,114 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('DB 실시간 — 개인 뷰 · 지운 속성 (RT-3 · F-05-16)')) { try {
+      // 같은 사람(동료)의 두 탭 A · B 와 다른 사람(주인)의 탭(주 탭). A 가 개인 필터를 바꾸면 B 가 따라오고(서버 화면을 다시 부른다 — 칩 ·
+      // 행) 주인의 탭은 아무것도 받지 않는다(`data-sync` 가 그대로 — 끝에 주인의 칸 하나를 고쳐 그 탭이 살아 있음을 본다). 주인이 그 개인
+      // 필터가 쓰는 속성을 지우면 B 에 띠가 한 번 서고 나머지 조건은 그대로 걸린다. 쿠키는 브라우저 전체가 나눠 쓴다 — 주 탭(주인)을 먼저
+      // 연 뒤 쿠키를 동료로 바꿔 A · B 를 연다(열린 구독은 연 때의 사람이다). 끝나면 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `개인 뷰 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const stage = (await api('POST', props, { name: '단계', type: 'select' })).body.property.id
+      const plan = (await api('POST', `${props}/${stage}/options`, { name: '기획' })).body.option.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (t, n, planned) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } },
+        { propertyId: qty, value: { type: 'number', number: n } },
+        ...(planned ? [{ propertyId: stage, value: { type: 'select', select: { id: plan } } }] : []),
+      ] })).body.row.id
+      await rowOf('가', 3, true)
+      await rowOf('나', 30, true)
+      const da = await rowOf('다', 12, false)
+      await rowOf('라', 20, true)
+      const mate = await joinAs(workspaceId, await createUser(`개인 뷰 동료 ${stamp}`), 'member')
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const syncJs = `(() => { const t = document.querySelector('[data-testid="db-table"]'); return t ? { last: t.dataset.sync ?? null, delta: Number(t.dataset.syncDelta), full: Number(t.dataset.syncFull) } : null })()`
+      const sync = () => evaluate(syncJs)
+      const NOTICE = '[data-testid="db-filter-notice-item"]'
+
+      // 주인 — 주 탭이 연다. 맞추기 한 번을 치르고 기준을 잡는다(렌더 커서가 앞선 쓰기를 아직 넘지 못했으면 첫 델타가 다시 읽기가 된다 · RT-2 절과 같다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`${titlesJs} === '가,나,다,라'`, 15000)
+      await sleep(800)
+      const warm = await sync()
+      await api('PATCH', `/rows/${da}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 13 } }] })
+      check('전제 — 주인의 탭이 맞추기를 한 번 치렀다',
+        await waitFor(`(() => { const s = ${syncJs}; return !!s && s.delta + s.full > ${warm.delta + warm.full} })()`, 10000), JSON.stringify(await sync()))
+      await sleep(500)
+      const ownerBase = await sync()
+
+      await send('Network.setCookie', { name: 'nc_session', value: mate.token, domain: 'localhost', path: '/', httpOnly: true })
+      const tabA = await openTab(`${BASE}/w/${workspaceId}/db/${db.id}`)
+      let tabAOpen = true
+      let tabB = null
+      try {
+        await tabA.waitFor(`${titlesJs} === '가,나,다,라'`, 15000)
+        tabB = await openTab(`${BASE}/w/${workspaceId}/db/${db.id}`)
+        await tabB.waitFor(`${titlesJs} === '가,나,다,라'`, 15000)
+        await sleep(1000) // 두 탭의 구독이 붙을 때까지
+        check('전제 — 동료의 두 탭이 열렸다 · 개인 필터 없음', !(await tabB.evaluate(`!!document.querySelector('[data-testid="db-personal"]')`)), String(await tabB.evaluate(titlesJs)))
+
+        // ── ① A 가 개인 필터를 건다 → B 가 따라온다(칩 · 행) ──
+        const set = await tabA.evaluate(`fetch(${JSON.stringify(`/api/workspaces/${workspaceId}/views/${view}/personal`)}, {
+          method: 'PATCH', headers: { 'content-type': 'application/json' },
+          body: ${JSON.stringify(JSON.stringify({ filter: { op: 'and', children: [
+            { property_id: stage, operator: 'equals', value: plan },
+            { property_id: qty, operator: 'greater_than', value: 5 },
+          ] } }))},
+        }).then((r) => r.status)`)
+        check('전제 — A 가 개인 필터를 걸었다(200)', set === 200, String(set))
+        check('★ 같은 사람의 다른 탭(B)이 따라온다 — 개인 필터의 행(기획 · 5 초과) · "나만 보는 필터" 칩',
+          await tabB.waitFor(`${titlesJs} === '나,라' && !!document.querySelector('[data-testid="db-personal"]')`, 10000),
+          String(await tabB.evaluate(titlesJs)))
+        await sleep(1500) // 주인에게 늦게 가는 것이 없는지 — 그동안 A 는 쓸 일이 끝났다(닫는다 — 뒤로 밀린 탭 · 연결 수를 줄인다)
+        await tabA.close().catch(() => undefined)
+        tabAOpen = false
+
+        // ── ② 다른 사람(주인)의 탭은 아무것도 받지 않는다 — 다시 읽지 않았다 ──
+        await send('Page.bringToFront')
+        await sleep(800)
+        const ownerAfter = await sync()
+        check('★ 다른 사람(주인)의 탭은 다시 읽지 않는다 — data-sync 그대로 · 행 그대로 · 칩 없음',
+          JSON.stringify(ownerAfter) === JSON.stringify(ownerBase) && (await evaluate(titlesJs)) === '가,나,다,라'
+            && !(await evaluate(`!!document.querySelector('[data-testid="db-personal"]')`)),
+          JSON.stringify({ ownerBase, ownerAfter, titles: await evaluate(titlesJs) }))
+        await api('PATCH', `/rows/${da}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 14 } }] })
+        // 전체 판의 부하에서 10초가 모자란 적이 있다(홀로는 통과) — 살아 있음만 보면 되므로 넉넉히
+        check('대조 — 주인의 탭은 살아 있다(행을 고치면 맞춘다)',
+          await waitFor(`(() => { const s = ${syncJs}; return !!s && s.delta + s.full > ${ownerAfter.delta + ownerAfter.full} })()`, 20000), JSON.stringify(await sync()))
+
+        // ── ③ 주인이 그 개인 필터가 쓰는 속성(단계)을 지운다 → B 에 띠가 한 번 · 남은 조건(5 초과)은 그대로 ──
+        await tabB.send('Page.bringToFront')
+        const removed = await api('DELETE', `${props}/${stage}`)
+        check('전제 — 주인이 단계를 지웠다', removed.status === 200, String(removed.status))
+        check('★ 동료의 화면에 띠가 선다 — 나만 보는 필터에서 삭제된 속성 \'단계\'의 조건을 뺐다',
+          await tabB.waitFor(`[...document.querySelectorAll('${NOTICE}')].some((e) => e.textContent.includes('나만 보는 필터') && e.textContent.includes("'단계'"))`, 15000),
+          String(await tabB.evaluate(`document.querySelector('[data-testid="db-filter-notice"]')?.textContent ?? '(띠 없음)'`)))
+        check('★ 나머지 조건(수량 5 초과)은 그대로 걸린다 — 뷰 전체가 풀리지 않았다(가 3 은 빠진 채)',
+          await tabB.waitFor(`${titlesJs} === '나,다,라' && !!document.querySelector('[data-testid="db-personal"]')`, 10000),
+          String(await tabB.evaluate(titlesJs)))
+        await sleep(800) // 띠가 "봤다"를 적을 때까지(띄우자마자 보낸다)
+        await tabB.send('Page.reload')
+        await tabB.waitFor(`${titlesJs} === '나,다,라'`, 15000)
+        await sleep(800)
+        check('★ 띠는 한 번만 — 다시 열면 없다',
+          !(await tabB.evaluate(`!!document.querySelector('[data-testid="db-filter-notice"]')`)), String(await tabB.evaluate(titlesJs)))
+      } finally {
+        if (tabB !== null) await tabB.close().catch(() => undefined)
+        if (tabAOpen) await tabA.close().catch(() => undefined)
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('연결된 데이터베이스 — 서버 (2l-1 · F-04-13)')) { try {
       // 다른 데이터베이스의 소스를 붙이면 그 소스를 보는 뷰가 생기고 원본의 행이 보인다 · 두 번 붙이면 409 · 떼면 뷰와 함께 빠진다 · 제 소스는 떼지 않는다.
       // 권한(원본을 못 보면 붙일 수 없음 · 이름을 가림 · 링크로 권한이 오르지 않음)은 DB 검사가 본다.

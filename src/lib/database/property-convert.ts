@@ -29,7 +29,8 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { readCell } from './cell-format.ts'
-import { operatorsFor, withoutRules, type FilterNode } from './filter.ts'
+import { operatorsFor } from './filter.ts'
+import { pruneViewConditions } from './view-prune.ts'
 import { readOptionsOf } from './options.ts'
 import { bumpSchema, isSchemaFailure, lockSchema, readSchema, schemaChange, type PropertyFailure, type SchemaSnapshot } from './property.ts'
 import {
@@ -59,7 +60,7 @@ export type ConvertOutcome = {
   readonly converted: number
   /** 값이 사라진 칸 수(확인을 받은 것). */
   readonly lost: number
-  /** 지운 필터 규칙 수(이 속성을 가리키던 것 — 정본 ⑤). */
+  /** 지운 필터 규칙 수(이 속성을 가리키던 것 — 정본 ⑤ · 공유 층과 모든 사람의 개인 층 · RT-3). */
   readonly filtersRemoved: number
 }
 
@@ -94,8 +95,8 @@ export async function convertPropertyIn(
   const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
   if (isSchemaFailure(own)) return own as ConvertResult
 
-  const property = await tx.queryMaybe<{ type: string }>(
-    `SELECT type::text AS type FROM property WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+  const property = await tx.queryMaybe<{ name: string; type: string }>(
+    `SELECT name, type::text AS type FROM property WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
     [propertyId, dataSourceId],
   )
   if (property === null) return fail('not_found')
@@ -218,23 +219,18 @@ export async function convertPropertyIn(
   }
 
   // ── 필터 — 이 속성의 규칙은 지운다(값의 뜻이 바뀌었다 · 정본 ⑤) ──
-  // 선택 ↔ 상태는 값이 같은 옵션 id 라 두 타입에 다 있는 연산자의 규칙은 남기고, 새 타입에 없는 것(그룹 단위)만 지운다(⑧)
+  // 선택 ↔ 상태는 값이 같은 옵션 id 라 두 타입에 다 있는 연산자의 규칙은 남기고, 새 타입에 없는 것(그룹 단위)만 지운다(⑧).
+  // 공유 층과 **모든 사람의 개인 층**에서 · 알림을 남긴다(RT-3 · `view-prune.ts`). 정렬은 남긴다(⑤ — 새 타입으로 정렬된다)
   const optionPair = (from === 'select' || from === 'status') && (to === 'select' || to === 'status')
   const kept = new Set(optionPair ? operatorsFor(to as 'select' | 'status') : [])
-  let filtersRemoved = 0
-  const views = await tx.query<{ id: string; filter: FilterNode | null }>(
-    `SELECT id, filter FROM view WHERE data_source_id = $1 AND filter IS NOT NULL`,
-    [dataSourceId],
-  )
-  for (const view of views) {
-    const pruned = withoutRules(view.filter, (leaf) => leaf.property_id === propertyId && !kept.has(leaf.operator))
-    if (pruned.removed === 0) continue
-    filtersRemoved += pruned.removed
-    await tx.query(`UPDATE view SET filter = $2::jsonb, updated_at = now() WHERE id = $1`, [
-      view.id,
-      pruned.filter === null ? null : JSON.stringify(pruned.filter),
-    ])
-  }
+  const pruned = await pruneViewConditions(tx, ctx, {
+    dataSourceId,
+    propertyId,
+    propertyName: property.name,
+    reason: 'type_changed',
+    drop: { leaf: (leaf) => leaf.property_id === propertyId && !kept.has(leaf.operator), sort: () => false },
+  })
+  const filtersRemoved = pruned.filters
 
   await bumpSchema(tx, dataSourceId, schemaChange(ctx, 'updated', propertyId))
   return { ok: true, value: { schema: await readSchema(tx, dataSourceId), converted, lost, filtersRemoved } } as const

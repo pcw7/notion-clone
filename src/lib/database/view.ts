@@ -85,6 +85,7 @@ import {
 import { readLiveTemplate } from './template.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
+import { VIEW_NOTICE_DAYS } from './view-notice-text.ts'
 
 /** MVP 가 만드는 뷰 타입. 정본의 `type` 은 10종이지만 Table 하나로 제품이 성립한다. */
 /**
@@ -1167,18 +1168,35 @@ export type PersonalViewInput = {
   readonly sorts?: readonly SortKey[]
 }
 
+/** 개인 설정 명령의 곁 — 바꾼 탭(RT-3 · `view-origin.ts`). 판정에 쓰지 않는다. */
+export type PersonalViewOptions = { readonly origin?: string | null }
+
+/**
+ * 바꾼 탭을 트랜잭션에 묻는다 — 0154 의 트리거가 개인 신호에 싣는다(그 탭은 신호를 버린다). 트랜잭션이 끝나면 사라진다(`is_local`).
+ */
+async function markViewOrigin(tx: Tx, options: PersonalViewOptions): Promise<void> {
+  if (typeof options.origin === 'string' && options.origin !== '') {
+    await tx.query(`SELECT set_config('notion.view_origin', $1, true)`, [options.origin])
+  }
+}
+
 /**
  * 나에게만 적용하는 필터 · 정렬을 건다(04 F-04-17). **볼 수 있으면 된다** — 읽기 권한만 있어도 개인 필터는 건다(04 *"읽기 권한만 있는
  * 사용자도 개인 필터는 적용할 수 있어야 한다"*). 공유 것을 **대체**한다. 주지 않은 쪽은 그대로 둔다. 검증은 공유 것과 같은 함수다.
  */
-export async function setPersonalView(ctx: SessionContext, viewId: string, input: PersonalViewInput): Promise<ViewResult<ViewDetail>> {
+export async function setPersonalView(
+  ctx: SessionContext,
+  viewId: string,
+  input: PersonalViewInput,
+  options: PersonalViewOptions = {},
+): Promise<ViewResult<ViewDetail>> {
   if (input.filter === undefined && input.sorts === undefined) return fail('invalid_filter')
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'view')
     if (isFailure(gate)) return gate
     if (gate.type === 'dashboard') return fail('unsupported_type') // 대시보드는 필터 · 정렬이 없다(DB-1)
     const types = await readPropertyTypes(tx, gate.dataSourceId)
-if (input.filter !== undefined && input.filter !== null) {
+    if (input.filter !== undefined && input.filter !== null) {
       const issues = validateFilter(input.filter, types)
       if (issues.length > 0) return fail('invalid_filter', issues)
     }
@@ -1188,6 +1206,7 @@ if (input.filter !== undefined && input.filter !== null) {
     }
     const filter = input.filter === undefined ? null : JSON.stringify(input.filter ?? NO_FILTER)
     const sorts = input.sorts === undefined ? null : JSON.stringify(input.sorts)
+    await markViewOrigin(tx, options)
     await tx.query(
       `INSERT INTO view_user_override (view_id, user_id, filter, sorts)
        VALUES ($1, $2, $3::jsonb, $4::jsonb)
@@ -1203,10 +1222,15 @@ if (input.filter !== undefined && input.filter !== null) {
 }
 
 /** 개인 필터 · 정렬을 버리고 공유 것으로 돌아간다(04 *"`Reset` 으로 개인 변경 폐기"*). 없으면 아무 일 없다. */
-export async function resetPersonalView(ctx: SessionContext, viewId: string): Promise<ViewResult<ViewDetail>> {
+export async function resetPersonalView(
+  ctx: SessionContext,
+  viewId: string,
+  options: PersonalViewOptions = {},
+): Promise<ViewResult<ViewDetail>> {
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'view')
     if (isFailure(gate)) return gate
+    await markViewOrigin(tx, options)
     await tx.query(`DELETE FROM view_user_override WHERE view_id = $1 AND user_id = $2`, [viewId, ctx.userId])
     const view = await readView(tx, viewId, ctx.userId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
@@ -1217,10 +1241,15 @@ export async function resetPersonalView(ctx: SessionContext, viewId: string): Pr
  * 내 개인 필터 · 정렬을 **모두에게** 저장한다(04 *"Save for everyone"*) — 뷰의 구조를 고치는 일이라 `edit_structure` 다(잠긴 데이터베이스는
  * 거부). 덮어쓴 쪽만 옮기고(빈 묶음은 "필터 없음" — 공유 필터를 지운다) 개인 것은 지운다. 개인 것이 없으면 아무 일 없다.
  */
-export async function publishPersonalView(ctx: SessionContext, viewId: string): Promise<ViewResult<ViewDetail>> {
+export async function publishPersonalView(
+  ctx: SessionContext,
+  viewId: string,
+  options: PersonalViewOptions = {},
+): Promise<ViewResult<ViewDetail>> {
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
+    await markViewOrigin(tx, options)
     const mine = await tx.queryMaybe<{ filter: FilterNode | null; sorts: unknown }>(
       `DELETE FROM view_user_override WHERE view_id = $1 AND user_id = $2 RETURNING filter, sorts`,
       [viewId, ctx.userId],
@@ -1246,6 +1275,86 @@ export async function publishPersonalView(ctx: SessionContext, viewId: string): 
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
   })
 }
+
+// ── 지운 속성의 조건을 뺀 알림 (RT-3 · F-05-16) ─────────────────────
+
+/**
+ * 속성을 지우거나 타입을 바꿔 이 뷰의 조건을 뺐다는 알림(0154 `view_filter_notice` · `view-prune.ts`). 개인 층은 그 사람에게만, 공유 층은
+ * 그 층이 걸려 있는 사람에게(개인 것이 대체한 쪽은 그 사람의 화면이 바뀌지 않았다). 한 사람에게 한 번 — 화면이 보이면 `ackViewNotices`.
+ */
+export type ViewFilterNotice = {
+  readonly id: string
+  readonly propertyName: string
+  readonly reason: 'property_deleted' | 'type_changed'
+  /** 뺀 필터 규칙 · 정렬 키 수. */
+  readonly filters: number
+  readonly sorts: number
+  /** 나만 보는 층(개인 필터 · 정렬)에서 뺐다 — 아니면 뷰의 공유 층. */
+  readonly personal: boolean
+}
+
+const MAX_VIEW_NOTICES = 20
+
+/**
+ * 이 사람이 아직 보지 않은 알림 — 볼 수 없는 뷰면 없다. 뷰 화면이 그릴 때마다 부르므로 알림 질의(인덱스 하나)를 먼저 하고, 있을 때만 권한을
+ * 판정한다(대개 없다 — 판정의 질의 여럿을 아낀다).
+ */
+export async function listViewNotices(ctx: SessionContext, viewId: string): Promise<ViewFilterNotice[]> {
+  return withReadTransaction(async (tx) => {
+    const rows = await tx.query<{
+      id: string
+      property_name: string
+      reason: ViewFilterNotice['reason']
+      filters: number
+      sorts: number
+      personal: boolean
+    }>(
+      `SELECT n.id, n.property_name, n.reason, n.filters, n.sorts, n.user_id IS NOT NULL AS personal
+         FROM view_filter_notice n
+         LEFT JOIN view_user_override o ON o.view_id = n.view_id AND o.user_id = $2
+        WHERE n.view_id = $1
+          AND n.created_at > now() - make_interval(days => $3)
+          AND (n.user_id = $2
+               OR (n.user_id IS NULL AND ((n.filters > 0 AND o.filter IS NULL) OR (n.sorts > 0 AND o.sorts IS NULL))))
+          AND NOT EXISTS (SELECT 1 FROM view_filter_notice_seen s WHERE s.notice_id = n.id AND s.user_id = $2)
+        ORDER BY n.created_at, n.id
+        LIMIT $4`,
+      [viewId, ctx.userId, VIEW_NOTICE_DAYS, MAX_VIEW_NOTICES],
+    )
+    if (rows.length === 0) return []
+    const gate = await openView(tx, ctx, viewId, 'view')
+    if (isFailure(gate)) return []
+    return rows.map((r) => ({
+      id: r.id,
+      propertyName: r.property_name,
+      reason: r.reason,
+      filters: r.filters,
+      sorts: r.sorts,
+      personal: r.personal,
+    }))
+  })
+}
+
+/** 화면이 알림을 보였다 — 다시 보이지 않는다. 이 뷰의 · 나에게 온(내 것이거나 공유 층) 알림만 적는다. 이미 봤으면 그대로. */
+export async function ackViewNotices(ctx: SessionContext, viewId: string, ids: readonly string[]): Promise<ViewResult<{ readonly seen: number }>> {
+  const wanted = ids.filter((id) => typeof id === 'string' && UUID_LIKE.test(id)).slice(0, MAX_VIEW_NOTICES)
+  return withCommandTransaction(async (tx) => {
+    const gate = await openView(tx, ctx, viewId, 'view')
+    if (isFailure(gate)) return gate
+    if (wanted.length === 0) return { ok: true, value: { seen: 0 } } as const
+    const rows = await tx.query<{ notice_id: string }>(
+      `INSERT INTO view_filter_notice_seen (notice_id, user_id)
+       SELECT n.id, $2 FROM view_filter_notice n
+        WHERE n.id = ANY($3::uuid[]) AND n.view_id = $1 AND (n.user_id IS NULL OR n.user_id = $2)
+       ON CONFLICT (notice_id, user_id) DO NOTHING
+       RETURNING notice_id`,
+      [viewId, ctx.userId, wanted],
+    )
+    return { ok: true, value: { seen: rows.length } } as const
+  })
+}
+
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // ── 컬럼 ──────────────────────────────────────────────────────────────
 

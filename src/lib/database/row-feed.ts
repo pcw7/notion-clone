@@ -12,6 +12,8 @@
  *   access(워크스페이스)   그 워크스페이스의 구독에게 `onAccess` — 구독이 권한을 다시 확인하고, 잃었으면 닫는다(정본 §3.7
  *                   *"권한 회수 시 서버 강제 unsubscribe"*)
  *   session(사용자)  그 사용자의 구독에게 `onSession` — 세션이 끝났을 수 있다. 구독이 닫고 받는 쪽이 다시 붙어 다시 확인받는다
+ *   personal(표 · 사람)  **그 표를 보는 그 사람**의 구독에게만 `onPersonal` — 개인 필터 · 정렬이 바뀌었다(RT-3 · 0154). 남에게는 가지 않고
+ *                   "표가 바뀐 시각"에도 적지 않는다(옛 `since` 판정이 남을 다시 읽게 하지 않는다)
  *
  * **구독이 붙기 전의 틈**(#250 · 정본 X-5 [보강] "X-5 의 단계") — 화면은 서버 렌더로 읽은 뒤에 구독한다. 그 사이의 신호는 지나갔다.
  * 허브가 표마다 마지막 신호를 받은 시각과 **듣기 시작한 시각**(LISTEN 이 걸린 때 · 다시 붙으면 새로)을 기억하고, 구독이 렌더 시각을
@@ -34,6 +36,8 @@ export type RowFeedListener = {
   onAccess(): void
   /** 이 사용자의 세션이 바뀌었다(로그아웃 · 범위 있는 로그아웃) — 닫아라. 다시 붙으면 다시 확인받는다. */
   onSession(): void
+  /** 이 사람의 이 표 뷰 개인 설정이 바뀌었다(RT-3) — `origin` 은 바꾼 탭(없으면 null). */
+  onPersonal?(viewId: string, origin: string | null): void
 }
 
 type Hub = {
@@ -88,6 +92,8 @@ export function dispatchRowSignal(signal: CollabSignal, listeners: Iterable<RowF
     if (signal.kind === 'rows' && l.dataSourceId === signal.dataSourceId) l.onChanged()
     else if (signal.kind === 'access' && l.workspaceId === signal.workspaceId) l.onAccess()
     else if (signal.kind === 'session' && l.userId === signal.userId) l.onSession()
+    // 개인 설정 — 그 표를 보는 **그 사람**에게만(RT-3)
+    else if (signal.kind === 'personal' && l.dataSourceId === signal.dataSourceId && l.userId === signal.userId) l.onPersonal?.(signal.viewId, signal.origin)
   }
 }
 

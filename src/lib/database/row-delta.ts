@@ -29,6 +29,7 @@ import {
   decideDelta,
   decodeChangeCursor,
   encodeChangeCursor,
+  personalChangedInWindow,
   readChangeWindow,
   type ResetReason,
 } from './change-log.ts'
@@ -61,6 +62,11 @@ export type RowDelta = {
   readonly viewChanged: boolean
   /** 이 뷰의 손으로 둔 순서(보드 · 수동 정렬)가 바뀌었다. 그 행들은 `rows` 에도 있다. */
   readonly orderChanged: boolean
+  /**
+   * **묻는 사람의** 이 뷰 개인 필터 · 정렬이 바뀌었다(RT-3 — 다른 탭 · 기기에서 · 신호를 놓쳤다). 화면은 도구줄까지 새로 그린다. 남의 것은
+   * 싣지 않는다(개인 설정은 변경 기록에 쓰지 않는다 — `view_personal_change`).
+   */
+  readonly personalChanged: boolean
   /**
    * 자리를 물었을 때(`place`)만 — 뷰에 서는 행마다 `place` 를 실었다. 거짓이면 이 뷰는 자리를 줄 수 없다(하위 항목 트리 · 카드의 부모만 ·
    * 화면의 "더 보기" 커서가 이 정렬에 맞지 않는다) — 화면은 처음부터 다시 읽는다.
@@ -107,12 +113,26 @@ export async function readRowDelta(
   const window = await readChangeWindow(dataSourceId, after)
   const ids = changedRowIds(window.entries)
   const decision = decideDelta(after, { horizon: window.horizon, floor: window.floor, entryCount: window.entries.length, rowCount: ids.length })
-  if (decision.reset) return { ok: true, value: resetDelta(window.horizon, decision.reason) }
+  if (decision.reset) {
+    // 처음부터 다시 읽는 화면도 도구줄(내 필터)은 따로 그린다 — 그 사이 내 개인 설정이 바뀌었으면 알린다(지운 기록 아래의 커서는 모른다 = 바뀌었다)
+    const personal = decision.reason === 'expired' || (await personalChangedInWindow(viewId, ctx.userId, after, window.horizon))
+    return { ok: true, value: resetDelta(window.horizon, decision.reason, personal) }
+  }
 
   const schemaChanged = window.entries.some((e) => e.kind === 'schema')
   const viewChanged = window.entries.some((e) => e.kind === 'view' && e.viewId === viewId)
   const orderChanged = window.entries.some((e) => e.kind === 'position' && e.viewId === viewId)
-  const base = { cursor: encodeChangeCursor(window.horizon), reset: false, behind: window.behind, schemaChanged, viewChanged, orderChanged }
+  // 내 개인 설정 — 같은 창(after ≤ xid < 지평)으로 묻는다(한 번만 알린다)
+  const personalChanged = await personalChangedInWindow(viewId, ctx.userId, after, window.horizon)
+  const base = {
+    cursor: encodeChangeCursor(window.horizon),
+    reset: false,
+    behind: window.behind,
+    schemaChanged,
+    viewChanged,
+    orderChanged,
+    personalChanged,
+  }
   if (ids.length === 0) return { ok: true, value: { ...base, rows: [], ...(options.place === true ? { placed: true } : {}) } }
 
   // 살아 있고 볼 수 있는 행 — 값(필터 없이) · 그 가운데 뷰에 서는 것(필터 · 검색어 · 범위)
@@ -187,7 +207,7 @@ function deltaCalculations(ctx: SessionContext, view: ViewDetail, search: unknow
     nest === null ? null : { parentPropertyId: nest.parentPropertyId, scope: view.subItemFilterScope })
 }
 
-function resetDelta(horizon: bigint, reason: ResetReason): RowDelta {
+function resetDelta(horizon: bigint, reason: ResetReason, personalChanged = false): RowDelta {
   return {
     cursor: encodeChangeCursor(horizon),
     reset: true,
@@ -197,6 +217,7 @@ function resetDelta(horizon: bigint, reason: ResetReason): RowDelta {
     schemaChanged: false,
     viewChanged: false,
     orderChanged: false,
+    personalChanged,
   }
 }
 

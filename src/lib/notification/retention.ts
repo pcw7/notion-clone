@@ -23,6 +23,8 @@
  *      이벤트는 FK CASCADE · 그때까지 화면은 "꺼짐 · 토큰 폐기" · "멈춤 · 토큰 만료" 를 보인다 · 토큰 행은 지우지 않는다)
  *   ⑫ 표의 변경 기록 — `CHANGE_LOG_WINDOW_MS`(24시간)가 지난 줄을 지우고 표마다 지운 자리(xid)를 남긴다(RT-1 · 정본 §3.7 [보강] X-5 의
  *      단계 — 1단계 · `change-log.ts` · 그 아래의 커서는 델타 대신 reset)
+ *   ⑬ 지운 속성의 조건을 뺀 알림 — `VIEW_NOTICE_DAYS`(30)일이 지나면 지운다(본 사람 표는 FK CASCADE · RT-3 · 정본 §3.6 [보강 RT-3] ③ —
+ *      화면은 그보다 오래된 것을 이미 띄우지 않는다)
  *
  * 감사 기록(`audit_event`)은 지우지 않는다(F-11-12). 기간은 코드 상수다 — 관리자 화면은 없다(노션에도 없다).
  */
@@ -31,6 +33,7 @@ import { query } from '../db/pool.ts'
 import { AUDIT_RETENTION_DAYS } from '../audit/audit.ts'
 import { API_WEBHOOK_STOPPED_DAYS } from '../api/token-format.ts'
 import { collectChangeLog } from '../database/change-log.ts'
+import { VIEW_NOTICE_DAYS } from '../database/view-notice-text.ts'
 
 /** 읽었거나 보관한 알림을 남기는 날(그 뒤). */
 export const PROCESSED_NOTIFICATION_DAYS = 180
@@ -65,6 +68,8 @@ export type RetentionResult = {
   readonly apiWebhookSubscriptions: number
   /** 지운 표의 변경 기록 줄(⑫). */
   readonly changeLog: number
+  /** 지운 뷰 알림(⑬). */
+  readonly viewNotices: number
   /** 그 해마다 파티션이 어떻게 됐나 — `created` · `exists` · `blocked`. */
   readonly partitions: Readonly<Record<number, string>>
   /** 한 종류라도 한 판이 꽉 찼다 — 더 남았을 수 있다. */
@@ -243,6 +248,18 @@ export async function runDataRetention(
         ).map((r) => r.id)
   const changeLog = await collectChangeLog(now, { batch, dataSources: changeSources })
 
+  // ⑬ 지운 속성의 조건을 뺀 알림 — 워크스페이스를 주면 그 워크스페이스의 뷰 것만
+  const viewNotices = await query<{ id: string }>(
+    `DELETE FROM view_filter_notice n USING (
+       SELECT n2.id FROM view_filter_notice n2 JOIN view v ON v.id = n2.view_id JOIN block b ON b.id = v.database_id
+        WHERE n2.created_at < $1
+          AND ($3::uuid[] IS NULL OR b.workspace_id = ANY($3::uuid[]))
+        LIMIT $2) old
+     WHERE n.id = old.id
+     RETURNING n.id`,
+    [new Date(now.getTime() - VIEW_NOTICE_DAYS * DAY), batch, ws],
+  )
+
   // ⑤ 파티션 — 올해 · 다음 해(UTC). 검사는 끈다(위 `options.partitions`)
   const partitions: Record<number, string> = {}
   if (options.partitions !== false) {
@@ -263,6 +280,7 @@ export async function runDataRetention(
     apiWebhookEvents.length,
     apiWebhookSubscriptions.length,
     changeLog,
+    viewNotices.length,
   ]
   return {
     processedNotifications: processed.length,
@@ -276,6 +294,7 @@ export async function runDataRetention(
     apiWebhookEvents: apiWebhookEvents.length,
     apiWebhookSubscriptions: apiWebhookSubscriptions.length,
     changeLog,
+    viewNotices: viewNotices.length,
     partitions,
     more: counts.some((n) => n === batch),
   }

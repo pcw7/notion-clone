@@ -179,6 +179,32 @@ export async function changedSinceCursor(dataSourceId: string, after: bigint): P
 }
 
 /**
+ * 개인 설정의 놓친 신호(RT-3 · 0154 `view_personal_change`) — 이 사람의 이 뷰 개인 필터 · 정렬이 `after <= xid < horizon` 사이에
+ * 바뀌었나. 델타의 `personalChanged` 다(델타의 창과 같은 경계 — 한 번만 알린다). 남의 것은 보지 않는다.
+ */
+export async function personalChangedInWindow(viewId: string, userId: string, after: bigint, horizon: bigint): Promise<boolean> {
+  const rows = await query<{ changed: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM view_personal_change
+                     WHERE view_id = $1 AND user_id = $2 AND xid >= $3::xid8 AND xid < $4::xid8) AS changed`,
+    [viewId, userId, after.toString(), horizon.toString()],
+  )
+  return rows[0]?.changed === true
+}
+
+/**
+ * 구독이 붙기 전의 틈 — 렌더 커서 뒤로 이 사람의 이 표(어느 뷰든) 개인 설정이 바뀌었나(`changedSinceCursor` 의 개인 쪽). 거짓 양성은
+ * 허용한다(한 번 더 그릴 뿐).
+ */
+export async function personalChangedSince(dataSourceId: string, userId: string, after: bigint): Promise<boolean> {
+  const rows = await query<{ changed: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM view_personal_change pc JOIN view v ON v.id = pc.view_id
+                     WHERE pc.user_id = $2 AND v.data_source_id = $1 AND pc.xid >= $3::xid8) AS changed`,
+    [dataSourceId, userId, after.toString()],
+  )
+  return rows[0]?.changed === true
+}
+
+/**
  * 보관 정리 — `CHANGE_LOG_WINDOW_MS` 가 지난 기록을 지우고 표마다 지운 가장 큰 xid 를 남긴다(한 문장 — 지운 것과 그 자리가 함께 커밋된다).
  *
  * 경계는 "`at` 이 창 안인 가장 작은 seq" 다 — 그보다 앞의 seq 만 지운다. 그래서 창 안의 줄은 지우지 않는다(오래 연 트랜잭션이 뒤늦게 넣은

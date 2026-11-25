@@ -9,6 +9,8 @@
  *   revoked     더 볼 수 없다 — 닫는다(다시 붙지 않는다 · 부르는 쪽이 화면을 다시 읽어 "없음"을 보인다)
  *   reconnect   서버가 닫는다 — 브라우저가 알아서 다시 붙는다(`EventSource` 의 기본)
  *   ready       붙었다 — **두 번째부터는** 끊긴 사이의 신호를 잃었을 수 있으니 "바뀌었다"로 친다
+ *   personal    **내** 개인 필터 · 정렬이 다른 탭 · 기기에서 바뀌었다(RT-3 — 서버가 이 사람에게만 보낸다 · 남은 받지 않는다). 이 탭이 바꾼
+ *               것(`origin`)은 버린다. 받는 화면은 서버 화면을 다시 부른다(도구줄의 칩까지 — 새 필터면 표가 새로 선다)
  *
  * 첫 구독이 붙기 전의 틈(#250) — 서버 렌더로 읽은 뒤 이 구독이 붙기까지의 변경은 신호가 이미 지나갔다. 서버 화면이 준 렌더 시각
  * (`since` — 읽기 전의 시각)을 주소에 실으면 서버가 그 사이에 바뀌었을 때 `ready` 바로 뒤에 `changed` 를 보낸다. 렌더 시각은 **마운트
@@ -28,6 +30,8 @@
 
 import { createContext, createElement, useContext, useEffect, useRef, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
+
+import { viewOrigin } from '@/lib/database/view-origin'
 
 /**
  * 이 안의 화면은 변경 알림을 구독하지 않는다 — 대시보드의 위젯(DB-2). 위젯마다 열면 위젯 수만큼 연결이 열려 호스트당 연결 수(HTTP/1.1 은 6)를
@@ -56,20 +60,33 @@ export function useRenderedChangeCursor(): string | null {
 /** "바뀌었다" 한 번 — 신호가 실어 온 커서(없을 수 있다)와 끊긴 뒤인가(머리말). */
 export type ChangeSignal = { readonly cursor: string | null; readonly reconnect: boolean }
 
-const cursorOf = (event: Event): string | null => {
+/** 사건이 실어 온 값 하나 — 모양이 틀리면 없다. */
+const fieldOf = (event: Event, key: string): unknown => {
   try {
     const data: unknown = JSON.parse(String((event as MessageEvent).data))
-    const cursor = typeof data === 'object' && data !== null ? (data as { cursor?: unknown }).cursor : undefined
-    return typeof cursor === 'string' && cursor !== '' ? cursor : null
+    return typeof data === 'object' && data !== null ? (data as Record<string, unknown>)[key] : undefined
   } catch {
-    return null
+    return undefined
   }
+}
+
+const cursorOf = (event: Event): string | null => {
+  const cursor = fieldOf(event, 'cursor')
+  return typeof cursor === 'string' && cursor !== '' ? cursor : null
 }
 
 export function useTableChanges(
   workspaceId: string,
   dataSourceId: string,
-  handlers: { readonly onChanged: (signal: ChangeSignal) => void; readonly onRevoked: () => void },
+  handlers: {
+    readonly onChanged: (signal: ChangeSignal) => void
+    readonly onRevoked: () => void
+    /**
+     * **내** 개인 필터 · 정렬이 다른 탭 · 기기에서 바뀌었다(RT-3 · `personal` 사건 — 서버가 이 사람에게만 보낸다 · 이 탭이 바꾼 것은 버린다)
+     * 또는 렌더 뒤로 이미 바뀌었다(첫 `ready` 의 `personal`). 없으면 듣지 않는다(행 페이지 — 뷰가 없다).
+     */
+    readonly onPersonal?: () => void
+  },
   enabled = true,
   /** 서버 화면이 읽기 전의 시각(ms) — 머리말. 없으면 첫 구독 전의 틈을 메우지 않는다. */
   since?: number,
@@ -97,10 +114,16 @@ export function useTableChanges(
       let readyCount = 0
       opened.addEventListener('ready', (event) => {
         readyCount += 1
-        // 두 번째부터는 다시 붙은 것 — 끊긴 사이를 메운다(커서를 든 화면은 델타로)
+        // 두 번째부터는 다시 붙은 것 — 끊긴 사이를 메운다(커서를 든 화면은 델타로 · 내 개인 설정은 델타의 `personalChanged`)
         if (readyCount > 1) latest.current.onChanged({ cursor: cursorOf(event), reconnect: true })
+        // 첫 `ready` — 렌더 뒤 · 구독 전에 내 개인 설정이 바뀌었다(RT-3)
+        else if (fieldOf(event, 'personal') === true) latest.current.onPersonal?.()
       })
       opened.addEventListener('changed', (event) => latest.current.onChanged({ cursor: cursorOf(event), reconnect: false }))
+      // 내 개인 설정(RT-3) — 이 탭이 바꾼 것은 이미 다시 그렸다
+      opened.addEventListener('personal', (event) => {
+        if (fieldOf(event, 'origin') !== viewOrigin()) latest.current.onPersonal?.()
+      })
       opened.addEventListener('revoked', () => {
         revoked = true
         opened.close()
@@ -167,16 +190,15 @@ export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, 
   useEffect(() => {
     busyRef.current = busy
   })
+  const refresh = () => {
+    if (busyRef.current) pending.current = true
+    else router.refresh()
+  }
   useTableChanges(
     workspaceId,
     dataSourceId,
-    {
-      onChanged: () => {
-        if (busyRef.current) pending.current = true
-        else router.refresh()
-      },
-      onRevoked: () => router.refresh(),
-    },
+    // 내 개인 설정(RT-3)도 같은 길 — 서버 화면이 내 필터 · 정렬로 다시 그린다
+    { onChanged: refresh, onPersonal: refresh, onRevoked: () => router.refresh() },
     // 그룹 덩이(G-3a)는 바깥이 하나로 구독한다 — 덩이마다 열면 그룹 수만큼 연결이 열린다
     enabled,
     since,
