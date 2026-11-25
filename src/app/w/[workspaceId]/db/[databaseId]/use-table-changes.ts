@@ -19,6 +19,11 @@
  * **뒤로 가기 캐시(bfcache)에 들면 닫고 돌아오면 다시 연다**(10n-7) — 떠난 화면이 캐시에 얼어 있는 동안 구독이 열린 채 남으면, 표 화면을 몇 번
  * 옮겨 다니는 사이 호스트당 연결 수를 다 차지해 새 화면의 요청이 막힌다. 링크가 보이기만 해도 미리받던 동안은 떠날 때 늘 진행 중인 요청이 있어
  * 화면이 캐시에 들지 못해 가려져 있었다.
+ *
+ * **신호는 커서를 싣는다**(RT-1) — `onChanged` 가 `{ cursor, reconnect }` 를 받는다. 커서를 들고 다니는 화면(표 — RT-2)은 바뀐 행만 묻고,
+ * 다른 화면은 지금처럼 다시 읽는다. `reconnect` 는 끊긴 사이의 신호를 잃었을 수 있다는 뜻이다 — 다시 붙은 `ready` · bfcache 에서 돌아옴 ·
+ * 오프라인에서 돌아옴(`online`) · 끊긴 채 숨었던 탭이 다시 보임(`visibilitychange`). 뒤의 둘은 구독이 닫혀 있으면(브라우저가 다시 붙기를
+ * 포기했다) 새로 연다 — 커서를 든 화면은 그 사이를 델타로 메운다(F-05-06).
  */
 
 import { createContext, createElement, useContext, useEffect, useRef, type ReactNode } from 'react'
@@ -43,10 +48,28 @@ export function RenderedChangeCursor({ cursor, children }: { readonly cursor: st
   return createElement(RenderedCursor.Provider, { value: cursor }, children)
 }
 
+/** 서버 화면이 읽기 전에 받은 커서 — 마운트 때의 것을 쓰는 것은 부르는 쪽의 일이다(RT-2 — 화면이 처음 아는 자리). */
+export function useRenderedChangeCursor(): string | null {
+  return useContext(RenderedCursor)
+}
+
+/** "바뀌었다" 한 번 — 신호가 실어 온 커서(없을 수 있다)와 끊긴 뒤인가(머리말). */
+export type ChangeSignal = { readonly cursor: string | null; readonly reconnect: boolean }
+
+const cursorOf = (event: Event): string | null => {
+  try {
+    const data: unknown = JSON.parse(String((event as MessageEvent).data))
+    const cursor = typeof data === 'object' && data !== null ? (data as { cursor?: unknown }).cursor : undefined
+    return typeof cursor === 'string' && cursor !== '' ? cursor : null
+  } catch {
+    return null
+  }
+}
+
 export function useTableChanges(
   workspaceId: string,
   dataSourceId: string,
-  handlers: { readonly onChanged: () => void; readonly onRevoked: () => void },
+  handlers: { readonly onChanged: (signal: ChangeSignal) => void; readonly onRevoked: () => void },
   enabled = true,
   /** 서버 화면이 읽기 전의 시각(ms) — 머리말. 없으면 첫 구독 전의 틈을 메우지 않는다. */
   since?: number,
@@ -72,11 +95,12 @@ export function useTableChanges(
       const qs = query.toString()
       const opened = new EventSource(`/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes${qs === '' ? '' : `?${qs}`}`)
       let readyCount = 0
-      opened.addEventListener('ready', () => {
+      opened.addEventListener('ready', (event) => {
         readyCount += 1
-        if (readyCount > 1) latest.current.onChanged()
+        // 두 번째부터는 다시 붙은 것 — 끊긴 사이를 메운다(커서를 든 화면은 델타로)
+        if (readyCount > 1) latest.current.onChanged({ cursor: cursorOf(event), reconnect: true })
       })
-      opened.addEventListener('changed', () => latest.current.onChanged())
+      opened.addEventListener('changed', (event) => latest.current.onChanged({ cursor: cursorOf(event), reconnect: false }))
       opened.addEventListener('revoked', () => {
         revoked = true
         opened.close()
@@ -96,14 +120,36 @@ export function useTableChanges(
     const onShow = (event: PageTransitionEvent) => {
       if (!event.persisted || revoked || source !== null) return
       open(undefined, null)
-      latest.current.onChanged()
+      latest.current.onChanged({ cursor: null, reconnect: true })
+    }
+    // 끊긴 구독을 새로 열고 그 사이를 메운다(F-05-06) — 렌더 시각 · 커서는 싣지 않는다(화면이 자기 커서로 묻는다)
+    const reopen = () => {
+      source?.close()
+      open(undefined, null)
+      latest.current.onChanged({ cursor: null, reconnect: true })
+    }
+    // 오프라인에서 돌아왔다 — 브라우저가 다시 붙기를 포기했으면(닫힘) · 아직 기다리는 중이면(연결 중) 새로 연다. 열려 있어도 그 사이의 신호가
+    // 막혀 있었을 수 있으니 한 번 맞춘다
+    const onOnline = () => {
+      if (revoked) return
+      if (source === null || source.readyState !== EventSource.OPEN) reopen()
+      else latest.current.onChanged({ cursor: null, reconnect: true })
+    }
+    // 다시 보인다 — 숨은 동안 구독이 닫혔으면(브라우저가 포기했다) 새로 연다. 열려 있거나 다시 붙는 중이면 그 `ready` 가 메운다
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || revoked) return
+      if (source === null || source.readyState === EventSource.CLOSED) reopen()
     }
     open(sinceAtMount.current, cursorAtMount.current)
     window.addEventListener('pagehide', onHide)
     window.addEventListener('pageshow', onShow)
+    window.addEventListener('online', onOnline)
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       window.removeEventListener('pagehide', onHide)
       window.removeEventListener('pageshow', onShow)
+      window.removeEventListener('online', onOnline)
+      document.removeEventListener('visibilitychange', onVisible)
       source?.close()
     }
   }, [workspaceId, dataSourceId, enabled, off])
@@ -157,4 +203,21 @@ export function useAdoptServerValue<T>(value: T, busy: boolean, adopt: (value: T
     seen.current = value
     latest.current(value)
   }, [value, busy])
+}
+
+/**
+ * 맞추기를 어떻게 했나 — 바뀐 행만(`delta`) · 처음부터(`full`) 의 마지막 것과 센 수(RT-2). 화면에 그리지 않는 신호다 — e2e 가 "이번
+ * 맞추기는 델타였다"를 시간 재기 없이 본다(표의 `data-sync` · `data-sync-delta` · `data-sync-full`). 뷰마다 모듈에 둔다 — 스키마가 바뀌면 표가
+ * 다시 마운트되는데 그 다시 읽기도 세어야 한다.
+ */
+export type SyncStats = { readonly last: 'delta' | 'full' | null; readonly delta: number; readonly full: number }
+const syncStats = new Map<string, SyncStats>()
+export function syncStatsOf(viewId: string): SyncStats {
+  return syncStats.get(viewId) ?? { last: null, delta: 0, full: 0 }
+}
+export function noteSync(viewId: string, how: 'delta' | 'full'): SyncStats {
+  const now = syncStatsOf(viewId)
+  const next = { last: how, delta: now.delta + (how === 'delta' ? 1 : 0), full: now.full + (how === 'full' ? 1 : 0) }
+  syncStats.set(viewId, next)
+  return next
 }

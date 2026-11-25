@@ -142,8 +142,19 @@ import type { OptionEditActions } from './select-editor'
 import { ButtonEditFormLazy, FilesEditorLazy, FormulaEditFormLazy, PlaceEditorLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
 import { containsAcrossLayers } from '../../anchored-layer'
 import { AddColumn } from './add-column'
-import { useTableChanges } from './use-table-changes'
+import { noteSync, syncStatsOf, useRenderedChangeCursor, useTableChanges } from './use-table-changes'
 import { mergeReloaded } from '@/lib/database/live-rows'
+import {
+  afterDelta,
+  afterFullRead,
+  createSyncLedger,
+  deltaFallback,
+  fullReadCursor,
+  mergeDelta,
+  noteSignal,
+  strongerSync,
+  type SyncMode,
+} from '@/lib/database/delta-merge'
 import {
   foreignDropBefore,
   foreignDropLineY,
@@ -1253,26 +1264,51 @@ export function DatabaseTable(props: {
   // 로직은 반드시 깨진다. 무한 스크롤을 만들지 않는 이유이기도 하다.
   const reachedCap = rows.length >= MAX_QUERY_PAGINATION
 
-  // ── 표가 바뀌었다는 알림(2k-2 · F-04-24) ───────────────────────────
+  // ── 표가 바뀌었다는 알림(2k-2 · F-04-24) · 바뀐 행만 합치기(RT-2 · F-05-16 · F-05-06) ───────────
   //
-  // 받으면 다시 읽는다 — 지금 보이는 만큼(최상위 행 수만큼 페이지를 읽고 · 펼쳐 둔 행의 자식도). 편집 · 추가 · 더 보기 중이면 미뤘다가
-  // 끝나면 읽는다. 다른 사람이 컬럼(속성 · 보임 · 순서 · 집계)을 바꿨으면 행만 맞추지 않고 화면을 새로 세운다(`router.refresh()` — 다시
-  // 마운트 기준에 컬럼이 있다). 내가 고친 행이 조건 밖이 되면 남긴다(`live-rows.ts`).
+  // 받으면 맞춘다. 평평한 표 · 목록은 **바뀐 행만** 묻는다 — 화면이 아는 커서(`ledger.applied` — 처음은 서버 화면의 렌더 커서)부터의 델타를
+  // 이 뷰의 눈(필터 · 정렬 · 검색어 · 개인 설정)으로 받아 행을 갈아 끼우고 · 빼고 · 서버가 준 이웃 사이에 끼운다(`delta-merge.ts`). 확신이
+  // 없으면 처음부터 다시 읽는다 — reset · 스키마 · 이 뷰가 바뀜 · 자리 없음 · 이웃이 어긋남 · 요청 실패 · 커서를 모름. 그룹 덩이(바깥이 신호를
+  // 나눠 준다)와 하위 항목 트리(층마다라 한 줄의 이웃으로 말할 수 없다)는 늘 다시 읽는다.
+  //
+  // 다시 읽기는 지금 보이는 만큼이다(최상위 행 수만큼 페이지를 읽고 · 펼쳐 둔 행의 자식도). 편집 · 추가 · 더 보기 중이면 미뤘다가 끝나면
+  // 맞춘다. 다른 사람이 컬럼(속성 · 보임 · 순서 · 집계)을 바꿨으면 행만 맞추지 않고 화면을 새로 세운다(`router.refresh()` — 다시 마운트
+  // 기준에 컬럼이 있다). 내가 고친 행이 조건 밖이 되면 남긴다(`live-rows.ts` · `delta-merge.ts` — 같은 규칙).
 
   const rowsRef = useRef(rows)
   const depthRef = useRef(depthOf)
   const expandedRef = useRef(expanded)
+  const outsideRef = useRef(outside)
+  const pageRef = useRef({ cursor, hasMore })
   useEffect(() => {
     rowsRef.current = rows
     depthRef.current = depthOf
     expandedRef.current = expanded
+    outsideRef.current = outside
+    pageRef.current = { cursor, hasMore }
   })
-  const reloadWanted = useRef(false)
-  const reloading = useRef(false)
+  const syncWanted = useRef<SyncMode>('none')
+  const syncing = useRef(false)
   const busyRef = useRef(false)
   useEffect(() => {
     busyRef.current = mode.kind === 'editing' || addingRow || loadingMore || loadingChildren !== null
   })
+  /** 바뀐 행만 합칠 수 있는 화면 — 평평한 표 · 목록 하나(머리말). */
+  const deltaCapable = variant !== 'record' && props.group == null && props.liveTick === undefined && subItems === null
+  // 화면이 아는 커서(`delta-merge.ts` 의 장부) — 마운트 때의 렌더 커서로 시작한다(다시 그린 서버 화면이 새 커서를 주어도 이 상태의 것이 아니다)
+  const renderedCursor = useRenderedChangeCursor()
+  const [ledger] = useState(() => createSyncLedger(renderedCursor))
+  /** 검사용 신호(`data-sync`) — 마지막 맞추기가 델타였나 다시 읽기였나 · 센 수. */
+  const [syncStats, setSyncStats] = useState(() => syncStatsOf(viewId))
+  // 맞추기가 끝났는데 그사이 또 청했다 — 한 번 다시 그려 미뤄 둔 맞추기(아래 효과)가 새 상태로 돌게 한다
+  const [, setSyncKick] = useState(0)
+  const behindTimer = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (behindTimer.current !== null) window.clearTimeout(behindTimer.current)
+    },
+    [],
+  )
 
   /** 컬럼의 모양 — 서버의 컬럼과 지금 컬럼이 같은지 본다(폭은 빼고 · 다시 마운트 기준과 같은 것들). */
   const shapeOf = (cs: readonly ViewColumn[]) =>
@@ -1307,93 +1343,171 @@ export function DatabaseTable(props: {
     return children
   }
 
-  const reload = async (): Promise<void> => {
-    if (busyRef.current || reloading.current) {
-      reloadWanted.current = true
+  /** 선택은 행으로 지킨다 — 자리가 바뀌어도 같은 행에 선다. */
+  const keepSelection = (next: readonly RowJson[]) => {
+    const current = modeRef.current
+    if (current.kind !== 'selected') return
+    const id = rowsRef.current[current.at.row]?.id
+    const at = id === undefined ? -1 : next.findIndex((r) => r.id === id)
+    setMode(at < 0 ? { kind: 'idle' } : { kind: 'selected', at: { row: at, col: current.at.col } })
+  }
+
+  /**
+   * 처음부터 다시 읽는다. `before` 는 읽기를 **시작하기 전에** 받아 둔 커서 — 다 읽으면 화면이 그 커서까지 안다(정본 X-5 1단계 ④).
+   */
+  const fullReload = async (before: string | null): Promise<void> => {
+    const writesAtStart = localWrites.current
+    const want = Math.max(1, rowsRef.current.filter((r) => (depthRef.current.get(r.id) ?? 0) === 0).length)
+    const top: RowJson[] = []
+    let next: string | null = null
+    let first = true
+    let calc: Calculations | undefined
+    do {
+      const page = await loadTop(next)
+      if (!page.ok) return
+      if (first) {
+        first = false
+        calc = page.value.calculations
+        // 다른 사람이 컬럼을 바꿨다 — 행만 맞추지 않고 화면을 새로 세운다
+        const serverColumns = page.value.columns
+        if (serverColumns !== undefined && shapeOf(listColumns(variant, serverColumns.filter((c) => c.visible))) !== shapeOf(columns)) {
+          setSyncStats(noteSync(viewId, 'full'))
+          router.refresh()
+          return
+        }
+      }
+      top.push(...page.value.rows)
+      next = page.value.hasMore ? page.value.nextCursor : null
+    } while (next !== null && top.length < want && top.length < MAX_QUERY_PAGINATION)
+
+    const childrenOf = new Map<string, RowJson[]>()
+    for (const id of expandedRef.current) {
+      const kids = await fetchChildren(id)
+      if (kids !== null) childrenOf.set(id, kids)
+    }
+    // 읽는 사이 이 화면에서 고쳤다 — 이 결과는 고치기 전의 서버 것일 수 있다. 버리고 다시 읽는다(곧 그 쓰기의 알림이 온다).
+    if (localWrites.current !== writesAtStart) {
+      syncWanted.current = strongerSync(syncWanted.current, 'full')
       return
     }
-    reloading.current = true
-    reloadWanted.current = false
-    const writesAtStart = localWrites.current
-    try {
-      const want = Math.max(1, rowsRef.current.filter((r) => (depthRef.current.get(r.id) ?? 0) === 0).length)
-      const top: RowJson[] = []
-      let next: string | null = null
-      let first = true
-      let calc: Calculations | undefined
-      do {
-        const page = await loadTop(next)
-        if (!page.ok) return
-        if (first) {
-          first = false
-          calc = page.value.calculations
-          // 다른 사람이 컬럼을 바꿨다 — 행만 맞추지 않고 화면을 새로 세운다
-          const serverColumns = page.value.columns
-          if (serverColumns !== undefined && shapeOf(listColumns(variant, serverColumns.filter((c) => c.visible))) !== shapeOf(columns)) {
-            router.refresh()
-            return
-          }
-        }
-        top.push(...page.value.rows)
-        next = page.value.hasMore ? page.value.nextCursor : null
-      } while (next !== null && top.length < want && top.length < MAX_QUERY_PAGINATION)
+    const merged = mergeReloaded({
+      previous: rowsRef.current,
+      depthOf: depthRef.current,
+      top,
+      childrenOf,
+      expanded: expandedRef.current,
+      touched: touched.current,
+      // 트리면 행의 지금 부모 — 부모를 바꿔 접힌 다른 부모 밑으로 옮긴 행에 "조건 밖" 을 달지 않는다(M-1)
+      ...(subItems === null
+        ? {}
+        : { parentOf: (row: RowJson) => readRelationValue(row.properties[subItems.parentPropertyId]).relation[0]?.id ?? null }),
+    })
+    keepSelection(merged.rows)
+    noteHits([...top, ...[...childrenOf.values()].flat()])
+    rowsRef.current = merged.rows
+    outsideRef.current = merged.outside
+    pageRef.current = { cursor: next, hasMore: next !== null }
+    setRows(merged.rows)
+    setDepthOf(merged.depthOf)
+    setExpanded(merged.expanded)
+    setOutside(merged.outside)
+    setCursor(next)
+    setHasMore(next !== null)
+    if (calc !== undefined) setCalculations(calc)
+    // rollup 은 행에 없다 — 보이는 행 전부의 것을 다시 묻는다(그사이 연결된 행이 바뀌었을 수 있다)
+    refreshRollups(merged.rows.map((r) => r.id))
+    // 리마인더도 행에 없다 — 걸기 · 풀기 · 울림의 신호(0109)로 온 다시 읽기면 행은 그대로다(10n-17)
+    setReminderTick((tick) => tick + 1)
+    afterFullRead(ledger, before)
+    setSyncStats(noteSync(viewId, 'full'))
+  }
 
-      const childrenOf = new Map<string, RowJson[]>()
-      for (const id of expandedRef.current) {
-        const kids = await fetchChildren(id)
-        if (kids !== null) childrenOf.set(id, kids)
-      }
-      // 읽는 사이 이 화면에서 고쳤다 — 이 결과는 고치기 전의 서버 것일 수 있다. 버리고 다시 읽는다(곧 그 쓰기의 알림이 온다).
-      if (localWrites.current !== writesAtStart) {
-        reloadWanted.current = true
-        return
-      }
-      const merged = mergeReloaded({
-        previous: rowsRef.current,
-        depthOf: depthRef.current,
-        top,
-        childrenOf,
-        expanded: expandedRef.current,
-        touched: touched.current,
-        // 트리면 행의 지금 부모 — 부모를 바꿔 접힌 다른 부모 밑으로 옮긴 행에 "조건 밖" 을 달지 않는다(M-1)
-        ...(subItems === null
-          ? {}
-          : { parentOf: (row: RowJson) => readRelationValue(row.properties[subItems.parentPropertyId]).relation[0]?.id ?? null }),
-      })
-      // 선택은 행으로 지킨다 — 자리가 바뀌어도 같은 행에 선다
-      const current = modeRef.current
-      if (current.kind === 'selected') {
-        const id = rowsRef.current[current.at.row]?.id
-        const at = id === undefined ? -1 : merged.rows.findIndex((r) => r.id === id)
-        setMode(at < 0 ? { kind: 'idle' } : { kind: 'selected', at: { row: at, col: current.at.col } })
-      }
-      noteHits([...top, ...[...childrenOf.values()].flat()])
+  /**
+   * 바뀐 행만 — 커서(`after`) 뒤의 델타를 합친다. 합칠 수 없으면 다시 읽을 커서와 함께 `full`(그 커서는 델타 응답의 것 — 다시 읽기보다 먼저
+   * 받았다). 읽는 사이 이 화면에서 고쳤거나 더 읽었으면 버리고 다시 묻는다(커서는 그대로 — 그 결과는 옛 목록의 것이다).
+   */
+  const syncDelta = async (after: string): Promise<{ readonly full: false } | { readonly full: true; readonly before: string | null }> => {
+    const writesAtStart = localWrites.current
+    const page = pageRef.current
+    const result = await api.loadDelta(workspaceId, dataSourceId, viewId, after, {
+      search: props.search ?? null,
+      page: page.hasMore ? page.cursor : null,
+      // 열 집계는 표 모양만 그린다 — 집계가 걸린 열이 있을 때만 묻는다
+      calculations: isGrid && columns.some((c) => c.calculation != null),
+    })
+    // 묻는 사이 편집이 시작됐어도 미룬다 — 편집 칸은 행의 자리(번호)로 서 있다
+    if (localWrites.current !== writesAtStart || pageRef.current.cursor !== page.cursor || pageRef.current.hasMore !== page.hasMore || busyRef.current) {
+      syncWanted.current = strongerSync(syncWanted.current, 'delta')
+      return { full: false }
+    }
+    // 요청 실패 · 모르는 모양 — 처음부터(그 전에 받은 신호의 커서로)
+    if (!result.ok || result.value === null) return { full: true, before: fullReadCursor(ledger) }
+    const delta = result.value
+    if (deltaFallback(delta) !== null) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
+    const merged = mergeDelta({ previous: rowsRef.current, outside: outsideRef.current, touched: touched.current, rows: delta.rows, hasMore: page.hasMore })
+    if (!merged.ok) return { full: true, before: fullReadCursor(ledger, delta.cursor) }
+    if (merged.changed) {
+      keepSelection(merged.rows)
+      rowsRef.current = merged.rows
+      outsideRef.current = merged.outside
       setRows(merged.rows)
-      setDepthOf(merged.depthOf)
-      setExpanded(merged.expanded)
       setOutside(merged.outside)
-      setCursor(next)
-      setHasMore(next !== null)
-      if (calc !== undefined) setCalculations(calc)
-      // rollup 은 행에 없다 — 보이는 행 전부의 것을 다시 묻는다(그사이 연결된 행이 바뀌었을 수 있다)
+      // rollup 은 행에 없다 — 다시 읽기와 같이 보이는 행 전부의 것을 다시 묻는다
       refreshRollups(merged.rows.map((r) => r.id))
-      // 리마인더도 행에 없다 — 걸기 · 풀기 · 울림의 신호(0109)로 온 다시 읽기면 행은 그대로다(10n-17)
-      setReminderTick((tick) => tick + 1)
+    }
+    if (delta.calculations !== undefined) setCalculations(delta.calculations)
+    // 리마인더는 행에 없다 — 걸기 · 풀기 · 울림도 그 행의 기록으로 온다(10n-17)
+    if (delta.rows.length > 0) setReminderTick((tick) => tick + 1)
+    afterDelta(ledger, delta.cursor)
+    setSyncStats(noteSync(viewId, 'delta'))
+    // 더 오래된 쓰기 트랜잭션이 지평을 붙잡았다 — 그 뒤의 커밋을 곧 다시 묻는다(정본 X-5 1단계 ③)
+    if (delta.behind && behindTimer.current === null) {
+      behindTimer.current = window.setTimeout(() => {
+        behindTimer.current = null
+        requestSync('delta')
+      }, 1000)
+    }
+    return { full: false }
+  }
+
+  /** 맞춘다 — 미뤄 둔 종류대로. 델타를 물을 수 없거나(커서를 모른다 · 평평한 목록이 아니다) 합칠 수 없으면 다시 읽는다. */
+  const runSync = async (): Promise<void> => {
+    const wanted = syncWanted.current
+    if (wanted === 'none') return
+    syncWanted.current = 'none'
+    syncing.current = true
+    try {
+      if (wanted === 'delta' && deltaCapable && ledger.applied !== null) {
+        const outcome = await syncDelta(ledger.applied)
+        if (outcome.full) await fullReload(outcome.before)
+      } else await fullReload(fullReadCursor(ledger))
     } finally {
-      reloading.current = false
+      syncing.current = false
+      if (syncWanted.current !== 'none') setSyncKick((n) => n + 1)
     }
   }
 
-  // 미뤄 둔 다시 읽기 — 편집 · 추가 · 더 보기가 끝나면
+  /** 맞추기를 청한다 — 편집 · 추가 · 더 보기 중이거나 이미 도는 중이면 미뤘다가 끝나면(아래 효과). */
+  const requestSync = (kind: 'delta' | 'full') => {
+    syncWanted.current = strongerSync(syncWanted.current, kind)
+    if (!busyRef.current && !syncing.current) void runSync()
+  }
+  /** 처음부터 다시 읽기 — 실패한 옮기기 · 바깥이 나눠 주는 신호(G-1 ④) 등. */
+  const reload = () => requestSync('full')
+
+  // 미뤄 둔 맞추기 — 편집 · 추가 · 더 보기가 끝나면
   useEffect(() => {
-    if (reloadWanted.current && !busyRef.current && !reloading.current) void reload()
+    if (syncWanted.current !== 'none' && !busyRef.current && !syncing.current) void runSync()
   })
 
   useTableChanges(
     workspaceId,
     dataSourceId,
     {
-      onChanged: () => void reload(),
+      onChanged: (signal) => {
+        noteSignal(ledger, signal.cursor)
+        requestSync('delta')
+      },
       // 더 볼 수 없다 — 화면을 다시 읽으면 서버 렌더가 "없음"을 보인다
       onRevoked: () => router.refresh(),
     },
@@ -1406,7 +1520,7 @@ export function DatabaseTable(props: {
   useEffect(() => {
     if (props.liveTick === undefined || props.liveTick === tickSeen.current) return
     tickSeen.current = props.liveTick
-    void reload()
+    reload()
   })
 
   const loadMore = async () => {
@@ -1659,6 +1773,10 @@ export function DatabaseTable(props: {
           // 행 옮기기를 보내는 중(10n-60)
           aria-busy={pendingMoves > 0 || undefined}
           data-variant={variant}
+          // 마지막 맞추기가 델타였나 다시 읽기였나 · 센 수(RT-2 — 검사용 · 그리지 않는다)
+          data-sync={syncStats.last ?? undefined}
+          data-sync-delta={syncStats.delta}
+          data-sync-full={syncStats.full}
           onKeyDown={onKeyDown}
           style={isList || isRecordRow ? undefined : { width: totalWidth }}
           className={isList || isRecordRow ? 'block w-full text-sm' : 'table-fixed border-collapse text-sm'}
