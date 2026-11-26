@@ -438,3 +438,34 @@ export type SyncMode = 'none' | 'delta' | 'full'
 export function strongerSync(a: SyncMode, b: SyncMode): SyncMode {
   return a === 'full' || b === 'full' ? 'full' : a === 'delta' || b === 'delta' ? 'delta' : 'none'
 }
+
+// ── 컬럼이 바뀐 다시 세우기 (정본 X-5 의 단계 ⑫ [W8-b 고침]) ─────────────
+
+/**
+ * 다시 읽은 첫 페이지의 컬럼을 화면의 것과 견준 결과 — 다르면 "다른 곳에서 컬럼이 바뀌었다" 로 보고 화면을 새로 세운다(다시 마운트 —
+ * 편집 칸 · 초안 · 진행 중인 추가가 사라진다). 모양(`server` · `atStart` · `now`)은 부르는 쪽이 한 함수로 만든 문자열이다.
+ *
+ *   same     서버의 것이 **지금** 화면의 것과 같다(또는 응답이 컬럼을 싣지 않았다 — `server` null) — 행을 맞춘다
+ *   reread   읽는 사이 이 화면의 컬럼이 바뀌었다(내가 속성을 더했다 · 고쳤다) — 서버의 것이 그 앞인지 뒤인지 가를 수 없다. 버리고 다시 읽는다
+ *            (⑪ 의 "묻는 사이 이 화면에서 고쳤으면 버린다" 와 같다)
+ *   defer    다른 곳에서 바뀌었는데 편집 · 추가 · 더 보기 중이다 — 끝난 뒤에 새로 세운다(⑲ ⓓ — 이 읽기가 그보다 먼저 출발했어도)
+ *   rebuild  다른 곳에서 바뀌었다 — 새로 세운다
+ *
+ * 견주는 것은 읽는 그때의 화면이다 — 맞추기를 청한 렌더의 컬럼과 견주면 델타를 묻는 사이(RT-2 가 다시 읽기 앞에 한 번 더 묻는다) 내가 더한
+ * 속성을 남의 변경으로 본다. W8-b: 셋째 속성을 더한 직후 "+ 새로 만들기" 의 제목 칸이 열리자마자 표가 새로 서며 사라졌다.
+ */
+export type ColumnsVerdict = 'same' | 'reread' | 'defer' | 'rebuild'
+export function columnsVerdict(input: {
+  /** 첫 페이지가 실어 온 컬럼의 모양 — 싣지 않았으면 null. */
+  readonly server: string | null
+  /** 읽기를 시작할 때 화면의 컬럼 모양. */
+  readonly atStart: string
+  /** 첫 페이지가 온 지금 화면의 컬럼 모양. */
+  readonly now: string
+  /** 편집 · 추가 · 더 보기 중이다 — 새로 서면 그것이 사라진다. */
+  readonly holding: boolean
+}): ColumnsVerdict {
+  if (input.server === null || input.server === input.now) return 'same'
+  if (input.now !== input.atStart) return 'reread'
+  return input.holding ? 'defer' : 'rebuild'
+}
