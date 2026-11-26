@@ -17741,6 +17741,49 @@ async function main() {
         await send('Network.emulateNetworkConditions', { offline: false, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1 }).catch(() => undefined)
         await tabA.close()
       }
+
+      // ── ⑥ 맞추기가 도는 사이 화면에서 더한 속성은 남의 변경이 아니다 — 표를 새로 세우지 않는다(W8-b 회귀 · 정본 ⑫ [W8-b 고침]) ──
+      // 화면에서 속성을 더하면 그 스키마 신호로 델타를 묻는다 — 그 요청을 붙잡은 채 화면에서 속성을 하나 더 더하고 놓아 준다. 델타가 스키마를
+      // 알려 다시 읽으면 첫 페이지의 컬럼(둘 다)을 화면의 것과 견준다. 고치기 전에는 신호를 받은 렌더의 컬럼(첫째만)과 견줘 "남이 바꿨다" 로 보고
+      // `router.refresh()` 로 표를 새로 세웠다 — W8-b 에서 그 사이 연 새 행의 제목 칸과 친 글이 사라졌다(작은 DB 에서는 셋째 속성이 늘 그 틈에
+      // 들었다). 새로 서면 표 요소가 바뀐다 — 그것을 본다(시간 재기에 기대지 않는다).
+      {
+        const own = (await api('POST', '/databases', { name: `내 속성 ${stamp}` })).body.database
+        const headsJs = `document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]').length`
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${own.id}` })
+        await waitFor(`${headsJs} === 1`, 15000)
+        await sleep(800) // 구독이 붙을 때까지
+        const addColumnHere = async (name, heads) => {
+          // 붙잡힌 델타가 진행 중인 요청으로 남는다 — 그것이 끝나기를 기다리지 않고 누른다
+          await clickSelector('[data-testid="db-add-column"]', { settle: false })
+          await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+          await typeText(name)
+          await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]', { settle: false })
+          return waitFor(`!document.querySelector('[data-testid="db-add-column-form"]') && ${headsJs} === ${heads}`, 8000)
+        }
+        await evaluate(`(() => { window.__ownColumnTable = document.querySelector('[data-testid="db-table"]'); return true })()`)
+        await send('Fetch.enable', { patterns: [{ urlPattern: '*/changes/delta*', requestStage: 'Request' }] })
+        try {
+          const first = await addColumnHere('첫 속성', 2)
+          for (let i = 0; i < 100 && pausedCount() === 0; i += 1) await sleep(50)
+          const held = pausedCount()
+          const second = await addColumnHere('둘째 속성', 3)
+          check('전제 — 첫 속성의 델타를 붙잡은 채 화면에서 둘째 속성을 더했다(머리 셋)', first && held > 0 && second,
+            JSON.stringify({ first, held, second, heads: await evaluate(headsJs) }))
+          const base = await sync()
+          await send('Fetch.disable')
+          await releasePaused()
+          // 델타가 스키마를 알려 다시 읽는다 — 다 읽었거나(고친 뒤) 새로 세우기로 갔다(고치기 전). 새로 세우는 서버 화면이 올 만큼 더 기다린다
+          const reloaded = await waitFor(`(() => { const s = ${syncJs}; return !!s && s.full > ${base?.full ?? 0} })()`, 10000)
+          await sleep(1500)
+          check('★ 맞추기 도중 화면에서 더한 속성은 남의 변경으로 보지 않는다 — 표를 새로 세우지 않는다(편집 칸 · 새 행이 남는다 · W8-b)',
+            reloaded && (await evaluate(`window.__ownColumnTable?.isConnected === true && document.querySelector('[data-testid="db-table"]') === window.__ownColumnTable && ${headsJs} === 3`)),
+            JSON.stringify({ reloaded, heads: await evaluate(headsJs), sync: await sync() }))
+        } finally {
+          await send('Fetch.disable').catch(() => undefined)
+          await releasePaused()
+        }
+      }
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('DB 실시간 — 개인 뷰 · 지운 속성 (RT-3 · F-05-16)')) { try {

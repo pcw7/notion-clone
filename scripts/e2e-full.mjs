@@ -4,6 +4,8 @@
  *
  *   npm run e2e:full                      # origin/main 을 받아 복사본에서 빌드하고 전체 판 · 새 실패의 게이트는 한 번 더(홀로)
  *   npm run e2e:full -- --ref=<커밋>       # 다른 커밋(예: 머지 전 브랜치의 HEAD — 커밋된 것만 돈다)
+ *   npm run e2e:full -- --only="<게이트>"  # 복사본의 마지막 빌드 · DB 그대로 그 게이트만(E2E_ONLY 와 같은 값) — 체크아웃 · DB 새로 만들기 ·
+ *                                         # 빌드를 건너뛴다. 복사본 환경(포트 3200 대 · `_e2e` DB · Valkey 1)에서만 떨어지는 것을 가를 때
  *
  * 왜 — 전체 판(약 1900개 · 30~40분)이 작업 트리에서 돌면 그동안 빌드도 다른 판도 못 한다(서버가 `.next` 를 읽고 있다). 2026-10-18
  * 사용자와 정한 대로 전체 판은 4조각마다 **머지한 뒤** 이것으로 뒤에서 돌리고 그동안 다음 조각을 한다(HANDOFF §4). 실패는 다음 조각이 고친다.
@@ -35,6 +37,8 @@ const DIR = resolve(process.env.E2E_FULL_DIR ?? join(ROOT, '..', `${basename(ROO
 const LOGS = join(DIR, '.e2e-full')
 const args = process.argv.slice(2)
 const ref = args.find((a) => a.startsWith('--ref='))?.slice('--ref='.length) ?? 'origin/main'
+/** 마지막 빌드 · DB 그대로 이 게이트만(머리말) — 없으면 전체 판. */
+const only = args.find((a) => a.startsWith('--only='))?.slice('--only='.length) || null
 const PORT = Number(process.env.E2E_FULL_PORT ?? 3200)
 const BROWSER = process.env.E2E_BROWSER ?? (existsSync('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe') ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : undefined)
 
@@ -73,11 +77,14 @@ if (existsSync(LOCK)) {
   if (alive) fail(`복사본에서 전체 판이 이미 돈다(pid ${pid}) — ${DIR}`)
 }
 
-// ── 1. 복사본 — 이 저장소의 worktree 를 그 커밋에 ──
-if (ref.startsWith('origin/')) git(ROOT, 'fetch', '-q', 'origin')
-const sha = git(ROOT, 'rev-parse', '--verify', `${ref}^{commit}`)
+// ── 1. 복사본 — 이 저장소의 worktree 를 그 커밋에(`--only` 면 옮기지 않는다 — 마지막 빌드가 그 커밋의 것이다) ──
+if (only !== null && !existsSync(join(DIR, '.next', 'BUILD_ID'))) fail(`복사본에 빌드가 없다(${DIR}) — --only 없이 한 번 돌린다`)
+if (only === null && ref.startsWith('origin/')) git(ROOT, 'fetch', '-q', 'origin')
+const sha = only !== null ? git(DIR, 'rev-parse', 'HEAD') : git(ROOT, 'rev-parse', '--verify', `${ref}^{commit}`)
 const subject = git(ROOT, 'log', '-1', '--format=%s', sha)
-if (!existsSync(DIR)) {
+if (only !== null) {
+  // 그대로 둔다
+} else if (!existsSync(DIR)) {
   git(ROOT, 'worktree', 'prune') // 지운 복사본의 등록이 남아 있으면 add 가 거부한다
   git(ROOT, 'worktree', 'add', '-q', '--detach', DIR, sha)
   say(`복사본을 만들었다 — ${DIR}`)
@@ -98,7 +105,7 @@ const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}
 // ── 2. 의존성 — 잠금 파일이 바뀌었을 때만 ──
 const lockHash = createHash('sha256').update(readFileSync(join(DIR, 'package-lock.json'))).digest('hex')
 const lockStamp = join(DIR, 'node_modules', '.e2e-full-lock')
-if (!existsSync(lockStamp) || readFileSync(lockStamp, 'utf8') !== lockHash) {
+if (only === null && (!existsSync(lockStamp) || readFileSync(lockStamp, 'utf8') !== lockHash)) {
   say('npm ci — 잠금 파일이 바뀌었거나 처음이다')
   const log = join(LOGS, `${stamp}-install.log`)
   if ((await runLogged('npm ci --no-audit --no-fund', null, { cwd: DIR, env: process.env, log })) !== 0) fail(`npm ci 실패\n${tail(log, 30)}`)
@@ -124,8 +131,8 @@ const env = {
   ...(BROWSER ? { E2E_BROWSER: BROWSER } : {}),
 }
 
-// ── 4. DB — 지우고 새로 · 확장과 로캘은 원래 DB 와 같게 · 마이그레이션 ──
-{
+// ── 4. DB — 지우고 새로 · 확장과 로캘은 원래 DB 와 같게 · 마이그레이션(`--only` 면 그대로 — 마지막 판이 남긴 상태에서 돈다) ──
+if (only === null) {
   const admin = new pg.Client({ connectionString: mainDbUrl })
   try {
     await admin.connect()
@@ -150,8 +157,8 @@ const env = {
   say(`DB ${e2eDb} 를 새로 만들었다 — 확장 ${extensions.length}개 · 로캘 ${loc(got)} · 마이그레이션`)
 }
 
-// ── 5. 빌드 ──
-{
+// ── 5. 빌드(`--only` 면 마지막 것) ──
+if (only === null) {
   const t = Date.now()
   const log = join(LOGS, `${stamp}-build.log`)
   if ((await runLogged(process.execPath, [join('node_modules', 'next', 'dist', 'bin', 'next'), 'build'], { cwd: DIR, env, log })) !== 0) fail(`빌드 실패\n${tail(log, 40)}`)
@@ -165,6 +172,18 @@ const ending = (file) => {
   const text = readFileSync(file, 'utf8')
   const at = text.lastIndexOf('\n느린 절 열둘')
   return (at >= 0 ? text.slice(at + 1) : tail(file, 20)).trimEnd()
+}
+if (only !== null) {
+  // 게이트만 — 다시 돌리기 · 홀로 다시는 없다(이것이 홀로 다시다)
+  const onlyLog = join(LOGS, `${stamp}-only.log`)
+  say(`게이트만 — E2E_ONLY="${only}" · 포트 ${PORT} · DB ${e2eDb} · 로그 ${onlyLog}`)
+  const t0 = Date.now()
+  await runLogged(process.execPath, E2E, { cwd: DIR, env: { ...env, E2E_ONLY: only }, log: onlyLog })
+  const result = parseRunSummary(readFileSync(onlyLog, 'utf8'))
+  if (result === null) fail(`판이 끝 줄 없이 끝났다(실행 실패) — 로그 꼬리:\n${tail(onlyLog, 30)}`, 1)
+  console.log(`\n${ending(onlyLog)}\n`)
+  console.log(`게이트만 ${sha.slice(0, 7)}: ${result.passed} / ${result.total} 통과 · 걸린 시간 ${formatSeconds(Date.now() - t0)}`)
+  process.exit(result.passed === result.total ? 0 : 1)
 }
 const runLog = join(LOGS, `${stamp}-e2e.log`)
 say(`전체 판 시작 — 포트 ${PORT} · DB ${e2eDb} · 로그 ${runLog}`)

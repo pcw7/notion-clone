@@ -148,6 +148,7 @@ import { mergeReloaded } from '@/lib/database/live-rows'
 import {
   afterDelta,
   afterFullRead,
+  columnsVerdict,
   createSyncLedger,
   crossedAbove,
   deltaFallback,
@@ -1299,16 +1300,19 @@ export function DatabaseTable(props: {
   // 다시 읽기는 지금 보이는 만큼이다(최상위 행 수만큼 페이지를 읽고 · 펼쳐 둔 행의 자식도). 추가 · 더 보기 중이면 미뤘다가 끝나면
   // 맞춘다. 편집 중이면 평평한 표 · 목록은 그 행만 붙들고(자리 · 뷰 밖이어도 남긴다) 나머지를 맞추며, 편집이 끝나면 그 행을 서버의 자리로
   // 놓는다(RT-4 · 정본 ⑲) — 그룹 덩이 · 트리는 지금처럼 다 미룬다. 다른 사람이 컬럼(속성 · 보임 · 순서 · 집계)을 바꿨으면 행만 맞추지 않고
-  // 화면을 새로 세운다(`router.refresh()` — 다시 마운트 기준에 컬럼이 있다 · 편집 중이면 끝난 뒤에). 내가 고친 행이 조건 밖이 되면 남긴다
-  // (`live-rows.ts` · `delta-merge.ts` — 같은 규칙). 남이 바꾼 칸은 잠깐 칠한다(⑳ · `remote-cells.ts`).
+  // 화면을 새로 세운다(`router.refresh()` — 다시 마운트 기준에 컬럼이 있다 · 편집 · 추가 · 더 보기 중이면 끝난 뒤에). 견주는 것은 읽는 그때의
+  // 컬럼이다(`columnsVerdict` — 맞추기를 청한 렌더의 것이면 그사이 내가 더한 속성을 남의 변경으로 본다 · W8-b). 내가 고친 행이 조건 밖이 되면
+  // 남긴다(`live-rows.ts` · `delta-merge.ts` — 같은 규칙). 남이 바꾼 칸은 잠깐 칠한다(⑳ · `remote-cells.ts`).
 
   const rowsRef = useRef(rows)
+  const columnsRef = useRef(columns)
   const depthRef = useRef(depthOf)
   const expandedRef = useRef(expanded)
   const outsideRef = useRef(outside)
   const pageRef = useRef({ cursor, hasMore })
   useEffect(() => {
     rowsRef.current = rows
+    columnsRef.current = columns
     depthRef.current = depthOf
     expandedRef.current = expanded
     outsideRef.current = outside
@@ -1495,6 +1499,8 @@ export function DatabaseTable(props: {
    */
   const fullReload = async (before: string | null, quiet = false): Promise<void> => {
     const writesAtStart = localWrites.current
+    // 읽기를 시작할 때의 컬럼 — 첫 페이지가 오는 사이 이 화면이 속성을 더했는지 본다(`columnsVerdict` · W8-b)
+    const columnsAtStart = shapeOf(columnsRef.current)
     const want = Math.max(1, rowsRef.current.filter((r) => (depthRef.current.get(r.id) ?? 0) === 0).length)
     const top: RowJson[] = []
     let next: string | null = null
@@ -1506,15 +1512,24 @@ export function DatabaseTable(props: {
       if (first) {
         first = false
         calc = page.value.calculations
-        // 다른 사람이 컬럼을 바꿨다 — 행만 맞추지 않고 화면을 새로 세운다
+        // 다른 사람이 컬럼을 바꿨다 — 행만 맞추지 않고 화면을 새로 세운다. 견주는 것은 **지금** 화면의 컬럼이다(이 함수를 부른 렌더의 `columns`
+        // 가 아니다 — 델타를 묻는 사이 내가 더한 속성을 남의 변경으로 보고 표를 새로 세워 새 행의 편집 칸을 지웠다 · W8-b)
         const serverColumns = page.value.columns
-        if (serverColumns !== undefined && shapeOf(listColumns(variant, serverColumns.filter((c) => c.visible))) !== shapeOf(columns)) {
-          // 편집 중이면 끝난 뒤에 — 새로 서면 편집 칸과 초안이 사라진다(RT-4 — 편집 중에도 행은 맞추지만 이것은 미룬다)
-          if (modeRef.current.kind === 'editing') {
-            columnsPending.current = true
-            syncWanted.current = strongerSync(syncWanted.current, 'full')
-            return
-          }
+        const verdict = columnsVerdict({
+          server: serverColumns === undefined ? null : shapeOf(listColumns(variant, serverColumns.filter((c) => c.visible))),
+          atStart: columnsAtStart,
+          now: shapeOf(columnsRef.current),
+          // 편집 · 추가 · 더 보기 중이면 끝난 뒤에 — 새로 서면 편집 칸과 초안 · 진행 중인 추가가 사라진다(RT-4 — 편집 중에도 행은 맞추지만 이것은
+          // 미룬다 · 이 읽기가 추가보다 먼저 출발했어도 · ⑲ ⓓ)
+          holding: modeRef.current.kind === 'editing' || busyRef.current,
+        })
+        if (verdict === 'reread' || verdict === 'defer') {
+          if (verdict === 'defer') columnsPending.current = true
+          syncWanted.current = strongerSync(syncWanted.current, 'full')
+          if (quiet) quietWanted.current = true
+          return
+        }
+        if (verdict === 'rebuild') {
           setSyncStats(noteSync(viewId, 'full'))
           router.refresh()
           return
@@ -1655,7 +1670,7 @@ export function DatabaseTable(props: {
 
   /**
    * 컬럼이 바뀐 것을 편집이 끝날 때까지 미뤘다(위 `fullReload` — 새로 서면 편집 칸이 사라진다). 그동안은 맞추지 않는다 — 다시 읽어도 또 미룰
-   * 뿐이다.
+   * 뿐이다. 추가 · 더 보기 중에 미룬 것은 바쁨(`busyRef`)이 막고, 끝나면 다시 읽어 다시 견준다(새 행의 제목 칸이 열렸으면 그 편집이 끝날 때까지).
    */
   const columnsPending = useRef(false)
   /** 맞추기를 미루는가 — 추가 · 더 보기 · 하위 항목 읽기(편집은 붙드는 화면이 아닐 때만) · 편집 중에 컬럼이 바뀌었다. */

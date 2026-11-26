@@ -9,6 +9,7 @@
  *   ⑥ 다시 읽을 까닭 — reset · 스키마 · 이 뷰 · 자리 없음 / 손으로 둔 순서는 까닭이 아니다
  *   ⑦ 커서 장부 — 델타는 응답의 커서로 · 다시 읽기는 시작 전에 받은 커서로(없으면 옛 것) · 다시 읽기가 델타보다 세다
  *   ⑧ 편집 중인 행(RT-4) — 다른 행은 옮기고 붙든 행은 제자리 · 떠 있는 행을 건너 잇기 · 모르면 다시 읽기 · 놓기 · 다시 읽기의 고정 · 위로 건너간 행
+ *   ⑨ 컬럼이 바뀐 다시 세우기(W8-b 고침) — 지금 화면의 컬럼과 견준다 · 읽는 사이 내가 바꿨으면 다시 읽기 · 편집 · 추가 · 더 보기 중이면 미룬다
  */
 
 import { test, describe } from 'node:test'
@@ -18,6 +19,7 @@ import type { RowJson } from './http.ts'
 import {
   afterDelta,
   afterFullRead,
+  columnsVerdict,
   createSyncLedger,
   crossedAbove,
   deltaFallback,
@@ -381,5 +383,29 @@ describe('⑧ 편집 중인 행(RT-4)', () => {
     assert.deepEqual(crossedAbove(list('a', 'h', 'b'), list('h', 'a', 'b'), 'h'), [], '위에서 아래로 간 행은 아니다')
     assert.deepEqual(crossedAbove(list('a', 'h'), list('n', 'a', 'h'), 'h'), [], '새 행은 아니다')
     assert.deepEqual(crossedAbove(list('a', 'b'), list('b', 'a'), 'h'), [], '붙든 행이 없으면 없다')
+  })
+})
+
+describe('⑨ 컬럼이 바뀐 다시 세우기 (W8-b 고침 · 정본 ⑫)', () => {
+  // 모양은 부르는 쪽(`shapeOf`)의 문자열 — 여기서는 컬럼 이름을 이어 쓴다
+  const two = '이름,수량'
+  const three = '이름,수량,상태'
+
+  test('★ 지금 화면의 컬럼과 같으면 그대로 맞춘다 — 맞추기를 청한 뒤 내가 더한 속성은 남의 변경이 아니다(W8-b)', () => {
+    // 신호를 받을 때는 둘이었고 델타를 묻는 사이 셋째를 더했다 — 읽기를 시작할 때 이미 셋 · 서버도 셋
+    assert.equal(columnsVerdict({ server: three, atStart: three, now: three, holding: false }), 'same')
+    assert.equal(columnsVerdict({ server: three, atStart: two, now: three, holding: false }), 'same', '읽는 사이 더한 것이 서버에도 있다')
+    assert.equal(columnsVerdict({ server: null, atStart: two, now: three, holding: false }), 'same', '응답이 컬럼을 싣지 않았다')
+  })
+
+  test('★ 다른 곳에서 바뀌었으면 새로 세운다 · 편집 · 추가 · 더 보기 중이면 미룬다', () => {
+    assert.equal(columnsVerdict({ server: three, atStart: two, now: two, holding: false }), 'rebuild')
+    assert.equal(columnsVerdict({ server: three, atStart: two, now: two, holding: true }), 'defer', '새로 서면 새 행의 편집 칸 · 진행 중인 추가가 사라진다')
+  })
+
+  test('읽는 사이 이 화면의 컬럼이 바뀌었고 서버의 것과 다르면 판정하지 않고 다시 읽는다', () => {
+    // 서버가 내 속성을 넣기 전에 읽었는데 응답보다 내 속성이 먼저 화면에 붙었다 — 남의 변경이 아니다
+    assert.equal(columnsVerdict({ server: two, atStart: two, now: three, holding: false }), 'reread')
+    assert.equal(columnsVerdict({ server: two, atStart: two, now: three, holding: true }), 'reread')
   })
 })
