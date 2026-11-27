@@ -6,6 +6,8 @@
  *   ① **연결을 받을 때** — 세션 쿠키 · 멤버십 · 페이지 권한 · Origin 을 본다. 볼 수 없는 페이지 · 없는 페이지 · 남의
  *      워크스페이스는 같은 이유다
  *   ② **볼 수만 있는 연결은 읽기 전용** — 본문은 오고, 보낸 편집은 쌓이지도 퍼지지도 않는다
+ *   ②-b **동기화 블록 사본의 연결(embed)은 A 를 고칠 수 있고 잠기지 않았을 때만 쓴다**(SB-3 · SY7) — 보기만 · 제안만 · 잠김의 편집은 쌓이지
+ *      않는다 · 강등 · 잠금은 `forbidden` · 승격은 `upgraded` · 볼 수 없게 되면 `not_found`
  *   ③ **편집은 로그에 쌓이고 행에 투영되고 다른 참여자에게 간다** — 서버를 다시 띄워도 로그에서 같은 본문을 읽는다
  *   ④ **쓰기마다 다시 묻는다** — 연결 뒤에 권한이 내려간 사람 · 세션이 끊긴 사람의 update 는 쌓이지도 퍼지지도 않는다
  *   ⑤ **수선은 모두에게 간다** — 오프라인 편집이 합쳐져 생긴 구조 위반을 로그가 한 번 고치고 두 참여자가 받는다
@@ -59,6 +61,7 @@ import { docToPm } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import type { Level } from '../permissions/levels.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
+import { setPageLock } from '../permissions/lock.ts'
 import { addGroupMember, createGroup, removeGroupMember } from '../workspace/group.ts'
 import { addTeamspaceMember, createTeamspace, removeTeamspaceMember } from '../workspace/teamspace.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
@@ -222,23 +225,100 @@ describe('② 볼 수만 있는 연결', () => {
     assert.deepEqual(await logOf(pageId), before, '읽기 전용 연결의 편집이 쌓였다')
   })
 
-  test('★ 동기화 블록 사본의 연결(embed=1 · SB-2)은 고칠 수 있는 사람이어도 읽기 전용이다 — 보낸 편집은 쌓이지도 퍼지지도 않는다', async (t) => {
-    if (skipReason) return t.skip(skipReason)
-    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
-    const server = await startServer(t)
-    // 멤버는 이 페이지를 고칠 수 있다(모두에게 열린 최상위) — 클라이언트는 보내지 않지만 서버가 문이다
-    const [writer, embed] = [join(t, server.url, name, cookieOf(owner)), join(t, `${server.url}?embed=1`, name, cookieOf(member))]
-    await ready(writer, embed)
-    assert.equal(embed.provider.authorizedScope, 'readonly')
-    assert.deepEqual(embed.stateless.filter((p) => p.startsWith('collab:mode:')), [], '모드 알림이 없다(읽기 전용)')
-    const before = await logOf(pageId)
+})
 
-    edit(embed.doc, insertAtStart(ids[0], '사본에서 '))
-    embed.provider.setAwarenessField('ts', 525252)
-    await waitFor('사본 쪽의 awareness 가 닿는다', () => writer.provider.awareness?.getStates().get(embed.doc.clientID)?.ts === 525252)
-    assert.deepEqual(textsOf(bodyOf(writer.doc, pageId)), ['원문'], '사본의 연결로 보낸 편집이 퍼졌다')
+// ── ②-b 동기화 블록 사본의 연결 (embed · SB-3 · SY7) ─────────────────
+
+describe('②-b 동기화 블록 사본의 연결(embed=1 · SB-3 · 정본 [보강 SB-0] ⑧ [SB-3 고침] · SY7)', () => {
+  /** 사본의 연결로 보낸 편집이 쌓이지도 퍼지지도 않았다 — 뒤이어 보낸 awareness 가 닿은 뒤에 본다(머리말 "퍼지지 않았다"). */
+  async function refused(writer: Participant, embed: Participant, pageId: string, blockId: string, stamp: number): Promise<void> {
+    const before = await logOf(pageId)
+    edit(embed.doc, insertAtStart(blockId, '사본에서 '))
+    embed.provider.setAwarenessField('ts', stamp)
+    await waitFor('사본 쪽의 awareness 가 닿는다', () => writer.provider.awareness?.getStates().get(embed.doc.clientID)?.ts === stamp)
+    assert.ok(!readBodyPm(writer.doc).textContent.includes('사본에서'), '사본의 연결로 보낸 편집이 퍼졌다')
     assert.deepEqual(await logOf(pageId), before, '사본의 연결로 보낸 편집이 쌓였다')
-    assert.deepEqual(embed.closed, [], '올라간 모드로 닫지 않는다')
+  }
+
+  test('★ A 를 고칠 수 있고 잠기지 않았을 때만 쓸 수 있게 받는다 — 쓴 것은 쌓이고(그 사람) 퍼진다 · 보기만 · 제안만 · 잠김은 읽기 전용이고 쌓이지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, member: editor, pageId, ids, name } = await pageFixture(['원문'])
+    const viewer = await joinAs(workspaceId, await createUser('보기만'), 'member')
+    const commenter = await joinAs(workspaceId, await createUser('제안만'), 'member')
+    await restrict(owner, pageId, [[editor, 'edit'], [viewer, 'view'], [commenter, 'comment']])
+    const server = await startServer(t)
+    const embedUrl = `${server.url}?embed=1`
+    const writer = join(t, server.url, name, cookieOf(owner))
+    const embeds = {
+      editor: join(t, embedUrl, name, cookieOf(editor)),
+      viewer: join(t, embedUrl, name, cookieOf(viewer)),
+      commenter: join(t, embedUrl, name, cookieOf(commenter)),
+    }
+    await ready(writer, ...Object.values(embeds))
+    assert.deepEqual(
+      Object.values(embeds).map((p) => p.provider.authorizedScope),
+      ['read-write', 'readonly', 'readonly'],
+      '고치기만 쓴다 — 제안만인 사람도 읽기 전용(중첩 편집기에는 제안 모드가 없다)',
+    )
+    await waitFor('고칠 수 있는 사본의 연결은 모드 알림 edit', () => embeds.editor.stateless.includes(modeNotice('edit')))
+    assert.deepEqual(embeds.viewer.stateless.filter((p) => p.startsWith('collab:mode:')), [], '읽기 전용은 모드 알림이 없다')
+
+    // 고치기 — 쌓이고(보낸 사람) 퍼진다
+    edit(embeds.editor.doc, insertAtStart(ids[0], '사본 '))
+    await waitFor('쓰는 쪽이 받는다', () => textsOf(bodyOf(writer.doc, pageId))[0] === '사본 원문')
+    assert.equal((await logOf(pageId)).at(-1)?.actor_id, editor.userId)
+
+    // 보기만 · 제안만 — 쌓이지도 퍼지지도 않는다
+    await refused(writer, embeds.viewer, pageId, ids[0], 610001)
+    await refused(writer, embeds.commenter, pageId, ids[0], 610002)
+
+    // 잠긴 A — 고칠 수 있는 사람도 읽기 전용으로 받는다(잠금은 능력 뒤의 게이트 · `pageAccess`). 잠그면 쓰는 쪽도 내려가 닫히므로 새로 본다
+    assert.equal((await setPageLock(owner.ctx, pageId, true)).ok, true)
+    await waitFor('잠그면 쓰는 쪽 연결도 내려간다', () => writer.closed.length > 0)
+    const [watcher, locked] = [join(t, server.url, name, cookieOf(owner)), join(t, embedUrl, name, cookieOf(editor))]
+    await ready(watcher, locked)
+    assert.equal(locked.provider.authorizedScope, 'readonly', '잠긴 A 의 사본은 읽기 전용')
+    await refused(watcher, locked, pageId, ids[0], 610003)
+  })
+
+  test('★ 다시 판정 — 강등은 forbidden(읽기 전용으로 다시 연다) · 잠그면 forbidden · 승격은 upgraded · 볼 수 없게 되면 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, member, pageId, name } = await pageFixture(['원문'])
+    const other = await joinAs(workspaceId, await createUser('다른 사람'), 'member')
+    await restrict(owner, pageId, [[member, 'edit'], [other, 'view']])
+    const server = await startServer(t)
+    const embedUrl = `${server.url}?embed=1`
+
+    // 강등 — 고치기 → 보기
+    const demoted = join(t, embedUrl, name, cookieOf(member))
+    await ready(demoted)
+    assert.equal(demoted.provider.authorizedScope, 'read-write')
+    assert.equal((await grantAccess(owner.ctx, pageId, { type: 'user', id: member.userId }, 'view')).ok, true)
+    await waitFor('강등된 사본의 연결이 닫힌다', () => demoted.closed.length > 0)
+    assert.deepEqual(demoted.closed, ['forbidden'])
+
+    // 승격 — 보기 → 고치기(곧바로 다시 붙으면 쓸 수 있게 받는다)
+    const promoted = join(t, embedUrl, name, cookieOf(member))
+    await ready(promoted)
+    assert.equal(promoted.provider.authorizedScope, 'readonly')
+    assert.equal((await grantAccess(owner.ctx, pageId, { type: 'user', id: member.userId }, 'edit')).ok, true)
+    await waitFor('올라간 사본의 연결이 닫힌다', () => promoted.closed.length > 0)
+    assert.deepEqual(promoted.closed, ['upgraded'])
+
+    // 잠금 — 고칠 수 있던 사본의 연결이 내려간다
+    const beforeLock = join(t, embedUrl, name, cookieOf(member))
+    await ready(beforeLock)
+    assert.equal(beforeLock.provider.authorizedScope, 'read-write')
+    assert.equal((await setPageLock(owner.ctx, pageId, true)).ok, true)
+    await waitFor('잠그면 사본의 연결이 닫힌다', () => beforeLock.closed.length > 0)
+    assert.deepEqual(beforeLock.closed, ['forbidden'])
+
+    // 볼 수 없게 되면 — "볼 수 없음" 이 먼저다(읽기 전용 사본의 연결도 닫는다)
+    const reader = join(t, embedUrl, name, cookieOf(other))
+    await ready(reader)
+    assert.equal((await revokeAccess(owner.ctx, pageId, { type: 'user', id: other.userId })).ok, true)
+    await waitFor('볼 수 없게 된 사본의 연결이 닫힌다', () => reader.closed.length > 0)
+    assert.deepEqual(reader.closed, ['not_found'])
   })
 })
 

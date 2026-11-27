@@ -181,6 +181,30 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
   ]
 }
 
+/**
+ * 동기화 블록 사본의 그리기 플러그인(SB-3 · 정본 [보강 SB-0] ⑧ⓕ) — 데코레이션뿐이다(읽기 전용 사본도 단다). 토글 접힘 · 코드 강조 · 목차 · 컬럼 폭.
+ */
+export function copyDrawingPlugins(deps: EditorDeps): Plugin[] {
+  return [collapsePlugin(deps.isCollapsed), codeHighlightPlugin(), tocPlugin(), columnLayoutPlugin()]
+}
+
+/**
+ * 동기화 블록 사본의 편집 플러그인(SB-3 · ⑧ⓕ) — `editingPlugins` 에서 화면이 없는 것(`/` · `@` · `:` 메뉴 · 주소 붙여넣기 메뉴 · presence ·
+ * 이미지 끌어 놓기 · breadcrumb · 찾기 · 목록 메뉴 · AI 안내 · 제안 모드)을 뺀 목록이다. 차례는 같다 — 여기와 위를 함께 고친다.
+ */
+export function copyEditingPlugins(deps: EditorDeps): Plugin[] {
+  return [
+    inputRulesPlugin(),
+    blockSelectionPlugin(),
+    clipboardPlugin(deps, clipboardHtml),
+    tableEditing(),
+    ...copyDrawingPlugins(deps),
+    atomMarksPlugin(),
+    syncedBlockPlugin({ isRemoteChange: deps.isRemoteChange, onNotice: deps.onNotice }),
+    blockIdPlugin(),
+  ]
+}
+
 /** 원자 블록(divider·image) 앞뒤에 캐럿을 둘 자리 · 드롭 위치 표시. 기록 플러그인 뒤에 둔다. */
 export function cursorPlugins(): Plugin[] {
   return [gapCursor(), dropCursor()]
@@ -195,9 +219,15 @@ export function createDocumentState(doc: EditorDoc, deps: EditorDeps): EditorSta
   })
 }
 
-export function createEditor(options: CreateEditorOptions): EditorView {
-  const ourKeys = createKeydownHandler(options.deps)
+/** 편집기의 키 — 우리 키맵 다음에 `baseKeymap` 의 남은 것(`safeBaseKeymap`). 동기화 블록 사본의 중첩 편집기도 쓴다(SB-3). */
+export function editorKeyHandler(deps: EditorKeymapDeps): (view: EditorView, event: KeyboardEvent) => boolean {
+  const ourKeys = createKeydownHandler(deps)
   const baseKeys = keydownHandler(safeBaseKeymap())
+  return (v, event) => ourKeys(v, event) || baseKeys(v, event)
+}
+
+export function createEditor(options: CreateEditorOptions): EditorView {
+  const keys = editorKeyHandler(options.deps)
   const state = options.state
 
   // ⚠ **만들어지는 도중에 트랜잭션이 온다.** 협업 바인딩(`ySyncPlugin`)은 플러그인 뷰를 만들 때 Y.Doc 의 내용을 문서에
@@ -209,7 +239,7 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     state,
     editable: options.editable,
     // ★ IME 게이트가 여기 하나뿐이다 — `createKeydownHandler` 내부.
-    handleKeyDown: (v, event) => ourKeys(v, event) || baseKeys(v, event),
+    handleKeyDown: keys,
     nodeViews: createNodeViews(options.deps),
     dispatchTransaction(tr) {
       const self = view ?? (this as unknown as EditorView)

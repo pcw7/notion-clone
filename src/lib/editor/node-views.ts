@@ -520,7 +520,7 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     // AI 블록(AI-5) — 머리 줄은 지연 로드 · 결과는 자식 그룹(보통의 블록)
     [AI_BLOCK_TYPE]: (node, view, getPos) => aiBlockNodeView(node, view, getPos, deps),
     // 동기화 블록(SB-1) — 머리 줄(`원본` 표지 · 해제) · 내용은 자식 그룹(보통의 블록) · 틀은 CSS 가 컨테이너에
-    [SYNCED_BLOCK_TYPE]: (node, view, getPos) => syncedBlockNodeView(node, view, getPos, deps, () => createNodeViews(deps)),
+    [SYNCED_BLOCK_TYPE]: (node, view, getPos) => syncedBlockNodeView(node, view, getPos, deps, createNodeViews),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
     // 인라인 수식(Phase 2 1b) — rich text 의 원자. 그리기는 블록 수식과 같은 한 곳(`equation-render.ts`).
     equation: (node, view, getPos) => inlineEquationNodeView(node, view, getPos, deps),

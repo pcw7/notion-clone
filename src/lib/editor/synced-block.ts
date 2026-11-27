@@ -51,6 +51,8 @@ export function isSyncedOriginal(container: PmNode): boolean {
  */
 export function excludedAt($pos: ResolvedPos): ReadonlySet<BlockType> {
   const out = new Set<BlockType>()
+  // 루트가 그룹인 문서는 사본의 중첩 편집기다 — 문서 전체가 원본 X 의 안이다(SB-3 · ⑧ⓕ · 가드 · 붙여넣기 ⓓ · 감싸기가 함께 본다)
+  if ($pos.node(0).type === GROUP) for (const t of specOf(SYNCED_BLOCK_TYPE).excludedDescendantTypes ?? []) out.add(t)
   for (let depth = $pos.depth; depth > 0; depth -= 1) {
     const node = $pos.node(depth)
     if (!isContainer(node)) continue
