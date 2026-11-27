@@ -30,6 +30,8 @@ import type { SettingSectionId } from './registry.ts'
 
 /** 모든 패널 — 절 안의 순서이기도 하다(값 항목들 뒤에 선다). */
 export const SETTING_PANELS = [
+  // 자기 계정의 이메일 주소(AC-1 · F-14-07) — 누구나(게스트 포함). 보안 절의 맨 위. 판정 · 쓰기는 `auth/account-email.ts` 가 한다.
+  { id: 'emails', section: 'account.security', visible: () => true },
   // 자기 계정의 비밀번호 — 누구나(게스트 포함). 판정 · 쓰기는 `auth/password.ts` 가 한다.
   { id: 'password', section: 'account.security', visible: () => true },
   // 2단계 인증(8i-2b) — 누구나 본다(켜려면 비밀번호가 있어야 한다는 것은 패널이 말한다). 판정 · 쓰기는 `auth/mfa.ts`.

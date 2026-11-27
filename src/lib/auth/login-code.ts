@@ -353,3 +353,9 @@ export async function verifyLoginCode(
   // user_id 가 null 이면 신규 가입이다. 계정 생성은 호출자(establishLogin)가 한다.
   return { ok: true, userId: consumed.user_id, email: normalized, challengeId: consumed.id }
 }
+
+// ── 같은 규칙의 다른 확인 코드 ────────────────────────────────────────
+//
+// 별칭 주소의 확인 코드(AC-1 · 정본 §3.2 [보강 AC-0] ③)는 로그인 코드와 같은 규칙이다 — 6자리 · challenge id 를 소금으로 한 HMAC ·
+// 상수 시간 비교 · 세션 없이도 남는 auth_event. 목적(purpose)만 다르다. 규칙이 둘로 갈라지지 않게 여기서 내보낸다.
+export { codeMatches as otpCodeMatches, generateCode as generateOtpCode, hashCode as hashOtpCode, recordAuthEvent }

@@ -203,9 +203,14 @@ describe('④ 이메일', () => {
     const alias = `별칭-${randomUUID().slice(0, 8)}@example.com`
     const unverified = `미검증-${randomUUID().slice(0, 8)}@example.com`
     await query(
-      `INSERT INTO user_email (id, user_id, email, verified_at, is_primary, added_at)
-       VALUES ($1, $3, $2, now(), false, now()), ($4, $3, $5, NULL, false, now())`,
-      [randomUUID(), alias, owner.userId, randomUUID(), unverified],
+      `INSERT INTO user_email (id, user_id, email, verified_at, is_primary, added_at) VALUES ($1, $3, $2, now(), false, now())`,
+      [randomUUID(), alias, owner.userId],
+    )
+    // 미검증 주소는 user_email 에 들지 않는다(CHECK — AC-0 ①) — 별칭으로 확인하는 중인 주소는 otp_challenge 의 대기다
+    await query(
+      `INSERT INTO otp_challenge (id, purpose, email, user_id, code_hash, expires_at, created_at)
+       VALUES ($1, 'email_verify', $2, $3, 'x', now() + interval '10 minutes', now())`,
+      [randomUUID(), unverified, owner.userId],
     )
 
     const toUnverified = await inviteGuestToPage(boss.ctx, doc, unverified, 'view')

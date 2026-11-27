@@ -272,12 +272,63 @@ try {
     [randomUUID(), userId],
   )
 
+  // 검증된 행으로 넣는다 — 미검증이면 아래 AC-0 ① 의 CHECK 이 먼저 막아 UNIQUE 를 보지 못한다
   await mustReject(
     '전역 이메일 중복',
-    `INSERT INTO user_email (id, user_id, email, added_at)
-     VALUES ($1,$2,'TEST@example.com', now())`,
+    `INSERT INTO user_email (id, user_id, email, verified_at, added_at)
+     VALUES ($1,$2,'TEST@example.com', now(), now())`,
     [randomUUID(), userId],
   )
+
+  // [보강 AC-0] ① 미검증 주소는 user_email 에 들지 않는다 — 확인 대기는 otp_challenge(email_verify) 에만 (0157)
+  await mustReject(
+    'AC-0 ① 미검증 별칭 행',
+    `INSERT INTO user_email (id, user_id, email, added_at)
+     VALUES ($1,$2,'pending-alias@example.com', now())`,
+    [randomUUID(), userId],
+  )
+  await mustReject(
+    'AC-0 ① 계정 없는 이메일 확인 대기',
+    `INSERT INTO otp_challenge (id, purpose, email, user_id, code_hash, expires_at, created_at)
+     VALUES ($1,'email_verify','pending-alias@example.com', NULL, '', now(), now())`,
+    [randomUUID()],
+  )
+  {
+    await client.query(
+      `INSERT INTO otp_challenge (id, purpose, email, user_id, code_hash, expires_at, created_at)
+       VALUES ($1,'email_verify','pending-alias@example.com', $2, '', now() + interval '10 minutes', now())`,
+      [randomUUID(), userId],
+    )
+    await client.query(
+      `INSERT INTO user_email (id, user_id, email, verified_at, added_at) VALUES ($1,$2,'verified-alias@example.com', now(), now())`,
+      [randomUUID(), userId],
+    )
+    ok('AC-0 ① 계정의 확인 대기 · 검증된 별칭(대표 아님)은 들어간다')
+  }
+
+  // [보강 AC-0] ⑥ 대표 주소는 자기 행만 — 복합 FK 는 지연이라 그 자리에서 검사하게 한 뒤 남의 행을 가리켜 본다(0157)
+  {
+    const otherUser = randomUUID()
+    const otherEmail = randomUUID()
+    await client.query(`INSERT INTO "user" (id, name, primary_email_id, created_at) VALUES ($1,'다른 사람',$2, now())`, [otherUser, otherEmail])
+    await client.query(
+      `INSERT INTO user_email (id, user_id, email, verified_at, is_primary, added_at) VALUES ($1,$2,'other-ac0@example.com', now(), true, now())`,
+      [otherEmail, otherUser],
+    )
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query('SET CONSTRAINTS user_primary_email_own_fk IMMEDIATE')
+      await client.query(`UPDATE "user" SET primary_email_id = $2 WHERE id = $1`, [userId, otherEmail])
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      fail('AC-0 ⑥ 대표 주소가 남의 행 — 거부되어야 하는데 통과했다')
+    } catch (e) {
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      // 그 제약 이름으로 떨어져야 거부다 — 제약이 없으면 `SET CONSTRAINTS` 의 42704 도 "떨어졌다"로 보인다(10n-25 와 같은 함정)
+      if (e.code === '23503' && e.constraint === 'user_primary_email_own_fk') ok('AC-0 ⑥ 대표 주소가 남의 행 — 거부됨 (23503 user_primary_email_own_fk)')
+      else fail(`AC-0 ⑥ 대표 주소가 남의 행 — 다른 까닭으로 떨어졌다 (${e.code} ${e.constraint ?? ''} ${String(e.message).split('\n')[0]})`)
+    }
+    await client.query('SET CONSTRAINTS user_primary_email_own_fk DEFERRED')
+  }
 
   await mustReject(
     'U3 is_managed 인데 org 없음',

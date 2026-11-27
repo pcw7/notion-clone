@@ -66,3 +66,31 @@ export async function sendLoginCode(mail: LoginCodeMail): Promise<string | undef
     }
   }
 }
+
+/**
+ * 별칭 주소의 확인 코드를 보낸다(AC-1 · 정본 §3.2 [보강 AC-0] ③) — 코드이므로 로그인 코드와 같은 큐다(계정 알림과는 따로 — `account-mailer.ts`).
+ * 콘솔의 모양은 로그인 코드와 같다(`받는 사람 :` · `코드 :` — e2e 가 같은 방법으로 읽는다).
+ *
+ * @returns 개발 transport 일 때만 코드 원문.
+ */
+export async function sendEmailVerifyCode(mail: LoginCodeMail): Promise<string | undefined> {
+  switch (transport()) {
+    case 'console': {
+      console.info(
+        [
+          '',
+          '  ┌─────────────────────────────────────────────',
+          '  │  주소 확인 코드 (개발 전용 — 메일 발송 안 함)',
+          `  │  받는 사람 : ${mail.to}`,
+          `  │  코드      : ${mail.code}`,
+          `  │  challenge : ${mail.challengeId}`,
+          '  └─────────────────────────────────────────────',
+          '',
+        ].join('\n'),
+      )
+      return mail.code
+    }
+    case 'none':
+      throw new Error('메일 발송기가 설정되지 않았습니다. 운영 환경에서는 MAIL_TRANSPORT 를 반드시 지정하세요.')
+  }
+}
