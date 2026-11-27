@@ -13,6 +13,8 @@
  *      고칠 수 있을 때). 연결이 닫히면(권한을 잃었다 — 5c) 다시 해석해 자리로 바꾼다
  *   ⑤ 다른 페이지 줄(㉑ · SB-3) — `GET …/synced-blocks/{X}/places`. 이 페이지를 뺀 곳이 있으면 "다른 N개 페이지에서 편집 중" · 누르면 목록 ·
  *      항목은 그 페이지의 그 블록으로 간다
+ *   ⑥ 수명(SB-4) — 사본 하나의 해제가 읽는 내용(`content`) · 해석으로 그린 자리는 다시 보이거나 창이 포커스를 받으면 다시 묻는다 · 원본의 모두
+ *      해제(⑫ⓑ) · 지우기 확인(⑬) · 잘라내기 알림(⑪ⓒ)의 서버 호출(첫 번들에 싣지 않는다 — 원본이 화면에 있을 때 쓰인다)
  *
  * 중첩 편집기의 블록은 `data-block-id` 를 달지 않는다(`data-copy-block-id`) — 바깥 편집기의 손잡이 · 오버레이가 DOM 에서 블록을 찾을 때
  * 사본 안의 블록을 이 페이지의 블록으로 잘못 잡지 않게(같은 페이지의 사본이면 같은 id 가 바깥에도 있다).
@@ -367,27 +369,101 @@ export function mountSyncedCopy(
   }
 
   let started = false
+  /**
+   * 처음 보였다 · 못 물었던 해석을 다시 · 해석으로 그린 자리(권한 없음 · 휴지통 · 삭제됨)를 다시(SB-4 — A 를 휴지통에서 되살리거나 권한을
+   * 받으면 이어진다). 붙어 있으면(같은 페이지 · embed — 붙은 뒤의 "삭제됨" 은 문서를 지켜본다) 그대로.
+   */
+  const recheck = (): void => {
+    if (!visible) return
+    if (!started || (body.dataset.copyState !== 'ok' && lease === null && watchedDoc === null && !resolving)) {
+      started = true
+      void start()
+    }
+  }
+  window.addEventListener('focus', recheck)
   return {
     setVisible(now) {
       visible = now
       lease?.setVisible(now)
-      if (!now) return
-      // 처음 보였다 · 못 물었던 해석을 다시 — 붙어 있거나 자리를 그렸으면 그대로
-      if (!started || (body.dataset.copyState === 'loading' && lease === null && watchedDoc === null && !resolving)) {
-        started = true
-        void start()
-      }
+      recheck()
     },
     // 사본의 내용(중첩 편집기의 키 · 선택 · 끌기 · 되돌리기) · 자리의 단추는 바깥 편집기가 받지 않는다(⑧ⓖ)
     stopEvent: (event) => event.target instanceof Node && body.contains(event.target),
+    content() {
+      if (nested === null || body.dataset.copyState !== 'ok') return null
+      const out: PmNode[] = []
+      nested.state.doc.forEach((child) => void out.push(child))
+      return out
+    },
     destroy() {
       destroyed = true
       generation += 1
+      window.removeEventListener('focus', recheck)
       if (retryTimer !== null) clearTimeout(retryTimer)
       unsubscribe?.()
       release()
     },
   }
+}
+
+// ── 수명 (SB-4 · ⑪ⓒ ⑫ⓑ ⑬) ─────────────────────────────────────────────
+
+type Notify = { readonly onNotice?: (message: string) => void; readonly onRefused?: (detail: string) => void }
+
+/**
+ * 원본의 "동기화 해제"(⑫ⓑ) — 서버가 고칠 수 있는 사본 페이지에 내용을 펴고 껍데기를 벗긴다. 사본이 없거나(`no_copies`) 서버의 문서에 X 가
+ * 아직 없으면(404 — 방금 감쌌다) 이 편집기가 벗긴다(⑫ⓒ · 되돌릴 수 있다).
+ */
+export async function unsyncOriginal(workspaceId: string, pageId: string, originalId: string, local: () => void, notify: Notify): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch(`/api/workspaces/${workspaceId}/synced-blocks/${originalId}/unsync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pageId }),
+    })
+  } catch {
+    notify.onRefused?.('동기화를 해제하지 못했습니다.')
+    return
+  }
+  const got = (await res.json().catch(() => null)) as { state?: string; left?: number } | null
+  if (res.status === 404 || got?.state === 'no_copies') return local()
+  if (!res.ok || got?.state !== 'done') {
+    notify.onRefused?.(res.status === 413 ? '사본이 너무 많아 한 번에 해제할 수 없습니다 — 사본을 먼저 줄이세요.' : '동기화를 해제하지 못했습니다.')
+    return
+  }
+  const left = got.left ?? 0
+  notify.onNotice?.(left > 0 ? `동기화를 해제했습니다 — 고칠 수 없는 페이지 ${left}곳의 사본은 끊겼습니다.` : '동기화를 해제했습니다 — 사본은 각 페이지의 보통 블록이 됐습니다.')
+}
+
+/** 원본들의 사본 수(⑬ · ⑪ⓒ) — 못 물은 것은 0 으로 센다. */
+async function copyCount(workspaceId: string, ids: readonly string[]): Promise<{ copies: number; elsewhere: number }> {
+  const counts = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const res = await fetch(`/api/workspaces/${workspaceId}/synced-blocks/${id}/copies`, { cache: 'no-store' })
+        return res.ok ? ((await res.json()) as { copies: number; elsewhere: number }) : null
+      } catch {
+        return null
+      }
+    }),
+  )
+  return counts.reduce<{ copies: number; elsewhere: number }>(
+    (sum, c) => ({ copies: sum.copies + (c?.copies ?? 0), elsewhere: sum.elsewhere + (c?.elsewhere ?? 0) }),
+    { copies: 0, elsewhere: 0 },
+  )
+}
+
+/** 블록 메뉴의 "삭제"(⑬) — 고른 블록에 사본이 있는 원본이 있으면 묻는다(수만 · 볼 수 없는 페이지까지). 못 물었으면 묻지 않는다(되돌리기가 있다). */
+export async function confirmDeleteOriginals(workspaceId: string, ids: readonly string[]): Promise<boolean> {
+  const { copies } = await copyCount(workspaceId, ids)
+  return copies === 0 || window.confirm(`이 동기화 블록의 사본 ${copies}개가 "원본이 삭제되었습니다" 로 바뀝니다. 되돌리기로 되살릴 수 있습니다.\n\n삭제할까요?`)
+}
+
+/** 원본을 잘라냈다(⑪ⓒ) — 다른 페이지의 사본이 끊기면 알린다(잘라내기는 막지 않는다 — 클립보드 사건은 기다릴 수 없다). */
+export async function warnCutOriginals(workspaceId: string, ids: readonly string[], notify: Notify): Promise<void> {
+  const { elsewhere } = await copyCount(workspaceId, ids)
+  if (elsewhere > 0) notify.onNotice?.(`다른 페이지의 사본 ${elsewhere}개가 끊깁니다 — 이 페이지에 다시 붙이면 이어집니다(페이지 안에서는 끌어 옮기세요).`)
 }
 
 // ── 다른 페이지 줄 (㉑ · SB-3) ──────────────────────────────────────────

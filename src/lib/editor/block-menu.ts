@@ -47,7 +47,7 @@ import { blockTypeOf, containerAt, findContainerById } from './pm-blocks.ts'
 import { colorable, setBlockColorAt } from './block-color.ts'
 import { colorLabel } from './color-names.ts'
 import { blockTypeLabel } from './slash-menu.ts'
-import { canWrapInSyncedBlock, isSyncedOriginal } from './synced-block.ts'
+import { canWrapInSyncedBlock } from './synced-block.ts'
 import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { tableShape, type TableEdit } from './table.ts'
 import { reducesMotion } from '../settings/device-preferences.ts'
@@ -91,7 +91,7 @@ export type BlockMenuAction =
   | { readonly kind: 'embed_swap'; readonly blockId: string }
   // 심플 테이블(Phase 2 1d-2 · F-01-18) — 머리 줄 · 머리 열 · 행 · 열. 블록 메뉴의 '표' 와 셀 위 손잡이 메뉴가 같은 동작이다.
   | { readonly kind: 'table_edit'; readonly blockId: string; readonly change: TableEdit }
-  // 동기화 블록(SB-1) — 고른 블록들을 새 원본으로 감싼다(변환 목록의 끝) · 원본의 껍데기를 벗긴다(사본 없는 원본 ⑫ⓒ).
+  // 동기화 블록(SB-1 · SB-4) — 고른 블록들을 새 원본으로 감싼다(변환 목록의 끝) · 동기화 해제(그 블록의 머리 단추가 한다 ⑫).
   | { readonly kind: 'synced_wrap' }
   | { readonly kind: 'synced_unsync'; readonly blockId: string }
 
@@ -202,9 +202,9 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps, ownHosts: 
     action: { kind: 'embed_swap', blockId: only?.id ?? '' },
   }
 
-  // 동기화 해제(SB-1 · ⑫ⓒ) — 원본 하나를 골랐을 때. 자리는 늘 있다.
-  const original = only !== null && only.type === SYNCED_BLOCK_TYPE && isSyncedOriginal(state.doc.nodeAt(only.pos)!) ? only : null
-  const unsync: MenuItem = { id: 'synced_unsync', label: '동기화 해제', enabled: original !== null, action: { kind: 'synced_unsync', blockId: original?.id ?? '' } }
+  // 동기화 해제(SB-1 · SB-4 · ⑫) — 동기화 블록 하나를 골랐을 때(원본은 모두 해제 · 사본은 그 사본만 — 머리의 단추가 정한다). 자리는 늘 있다.
+  const synced = only !== null && only.type === SYNCED_BLOCK_TYPE ? only : null
+  const unsync: MenuItem = { id: 'synced_unsync', label: '동기화 해제', enabled: synced !== null, action: { kind: 'synced_unsync', blockId: synced?.id ?? '' } }
 
   return [
     {

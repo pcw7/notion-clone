@@ -8,7 +8,7 @@
  *     보지 않는다 — 그 모양은 서버의 정규화 ⑥ⓒⓓ 가 고친다. 규칙은 레지스트리의 `excludedDescendantTypes` 다(타입 이름으로 가르지 않는다)
  *   · 자식 없는 원본 — 마지막 자식을 지우면 빈 문단 하나를 넣는다(정규화 ⑥ⓐ 와 같은 모양 · 캐럿을 둘 곳)
  *   · 바꾸기 → 동기화 블록(⑪ⓐ) — 같은 부모의 이웃 블록들을 새 원본(새 id)으로 감싼다
- *   · 동기화 해제(⑫ⓒ) — 사본 없는 원본의 껍데기를 벗긴다(자식은 제자리)
+ *   · 동기화 해제 — 사본 없는 원본의 껍데기를 벗긴다(⑫ⓒ · 자식은 제자리) · 사본 하나를 지금 X 의 내용으로 바꾼다(⑫ⓐ · SB-4)
  *   · 붙여넣기(⑪ⓑ~ⓔ · SB-2) — 복사한 동기화 블록은 같은 원본의 새 사본 · 잘라 붙이기 · 동기화 블록 안 · 다른 워크스페이스(`planSyncedPaste`)
  *
  * 변경 범위만 본다 — 타이핑 한 글자는 조상 몇 개를 볼 뿐이다. 문서 전체를 훑지 않는다.
@@ -21,7 +21,7 @@ import { isSyncedCopyProps, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY } from '../block/
 import { BLOCK_TYPES, isRefType, specOf, type BlockType } from '../block/types.ts'
 import { BlockSelection, isBlockSelection } from './block-selection.ts'
 import type { EditorBlock } from './document.ts'
-import { newBlockId } from './pm-adapter.ts'
+import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
 import { blockTypeOf, findContainerById } from './pm-blocks.ts'
 import { blockSchema } from './schema.ts'
 
@@ -245,11 +245,18 @@ export function wrapInSyncedBlockCommand(newId: () => string = newBlockId): Comm
 
 // ── 동기화 해제 (⑫ⓒ) ────────────────────────────────────────────────
 
+/** 블록 id 들이 제자리에 놓인 뒤 처음 ~ 끝을 블록 선택으로. */
+function replaceSelecting(state: EditorState, from: number, to: number, nodes: readonly PmNode[]): Transaction {
+  const tr = state.tr.replaceWith(from, to, nodes)
+  const first = findContainerById(tr.doc, String(nodes[0]!.attrs.blockId ?? ''))
+  const last = findContainerById(tr.doc, String(nodes[nodes.length - 1]!.attrs.blockId ?? ''))
+  if (first !== null && last !== null) tr.setSelection(BlockSelection.create(tr.doc, first.pos, last.pos))
+  return tr.scrollIntoView()
+}
+
 /**
  * 사본 없는 원본의 "동기화 해제" — 껍데기를 벗겨 자식을 그 자리에 둔다(id 그대로 · 한 트랜잭션). 벗긴 블록들이 블록 선택으로 남는다.
- *
- * ⚠ SB-4 의 이음매: 사본이 있는 원본의 해제는 서버 명령(모두 해제 ⑫ⓑ — 고칠 수 있는 사본 페이지에 펴 넣는다)이다. 그 조각이 사본 수를
- * 묻고 이 명령은 사본이 없을 때만 탄다. SB-1 에는 사본이 없다.
+ * 사본이 있는 원본은 서버 명령(모두 해제 ⑫ⓑ — `synced-block-lifecycle.ts`)이고, 그 명령이 `no_copies` 라고 답할 때 이것이 탄다(SB-4).
  */
 export function unsyncSyncedBlockCommand(blockId: string, newId: () => string = newBlockId): Command {
   return (state, dispatch) => {
@@ -259,14 +266,45 @@ export function unsyncSyncedBlockCommand(blockId: string, newId: () => string = 
       const children: PmNode[] = []
       info.groupNode?.forEach((child) => children.push(child))
       if (children.length === 0) children.push(emptyParagraph(newId))
-      const tr = state.tr.replaceWith(info.pos, info.pos + info.node.nodeSize, children)
-      const first = findContainerById(tr.doc, String(children[0]!.attrs.blockId ?? ''))
-      const last = findContainerById(tr.doc, String(children[children.length - 1]!.attrs.blockId ?? ''))
-      if (first !== null && last !== null) tr.setSelection(BlockSelection.create(tr.doc, first.pos, last.pos))
-      dispatch(tr.scrollIntoView())
+      dispatch(replaceSelecting(state, info.pos, info.pos + info.node.nodeSize, children))
     }
     return true
   }
+}
+
+/**
+ * 사본 하나의 "동기화 해제"(⑫ⓐ · SB-4) — 사본 자리를 지금 X 의 내용으로 한 트랜잭션에 바꾼다(B 의 되돌리기가 사본을 되살린다). 내용은 사본의
+ * 중첩 편집기가 보이는 X 의 그룹(`content` — 같은 노드 타입)이고 클립보드처럼 블록으로 읽어 다시 짓는다: 새 id · 페이지 멘션 그대로 · A 의
+ * 제안 · 코멘트 표시는 따라가지 않는다. 내용이 없으면(A 를 볼 수 없다 · 아직 붙지 않았다) 거부한다 — 고칠 수 있는지는 부르는 쪽(B 의 편집기)이 본다.
+ */
+export function unsyncSyncedCopyCommand(copyId: string, content: readonly PmNode[] | null, newId: () => string = newBlockId): Command {
+  return (state, dispatch) => {
+    const info = findContainerById(state.doc, copyId)
+    if (info === null || content === null || content.length === 0 || !isSyncedCopyProps(info.node.firstChild?.attrs.props)) return false
+    if (dispatch) {
+      const fresh = (b: EditorBlock): EditorBlock => ({ ...b, id: newId(), ...(b.children === undefined ? {} : { children: b.children.map(fresh) }) })
+      const nodes = content.map((c) => containerFor(fresh(blockFromContainer(c))))
+      dispatch(replaceSelecting(state, info.pos, info.pos + info.node.nodeSize, nodes))
+    }
+    return true
+  }
+}
+
+/** 이 블록들(서브트리 · 어느 깊이든)의 동기화 블록 원본 id — 지우기 확인(⑬) · 잘라내기 알림(⑪ⓒ)이 사본 수를 묻는다(SB-4). */
+export function syncedOriginalsIn(doc: PmNode, rootPositions: readonly number[]): string[] {
+  const ids: string[] = []
+  const visit = (node: PmNode): boolean => {
+    if (isContainer(node) && isSyncedOriginal(node)) {
+      ids.push(String(node.attrs.blockId ?? ''))
+      return false
+    }
+    return !node.isTextblock && !node.isAtom
+  }
+  for (const pos of rootPositions) {
+    const node = doc.nodeAt(pos)
+    if (node !== null && visit(node)) node.descendants(visit)
+  }
+  return ids
 }
 
 // ── 붙여넣기 (⑪ⓑ~ⓔ · SB-2) ───────────────────────────────────────────

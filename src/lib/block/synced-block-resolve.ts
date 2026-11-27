@@ -10,6 +10,8 @@
  * (레벨을 견주지 않는다 · 게스트도 같다). 질의는 `ctx.workspaceId` 에 묶인다 — 다른 워크스페이스의 원본은 없는 것이다(SY6).
  *
  * 접근 요청은 X 로 보낸다 — 서버가 A 를 찾아 A 의 `page_access` 요청을 연다. 화면은 A 의 id · 제목을 모른다.
+ *
+ * 사본 수(SB-4 · ⑬ · ⑪ⓒ)도 여기다 — 원본을 지우거나 잘라낼 때 화면이 묻는다.
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -104,6 +106,46 @@ export async function listSyncedPlaces(ctx: SessionContext, originalId: string):
       [ctx.workspaceId, id, id, scopes],
     )
     return rows.map((r) => ({ pageId: r.page_id, title: plainTitleOf(r.properties), blockId: r.block_id, original: r.original }))
+  })
+}
+
+/**
+ * X 를 가리키는 사본이 든 **살아 있는** 페이지와 그 안의 사본 수 — 권한을 보지 않는다(호출자가 본다). id 순. 역인덱스
+ * (`ix_block_synced_copies` — 술어를 글자 그대로)로 찾고, 사본의 페이지는 그 행의 `ancestor_path` 에서 가장 깊은 `page` 다(정본 ④). 휴지통의
+ * 페이지 · 아직 투영되지 않은 사본은 없다(⑫ⓑ · ⑬ — 받아들인다).
+ */
+export async function syncedCopyPagesIn(tx: Tx, workspaceId: string, originalId: string): Promise<{ readonly pageId: string; readonly copies: number }[]> {
+  const rows = await tx.query<{ page_id: string; n: string }>(
+    `SELECT p.id AS page_id, count(*) AS n
+       FROM block b
+       JOIN LATERAL (
+         SELECT a.id, a.lifecycle FROM unnest(b.ancestor_path) WITH ORDINALITY AS t(id, depth)
+           JOIN block a ON a.id = t.id AND a.type = 'page'
+          ORDER BY t.depth DESC LIMIT 1
+       ) p ON true
+      WHERE b.workspace_id = $1 AND b.type = 'synced_block' AND b.properties ? 'synced_from' AND (b.properties ->> 'synced_from') = $2
+        AND p.lifecycle = 'live'
+      GROUP BY p.id
+      ORDER BY p.id`,
+    [workspaceId, originalId.toLowerCase()],
+  )
+  return rows.map((r) => ({ pageId: r.page_id, copies: Number(r.n) }))
+}
+
+/** 원본 X 의 사본 수(⑬ 지우기 확인 · ⑪ⓒ 잘라내기 알림 · SB-4) — `elsewhere` 는 X 의 페이지 밖의 것. */
+export type SyncedCopyCount = { readonly copies: number; readonly elsewhere: number }
+
+/**
+ * 사본 수 — X 가 살아 있는 원본이고 그 페이지를 볼 수 있을 때만(아니면 null — 없는 것과 같은 답). 볼 수 없는 페이지의 사본도 센다 — 수만
+ * 싣고 이름 · id 는 싣지 않는다(정본 ⑬). 살아 있는 페이지의 것만.
+ */
+export async function countSyncedCopies(ctx: SessionContext, originalId: string): Promise<SyncedCopyCount | null> {
+  return withReadTransaction(async (tx) => {
+    const page = await originalPageOf(tx, ctx, originalId)
+    if (page === null || !can(await effectiveCaps(tx, ctx, page.id), 'view')) return null
+    const pages = await syncedCopyPagesIn(tx, ctx.workspaceId, originalId)
+    const copies = pages.reduce((sum, p) => sum + p.copies, 0)
+    return { copies, elsewhere: copies - (pages.find((p) => p.pageId === page.id)?.copies ?? 0) }
   })
 }
 

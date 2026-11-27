@@ -75,7 +75,7 @@ import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
 import { containerAt, findContainerById, inTableCell } from './pm-blocks.ts'
 import { canPasteUrl, pastedUrlOf, pasteUrlCommand } from './paste-url.ts'
 import { blockSchema, isPlainTextNode } from './schema.ts'
-import { excludedAt, planSyncedPaste, SYNCED_PASTE_NOTICE, syncedCopyBlock } from './synced-block.ts'
+import { excludedAt, planSyncedPaste, SYNCED_PASTE_NOTICE, syncedCopyBlock, syncedOriginalsIn } from './synced-block.ts'
 import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
@@ -479,7 +479,15 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
 
     // 잘라내기는 복사한 뒤 지운다. 하위 페이지가 섞여 있으면 삭제 쪽이 거부하고
     // 이유를 알린다(#27) — 복사는 이미 끝났으므로 내용이 사라지지는 않는다.
-    if (cut) deleteBlockSelectionCommand(deps)(view.state, view.dispatch.bind(view))
+    if (!cut) return true
+    const before = view.state.doc
+    const originals = syncedOriginalsIn(before, sel.rootPositions)
+    deleteBlockSelectionCommand(deps)(view.state, view.dispatch.bind(view))
+    // 원본을 잘라냈다(지우기가 거부되지 않았다) — 다른 페이지의 사본이 끊기면 알린다(⑪ⓒ · SB-4 · 사건은 기다릴 수 없어 막지 않는다)
+    const place = deps.clipboardPlace?.() ?? null
+    if (originals.length > 0 && place !== null && view.state.doc !== before) {
+      void import('./synced-copy-view-impl.ts').then((m) => m.warnCutOriginals(place.workspaceId, originals, deps))
+    }
     return true
   }
 

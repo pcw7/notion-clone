@@ -151,3 +151,27 @@ describe('⑥ 사본의 제목', () => {
     assert.equal(title[0].text?.content, '원본')
   })
 })
+
+describe('⑦ 동기화 블록은 모두 사본이 된다 (SB-4 · 정본 [보강 SB-0] ⑭)', () => {
+  const X = '44444444-4444-4444-8444-444444444444'
+  const Y = '55555555-5555-4555-8555-555555555555'
+  test('★ 원본 X → X 를 가리키는 사본(자식 없음 · 새 id) · 사본 → 같은 원본의 사본 · 토글 안이어도', () => {
+    const body = doc(
+      block({ id: X, type: 'synced_block', properties: {}, children: [block({ id: 'in', title: [textRun('원본 글')] })] }),
+      block({ id: 'cp', type: 'synced_block', properties: { synced_from: Y } }),
+      block({ id: 't', type: 'toggle', children: [block({ id: X.toUpperCase(), type: 'synced_block', properties: {}, children: [block({ id: 'in2' })] })] }),
+    )
+    const out = remapBody(body, pages, ids()).blocks
+    assert.deepEqual(out.map((b) => [b.id, b.type, b.properties, b.children]).slice(0, 2), [
+      ['new-1', 'synced_block', { synced_from: X }, []],
+      ['new-2', 'synced_block', { synced_from: Y }, []],
+    ])
+    assert.deepEqual(out[2].children?.[0].properties, { synced_from: X }, '깊이 상관없이 · 소문자')
+    assert.ok(!JSON.stringify(out).includes('원본 글'), '원본의 내용은 사본에 복사하지 않는다(SY1)')
+  })
+
+  test('모양이 틀린 사본(자기 id · uuid 아님)은 빠진다', () => {
+    const body = doc(block({ id: X, type: 'synced_block', properties: { synced_from: X } }), block({ id: 'z', type: 'synced_block', properties: { synced_from: 'nope' } }))
+    assert.deepEqual(remapBody(body, pages, ids()).blocks, [])
+  })
+})
