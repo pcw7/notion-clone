@@ -25,7 +25,7 @@ import { pageToMarkdown } from '../export/markdown.ts'
 import { planDrop } from './block-handle.ts'
 import { blockMenuItems } from './block-menu.ts'
 import { BlockSelection } from './block-selection.ts'
-import { parseClipboardBlocks, CLIPBOARD_VERSION } from './block-clipboard.ts'
+import { parseClipboardBlocks, pasteBlocksCommand, serializeBlocks, syncedCopyClipboard, CLIPBOARD_VERSION } from './block-clipboard.ts'
 import { indentCommand, type CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
 import { docToPm, pmToDoc } from './pm-adapter.ts'
@@ -35,7 +35,9 @@ import { filterSlashCommands, runSyncedBlockSlashCommand, slashMenuPlugin } from
 import {
   canWrapInSyncedBlock,
   excludedAt,
+  planSyncedPaste,
   syncedBlockPlugin,
+  type SyncedPasteContext,
   unsyncSyncedBlockCommand,
   wrapInSyncedBlockCommand,
 } from './synced-block.ts'
@@ -213,17 +215,102 @@ describe('④ 중첩 가드 (SY5)', () => {
   })
 })
 
-describe('⑤ 붙여넣기', () => {
-  test('★ 붙이는 동기화 블록은 내용만 편다 — 원본은 자식을, 사본은 뺀다', () => {
-    const [s, a, b] = [nextId(), nextId(), nextId()]
-    const json = JSON.stringify({
-      version: CLIPBOARD_VERSION,
-      blocks: [synced(s, [blk(a, 'paragraph', 'a')]), blk(b, SYNCED_BLOCK_TYPE, '', [], { synced_from: nextId() })],
-    })
-    const parsed = parseClipboardBlocks(json)
+describe('⑤ 클립보드 v2 · 붙여넣기 ⑪ⓑ~ⓔ (SB-2)', () => {
+  const WS = '22222222-2222-4222-8222-000000000001'
+  const PAGE = '22222222-2222-4222-8222-000000000002'
+  const here = { workspaceId: WS, pageId: PAGE }
+  const copyOf = (id: string, from: string): EditorBlock => blk(id, SYNCED_BLOCK_TYPE, '', [], { synced_from: from })
+  const plan = (blocks: EditorBlock[], over: Partial<SyncedPasteContext> = {}) =>
+    planSyncedPaste(blocks, { from: here, to: here, cut: false, insideSynced: false, hasBlock: () => false, ...over })
+  /** 사본이면 `→원본`, 원본이면 `원본[자식]`, 아니면 타입. */
+  const shape = (blocks: readonly EditorBlock[]): string[] =>
+    blocks.map((b) =>
+      b.type !== SYNCED_BLOCK_TYPE
+        ? `${b.type}${(b.children?.length ?? 0) > 0 ? `[${shape(b.children!).join(',')}]` : ''}`
+        : b.properties?.synced_from !== undefined
+          ? `→${String(b.properties.synced_from)}`
+          : `원본[${shape(b.children ?? []).join(',')}]`,
+    )
+
+  test('★ v2 모양 — 온 곳 · 잘라냄 표지를 싣고 읽는다 · v1 은 온 곳을 모르는 복사로 · 모르는 버전은 평문으로 · "복사" 단추는 사본 하나', () => {
+    const [s, a] = [nextId(), nextId()]
+    const state = stateOf([synced(s, [blk(a, 'paragraph', 'a')])])
+    const out = serializeBlocks(state.doc, [findContainerById(state.doc, s)!.pos], here, true)
+    assert.ok(out)
+    const raw = JSON.parse(out.json) as Record<string, unknown>
+    assert.deepEqual([raw.version, raw.workspaceId, raw.pageId, raw.cut], [2, WS, PAGE, true])
+    const parsed = parseClipboardBlocks(out.json)
     assert.ok(parsed.ok)
-    assert.deepEqual(parsed.blocks.map((x) => x.id), [a])
-    assert.equal(parsed.unwrapped, 2)
+    assert.deepEqual(parsed.origin, { workspaceId: WS, pageId: PAGE, cut: true })
+    assert.deepEqual(shape(parsed.blocks), ['원본[paragraph]'], '읽기는 동기화 블록을 그대로 둔다 — 붙이는 자리가 정한다')
+
+    const v1 = parseClipboardBlocks(JSON.stringify({ version: 1, blocks: [synced(s, [blk(a)])] }))
+    assert.ok(v1.ok)
+    assert.deepEqual(v1.origin, { workspaceId: null, pageId: null, cut: false }, '옛 모양은 온 곳을 모르는 복사다')
+    assert.deepEqual(parseClipboardBlocks(JSON.stringify({ version: 3, blocks: [] })), { ok: false, reason: 'other_version' })
+    assert.equal(CLIPBOARD_VERSION, 2)
+
+    const button = parseClipboardBlocks(syncedCopyClipboard(s.toUpperCase(), here))
+    assert.ok(button.ok)
+    assert.deepEqual(shape(button.blocks), [`→${s}`], '원본의 "복사" 단추 — 소문자 uuid 의 사본 하나')
+  })
+
+  test('★ ⓑ 복사 → 붙이기 — 원본이든 사본이든 같은 원본의 새 사본(같은 페이지여도 · 깊이 상관없이) · 붙이면 새 id · 검증을 지난다', () => {
+    const [s, a, s2, c, t, s3, b] = [nextId(), nextId(), nextId(), nextId(), nextId(), nextId(), nextId()]
+    const planned = plan([synced(s, [blk(a, 'paragraph', 'a')]), copyOf(c, s2), blk(t, 'toggle', 't', [synced(s3, [blk(b)])])])
+    assert.deepEqual(shape(planned.blocks), [`→${s}`, `→${s2}`, `toggle[→${s3}]`])
+    assert.deepEqual([planned.keepIds.size, planned.unwrapped, planned.dropped], [0, 0, 0])
+    // 다른 페이지 · v1(온 곳 모름)도 같다
+    assert.deepEqual(shape(plan([synced(s, [blk(a)])], { from: { workspaceId: null, pageId: null } }).blocks), [`→${s}`])
+
+    const [p] = [nextId()]
+    const next = run(caretIn(stateOf([blk(p, 'paragraph', '')]), p, 0), pasteBlocksCommand(planned.blocks, { isCollapsed: () => false, newId: nextId }))
+    assert.ok(next !== null)
+    const doc = pmToDoc(next.doc)
+    assert.deepEqual(validateDoc(doc), [])
+    const copies = doc.blocks.filter((x) => x.type === SYNCED_BLOCK_TYPE)
+    assert.deepEqual(copies.map((x) => x.properties?.synced_from), [s, s2])
+    assert.ok(copies.every((x) => x.id !== s && x.id !== c && (x.children?.length ?? 0) === 0), '새 id · 자식 없음(SY1 · SY4)')
+  })
+
+  test('★ ⓒ 잘라 붙이기 — 같은 페이지 · 문서에 X 가 없으면 같은 id(사본이 이어진다) · 있으면 · 다른 페이지면 새 원본(새 id · 내용)', () => {
+    const [s, a, c, s2] = [nextId(), nextId(), nextId(), nextId()]
+    const cut = { cut: true }
+    const restored = plan([synced(s, [blk(a, 'paragraph', 'a')]), copyOf(c, s2)], cut)
+    assert.deepEqual(shape(restored.blocks), ['원본[paragraph]', `→${s2}`])
+    assert.deepEqual([...restored.keepIds], [s])
+    const p = nextId()
+    const next = run(
+      caretIn(stateOf([blk(p, 'paragraph', '')]), p, 0),
+      pasteBlocksCommand(restored.blocks, { isCollapsed: () => false, newId: nextId }, restored.keepIds),
+    )
+    assert.ok(next !== null)
+    const doc = pmToDoc(next.doc)
+    const back = doc.blocks.find((x) => x.type === SYNCED_BLOCK_TYPE && x.properties?.synced_from === undefined)
+    assert.equal(back?.id, s, '같은 id 로 되살렸다')
+    assert.notEqual(back?.children?.[0]?.id, a, '자식은 새 id')
+    assert.deepEqual(validateDoc(doc), [])
+
+    assert.equal(plan([synced(s, [blk(a)])], { ...cut, hasBlock: (id) => id === s }).keepIds.size, 0, '이 문서에 아직 있으면 새 원본')
+    const elsewhere = plan([synced(s, [blk(a)])], { ...cut, to: { workspaceId: WS, pageId: nextId() } })
+    assert.deepEqual([shape(elsewhere.blocks), elsewhere.keepIds.size], [['원본[paragraph]'], 0], '다른 페이지 — 새 원본(새 id · 붙인 내용)')
+  })
+
+  test('★ ⓓ 동기화 블록 안 · ⓔ 다른 워크스페이스 — 원본은 내용만 펴고 사본은 뺀다 · 수를 센다', () => {
+    const [s, a, c, s2, t, s3, b] = [nextId(), nextId(), nextId(), nextId(), nextId(), nextId(), nextId()]
+    const blocks = [synced(s, [blk(a, 'paragraph', 'a')]), copyOf(c, s2), blk(t, 'toggle', 't', [synced(s3, [blk(b)])])]
+    const inside = plan(blocks, { insideSynced: true })
+    assert.deepEqual(shape(inside.blocks), ['paragraph', 'toggle[paragraph]'])
+    assert.deepEqual([inside.unwrapped, inside.dropped], [2, 1])
+    const other = plan(blocks, { from: { workspaceId: nextId(), pageId: nextId() }, cut: true })
+    assert.deepEqual(shape(other.blocks), ['paragraph', 'toggle[paragraph]'], '다른 워크스페이스 — 잘라냈어도')
+    assert.deepEqual([other.unwrapped, other.dropped, other.keepIds.size], [2, 1, 0])
+
+    // 붙이는 자리가 동기화 블록 안인지는 조상이 배제하는 타입으로 본다(클립보드 플러그인이 쓰는 물음)
+    const [o, x, q] = [nextId(), nextId(), nextId()]
+    const state = stateOf([synced(o, [blk(x, 'paragraph', 'x')]), blk(q, 'paragraph', 'q')])
+    assert.equal(excludedAt(caretIn(state, x, 0).selection.$from).has(SYNCED_BLOCK_TYPE), true)
+    assert.equal(excludedAt(caretIn(state, q, 0).selection.$from).has(SYNCED_BLOCK_TYPE), false)
   })
 })
 
@@ -255,11 +342,17 @@ describe('⑦ 검증 · 읽는 길', () => {
     assert.equal(issues([synced(s, [blk(a)]), blk(p, 'page')]), '', '형제 자리의 하위 페이지는 된다')
   })
 
-  test('★ 공개 API 읽기 — 원본은 synced_from: null · has_children · 사본은 SB-2 전까지 unsupported', () => {
+  test('★ 공개 API 읽기 — 원본은 synced_from: null · has_children · 사본은 block_id(SB-2) · 자식 없음', () => {
     const read: BlockReadContext = { links: {} as BlockReadContext['links'], refs: new Map(), fileNames: new Map(), columnWidths: new Map() }
     const [s, a, c] = [nextId(), nextId(), nextId()]
     assert.deepEqual(blockContentToApi(synced(s, [blk(a)]), read), { type: 'synced_block', payload: { synced_from: null }, hasChildren: true })
-    assert.equal(blockContentToApi(blk(c, SYNCED_BLOCK_TYPE, '', [], { synced_from: s }), read).type, 'unsupported')
+    assert.deepEqual(blockContentToApi(blk(c, SYNCED_BLOCK_TYPE, '', [], { synced_from: s }), read), {
+      type: 'synced_block',
+      payload: { synced_from: { type: 'block_id', block_id: s } },
+      hasChildren: false,
+    })
+    // 모양이 틀린 사본(정규화가 빼므로 오지 않는다) — 거짓 id 를 싣지 않는다
+    assert.equal(blockContentToApi(blk(c, SYNCED_BLOCK_TYPE, '', [], { synced_from: c }), read).type, 'unsupported')
   })
 
   test('★ 마크다운 — 원본은 감싸개 없이 내용을 편다(잃은 것이 아니다)', () => {

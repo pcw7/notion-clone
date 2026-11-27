@@ -40462,6 +40462,146 @@ async function main() {
       await sleep(800)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('동기화 블록 — 사본 (SB-2 · F-01-11)')) { try {
+      // 원본 페이지 A(소유자만의 페이지)의 원본 X 를 다른 페이지 B 의 사본이 가리킨다. 두 창 — A 에서 친 글이 B 의 사본에 곧바로 뜬다 · 사본은 이
+      // 조각에서 고칠 수 없다(A · B 가 그대로). A 에서 원본의 "복사" 를 붙이면 같은 원본의 사본이 선다(둘째 원본이 아니다 · 같은 페이지의 사본도
+      // 내용을 그린다). A 를 볼 수 없는 동료는 자리(권한 없음 · 접근 요청)만 보고 A 의 내용 · 페이지 id 가 화면에 없다. 볼 수 있게 했다가 권한을
+      // 빼면 새로 열지 않아도 사본이 자리로 바뀐다(협업 서버가 연결을 닫는다). 좁은 화면 · 어두운 테마. 스스로 데이터를 만든다 — E2E_ONLY 로
+      // 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const pageA = await newPage({ title: `동기화 원본 ${stamp}`, privateTop: true })
+      const pageB = await newPage({ title: `동기화 사본 ${stamp}` })
+      const sc = { x: randomUUID(), a1: randomUUID(), aEnd: randomUUID(), b1: randomUUID(), copy: randomUUID(), bEnd: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(pageA, { blocks: [{ id: sc.x, type: 'synced_block', title: [], properties: {}, format: {}, children: [para(sc.a1, '원본 글')] }, para(sc.aEnd, 'A 끝')] })
+      await saveBody(pageB, { blocks: [para(sc.b1, 'B 앞'), { id: sc.copy, type: 'synced_block', title: [], properties: { synced_from: sc.x }, format: {}, children: [] }, para(sc.bEnd, 'B 끝')] })
+      const mate = await joinAs(workspaceId, await createUser(`사본을 보는 동료 ${stamp}`), 'member')
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const COPY = `[data-block-id="${sc.copy}"] .blk-synced-copy`
+      const copyIs = (state, ms = 15000) => waitFor(`document.querySelector('${COPY}')?.dataset.copyState === '${state}'`, ms)
+      const copyText = () => evaluate(`document.querySelector('${COPY}')?.innerText ?? ''`)
+      const openB = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageB}` })
+        return waitFor(`!!document.querySelector('[data-block-id="${sc.bEnd}"] p') && !!document.querySelector('${COPY}')`, 15000)
+      }
+      const share = (action, level) =>
+        fetch(`${pagesUrl}/${pageA}/access`, { method: 'POST', headers: authed, body: JSON.stringify({ action, principal: { type: 'user', id: mate.userId }, ...(level ? { level } : {}) }) })
+      /** 본문의 모양 — 원본은 ['원본', 자식 글], 사본은 `→원본 id`, 보통 블록은 글. */
+      const tree = async (page) => JSON.stringify((await readBody(page)).doc.blocks.map((b) => (b.type !== 'synced_block' ? b.title.map((r) => r.plain_text).join('')
+        : b.properties?.synced_from ? `→${b.properties.synced_from}` : ['원본', (b.children ?? []).map((c) => c.title.map((r) => r.plain_text).join(''))])))
+
+      try {
+        // ① 소유자가 B 를 연다 — 사본에 A 의 내용
+        check('전제 — B 가 열렸다', await openB())
+        check('★ 사본이 원본 페이지의 내용을 그린다(embed 연결 · 중첩 편집기)', (await copyIs('ok')) && (await copyText()).includes('원본 글'), await copyText())
+
+        // ② 두 창 — A 에서 친 글이 B 의 사본에 곧바로 뜬다
+        const typed = `실시간${stamp % 1000}`
+        const tab = await openTab(`${BASE}/w/${workspaceId}/${pageA}`)
+        try {
+          check('전제 — 둘째 창에 A', await tab.waitFor(`!!document.querySelector('[data-block-id="${sc.a1}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000))
+          let inside = false
+          for (let i = 0; i < 10 && !inside; i += 1) {
+            const box = await tab.evaluate(`(() => { const r = document.querySelector('[data-block-id="${sc.a1}"] p').getBoundingClientRect(); return { x: r.x + 4, y: r.y + r.height / 2 } })()`)
+            await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 })
+            await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 })
+            inside = await tab.waitFor(`document.querySelector('[data-block-id="${sc.a1}"]')?.contains(getSelection()?.anchorNode ?? null)`, 800)
+          }
+          await tab.send('Input.insertText', { text: typed })
+          const live = await waitFor(`(document.querySelector('${COPY}')?.innerText ?? '').includes('${typed}')`, 15000)
+          check('★ 두 창 — A 에서 친 글이 B 의 사본에 곧바로 뜬다', inside && live, await copyText())
+        } finally {
+          await tab.close()
+        }
+
+        // ③ 이 조각에서 사본은 고칠 수 없다 — 중첩 편집기가 읽기 전용 · 쳐도 A · B 가 그대로
+        await sleep(1500) // 친 글이 서버에 쌓이고 투영되기를
+        const beforeA = await tree(pageA)
+        const beforeB = await tree(pageB)
+        const nestedEditable = await evaluate(`document.querySelector('${COPY} .blk-synced-nested')?.getAttribute('contenteditable') ?? null`)
+        await clickSelector(`${COPY} [data-copy-block-id="${sc.a1}"] p`)
+        await typeText('몰래')
+        await sleep(1500)
+        const [afterA, afterB] = [await tree(pageA), await tree(pageB)]
+        check('★ 사본은 고칠 수 없다 — 중첩 편집기가 읽기 전용 · 친 글이 A 에도 B 에도 화면에도 없다',
+          nestedEditable === 'false' && afterA === beforeA && afterB === beforeB && !(await copyText()).includes('몰래'), JSON.stringify({ nestedEditable, beforeA, afterA, afterB }))
+        check('사본 안의 블록은 바깥 편집기의 블록으로 잡히지 않는다(data-block-id 가 없다)',
+          await evaluate(`!document.querySelector('${COPY} [data-block-id]') && !!document.querySelector('${COPY} [data-copy-block-id="${sc.a1}"]')`))
+
+        // ④ A 에서 원본의 "복사" → 붙이기 — 같은 원본의 사본이 선다(둘째 원본이 아니다) · 같은 페이지의 사본도 내용을 그린다
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageA}` })
+        check('전제 — A 가 열렸다', await waitFor(`!!document.querySelector('[data-block-id="${sc.aEnd}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000))
+        await evaluate(`(() => { window.__copied = []; const set = DataTransfer.prototype.setData; DataTransfer.prototype.setData = function (t, v) { window.__copied.push([t, v]); return set.call(this, t, v) } })()`)
+        await clickSelector(`[data-block-id="${sc.x}"] > .blk-synced_block .blk-synced-copy-button`)
+        const copied = await evaluate(`(window.__copied.find(([t]) => t === 'application/x-notion-clone-blocks+json') ?? [])[1] ?? null`)
+        const copiedBlocks = copied ? JSON.parse(copied).blocks : []
+        check('★ 원본의 "복사" — 클립보드에 사본 하나(이 원본을 가리킨다 · v2)', copiedBlocks.length === 1 && copiedBlocks[0].properties?.synced_from === sc.x && JSON.parse(copied).version === 2, copied ?? '없음')
+        await clickSelector(`[data-block-id="${sc.aEnd}"] p`)
+        await key('End')
+        await evaluate(`(() => {
+          const dt = new DataTransfer()
+          dt.setData('application/x-notion-clone-blocks+json', ${JSON.stringify(copied ?? '')})
+          document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+        })()`)
+        let pastedTree = null
+        for (let i = 0; i < 60; i += 1) {
+          pastedTree = JSON.parse(await tree(pageA))
+          if (pastedTree.some((b) => b === `→${sc.x}`)) break
+          await sleep(150)
+        }
+        const originals = pastedTree.filter((b) => Array.isArray(b))
+        const samePageCopy = `.blk-editor > .blk-group > .blk-container:has(> .blk-synced_block[data-synced="copy"]) .blk-synced-copy`
+        check('★ A 에서 원본을 복사해 붙이면 같은 원본의 사본이 선다 — 둘째 원본이 아니다(서버)',
+          pastedTree.filter((b) => b === `→${sc.x}`).length === 1 && originals.length === 1, JSON.stringify(pastedTree))
+        check('★ 같은 페이지의 사본도 내용을 그린다(새 연결 없이 이 문서에)',
+          await waitFor(`document.querySelector('${samePageCopy}')?.dataset.copyState === 'ok' && document.querySelector('${samePageCopy}').innerText.includes('원본 글')`, 10000),
+          await evaluate(`document.querySelector('${samePageCopy}')?.innerText ?? '없음'`))
+
+        // ⑤ A 를 볼 수 없는 동료 — 자리(권한 없음 · 접근 요청)만 · A 의 내용 · 페이지 id 가 화면에 없다
+        await browseAs(mate.token)
+        check('전제 — 동료로 B 를 연다', await openB())
+        const denied = await copyIs('no_access')
+        const html = await evaluate(`document.documentElement.outerHTML`)
+        check('★ A 를 볼 수 없는 동료 — 자리 "원본을 볼 권한이 없습니다" · A 의 내용 · 페이지 id 가 화면에 없다',
+          denied && (await copyText()).includes('원본을 볼 권한이 없습니다') && !html.includes('원본 글') && !html.includes(pageA), await copyText())
+        await clickSelector(`${COPY} .blk-synced-place button`)
+        check('접근 요청 — 누르면 "요청을 보냈습니다"', await waitFor(`(document.querySelector('${COPY}')?.innerText ?? '').includes('요청을 보냈습니다')`, 5000), await copyText())
+
+        // ⑥ 볼 수 있게 했다가 권한을 빼면 — 새로 열지 않아도 자리로 바뀐다
+        const granted = await share('grant', 'view')
+        check('전제 — 동료에게 A 를 보기로 공유', granted.ok, String(granted.status))
+        check('다시 연다', await openB())
+        check('★ 볼 수 있게 되면 사본이 내용을 그린다', (await copyIs('ok')) && (await copyText()).includes('원본 글'), await copyText())
+        const revoked = await share('revoke')
+        check('전제 — 공유를 거뒀다', revoked.ok, String(revoked.status))
+        check('★ 권한을 빼면 사본이 자리로 바뀐다 — 새로 열지 않아도(협업 서버가 연결을 닫는다) · 내용이 사라진다',
+          (await copyIs('no_access', 20000)) && !(await copyText()).includes('원본 글'), await copyText())
+
+        // ⑦ 좁은 화면 · 어두운 테마 — 자리
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await sleep(300)
+        const narrow = await evaluate(`(() => { const r = document.querySelector('${COPY}').getBoundingClientRect()
+          return { right: Math.round(r.right), width: innerWidth, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth } })()`)
+        await send('Emulation.clearDeviceMetricsOverride')
+        check('좁은 화면(390px) — 사본의 자리가 화면 안이고 가로로 넘치지 않는다', narrow.right <= narrow.width && narrow.overflow <= 0, JSON.stringify(narrow))
+        const theme = await evaluate(`document.documentElement.dataset.theme ?? ''`)
+        const placeColor = () => evaluate(`getComputedStyle(document.querySelector('${COPY} .blk-synced-place')).color`)
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+        await sleep(200)
+        const dark = await placeColor()
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+        await sleep(200)
+        const light = await placeColor()
+        await send('Emulation.setEmulatedMedia', { features: [] })
+        check('어두운 테마 — 자리의 글 색이 바뀐다(테마가 시스템을 따를 때)', theme !== 'system' || dark !== light, JSON.stringify({ theme, dark, light }))
+      } finally {
+        await browseAs(session)
+      }
+      await sleep(500)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

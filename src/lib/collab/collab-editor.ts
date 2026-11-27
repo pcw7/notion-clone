@@ -25,6 +25,12 @@ import { EditorState, type Plugin } from '@tiptap/pm/state'
 import { cursorPlugins, editingPlugins, type EditorDeps } from '../editor/create-editor.ts'
 import { collabSchema } from './collab-schema.ts'
 
+/**
+ * 동기화 블록 사본의 묶기(`editor/synced-copy-binding.ts` · SB-2)가 쓰는 바인딩 — 여기서 다시 내보낸다. y-prosemirror 를 가져오는 모듈이 하나
+ * 더 생기면 번들러가 첫 번들의 yjs · lib0 합치기를 풀어 처음 받는 JS 가 늘었다(재 봤다).
+ */
+export { ySyncPlugin, ySyncPluginKey }
+
 export type CollabEditor = {
   readonly state: EditorState
   /** `createEditor` 에 넘길 것 — 받은 것에 되돌리기 짝과 던진 명령 삼키기를 더했다. */

@@ -86,6 +86,11 @@ export type CommandDeps = {
   onRefused?: (detail: string) => void
   /** 테스트에서 결정적 id 를 쓰기 위한 구멍. */
   newId?: () => string
+  /**
+   * 이 편집기가 든 워크스페이스 · 페이지(클립보드 v2 · SB-2) — 복사할 때 싣고 붙일 때 견준다(동기화 블록의 붙여넣기 ⑪ⓒⓔ). 없으면(미리보기 ·
+   * 검사) 모르는 곳이다 — 같은 곳으로 읽는다.
+   */
+  clipboardPlace?: () => { readonly workspaceId: string; readonly pageId: string } | null
 }
 
 const NO_COLLAPSE: CommandDeps = { isCollapsed: () => false }

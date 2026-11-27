@@ -22,10 +22,14 @@ import { textRun } from '../contracts/rich-text.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { reset } from '../rate-limit.ts'
-import { makeFixture, probeDatabase, type Fixture } from '../testing/db-fixtures.ts'
+import { asBlockId } from '../ids.ts'
+import { grantAccess, revokeAccess } from '../permissions/acl.ts'
+import { createBareWorkspace, createUser, joinAs, makeFixture, probeDatabase, type Fixture } from '../testing/db-fixtures.ts'
 import { createPage, titleFromPlainText } from './page.ts'
 import { savePageBody } from './save-page-body.ts'
 import { SYNCED_BLOCK_TYPE } from './synced-block.ts'
+import { requestSyncedOriginalAccess, resolveSyncedBlock } from './synced-block-resolve.ts'
+import { restorePage, trashPage } from './trash.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
@@ -132,5 +136,101 @@ describe('동기화 블록의 원본 (SB-1)', () => {
     assert.deepEqual((kids.body.results as { id: string; type: string }[]).map((r) => [r.id, r.type]), [[inner, 'paragraph'], [toggle, 'toggle']])
     const patched = await call(updateApiBlock, 'PATCH', `/v1/blocks/${synced}`, { synced_block: {} })
     assert.equal(patched.status, 400, JSON.stringify(patched.body))
+  })
+})
+
+/** 사본 하나가 든 페이지 — 원본 X 를 가리킨다. */
+async function pageWithCopy(original: string): Promise<{ page: string; copy: string }> {
+  const page = (await createPage(fx.owner.ctx, { title: titleFromPlainText(`동기화 사본 ${randomUUID().slice(0, 8)}`) })).id
+  const copy = randomUUID()
+  const saved = await savePageBody(fx.owner.ctx, page, {
+    blocks: [{ id: copy, type: SYNCED_BLOCK_TYPE, title: [], properties: { synced_from: original }, format: {}, children: [] }],
+  })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  return { page, copy }
+}
+
+describe('동기화 블록 사본의 해석 (SB-2 · ⑨)', () => {
+  test('★ 권한 — 볼 수 있으면 ok(pageId) · 게스트는 부여 전 no_access(id 없음) · 부여하면 ok · 회수하면 다시 no_access', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { page, synced } = await pageWithOriginal()
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, synced), { state: 'ok', pageId: page })
+    // 대문자로 와도 같은 원본이다
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, synced.toUpperCase()), { state: 'ok', pageId: page })
+
+    const guest = await joinAs(fx.workspaceId, await createUser('사본을 보는 손님'), 'guest')
+    const denied = await resolveSyncedBlock(guest.ctx, synced)
+    assert.deepEqual(denied, { state: 'no_access' })
+    assert.ok(!JSON.stringify(denied).includes(page), '원본 페이지의 id 를 싣지 않는다')
+
+    assert.ok((await grantAccess(fx.owner.ctx, page, { type: 'user', id: guest.userId }, 'view')).ok)
+    assert.deepEqual(await resolveSyncedBlock(guest.ctx, synced), { state: 'ok', pageId: page }, '능력 비트만 본다 — 게스트도 같다')
+    assert.ok((await revokeAccess(fx.owner.ctx, page, { type: 'user', id: guest.userId })).ok)
+    assert.deepEqual(await resolveSyncedBlock(guest.ctx, synced), { state: 'no_access' })
+  })
+
+  test('★ 휴지통 — 볼 수 있으면 trashed · 볼 수 없으면 휴지통이어도 no_access · 되살리면 ok', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { page, synced } = await pageWithOriginal()
+    const guest = await joinAs(fx.workspaceId, await createUser('휴지통을 모르는 손님'), 'guest')
+    await trashPage(fx.owner.ctx, asBlockId(page))
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, synced), { state: 'trashed' })
+    assert.deepEqual(await resolveSyncedBlock(guest.ctx, synced), { state: 'no_access' }, '볼 수 없으면 휴지통인지도 모른다')
+    await restorePage(fx.owner.ctx, asBlockId(page))
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, synced), { state: 'ok', pageId: page })
+  })
+
+  test('★ 없음 — 모르는 id · 사본 · uuid 아님 · 원본을 지운 뒤 · 다른 워크스페이스(SY6)는 missing', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { page, synced } = await pageWithOriginal()
+    const { copy } = await pageWithCopy(synced)
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, randomUUID()), { state: 'missing' })
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, copy), { state: 'missing' }, '사본은 원본이 아니다')
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, 'nope'), { state: 'missing' })
+
+    const elsewhere = await createBareWorkspace('다른 워크스페이스')
+    const stranger = await joinAs(elsewhere, { userId: fx.owner.userId })
+    assert.deepEqual(await resolveSyncedBlock(stranger.ctx, synced), { state: 'missing' }, '다른 워크스페이스의 원본은 없는 것이다')
+
+    const saved = await savePageBody(fx.owner.ctx, page, { blocks: [blk(randomUUID(), 'paragraph', '원본을 지웠다')] })
+    assert.equal(saved.ok, true)
+    assert.deepEqual(await resolveSyncedBlock(fx.owner.ctx, synced), { state: 'missing' })
+  })
+
+  test('★ 접근 요청 — X 로 보내면 원본 페이지에 열린다 · 답에 페이지가 없다 · 볼 수 있으면 has_access · 없는 원본은 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { page, synced } = await pageWithOriginal()
+    const guest = await joinAs(fx.workspaceId, await createUser('요청하는 손님'), 'guest')
+    const sent = await requestSyncedOriginalAccess(guest.ctx, synced)
+    assert.ok(sent.ok && sent.value.sent, JSON.stringify(sent))
+    const opened = await withReadTransaction((tx) =>
+      tx.query<{ node_id: string; kind: string }>(`SELECT node_id, kind FROM access_request WHERE requester_id = $1`, [guest.userId]),
+    )
+    assert.deepEqual(opened, [{ node_id: page, kind: 'page_access' }], '요청은 원본 페이지의 것이다')
+    const again = await requestSyncedOriginalAccess(guest.ctx, synced)
+    assert.ok(again.ok && !again.value.sent, '이미 열린 요청')
+    assert.deepEqual(await requestSyncedOriginalAccess(fx.owner.ctx, synced), { ok: false, reason: 'has_access' })
+    assert.deepEqual(await requestSyncedOriginalAccess(guest.ctx, randomUUID()), { ok: false, reason: 'not_found' })
+  })
+
+  test('★ 공개 API — 사본은 synced_from.block_id · has_children false · 자식은 빈 목록', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { synced } = await pageWithOriginal()
+    const { copy } = await pageWithCopy(synced)
+    const made = await createApiToken(fx.owner.ctx, { name: 'SB-2 시험' })
+    assert.ok(made.ok)
+    const call = async (handler: Parameters<typeof v1Route>[0], path: string) => {
+      await reset(API_RATE_NAMESPACE, made.value.summary.id)
+      const headers = { authorization: `Bearer ${made.value.token}`, 'notion-version': NOTION_VERSION }
+      const res = await v1Route(handler)(new Request(`http://localhost${path}`, { headers }), { params: Promise.resolve({ block_id: copy }) })
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> }
+    }
+    const got = await call(retrieveBlock, `/v1/blocks/${copy}`)
+    assert.equal(got.status, 200, JSON.stringify(got.body))
+    assert.deepEqual(got.body.synced_block, { synced_from: { type: 'block_id', block_id: synced } })
+    assert.equal(got.body.has_children, false)
+    const kids = await call(retrieveBlockChildren, `/v1/blocks/${copy}/children`)
+    assert.equal(kids.status, 200)
+    assert.deepEqual(kids.body.results, [])
   })
 })
