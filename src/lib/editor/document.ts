@@ -62,6 +62,7 @@ import { BOOKMARK_TYPE, validateBookmarkProperties } from '../block/bookmark-blo
 import { EMBED_TYPE, validateEmbedProperties } from '../block/embed-block.ts'
 import { CALLOUT_TYPE, validateCalloutProperties } from '../block/callout.ts'
 import { AI_BLOCK_TYPE, validateAiBlockProperties } from '../block/ai-block.ts'
+import { SYNCED_BLOCK_TYPE, validateSyncedBlock } from '../block/synced-block.ts'
 import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { TABLE_CELLS_KEY, TABLE_ROW_TYPE, validateTableRow, validateTableWidths } from '../block/table.ts'
 import { isUuid } from '../ids.ts'
@@ -92,6 +93,8 @@ export type EditorDoc = {
 
 export type DocIssue = { readonly path: string; readonly message: string }
 
+const NO_EXCLUSION: ReadonlySet<string> = new Set()
+
 /**
  * 클라이언트가 보낸 문서를 검증한다.
  *
@@ -110,12 +113,15 @@ export type DocIssue = { readonly path: string; readonly message: string }
  *     목록(레지스트리 `childTypes` · `parentTypes` · `excludedChildTypes`). 협업 경로는 정규화가 고친다(`collab/normalize.ts` ④)
  *   - 표의 구조(Phase 2 1d) — 표의 자식은 행뿐 · 하나 이상 · 행마다 셀 수가 같고 하나 이상 · 셀은 RichText 계약, 행은 표 안에만
  *     (`block/table.ts`). 협업 경로는 정규화가 고친다(⑤)
+ *   - 동기화 블록(SB-1 · 정본 [보강 SB-0] ⑥) — 안(어느 깊이든)의 동기화 블록 · 하위 페이지 · 인라인 데이터베이스(레지스트리
+ *     `excludedDescendantTypes`) · 자식 없는 원본 · 자식 있는 사본 · 모양이 틀린 `synced_from` · 다른 키. 협업 경로는 정규화가 고친다(⑥)
  */
 export function validateDoc(doc: EditorDoc): DocIssue[] {
   const issues: DocIssue[] = []
   const seen = new Set<string>()
 
-  const walk = (blocks: readonly EditorBlock[], path: string, depth: number, parent: BlockType | null): void => {
+  // `excluded` — 조상들의 `excludedDescendantTypes`(깊이에 상관없이 · 동기화 블록 SB-1). 비었으면 없다.
+  const walk = (blocks: readonly EditorBlock[], path: string, depth: number, parent: BlockType | null, excluded: ReadonlySet<string> = NO_EXCLUSION): void => {
     if (depth > MAX_TREE_DEPTH) {
       issues.push({ path, message: `깊이가 상한(${MAX_TREE_DEPTH})을 넘습니다` })
       return
@@ -149,6 +155,12 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
         if (parent !== null && specOf(parent).excludedChildTypes?.includes(block.type)) {
           issues.push({ path: `${p}.type`, message: `${parent} 바로 안에는 ${block.type} 을 둘 수 없습니다` })
         }
+        // 동기화 블록 안(어느 깊이든)의 동기화 블록 · 하위 페이지 · 인라인 데이터베이스(SY5 · 정규화 ⑥ⓒⓓ 가 고치는 모양)
+        if (excluded.has(block.type)) {
+          issues.push({ path: `${p}.type`, message: `동기화 블록 안에는 ${block.type} 을 둘 수 없습니다` })
+        }
+        // 동기화 블록의 모양(SY2 · SY4 — 정규화 ⑥ⓐⓑⓔ 가 고치는 모양)
+        if (block.type === SYNCED_BLOCK_TYPE) issues.push(...validateSyncedBlock(block, p))
         const allowed = specOf(block.type).childTypes
         const kids = block.children ?? []
         if (allowed !== undefined) {
@@ -233,7 +245,8 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
           })
           return
         }
-        walk(children, `${p}.children`, depth + 1, known ? block.type : null)
+        const own = known ? specOf(block.type).excludedDescendantTypes : undefined
+        walk(children, `${p}.children`, depth + 1, known ? block.type : null, own === undefined ? excluded : new Set([...excluded, ...own]))
       }
     })
   }

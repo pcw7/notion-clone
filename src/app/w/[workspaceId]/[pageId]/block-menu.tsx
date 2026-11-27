@@ -49,6 +49,7 @@ import { editTableCommand } from '@/lib/editor/table'
 import { ownHostsOf } from '@/lib/block/embed-origin'
 import { swapBookmarkEmbedCommand } from '@/lib/editor/file-block-commands'
 import { rememberColor } from '@/lib/editor/last-color'
+import { unsyncSyncedBlockCommand, wrapInSyncedBlockCommand } from '@/lib/editor/synced-block'
 
 export type BlockMenuProps = {
   view: EditorView
@@ -129,6 +130,13 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
         break
       case 'embed_swap':
         swapBookmarkEmbedCommand(action.blockId, ownHostsOf([window.location.origin]))(view.state, dispatch)
+        break
+      // 동기화 블록(SB-1) — 감싸기 · 사본 없는 원본의 해제
+      case 'synced_wrap':
+        wrapInSyncedBlockCommand(deps.newId)(view.state, dispatch)
+        break
+      case 'synced_unsync':
+        unsyncSyncedBlockCommand(action.blockId, deps.newId)(view.state, dispatch)
         break
       case 'code_language':
       case 'code_caption': {

@@ -75,6 +75,7 @@ import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
 import { containerAt, inTableCell } from './pm-blocks.ts'
 import { canPasteUrl, pastedUrlOf, pasteUrlCommand } from './paste-url.ts'
 import { blockSchema, isPlainTextNode } from './schema.ts'
+import { SYNCED_PASTE_NOTICE, unwrapSyncedBlocks } from './synced-block.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
 export const BLOCKS_MIME = 'application/x-notion-clone-blocks+json'
@@ -127,7 +128,8 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
     for (const block of list) {
       // 컬럼의 틀(Phase 2 1c)은 줄이 아니다 — 그 안의 블록을 같은 깊이로 차례로 편다(내보내기와 같다).
       // AI 블록(AI-5)도 틀이다 — 머리(지시 · 단추)는 글이 아니고 결과(자식)만 같은 깊이로(내보내기와 같다).
-      if (block.type === 'column_list' || block.type === 'column' || block.type === 'ai_block') {
+      // 동기화 블록(SB-1)의 원본도 — 내용(자식)을 같은 깊이로(내보내기 ⑰ 와 같다 · 사본은 자식이 없어 줄이 없다).
+      if (block.type === 'column_list' || block.type === 'column' || block.type === 'ai_block' || block.type === 'synced_block') {
         walk(block.children ?? [], depth)
         continue
       }
@@ -254,7 +256,8 @@ export function serializeBlocks(doc: PmNode, rootPositions: readonly number[]): 
 // ── 읽기 ──────────────────────────────────────────────────────────────
 
 export type ParsedClipboard =
-  | { readonly ok: true; readonly blocks: EditorBlock[] }
+  /** `unwrapped` — 내용으로 편 동기화 블록 수(SB-1 — 0 이 아니면 알린다). */
+  | { readonly ok: true; readonly blocks: EditorBlock[]; readonly unwrapped?: number }
   /** 우리 포맷이 아니거나 읽을 수 없다 — 부르는 쪽은 평문 경로로 간다. */
   | { readonly ok: false; readonly reason: 'absent' | 'unreadable' | 'other_version' | 'too_many' }
 
@@ -283,8 +286,9 @@ export function parseClipboardBlocks(raw: string | null | undefined): ParsedClip
   if (countBlocks(blocks) > MAX_PASTE_BLOCKS) return { ok: false, reason: 'too_many' }
   if (validateDoc({ blocks }).length > 0) return { ok: false, reason: 'unreadable' }
 
-  // 하위 페이지는 복사될 때 빠지지만, 다른 버전·손으로 만든 클립보드가 들고 올 수 있다.
-  return { ok: true, blocks: stripPageRefs(blocks).blocks }
+  // 하위 페이지는 복사될 때 빠지지만, 다른 버전·손으로 만든 클립보드가 들고 올 수 있다. 동기화 블록은 내용으로 편다(SB-1 · `unwrapSyncedBlocks`).
+  const unwrapped = unwrapSyncedBlocks(stripPageRefs(blocks).blocks)
+  return { ok: true, blocks: unwrapped.blocks, unwrapped: unwrapped.unwrapped }
 }
 
 /** 붙는 모든 블록에 새 id 를 준다(머리말). */
@@ -497,6 +501,7 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
           // 우리 포맷이 아니다 — HTML·평문 기본 경로로 넘긴다.
           return false
         }
+        if ((parsed.unwrapped ?? 0) > 0) deps.onRefused?.(SYNCED_PASTE_NOTICE)
         return pasteBlocksCommand(parsed.blocks, deps)(view.state, view.dispatch.bind(view))
       },
 

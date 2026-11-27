@@ -50,6 +50,7 @@ import {
   LAYOUT_BLOCK_TYPES,
   DATABASE_TYPE,
   PAGE_TYPE,
+  SYNCED_BLOCK_TYPE,
   UNSUPPORTED_TYPE,
   isKnownBlockType,
   type BlockType,
@@ -372,6 +373,19 @@ nodes[AI_BLOCK_TYPE] = {
     'div',
     { 'data-block-type': AI_BLOCK_TYPE, 'data-ai-kind': String((node.attrs.props as { kind?: unknown })?.kind ?? 'custom'), class: `blk blk-${AI_BLOCK_TYPE}` },
   ],
+} as NodeSpec
+
+// 동기화 블록(SB-1 · F-01-11 · 정본 [보강 SB-0]) — 글이 없는 머리(원자 — `원본` 표지 · 해제 단추)이고 원본의 내용은 컨테이너의 자식
+// 그룹이다(보통의 블록 — 원본 페이지에서 그대로 고친다). 사본은 자식 없는 원자다(SB-2 가 그 자리에 원본을 그린다). 머리는 노드 뷰가
+// 그린다(`synced-block-view.ts`). 끌 수 없다 — PM 의 노드 끌기는 머리만 떼어 자식과 갈라 놓는다(옮기기는 핸들이 컨테이너째).
+// parseDOM 이 없다 — 붙여넣은 HTML 이 동기화 블록을 만들 수 없다(만드는 길은 바꾸기 · `/` 뿐이다).
+nodes[SYNCED_BLOCK_TYPE] = {
+  group: 'blockContent',
+  attrs: blockAttrSpec,
+  atom: true,
+  selectable: true,
+  draggable: false,
+  toDOM: () => ['div', { 'data-block-type': SYNCED_BLOCK_TYPE, class: `blk blk-${SYNCED_BLOCK_TYPE}` }],
 } as NodeSpec
 
 // 자식 페이지 참조. 본문에 보이지만 내용은 그 페이지의 것이다.

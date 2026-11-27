@@ -37,10 +37,12 @@
  * → **트리거 조건: `/` 앞이 줄 시작 또는 공백일 때만**."* 그대로 구현한다.
  */
 
-import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
+import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from '@tiptap/pm/state'
 
 import { AI_BLOCK_TYPE, type AiBlockKind } from '../block/ai-block.ts'
+import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { BODY_BLOCK_TYPES, specOf, type BodyBlockType } from '../block/types.ts'
+import { excludedAt } from './synced-block.ts'
 import { applyTurnInto, insertParagraphAfter, type CommandDeps } from './commands.ts'
 import { containerAt, findContainerById, isBlankLeaf } from './pm-blocks.ts'
 import { newBlockId } from './pm-adapter.ts'
@@ -127,8 +129,15 @@ export type AiSlashCommand = SlashCommandBase & { readonly kind: 'ai'; readonly 
  */
 export type AiBlockSlashCommand = SlashCommandBase & { readonly kind: 'ai_block'; readonly id: `ai_block:${AiBlockKind}`; readonly aiKind: AiBlockKind }
 
+/**
+ * 동기화 블록(SB-1 · F-01-11 — 노션의 `/synced`) — 빈 원본을 넣는다(`runSyncedBlockSlashCommand`). 동기화 블록 안에서는 목록에 서지 않는다
+ * (SY5 · `filterSlashCommands` 의 맥락).
+ */
+export type SyncedBlockSlashCommand = SlashCommandBase & { readonly kind: 'synced_block'; readonly id: 'synced_block' }
+
 export type SlashCommand =
   | BlockSlashCommand
+  | SyncedBlockSlashCommand
   | PageSlashCommand
   | DatabaseSlashCommand
   | LinkedDatabaseSlashCommand
@@ -226,6 +235,11 @@ const WIKI_COMMAND: WikiSlashCommand = {
   group: '페이지',
 }
 
+/** 동기화 블록(SB-1) — 고급 블록 끝(표 · 컬럼 앞). 공백은 메뉴를 닫으므로 `/동기화블록` · `/동기화` · `/synced` 로 찾는다. */
+const SYNCED_BLOCK_COMMAND: SyncedBlockSlashCommand = {
+  kind: 'synced_block', id: 'synced_block', label: '동기화 블록', aliases: ['동기화', '싱크', 'synced', 'synced block', 'sync'], group: '고급 블록',
+}
+
 /** 컬럼(Phase 2 1c) — 노션의 Layout 자리. "열" · "컬럼"으로 둘 다 찾는다. */
 const COLUMN_COMMANDS: readonly ColumnsSlashCommand[] = [
   { kind: 'columns', id: 'columns_2', count: 2, label: '2열', aliases: ['2열', '2단', '2 columns', '2columns', '컬럼', 'columns', '열'], group: '고급 블록' },
@@ -278,6 +292,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   WIKI_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
+  SYNCED_BLOCK_COMMAND,
   TABLE_COMMAND,
   ...COLUMN_COMMANDS,
   AI_COMMAND,
@@ -291,14 +306,37 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
  * 라벨과 별칭 **각각**에 대해 앞부분 일치를 본다. 라벨의 공백을 지운 형태도
  * 함께 본다 — "제목 1"을 찾으려고 `/제목1` 을 치는 것이 자연스럽다.
  */
-export function filterSlashCommands(query: string): SlashCommand[] {
+export function filterSlashCommands(query: string, excluded: ReadonlySet<string> = NOTHING_EXCLUDED): SlashCommand[] {
   const q = query.trim().toLowerCase()
-  if (q === '') return [...SLASH_COMMANDS]
+  // 그 자리에 둘 수 없는 블록을 만드는 명령은 서지 않는다(SB-1 · 동기화 블록 안의 동기화 블록 · 하위 페이지 · 데이터베이스 — `excludedAt`)
+  const allowed = excluded.size === 0 ? SLASH_COMMANDS : SLASH_COMMANDS.filter((command) => !excluded.has(createdTypeOf(command) ?? ''))
+  if (q === '') return [...allowed]
 
-  return SLASH_COMMANDS.filter((command) => {
+  return allowed.filter((command) => {
     const targets = [command.label, command.label.replace(/\s+/g, ''), ...command.aliases]
     return targets.some((t) => t.toLowerCase().startsWith(q))
   })
+}
+
+const NOTHING_EXCLUDED: ReadonlySet<string> = new Set()
+
+/**
+ * 명령이 만드는 블록 중 배제 규칙(레지스트리 `excludedDescendantTypes`)이 보는 타입 — 하위 페이지는 `page`, 인라인 · 연결된 데이터베이스 ·
+ * 위키는 `database`, 동기화 블록은 `synced_block`. 그 밖은 null(보통의 블록 — 본문 타입의 변환은 그 자리의 블록을 바꿀 뿐이다).
+ */
+export function createdTypeOf(command: SlashCommand): string | null {
+  switch (command.kind) {
+    case 'page':
+      return 'page'
+    case 'database':
+    case 'linked_database':
+    case 'wiki':
+      return 'database'
+    case 'synced_block':
+      return 'synced_block'
+    default:
+      return null
+  }
 }
 
 // ── 플러그인 상태 ─────────────────────────────────────────────────────
@@ -354,9 +392,9 @@ function computeState(prev: SlashMenuState, tr: Transaction, next: EditorState):
     if (next.doc.textBetween(from, from + 1) !== '/') return INACTIVE
 
     const query = next.doc.textBetween(from + 1, head)
-    // 종료 조건 ⓐ 공백 ⓑ 매칭 0건
+    // 종료 조건 ⓐ 공백 ⓑ 매칭 0건(그 자리에 설 수 있는 명령 중 — 화면의 목록과 같은 맥락)
     if (/\s/.test(query)) return INACTIVE
-    if (filterSlashCommands(query).length === 0) return INACTIVE
+    if (filterSlashCommands(query, excludedAt($from)).length === 0) return INACTIVE
 
     return { active: true, from, query }
   }
@@ -456,6 +494,37 @@ export function runAiBlockSlashCommand(
   if (blank) tr.replaceWith(at.pos, at.pos + at.node.nodeSize, container)
   else tr.insert(at.pos + at.node.nodeSize, container)
   insertParagraphAfter(tr, id, newId())
+  dispatch?.(tr.scrollIntoView())
+  return id
+}
+
+/**
+ * 동기화 블록 넣기(SB-1 · 정본 ⑪ⓐ *"`/동기화 블록` 은 빈 원본이다"*) — `/쿼리` 를 지우고, 그 줄이 빈 문단이면 그 문단을 새 원본의 첫 자식으로
+ * (id 그대로), 아니면 그 뒤에 빈 문단 하나를 든 새 원본을 넣고 캐럿을 그 문단에. 한 트랜잭션. 동기화 블록 안이면 하지 않는다(SY5).
+ * 넣은 원본의 id — 메뉴가 닫혀 있거나 자리가 없으면 null.
+ */
+export function runSyncedBlockSlashCommand(
+  state: EditorState,
+  dispatch: ((tr: Transaction) => void) | undefined,
+  newId: () => string = newBlockId,
+): string | null {
+  const menu = slashMenuState(state)
+  if (!menu.active) return null
+  const info = containerAt(state.selection.$from)
+  if (!info || excludedAt(state.selection.$from).has(SYNCED_BLOCK_TYPE)) return null
+  const tr = state.tr.delete(menu.from, state.selection.head)
+  closeSlashMenu(tr)
+  const at = findContainerById(tr.doc, info.id)
+  if (at === null) return null
+  const { blockContainer: CONTAINER, blockGroup: GROUP, paragraph: PARAGRAPH } = blockSchema.nodes
+  const blank = isBlankLeaf(at) && at.contentNode.type.name === 'paragraph'
+  const id = newId()
+  const child = blank ? at.node : CONTAINER!.create({ blockId: newId() }, [PARAGRAPH!.create({ props: {}, format: {} })])
+  const synced = CONTAINER!.create({ blockId: id }, [blockSchema.nodes[SYNCED_BLOCK_TYPE]!.create({ props: {}, format: {} }), GROUP!.create(null, [child])])
+  if (blank) tr.replaceWith(at.pos, at.pos + at.node.nodeSize, synced)
+  else tr.insert(at.pos + at.node.nodeSize, synced)
+  const inner = findContainerById(tr.doc, String(child.attrs.blockId ?? ''))
+  if (inner !== null) tr.setSelection(TextSelection.create(tr.doc, inner.contentPos + 1))
   dispatch?.(tr.scrollIntoView())
   return id
 }

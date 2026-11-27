@@ -73,7 +73,8 @@ describe('blockMenuItems — 무엇이 켜져 있는가', () => {
     const plain = blockMenuItems(select(stateOf([blk(a, 'paragraph', 'A')]), a), deps()).map((i) => i.id)
     const page = blockMenuItems(select(stateOf([blk(p, 'page', '하위')]), p), deps()).map((i) => i.id)
     // '코드'(8a-2) · '표'(Phase 2 1d-2)도 늘 있다 — 그 블록이 아니면 꺼질 뿐이다(`code-chrome.test.ts` ② · `table.test.ts` ⑩).
-    assert.deepEqual(plain, ['turn_into', 'color', 'code', 'table', 'embed_swap', 'duplicate', 'copy_link', 'delete'])
+    // '동기화 해제'(SB-1)도 늘 있다 — 동기화 블록의 원본 하나가 아니면 꺼질 뿐이다(`synced-block.test.ts`).
+    assert.deepEqual(plain, ['turn_into', 'color', 'code', 'table', 'embed_swap', 'synced_unsync', 'duplicate', 'copy_link', 'delete'])
     assert.deepEqual(page, plain, '손이 기억한 위치가 선택에 따라 틀어지면 안 된다')
   })
 

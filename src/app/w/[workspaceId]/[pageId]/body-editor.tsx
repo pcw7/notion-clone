@@ -62,9 +62,11 @@ import {
   filterSlashCommands,
   runAiBlockSlashCommand,
   runSlashCommand,
+  runSyncedBlockSlashCommand,
   slashMenuState,
   type SlashCommand,
 } from '@/lib/editor/slash-menu'
+import { excludedAt } from '@/lib/editor/synced-block'
 import { createCollabEditorState } from '@/lib/collab/collab-editor'
 import { openCollabConnection, type CollabConnection, type CollabSnapshot, type DiscardedDoc } from '@/lib/collab/collab-connection'
 import { decodeBodyState } from '@/lib/collab/collab-protocol'
@@ -1566,6 +1568,12 @@ export function BodyEditor({
         if (at !== null) openAi(at.id, 'slash')
         return
       }
+      // 동기화 블록(SB-1) — 빈 원본을 넣고 캐럿을 그 안의 문단에(동기화 블록 안이면 목록에 서지 않는다)
+      if (command.kind === 'synced_block') {
+        runSyncedBlockSlashCommand(view.state, view.dispatch.bind(view))
+        view.focus()
+        return
+      }
       // AI 블록(AI-5) — 빈 AI 블록을 넣는다(만들기는 블록의 "생성"). 직접 지시는 넣은 뒤 그 지시 입력칸으로
       if (command.kind === 'ai_block') {
         const id = runAiBlockSlashCommand(view.state, view.dispatch.bind(view), command.aiKind)
@@ -2031,8 +2039,12 @@ export function BodyEditor({
 
   // useMemo 가 필요하다 — 아래 useEffect 의 의존성이라 매 렌더 새 배열이면
   // 키 핸들러가 계속 다시 붙는다.
+  // 맥락(SB-1) — 캐럿 자리에 둘 수 없는 블록을 만드는 명령은 서지 않는다(동기화 블록 안). 자리가 바뀌면 메뉴가 닫히므로 쿼리만 본다.
   const items = useMemo(
-    () => (menu.open ? filterSlashCommands(menu.query) : []),
+    () => {
+      const view = viewRef.current
+      return menu.open ? filterSlashCommands(menu.query, view ? excludedAt(view.state.selection.$from) : undefined) : []
+    },
     [menu.open, menu.query],
   )
 

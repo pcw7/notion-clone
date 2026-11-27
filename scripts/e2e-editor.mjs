@@ -40312,6 +40312,156 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('동기화 블록 — 원본 (SB-1 · F-01-11)')) { try {
+      // 이웃 블록 둘을 블록 메뉴의 변환 → 동기화 블록으로 감싸면 서버에 원본이 서고 틀(테두리)과 `원본` 표지가 보인다 · 새로 열어도 남는다(좁은
+      // 화면에서 넘치지 않는다 · 어두운 테마의 틀). 다른 원본 · 하위 페이지는 원본 안으로 끌어 넣지 못한다(SY5 — 문서가 그대로) · 보통 블록은
+      // 끌어 넣어진다(대조 — 끌기가 돈다). 원본 안에 동기화 블록을 붙이면 내용만 들어간다 · 원본 안의 `/동기화` 는 메뉴가 서지 않는다. 사본 없는
+      // 원본의 "동기화 해제" 는 보통 블록을 남긴다. 스스로 데이터를 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const sbPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `동기화 블록 ${stamp}` }),
+      })).json()).page.id
+      const sb = { p1: randomUUID(), p2: randomUUID(), other: randomUUID(), inner: randomUUID(), end: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(sbPage, { blocks: [
+        para(sb.p1, '감쌀 첫째'), para(sb.p2, '감쌀 둘째'),
+        { id: sb.other, type: 'synced_block', title: [], properties: {}, format: {}, children: [para(sb.inner, '다른 원본')] },
+        para(sb.end, '끝 줄'),
+      ] })
+      const sub = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: sbPage, title: `동기화 하위 ${stamp}` }),
+      })).json()).page.id
+      const tree = async () => {
+        const walk = (blocks) => blocks.map((b) => (b.type === 'synced_block' ? ['동기화', walk(b.children ?? [])] : b.type === 'page' ? '하위' : (b.title ?? []).map((r) => r.plain_text ?? '').join('')))
+        return JSON.stringify(walk((await readBody(sbPage)).doc.blocks))
+      }
+      const serverIs = async (expected, tries = 60) => {
+        let got = null
+        for (let i = 0; i < tries; i += 1) {
+          got = await tree()
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const FRAME = '.blk-container:has(> .blk-synced_block)'
+      const NESTED = `.blk-editor ${FRAME} ${FRAME}`
+      const openSb = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sbPage}` })
+        return waitFor(`!!document.querySelector('[data-block-id="${sb.p1}"] p') && !!document.querySelector('[data-block-id="${sub}"]') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      }
+      const caretInto = async (id) => {
+        let inside = false
+        for (let i = 0; i < 20 && !inside; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] p`)
+          inside = await waitFor(`document.querySelector('[data-block-id="${id}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+        }
+        return inside
+      }
+      /** 이 블록을 감싼 원본의 틀 — 테두리 · 표지 · 화면 폭 안인가. */
+      const frameOf = (id) => evaluate(`(() => {
+        const c = document.querySelector('[data-block-id="${id}"]')?.closest('${FRAME}')
+        if (!c) return null
+        const s = getComputedStyle(c)
+        const r = c.getBoundingClientRect()
+        return { id: c.dataset.blockId, border: s.borderTopWidth, color: s.borderTopColor, badge: c.querySelector(':scope > .blk-synced_block .blk-synced-badge')?.textContent ?? null,
+          right: Math.round(r.right), width: innerWidth, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth }
+      })()`)
+      check('전제 — 페이지가 열렸다(보통 블록 둘 · 원본 하나 · 하위 페이지)', await openSb())
+      const [seeded, seededGot] = await serverIs(['감쌀 첫째', '감쌀 둘째', ['동기화', ['다른 원본']], '끝 줄', '하위'])
+      check('전제 — 서버의 처음 모양', seeded, seededGot)
+
+      // ① 감싸기 — 첫째에서 Esc(블록 선택) → Shift+↓(둘째까지) → Mod+/ → 변환 → 끝 항목(동기화 블록)
+      check('전제 — 첫째 줄에 캐럿', await caretInto(sb.p1))
+      await key('Escape')
+      await key('ArrowDown', SHIFT)
+      await sleep(150)
+      await key('/', MOD)
+      await waitFor(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')`, 3000)
+      await key('Enter')
+      await sleep(60)
+      await key('End')
+      await sleep(40)
+      const lastTurn = await evaluate(`document.activeElement?.textContent ?? ''`)
+      await key('Enter')
+      const wrappedShape = [['동기화', ['감쌀 첫째', '감쌀 둘째']], ['동기화', ['다른 원본']], '끝 줄', '하위']
+      const [wrapped, wrappedGot] = await serverIs(wrappedShape)
+      check('★ 블록 메뉴 변환 → 동기화 블록 — 고른 이웃 블록 둘이 새 원본 안으로(서버)', lastTurn.startsWith('동기화 블록') && wrapped, `${lastTurn} · ${wrappedGot}`)
+      const framed = await frameOf(sb.p1)
+      check('★ 원본의 틀 — 테두리 · `원본` 표지', framed !== null && framed.border === '2px' && framed.badge === '원본', JSON.stringify(framed))
+
+      // ② 새로 열어도 남는다 · 좁은 화면 · 어두운 테마
+      check('새로 연다', await openSb())
+      const reopened = await frameOf(sb.p1)
+      check('★ 새로 열어도 원본이 남는다 — 틀 · 표지 · 두 블록이 그 안에', reopened !== null && reopened.badge === '원본' && reopened.id === framed?.id
+        && (await evaluate(`document.querySelector('[data-block-id="${sb.p2}"]')?.closest('${FRAME}')?.dataset.blockId === ${JSON.stringify(framed?.id ?? '')}`)), JSON.stringify(reopened))
+      await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+      await sleep(300)
+      const narrow = await frameOf(sb.p1)
+      await send('Emulation.clearDeviceMetricsOverride')
+      check('좁은 화면(390px) — 틀이 화면 안이고 가로로 넘치지 않는다', narrow !== null && narrow.right <= narrow.width && narrow.overflow <= 0, JSON.stringify(narrow))
+      const theme = await evaluate(`document.documentElement.dataset.theme ?? ''`)
+      await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+      await sleep(200)
+      const dark = await frameOf(sb.p1)
+      await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+      await sleep(200)
+      const light = await frameOf(sb.p1)
+      await send('Emulation.setEmulatedMedia', { features: [] })
+      check('어두운 테마 — 틀의 색이 바뀐다(테마가 시스템을 따를 때)', theme !== 'system' || (dark !== null && light !== null && dark.color !== light.color), JSON.stringify({ theme, dark: dark?.color, light: light?.color }))
+
+      // ③ 끌어 넣기 — 다른 원본 · 하위 페이지는 원본 안으로 들어가지 않는다(SY5). 화면에 중첩이 서지 않고 서버도 그대로다.
+      const p2Line = await line(sb.p2)
+      await drag(sb.other, p2Line.x + 10, p2Line.y + p2Line.h * 0.75)
+      await sleep(1200)
+      const [keptSynced, keptSyncedGot] = await serverIs(wrappedShape, 4)
+      check('★ 다른 동기화 블록을 원본 안으로 끌어 넣지 못한다 — 화면 · 서버가 그대로', keptSynced && (await evaluate(`document.querySelectorAll('${NESTED}').length === 0`)), keptSyncedGot)
+      const p2Again = await line(sb.p2)
+      await drag(sub, p2Again.x + 10, p2Again.y + p2Again.h * 0.75)
+      await sleep(1200)
+      const [keptPage, keptPageGot] = await serverIs(wrappedShape, 4)
+      check('★ 하위 페이지를 원본 안으로 끌어 넣지 못한다 — 화면 · 서버가 그대로', keptPage && (await evaluate(`!document.querySelector('[data-block-id="${sub}"]')?.closest('${FRAME}')`)), keptPageGot)
+
+      // ④ 원본 안의 `/동기화` — 메뉴가 서지 않는다(그 자리에 둘 수 없다) · 원본 안에 동기화 블록을 붙이면 내용만
+      check('전제 — 둘째 줄에 캐럿', await caretInto(sb.p2))
+      await key('End')
+      await key('Enter')
+      await typeText('/')
+      const slashOpened = await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 2000)
+      await typeText('동기화')
+      await sleep(300)
+      const slashInside = await evaluate(`[...document.querySelectorAll('[role="listbox"][aria-label="블록 삽입"] [role="option"]')].map((o) => o.textContent)`)
+      for (let i = 0; i < 4; i += 1) await key('Backspace')
+      check('★ 원본 안에서 `/동기화` — 동기화 블록 명령이 서지 않는다(`/` 로 메뉴는 열린다)', slashOpened && !slashInside.some((t) => t.startsWith('동기화 블록')), JSON.stringify(slashInside))
+      const pasted = [{ id: randomUUID(), type: 'synced_block', title: [], properties: {}, format: {}, children: [para(randomUUID(), '붙인 글')] }]
+      await evaluate(`(() => {
+        const dt = new DataTransfer()
+        dt.setData('application/x-notion-clone-blocks+json', ${JSON.stringify(JSON.stringify({ version: 1, blocks: pasted }))})
+        dt.setData('text/plain', '붙인 글')
+        document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+      })()`)
+      const pastedShape = [['동기화', ['감쌀 첫째', '감쌀 둘째', '붙인 글']], ['동기화', ['다른 원본']], '끝 줄', '하위']
+      const [pastedOk, pastedGot] = await serverIs(pastedShape)
+      check('★ 원본 안에 동기화 블록을 붙이면 내용만 들어간다 — 원본 안에 원본이 서지 않는다 · 알린다', pastedOk && (await evaluate(`document.querySelectorAll('${NESTED}').length === 0`))
+        && (await waitFor(`[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('내용만 붙여넣었습니다'))`, 2000)), pastedGot)
+
+      // ⑤ 대조 — 보통 블록은 끌어 넣어진다(끌기가 돈다 · ③ 의 거부는 SY5 때문이다)
+      const lastInside = await evaluate(`(() => {
+        const rows = [...document.querySelector('[data-block-id="${framed?.id ?? ''}"]')?.querySelectorAll(':scope > .blk-group > .blk-container') ?? []]
+        const r = rows.at(-1)?.firstElementChild?.getBoundingClientRect()
+        return r ? { x: r.x, y: r.y, h: r.height } : null
+      })()`)
+      if (lastInside !== null) await drag(sb.end, lastInside.x + 10, lastInside.y + lastInside.h * 0.75)
+      const [movedIn, movedInGot] = await serverIs([['동기화', ['감쌀 첫째', '감쌀 둘째', '붙인 글', '끝 줄']], ['동기화', ['다른 원본']], '하위'])
+      check('대조 — 보통 블록은 원본 안으로 끌어 넣어진다', lastInside !== null && movedIn, movedInGot)
+
+      // ⑥ 사본 없는 원본의 동기화 해제 — 머리의 단추 · 보통 블록이 제자리에 남는다
+      await clickSelector(`[data-block-id="${framed?.id ?? ''}"] > .blk-synced_block .blk-synced-unsync`)
+      const [unsynced, unsyncedGot] = await serverIs(['감쌀 첫째', '감쌀 둘째', '붙인 글', '끝 줄', ['동기화', ['다른 원본']], '하위'])
+      check('★ 동기화 해제 — 껍데기만 벗고 블록이 제자리에(서버) · 틀이 하나 남는다(다른 원본)', unsynced && (await evaluate(`document.querySelectorAll('.blk-editor ${FRAME}').length === 1`)), unsyncedGot)
+      await sleep(800)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

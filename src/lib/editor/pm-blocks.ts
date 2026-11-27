@@ -14,6 +14,7 @@
 
 import type { Node as PmNode, ResolvedPos } from '@tiptap/pm/model'
 
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { isRefType, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import type { RuleBlock } from './block-rules.ts'
 import { inlineToRuns } from './pm-adapter.ts'
@@ -119,6 +120,8 @@ export function canNestUnder(info: ContainerInfo): boolean {
   if (specOf(type).layout) return false
   // 표(Phase 2 1d) — 행은 내용 노드 안에 산다. 다른 블록이 표의 자식이 될 수 없다.
   if (specOf(type).childrenInContent) return false
+  // 동기화 블록의 사본(SB-1 · SY4) — 내용은 원본에 있다. 자식을 받지 않는다.
+  if (type === SYNCED_BLOCK_TYPE && isSyncedCopyProps(info.contentNode.attrs.props)) return false
   return specOf(type).canHaveChildren
 }
 

@@ -1458,6 +1458,43 @@ span.blk-equation {
   }
 }
 
+/*
+ * 동기화 블록(SB-1 · F-01-11 · 정본 [보강 SB-0]) — 틀은 **컨테이너**에 그린다(내용 = 자식 그룹이 틀 안 · AI 블록과 같은 짜임). 자식은 들이지
+ * 않는다(틀이 곧 경계다 — 노션도 내용이 틀의 글 칸에 선다). 머리 줄(노드 뷰)은 `원본` 표지와 해제 단추 — 좁은 화면에서는 줄을 바꿔 넘치지
+ * 않는다. 붉은 기가 도는 테두리는 노션의 동기화 블록 테두리를 따랐다. 읽기 전용이면 해제 단추를 숨긴다.
+ */
+.blk-editor .blk-container:has(> .blk-synced_block) {
+  margin: 4px 0;
+  border: 2px solid rgba(235, 87, 87, 0.42);
+  border-radius: 6px;
+  padding: 2px 8px 4px;
+  min-width: 0;
+}
+.blk-editor .blk-container:has(> .blk-synced_block) > .blk-group { margin-left: 0; }
+.blk-synced_block {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; padding: 0 2px;
+  font-size: 0.75rem; line-height: 20px; color: #9b2c2c; user-select: none;
+}
+.blk-synced_block .blk-synced-badge {
+  display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; background: rgba(235, 87, 87, 0.1); padding: 0 8px; font-weight: 600;
+}
+.blk-synced_block .blk-synced-glyph { width: 12px; height: 12px; flex: none; }
+.blk-synced_block .blk-synced-unsync {
+  margin-left: auto; border: 0; border-radius: 4px; background: none; padding: 0 6px; color: #6b7280; font: inherit; cursor: pointer;
+}
+.blk-synced_block .blk-synced-unsync:hover { background: rgba(55, 53, 47, 0.06); color: #37352f; }
+.blk-synced_block .blk-synced-unsync:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
+.blk-editor[contenteditable='false'] .blk-synced-unsync, .blk-synced_block [hidden] { display: none; }
+:root {
+  @variant dark {
+    .blk-editor .blk-container:has(> .blk-synced_block) { border-color: rgba(255, 123, 114, 0.45); }
+    .blk-synced_block { color: #fca5a5; }
+    .blk-synced_block .blk-synced-badge { background: rgba(255, 123, 114, 0.14); }
+    .blk-synced_block .blk-synced-unsync { color: #a3a3a3; }
+    .blk-synced_block .blk-synced-unsync:hover { background: rgba(255, 255, 255, 0.055); color: #e5e5e5; }
+  }
+}
+
 .blk-editor .blk-code-caption {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
