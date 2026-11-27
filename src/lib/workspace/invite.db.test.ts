@@ -231,11 +231,13 @@ describe('acceptInvite — 실패 경로', () => {
     })
     assert.ok(invited.ok)
 
-    // 그 주소를 **미검증** 별칭으로 등록한 사용자
+    // 그 주소를 별칭으로 **확인하는 중인**(코드를 아직 맞히지 않은) 사용자 — 대기는 otp_challenge 에만 있다(AC-0 ① · 미검증
+    // 행은 user_email 에 들지 않는다 — CHECK)
     const other = await makeUser()
     await pool.query(
-      `INSERT INTO user_email (id, user_id, email, added_at) VALUES ($1,$2,$3, now())`,
-      [randomUUID(), other.userId, target],
+      `INSERT INTO otp_challenge (id, purpose, email, user_id, code_hash, expires_at, created_at)
+       VALUES ($1, 'email_verify', $2, $3, 'x', now() + interval '10 minutes', now())`,
+      [randomUUID(), target, other.userId],
     )
 
     const r = await inv.acceptInvite(invited.token, other.userId)

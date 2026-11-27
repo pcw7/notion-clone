@@ -34,6 +34,10 @@ const SECURITY_CHANGE: Readonly<Record<string, string>> = {
   mfa_disabled: '2단계 인증을 껐다',
   mfa_method_removed: '2단계 인증 수단을 뺐다',
   mfa_backup_codes_regenerated: '백업 코드를 새로 만들었다',
+  // 계정의 이메일(AC-1 · 정본 §3.2 [보강 AC-0] ⑩) — 주소는 싣지 않는다
+  email_added: '이메일 주소를 더했다',
+  email_removed: '이메일 주소를 뺐다',
+  email_primary_changed: '대표 이메일 주소를 바꿨다',
   // 공개 API 의 개인 토큰(API-1) — 이 워크스페이스의 범위로 쌓는다 · 이름을 함께 보인다
   api_token_created: 'API 토큰을 만들었다',
   api_token_revoked: 'API 토큰을 폐기했다',

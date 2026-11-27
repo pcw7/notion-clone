@@ -144,7 +144,8 @@ describe('⑤ 패널', () => {
     if (skipReason) return t.skip(skipReason)
     const admin = await joinAs(fx.workspaceId, await createUser('설정의 멤버 관리자'), 'membership_admin')
     const ids = (who: Actor) => visiblePanels(who.ctx).map((panel) => panel.id)
-    const mine = ['password', 'mfa', 'account-delete', 'accessibility', 'offline', 'api-tokens']
+    // 이메일 주소(AC-1) — 누구나 · 보안 절의 맨 위
+    const mine = ['emails', 'password', 'mfa', 'account-delete', 'accessibility', 'offline', 'api-tokens']
     // AI(AI-1) — 게스트가 아닌 사람 모두(스위치는 패널이 소유자에게만 세운다)
     assert.deepEqual(ids(fx.owner), [...mine, 'members', 'invites', 'guests', 'groups', 'export', 'leave', 'delete', 'plan', 'emoji', 'site', 'ai', 'audit'])
     assert.deepEqual(ids(admin), [...mine, 'members', 'invites', 'guests', 'groups', 'leave', 'plan', 'emoji', 'ai'])

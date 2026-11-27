@@ -143,28 +143,29 @@ describe('requestLoginCode — 계정 열거 방지 (F-14-02)', () => {
     assert.equal(rows.length, 1)
   })
 
-  test('미인증 이메일은 코드를 받지 못한다 — 이미 UNIQUE 슬롯을 차지하고 있다', async (t) => {
+  test('★ 남의 확인 대기는 그 주소를 선점하지 못한다 — 메일함의 주인은 코드를 받아 가입한다 (AC-0 ①)', async (t) => {
     if (!available) return t.skip(skipReason)
 
-    // user_email.email 은 전역 UNIQUE 다. 미인증 별칭도 그 슬롯을 이미 차지하고
-    // 있으므로, 신규 가입으로 오인해 코드를 보내면 검증 시점에 제약 위반으로
-    // 터진다. F-14-01 엣지 케이스: "이미 다른 계정의 secondary → 가입 거부".
+    // 예전에는 미검증 별칭이 user_email 의 전역 UNIQUE 자리를 차지해, 아무 계정이나 남의 주소를 걸어 두면 그 주소로는 가입도
+    // 로그인도 못 했다. 이제 미검증 주소는 user_email 에 들지 않고(CHECK) 대기는 otp_challenge(email_verify) 에만 있다.
     const email = freshEmail()
-    const userId = randomUUID()
-    await pool.query(
-      `INSERT INTO "user" (id, name, created_at) VALUES ($1,'미인증', now())`, [userId],
+    const squatter = await createVerifiedUser(freshEmail())
+    await assert.rejects(
+      pool.query(`INSERT INTO user_email (id, user_id, email, added_at) VALUES ($1,$2,$3, now())`, [randomUUID(), squatter, email]),
+      (e: { code?: string }) => e.code === '23514',
+      '미검증 행은 DB 가 받지 않는다(user_email_verified)',
     )
     await pool.query(
-      `INSERT INTO user_email (id, user_id, email, added_at) VALUES ($1,$2,$3, now())`,
-      [randomUUID(), userId, email],
+      `INSERT INTO otp_challenge (id, purpose, email, user_id, code_hash, expires_at, created_at)
+       VALUES ($1, 'email_verify', $2, $3, 'x', now() + interval '10 minutes', now())`,
+      [randomUUID(), email, squatter],
     )
 
     const result = await loginCode.requestLoginCode(email, freshCtx())
-    assert.equal(result.devCode, undefined, 'verified_at 이 NULL 이면 로그인도 가입도 불가여야 한다')
-    assert.equal(result.rateLimited, false, '거부 사유가 응답으로 드러나면 안 된다')
-
-    const rows = await pool.query(`SELECT id FROM otp_challenge WHERE email = $1`, [email])
-    assert.equal(rows.length, 0)
+    assert.ok(result.devCode, '남이 걸어 둔 대기가 있어도 그 주소의 주인은 코드를 받는다')
+    const verified = await loginCode.verifyLoginCode(email, result.devCode!, freshCtx())
+    assert.ok(verified.ok)
+    assert.equal(verified.ok && verified.userId, null, '계정이 없는 주소 — 가입 경로다')
   })
 
   test('정지된 계정은 코드를 받지 못한다', async (t) => {

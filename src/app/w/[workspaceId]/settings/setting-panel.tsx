@@ -11,6 +11,7 @@ import { aiSettingsSummary } from '@/lib/ai/usage'
 import { aiInstructionsViewFor } from '@/lib/ai/chat-store'
 import { aiModelSettingsFor } from '@/lib/ai/model-setting'
 import { canCreateApiToken, listApiTokens } from '@/lib/api/api-token'
+import { emailsStatus } from '@/lib/auth/account-email'
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import { listWorkspaceAudit } from '@/lib/audit/audit'
@@ -36,6 +37,7 @@ import {
   ApiTokenPanel,
   AuditPanel,
   DeleteWorkspacePanel,
+  EmailsPanel,
   EmojiPanel,
   ExportButton,
   GroupPanel,
@@ -56,6 +58,11 @@ const NOTE = 'mt-1 text-xs text-neutral-500'
 
 export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: SessionContext }) {
   switch (id) {
+    case 'emails': {
+      // 이메일 주소(AC-1) — 주소 · 확인 대기 · 재인증이 필요한가는 서버가 판정한다.
+      const status = await emailsStatus(ctx)
+      return <EmailsPanel workspaceId={ctx.workspaceId} {...status} />
+    }
     case 'password': {
       // 자기 계정의 비밀번호(8i-1b) — 있는가 · 지금 비밀번호를 묻는가는 서버가 판정한다.
       const status = await passwordStatus(ctx)

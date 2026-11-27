@@ -12001,6 +12001,135 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('계정 — 이메일 여러 개 (AC-1 · F-14-07)')) { try {
+      // 정본 §3.2 [보강 AC-0] — 라우트를 실제 서버로 본 뒤(코드는 콘솔 메일러에서 읽는다) 설정 → 내 계정 → 보안의 이메일 패널을 브라우저로.
+      // 열거 방지(다른 계정의 주소도 같은 응답) · 맞혀야 별칭 · 별칭으로 로그인하면 같은 계정 · 오래된 세션은 재인증 · 대표로(옛 대표 주소로
+      // 알림) · 화면에서 더하기 · 빼기 · 폰 폭 · 어두운 테마. 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 자기 데이터를 스스로.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const who = await joinAs(workspaceId, await createUser(`이메일의 사람 ${stamp}`), 'member')
+      const owner = await createUser(`주소의 주인 ${stamp}`)
+      const asWho = { ...json, cookie: `nc_session=${who.token}` }
+      const emailsUrl = `${BASE}/api/workspaces/${workspaceId}/account/emails`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const post = (url, body) => fetch(url, { method: 'POST', headers: asWho, body: JSON.stringify(body) })
+      const noticeFor = (to, kind) => {
+        const at = serverOutput.lastIndexOf(`받는 사람 : ${to}`)
+        return at >= 0 && serverOutput.slice(at, at + 400).includes(`종류      : ${kind}`)
+      }
+      const alias = `e2e-alias-${stamp}@example.com`
+
+      const taken = await readRes(await post(emailsUrl, { email: owner.email }))
+      const free = await readRes(await post(emailsUrl, { email: alias }))
+      check('★ 더하기 — 다른 계정의 주소와 비어 있는 주소가 같은 응답(200 { ok: true }) · 코드는 응답에 없다 · 주인에게만 안내',
+        taken.status === 200 && free.status === 200 && JSON.stringify(taken.body) === '{"ok":true}' && JSON.stringify(free.body) === '{"ok":true}'
+          && noticeFor(owner.email, 'email_taken'),
+        JSON.stringify([taken, free]))
+
+      const code = await loginCodeFor(alias)
+      const wrong = await readRes(await post(`${emailsUrl}/verify`, { email: alias, code: code === '000000' ? '111111' : '000000' }))
+      const verified = await readRes(await post(`${emailsUrl}/verify`, { email: alias, code }))
+      const guess = await readRes(await post(`${emailsUrl}/verify`, { email: owner.email, code }))
+      check('★ 코드를 맞혀야 별칭이 된다 — 틀리면 400 invalid · 다른 계정의 주소는 어떤 코드도 맞지 않는다 · 대표 주소로 알림',
+        wrong.status === 400 && wrong.body?.error === 'invalid' && verified.status === 200 && verified.body?.email?.isPrimary === false
+          && guess.status === 400 && noticeFor(who.email, 'email_added'),
+        JSON.stringify([wrong, verified, guess]))
+      const aliasId = verified.body?.email?.id
+
+      await fetch(`${BASE}/api/auth/request-code`, { method: 'POST', headers: json, body: JSON.stringify({ email: alias }) })
+      const aliasLogin = await fetch(`${BASE}/api/auth/verify-code`, { method: 'POST', headers: json, body: JSON.stringify({ email: alias, code: await loginCodeFor(alias) }) })
+      const loggedAs = (await dbQuery(`SELECT user_id FROM auth_event WHERE email = $1 AND kind = 'login_succeeded' ORDER BY at DESC LIMIT 1`, [alias]))[0]?.user_id
+      check('★ 별칭으로 로그인 코드를 받아 들어오면 같은 계정이다(새 계정이 생기지 않는다)',
+        aliasLogin.status === 200 && loggedAs === who.userId, JSON.stringify([aliasLogin.status, loggedAs, who.userId]))
+
+      // 오래된 세션(비밀번호 없음) — 셋 다 재인증을 요구하고 아무것도 바꾸지 않는다
+      await dbQuery(`UPDATE user_session SET created_at = now() - interval '1 hour' WHERE user_id = $1`, [who.userId])
+      const stale = [
+        await readRes(await post(`${emailsUrl}/${aliasId}/primary`, {})),
+        await readRes(await fetch(`${emailsUrl}/${aliasId}`, { method: 'DELETE', headers: asWho, body: '{}' })),
+        await readRes(await post(emailsUrl, { email: `e2e-stale-${stamp}@example.com` })),
+      ]
+      const rowsNow = await dbQuery(`SELECT email::text AS email, is_primary FROM user_email WHERE user_id = $1 ORDER BY added_at`, [who.userId])
+      check('★ 오래된 세션 — 대표로 · 빼기 · 더하기 모두 403 reauth_required · 주소는 그대로',
+        stale.every((r) => r.status === 403 && r.body?.error === 'reauth_required') && rowsNow.length === 2 && rowsNow[0]?.is_primary === true,
+        JSON.stringify([stale, rowsNow]))
+      await dbQuery(`UPDATE user_session SET created_at = now() WHERE id = $1`, [who.ctx.sessionId])
+
+      // ── 화면 ──
+      const SECURITY = `${BASE}/w/${workspaceId}/settings?s=account.security`
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const rowSel = (email) => `[data-testid="email-row"][data-email=${JSON.stringify(email)}]`
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const statusText = () => evaluate(`document.querySelector('[data-testid="emails-status"]')?.textContent ?? null`)
+      const typeInto = async (sel, text) => {
+        await clickSelector(sel)
+        await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
+        await typeText(text)
+      }
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 바라는 것이 될 때까지 다시 누른다
+      const clickUntil = async (button, done, wait = 4000) => {
+        for (let i = 0; i < 5; i += 1) {
+          if (await evaluate(done)) return true
+          if (await has(button)) await clickSelector(button)
+          if (await waitFor(done, wait)) return true
+        }
+        return false
+      }
+      const uiAddress = `e2e-ui-${stamp}@example.com`
+      try {
+        await browseAs(who.token)
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector('[data-testid="emails-panel"]')`, 15000)
+        check('설정 → 보안 — 이메일 패널에 대표와 별칭 두 줄 · 대표 표지는 대표 줄에만 · 방금 로그인한 세션이라 재인증 칸이 없다',
+          (await evaluate(`document.querySelectorAll('[data-testid="email-row"]').length`)) === 2
+            && (await has(`${rowSel(who.email)}[data-primary="true"] [data-testid="email-primary-badge"]`))
+            && !(await has(`${rowSel(alias)} [data-testid="email-primary-badge"]`))
+            && !(await has('[data-testid="email-current-password"]')) && !(await has('[data-testid="email-reauth-note"]')),
+          String(await evaluate(`document.querySelector('[data-testid="emails-panel"]')?.innerText ?? null`)))
+
+        const promoted = await clickUntil(`${rowSel(alias)} [data-testid="email-make-primary"]`, `!!document.querySelector(${JSON.stringify(`${rowSel(alias)}[data-primary="true"]`)})`)
+        check('★ 대표로 — 표지가 별칭으로 옮겨 가고 옛 대표 주소로 알림이 간다',
+          promoted && noticeFor(who.email, 'email_primary_changed') && String(await statusText()).includes('옛 대표 주소로 알림'),
+          String(await statusText()))
+
+        await typeInto('[data-testid="email-add-input"]', uiAddress)
+        const pendingSel = `[data-testid="email-pending"][data-email=${JSON.stringify(uiAddress)}]`
+        const asked = await clickUntil('[data-testid="email-add-submit"]', `!!document.querySelector(${JSON.stringify(pendingSel)})`, 6000)
+        const uiCode = await loginCodeFor(uiAddress)
+        await typeInto(`${pendingSel} [data-testid="email-code"]`, uiCode)
+        const added = await clickUntil(`${pendingSel} [data-testid="email-verify"]`, `!!document.querySelector(${JSON.stringify(rowSel(uiAddress))})`, 6000)
+        check('★ 화면에서 더하기 — 확인 대기 줄에 코드 칸이 서고, 맞히면 주소 줄이 된다',
+          asked && added && !(await has(pendingSel)), String(await statusText()))
+
+        await clickSelector(`${rowSel(who.email)} [data-testid="email-remove"]`)
+        const confirmed = await waitFor(`!!document.querySelector(${JSON.stringify(`${rowSel(who.email)} [data-testid="email-remove-confirm"]`)})`, 4000)
+        const removed = confirmed && (await clickUntil(`${rowSel(who.email)} [data-testid="email-remove-confirm"]`, `!document.querySelector(${JSON.stringify(rowSel(who.email))})`, 6000))
+        check('★ 빼기 — 한 번 더 묻고("다른 기기에서 로그아웃") 빼면 줄이 사라진다 · 별칭으로 들어온 다른 세션이 폐기된다',
+          removed && (await dbQuery(`SELECT count(*)::int AS n FROM user_session WHERE user_id = $1 AND revoked_reason = 'email_removed'`, [who.userId]))[0]?.n >= 1,
+          String(await statusText()))
+
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector('[data-testid="emails-panel"]')`, 15000)
+        check('폰 폭(390) — 이메일 패널이 칸 밖으로 넘치지 않는다',
+          await evaluate(`(() => { const p = document.querySelector('[data-testid="emails-panel"]'); return !!p && p.scrollWidth <= p.clientWidth + 1 })()`),
+          String(await evaluate(`(() => { const p = document.querySelector('[data-testid="emails-panel"]'); return p ? p.scrollWidth + ' / ' + p.clientWidth : null })()`)))
+        await send('Emulation.clearDeviceMetricsOverride')
+
+        const inputBg = () => evaluate(`(() => { const el = document.querySelector('[data-testid="email-add-input"]'); return el ? getComputedStyle(el).backgroundColor : null })()`)
+        const lightBg = await inputBg()
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector('[data-testid="email-add-input"]')`, 15000)
+        const darkBg = await inputBg()
+        check('어두운 테마 — 입력 칸의 바탕이 밝을 때와 다르다', lightBg !== null && darkBg !== null && lightBg !== darkBg, JSON.stringify([lightBg, darkBg]))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+        await send('Emulation.setEmulatedMedia', { features: [] }).catch(() => {})
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('워크스페이스 스위처 (8j-1 · F-14-09)')) { try {
       // 사이드바 머리의 이름 → 스위처(이 계정의 이메일 · 워크스페이스(만든 순서) · 지금 것에 ✓ · 역할) → 고르면 그리로 · Ctrl/Cmd + Shift + 숫자 ·
       // Esc · 사이드바의 "홈". 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 그 멤버가 둘째 워크스페이스를 만든다(소유자).
