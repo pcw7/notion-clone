@@ -63,6 +63,7 @@ import {
 } from '@tiptap/pm/state'
 import type { Mappable } from '@tiptap/pm/transform'
 
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY } from '../block/synced-block.ts'
 import type { BlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
@@ -603,8 +604,16 @@ export function turnSelectionIntoCommand(type: BlockType, deps: CommandDeps): Co
   }
 }
 
-/** 컨테이너 subtree 를 복제하며 모든 `blockId` 를 새로 발급한다. */
+/**
+ * 컨테이너 subtree 를 복제하며 모든 `blockId` 를 새로 발급한다. 동기화 블록의 원본 X 는 X 를 가리키는 사본이 된다(자식은 복사하지 않는다 —
+ * 정본 [보강 SB-0] ⑭ [SB-4 고침] · SY1).
+ */
 function withFreshIds(node: PmNode, newId: () => string): PmNode {
+  const head = node.type.name === CONTAINER ? node.firstChild : null
+  if (head?.type.name === SYNCED_BLOCK_TYPE && !isSyncedCopyProps(head.attrs.props)) {
+    const props = { [SYNCED_FROM_KEY]: String(node.attrs.blockId ?? '').toLowerCase() }
+    return node.type.create({ ...node.attrs, blockId: newId() }, head.type.create({ ...head.attrs, props }), node.marks)
+  }
   const name = node.type.name
   if (name !== CONTAINER && name !== GROUP) return node
 

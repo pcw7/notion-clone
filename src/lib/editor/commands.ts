@@ -84,6 +84,8 @@ export type CommandDeps = {
    * 전달하는 통로라 `reason` 이 병합 어휘로 닫혀 있다.
    */
   onRefused?: (detail: string) => void
+  /** 오류가 아닌 짧은 안내 — 잘라낸 원본의 다른 페이지 사본(SB-4 · ⑪ⓒ). */
+  onNotice?: (message: string) => void
   /** 테스트에서 결정적 id 를 쓰기 위한 구멍. */
   newId?: () => string
   /**

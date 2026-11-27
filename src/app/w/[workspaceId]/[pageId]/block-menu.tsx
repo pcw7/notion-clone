@@ -49,7 +49,7 @@ import { editTableCommand } from '@/lib/editor/table'
 import { ownHostsOf } from '@/lib/block/embed-origin'
 import { swapBookmarkEmbedCommand } from '@/lib/editor/file-block-commands'
 import { rememberColor } from '@/lib/editor/last-color'
-import { unsyncSyncedBlockCommand, wrapInSyncedBlockCommand } from '@/lib/editor/synced-block'
+import { syncedOriginalsIn, wrapInSyncedBlockCommand } from '@/lib/editor/synced-block'
 
 export type BlockMenuProps = {
   view: EditorView
@@ -119,9 +119,24 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
       case 'duplicate':
         duplicateBlockSelectionCommand(deps)(view.state, dispatch)
         break
-      case 'delete':
-        deleteBlockSelectionCommand(deps)(view.state, dispatch)
+      case 'delete': {
+        // 사본이 있는 원본을 지우면 묻는다(⑬ · SB-4) — 고른 블록(서브트리)에 원본이 있을 때만 사본 수를 묻는다
+        const sel = view.state.selection
+        const originals = isBlockSelection(sel) ? syncedOriginalsIn(view.state.doc, sel.rootPositions) : []
+        if (originals.length === 0 || !isBlockSelection(sel)) {
+          deleteBlockSelectionCommand(deps)(view.state, dispatch)
+          break
+        }
+        const picked = sel.blockIds.join()
+        void import('@/lib/editor/synced-copy-view-impl')
+          .then((m) => m.confirmDeleteOriginals(workspaceId, originals))
+          .then((ok) => {
+            const now = view.state.selection
+            // 묻는 사이 선택이 바뀌었으면 지우지 않는다
+            if (ok && !view.isDestroyed && isBlockSelection(now) && now.blockIds.join() === picked) deleteBlockSelectionCommand(deps)(view.state, view.dispatch.bind(view))
+          })
         break
+      }
       case 'code_wrap':
         setCodeWrapSelectionCommand(action.wrap)(view.state, dispatch)
         break
@@ -131,12 +146,12 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
       case 'embed_swap':
         swapBookmarkEmbedCommand(action.blockId, ownHostsOf([window.location.origin]))(view.state, dispatch)
         break
-      // 동기화 블록(SB-1) — 감싸기 · 사본 없는 원본의 해제
+      // 동기화 블록(SB-1 · SB-4) — 감싸기 · 해제는 그 블록의 머리 단추가 한다(원본은 모두 해제 ⑫ⓑ · 사본은 중첩 편집기의 내용으로 ⑫ⓐ)
       case 'synced_wrap':
         wrapInSyncedBlockCommand(deps.newId)(view.state, dispatch)
         break
       case 'synced_unsync':
-        unsyncSyncedBlockCommand(action.blockId, deps.newId)(view.state, dispatch)
+        view.dom.querySelector<HTMLButtonElement>(`[data-block-id="${action.blockId}"] > .blk-synced_block .blk-synced-unsync`)?.click()
         break
       case 'code_language':
       case 'code_caption': {

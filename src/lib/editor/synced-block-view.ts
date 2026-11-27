@@ -7,7 +7,7 @@
  *     span.blk-synced-badge     ← 동기화 그림 + `원본`(사본이면 `사본`)
  *     span.blk-synced-places    ← "다른 N개 페이지에서 편집 중"(SB-3 · ㉑ — 지연 로드한 구현이 채운다 · 없으면 비었다)
  *     button.blk-synced-copy-button ← "복사"(원본 — 이 원본의 사본 하나를 클립보드에 · ⑪ⓑ 시나리오 2)
- *     button.blk-synced-unsync  ← "동기화 해제"(원본 · 고칠 수 있을 때)
+ *     button.blk-synced-unsync  ← "동기화 해제"(고칠 수 있을 때 · 원본은 모두 해제 ⑫ⓑ · 사본은 내용을 그렸을 때 그 사본만 ⑫ⓐ — SB-4)
  *     div.blk-synced-copy[data-copy-state]  ← 사본만 — 원본 페이지의 내용(중첩 편집기) 또는 자리(불러오는 중 · 권한 없음 · 휴지통 · 삭제됨)
  *
  *   · 틀(테두리)은 **컨테이너**에 그린다 — 원본의 내용(= 자식 그룹)이 틀 안에 선다(`editor.css` · AI 블록 · 콜아웃과 같은 짜임)
@@ -26,7 +26,7 @@ import { BLOCKS_MIME, syncedCopyClipboard } from './block-clipboard.ts'
 import { BlockSelection, deleteBlockSelectionCommand } from './block-selection.ts'
 import type { EditorDeps } from './create-editor.ts'
 import type { createNodeViews, NodeViewDeps } from './node-views.ts'
-import { unsyncSyncedBlockCommand } from './synced-block.ts'
+import { unsyncSyncedBlockCommand, unsyncSyncedCopyCommand } from './synced-block.ts'
 import type { copyKeyHandler, createCopyEditorState, watchSyncedGroup } from './synced-copy-binding.ts'
 
 /**
@@ -76,12 +76,17 @@ export type CopyNodeViews = ReturnType<typeof createNodeViews>
 export type SyncedBlockViewDeps = {
   /** 지금의 맥락 — 없으면(읽기 전용 미리보기 · 검사) 사본은 내용 없이 자리만 그린다. */
   readonly syncedCopyHost?: () => SyncedCopyHost | null
+  /** 해제의 결과 · 막은 까닭(SB-4) — 편집기의 알림 줄. */
+  readonly onNotice?: (message: string) => void
+  readonly onRefused?: (detail: string) => void
 }
 
 /** 지연 로드한 사본의 내용 — 화면에 들고 나갈 때 알린다. */
 export type MountedSyncedCopy = {
   setVisible(visible: boolean): void
   stopEvent(event: Event): boolean
+  /** 지금 그린 X 의 내용(중첩 편집기의 블록들) — 그리지 않았으면(자리) null. 사본 하나의 해제가 쓴다(⑫ⓐ · SB-4). */
+  content(): PmNode[] | null
   destroy(): void
 }
 
@@ -193,24 +198,38 @@ export function syncedBlockNodeView(
     setTimeout(() => (copyButton.textContent = '복사'), 1500)
   })
 
+  const copy = isSyncedCopyProps(node.attrs.props)
   const unsync = document.createElement('button')
   unsync.type = 'button'
   unsync.className = 'blk-synced-unsync'
   unsync.textContent = '동기화 해제'
+  unsync.title = copy ? '이 사본을 지금 내용의 보통 블록으로 바꿉니다' : '모든 사본을 끊고 이 블록을 보통 블록으로 바꿉니다'
   unsync.addEventListener('mousedown', (event) => event.preventDefault())
+  // 블록 메뉴의 "동기화 해제" 도 이 단추를 누른다(SB-4)
   unsync.addEventListener('click', () => {
     // 읽기 전용이면 하지 않는다 — 노드 뷰는 편집 가능 여부가 바뀌어도 다시 만들어지지 않으므로 누르는 순간에 묻는다
     if (!view.editable) return
     const id = containerIdAt(view, getPos)
-    if (id !== '') unsyncSyncedBlockCommand(id)(view.state, view.dispatch.bind(view))
+    if (id === '') return
+    const dispatch = view.dispatch.bind(view)
+    const local = (): void => void unsyncSyncedBlockCommand(id)(view.state, dispatch)
+    const h = deps.syncedCopyHost?.() ?? null
+    // 제안 모드에서는 하지 않는다 — 서버 명령은 제안이 되지 않는다 · 사본은 제안 모드에서 고칠 수 없다(SY7)
+    if (h?.suggesting() === true) return deps.onRefused?.('제안 모드에서는 동기화를 해제할 수 없습니다.')
+    // 사본 하나(⑫ⓐ) — 내용을 그렸을 때만(A 를 볼 수 있다)
+    if (copy) {
+      if (!unsyncSyncedCopyCommand(id, mounted?.content() ?? null)(view.state, dispatch)) deps.onRefused?.('원본의 내용이 보일 때만 동기화를 해제할 수 있습니다.')
+      return
+    }
+    // 원본 — 사본이 있으면 서버가 끊고(⑫ⓑ) 없으면 여기서 벗긴다(⑫ⓒ)
+    if (h === null) local()
+    else void import('./synced-copy-view-impl.ts').then((impl) => impl.unsyncOriginal(h.workspaceId, h.pageId, id, local, deps))
   })
 
-  const copy = isSyncedCopyProps(node.attrs.props)
   dom.dataset.synced = copy ? 'copy' : 'original'
   label.textContent = copy ? '사본' : '원본'
   badge.title = copy ? '동기화 블록의 사본 — 원본 페이지의 내용을 보여 줍니다' : '동기화 블록의 원본 — 여기서 고친 내용이 사본에도 보입니다'
   copyButton.hidden = copy
-  unsync.hidden = copy
   // "다른 N개 페이지에서 편집 중"(SB-3 · ㉑) — 지연 로드한 구현이 채운다
   const places = document.createElement('span')
   places.className = 'blk-synced-places'

@@ -34,10 +34,18 @@
  * 사본의 블록은 새 행이다. 원본의 id 를 물려주면 `block.id` 가 부딪힌다. 다만 **하위 페이지 참조만은 예외**다 — 그 id 는
  * 블록 id 이기 전에 **그 페이지의 id** 이므로, 새로 만든 사본 페이지의 id 를 받아야 한다. 복제하지 않은 하위 페이지의
  * 참조(볼 수 없어서 · 상한에 걸려서)는 **뺀다**: 사본이 남의 페이지를 자기 본문에 매달 수는 없다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 동기화 블록은 모두 사본이 된다 (SB-4 · 정본 [보강 SB-0] ⑭)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 원본 X → X 를 가리키는 사본(자식은 복사하지 않는다 — 내용은 X 하나에 · SY1) · 사본 → 같은 원본의 사본. 페이지 복제 · 템플릿 · 행
+ * 템플릿 · 데이터베이스 복제가 모두 이 함수를 지난다 — 템플릿에 둔 원본이 새 페이지마다 사본으로 이어진다.
  */
 
 import { mentionTarget, pageMentionRun, sanitizeRichText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY, syncedFromOf } from './synced-block.ts'
 import { TABLE_CELLS_KEY } from './table.ts'
 import { isRefType } from './types.ts'
 
@@ -107,6 +115,12 @@ function remapBlocks(
       // (사본 지도에 데이터베이스가 없다 — 새 id 를 주면 데이터베이스 행 없는 데이터베이스 블록을 만들게 된다).
       const copy = pages.get(block.id)
       if (copy !== undefined) out.push({ ...block, id: copy })
+      continue
+    }
+    if (block.type === SYNCED_BLOCK_TYPE) {
+      // 머리말 "동기화 블록은 모두 사본이 된다" — 모양이 틀린 사본(정규화가 이미 뺀다)은 빠진다
+      const from = isSyncedCopyProps(block.properties) ? syncedFromOf(block.properties, block.id) : block.id.toLowerCase()
+      if (from !== null) out.push({ ...block, id: newBlockId(), title: [], properties: { [SYNCED_FROM_KEY]: from }, children: [] })
       continue
     }
     out.push({

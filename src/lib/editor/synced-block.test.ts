@@ -11,6 +11,7 @@
  *   ⑤ 붙여넣기: 동기화 블록은 내용만 편다
  *   ⑥ 자식 없는 원본: 마지막 자식을 지우면 빈 문단이 선다
  *   ⑦ 검증(`validateDoc`)이 정규화 ⑥ 의 모양을 거부한다 · 공개 API 읽기 · 마크다운 펴기
+ *   ⑧ 수명(SB-4): 사본 하나의 해제(⑫ⓐ — 새 id · 내용이 없으면 거부) · 블록 복제는 원본을 사본으로(⑭) · 지우기 확인 · 잘라내기 알림의 원본 찾기
  */
 
 import { test, describe } from 'node:test'
@@ -20,11 +21,11 @@ import { EditorState, TextSelection, type Command, type Transaction } from '@tip
 import { blockContentToApi, type BlockReadContext } from '../api/block-json.ts'
 import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import type { BlockType } from '../block/types.ts'
-import { textRun } from '../contracts/rich-text.ts'
+import { pageMentionRun, textRun } from '../contracts/rich-text.ts'
 import { pageToMarkdown } from '../export/markdown.ts'
 import { planDrop } from './block-handle.ts'
 import { blockMenuItems } from './block-menu.ts'
-import { BlockSelection } from './block-selection.ts'
+import { BlockSelection, duplicateBlockSelectionCommand } from './block-selection.ts'
 import { parseClipboardBlocks, pasteBlocksCommand, serializeBlocks, syncedCopyClipboard, CLIPBOARD_VERSION } from './block-clipboard.ts'
 import { indentCommand, type CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
@@ -37,8 +38,10 @@ import {
   excludedAt,
   planSyncedPaste,
   syncedBlockPlugin,
+  syncedOriginalsIn,
   type SyncedPasteContext,
   unsyncSyncedBlockCommand,
+  unsyncSyncedCopyCommand,
   wrapInSyncedBlockCommand,
 } from './synced-block.ts'
 
@@ -364,5 +367,69 @@ describe('⑦ 검증 · 읽는 길', () => {
     )
     assert.equal(markdown, '# T\n\n앞\n\n동기화 내용\n')
     assert.equal(losses.unsupported, 0)
+  })
+})
+
+describe('⑧ 수명 (SB-4 · ⑪ⓒ ⑫ⓐ ⑬ ⑭)', () => {
+  const copyOf = (id: string, from: string): EditorBlock => blk(id, SYNCED_BLOCK_TYPE, '', [], { synced_from: from })
+  const P = '33333333-3333-4333-8333-000000000001'
+  /** 원본 X(글 둘 — 멘션 하나) · 사본(X) · 끝 줄. */
+  function scene() {
+    const [x, a1, a2, cp, end] = [nextId(), nextId(), nextId(), nextId(), nextId()]
+    const state = stateOf([
+      synced(x, [blk(a1, 'paragraph', '원본 글'), { ...blk(a2, 'toggle', ''), title: [textRun('보기 '), pageMentionRun(P)], children: [blk(nextId(), 'paragraph', '깊은 글')] }]),
+      copyOf(cp, x),
+      blk(end, 'paragraph', '끝'),
+    ])
+    return { state, x, a1, a2, cp, end }
+  }
+  /** X 의 그룹 — 사본의 중첩 편집기가 보이는 내용과 같은 노드들. */
+  const groupOf = (state: EditorState, x: string) => {
+    const nodes: import('@tiptap/pm/model').Node[] = []
+    findContainerById(state.doc, x)!.groupNode!.forEach((n) => void nodes.push(n))
+    return nodes
+  }
+
+  test('★ ⑫ⓐ 사본 하나의 해제 — 사본 자리를 X 의 내용으로(새 id · 멘션 그대로 · 깊이까지) · 한 트랜잭션 · 내용이 없으면(A 를 볼 수 없다) 거부', () => {
+    const { state, x, a1, a2, cp } = scene()
+    assert.ok(run(state, unsyncSyncedCopyCommand(cp, null, nextId)) === null, '내용이 없으면(자리) 거부한다')
+    assert.ok(run(state, unsyncSyncedCopyCommand(x, groupOf(state, x), nextId)) === null, '원본은 이 명령이 아니다')
+    const next = run(state, unsyncSyncedCopyCommand(cp, groupOf(state, x), nextId))
+    assert.ok(next !== null)
+    const blocks = pmToDoc(next.doc).blocks
+    assert.deepEqual(blocks.map((b) => b.type), [SYNCED_BLOCK_TYPE, 'paragraph', 'toggle', 'paragraph'], '사본 자리에 X 의 블록 둘')
+    const [, p, t] = blocks
+    assert.ok(p.id !== a1 && t.id !== a2 && t.children![0].id !== findContainerById(state.doc, a2)!.groupNode!.child(0).attrs.blockId, '새 id — 어디서도 X 의 id 가 둘이 되지 않는다(SY1)')
+    assert.equal(p.title[0].plain_text, '원본 글')
+    assert.equal(t.title[1].type, 'mention', '페이지 멘션 그대로')
+    assert.equal(t.children![0].title[0].plain_text, '깊은 글')
+    assert.ok(findContainerById(next.doc, x) !== null && findContainerById(next.doc, cp) === null, '원본은 그대로 · 사본만 바뀐다')
+    assert.equal(validateDoc(pmToDoc(next.doc)).length, 0)
+  })
+
+  test('★ ⑭ 블록 복제(Mod+D) — 원본 X 의 복제는 X 의 사본(자식 없음) · 토글 안의 원본도 · 사본의 복제는 같은 원본의 사본', () => {
+    const { state, x, cp } = scene()
+    const dup = (s: EditorState) => run(s, duplicateBlockSelectionCommand({ ...deps, newId: nextId }))
+    const afterX = dup(select(state, x))
+    assert.ok(afterX !== null)
+    const top = pmToDoc(afterX.doc).blocks
+    assert.deepEqual(top[1].properties, { synced_from: x }, 'X 바로 뒤에 X 의 사본')
+    assert.deepEqual(top[1].children ?? [], [])
+    assert.equal(top.filter((b) => b.type === SYNCED_BLOCK_TYPE && !b.properties?.synced_from).length, 1, '원본은 하나뿐이다')
+    const afterCopy = dup(select(state, cp))
+    assert.deepEqual(pmToDoc(afterCopy!.doc).blocks[2].properties, { synced_from: x })
+    const [t, y, in1] = [nextId(), nextId(), nextId()]
+    const nested = dup(select(stateOf([blk(t, 'toggle', '토글', [synced(y, [blk(in1, 'paragraph', '안')])])]), t))
+    assert.deepEqual(pmToDoc(nested!.doc).blocks[1].children?.[0].properties, { synced_from: y }, '깊이 상관없이')
+  })
+
+  test('★ ⑬ ⑪ⓒ 원본 찾기 — 고른 블록의 서브트리(어느 깊이든)의 원본만 · 사본은 아니다 · 메뉴의 "동기화 해제" 는 사본에도 켜진다', () => {
+    const { state, x, cp, end } = scene()
+    const [t, y] = [nextId(), nextId()]
+    const withToggle = stateOf([...pmToDoc(state.doc).blocks, blk(t, 'toggle', '토글', [synced(y, [blk(nextId(), 'paragraph', '안')])])])
+    const roots = (s: EditorState, ids: string[]) => ids.map((id) => findContainerById(s.doc, id)!.pos)
+    assert.deepEqual(syncedOriginalsIn(withToggle.doc, roots(withToggle, [x, cp, end, t])), [x, y])
+    assert.deepEqual(syncedOriginalsIn(withToggle.doc, roots(withToggle, [cp, end])), [])
+    assert.equal(blockMenuItems(select(state, cp), deps).find((i) => i.id === 'synced_unsync')?.enabled, true)
   })
 })

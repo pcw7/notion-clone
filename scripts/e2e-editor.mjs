@@ -40807,6 +40807,172 @@ async function main() {
       await sleep(500)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('동기화 블록 — 수명 (SB-4 · F-01-11)')) { try {
+      // 원본 페이지 A 의 원본 X 를 B · C · D 의 사본이 가리킨다. ① A 를 복제하면 복제본의 동기화 블록은 X 의 사본이다(내용을 복사하지 않는다 ·
+      // 열면 X 의 내용 · A 를 고치면 복제본에도). ② 두 창 — A 에서 블록 메뉴로 X 를 지우면 사본 수를 묻고 C 의 사본이 "원본이 삭제되었습니다" 가
+      // 된다 · A 의 되돌리기로 C 의 사본이 돌아온다. 잘라내면 "다른 페이지의 사본 N개가 끊깁니다" 를 알린다. ③ B 의 사본 머리의 "동기화 해제" — 그
+      // 자리에 X 의 글(새 id) · 그 뒤 A 를 고쳐도 B 는 그대로(따로). ④ D 를 잠그고 A 의 원본에서 "동기화 해제"(모두 해제) — "고칠 수 없는 페이지
+      // 1곳의 사본은 끊겼습니다" · C · 복제본에 X 의 글 · D 는 사본 그대로이고 글이 없으며 열면 끊긴 자리. 좁은 화면 · 어두운 테마(사본의 해제
+      // 단추). 스스로 데이터를 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 잠금을 푼다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const pageA = await newPage({ title: `수명 원본 ${stamp}` })
+      const pageB = await newPage({ title: `수명 사본 B ${stamp}` })
+      const pageC = await newPage({ title: `수명 사본 C ${stamp}` })
+      const pageD = await newPage({ title: `수명 사본 D ${stamp}` })
+      const sc = { x: randomUUID(), a1: randomUUID(), aEnd: randomUUID(), copyB: randomUUID(), bEnd: randomUUID(), copyC: randomUUID(), cEnd: randomUUID(), copyD: randomUUID(), dEnd: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      const copyOf = (id) => ({ id, type: 'synced_block', title: [], properties: { synced_from: sc.x }, format: {}, children: [] })
+      const bodyA = (text) => ({ blocks: [{ id: sc.x, type: 'synced_block', title: [], properties: {}, format: {}, children: [para(sc.a1, text)] }, para(sc.aEnd, 'A 끝')] })
+      await saveBody(pageA, bodyA('원본 글'))
+      await saveBody(pageB, { blocks: [copyOf(sc.copyB), para(sc.bEnd, 'B 끝')] })
+      await saveBody(pageC, { blocks: [copyOf(sc.copyC), para(sc.cEnd, 'C 끝')] })
+      await saveBody(pageD, { blocks: [copyOf(sc.copyD), para(sc.dEnd, 'D 끝')] })
+      const plain = (b) => (b?.title ?? []).map((r) => r.plain_text).join('')
+      /** 본문의 최상위 — 사본은 `→원본`, 원본은 ['원본', 자식 글], 보통 블록은 글. */
+      const tree = async (page) => (await readBody(page)).doc.blocks.map((b) => (b.type !== 'synced_block' ? plain(b) : b.properties?.synced_from ? `→${b.properties.synced_from}` : ['원본', (b.children ?? []).map(plain)]))
+      const until = async (read, ok, ms = 10000) => {
+        let got = await read()
+        for (let waited = 0; !ok(got) && waited < ms; waited += 200) {
+          await sleep(200)
+          got = await read()
+        }
+        return got
+      }
+      const COPY = (id) => `[data-block-id="${id}"] .blk-synced-copy`
+      const ANY_COPY = `.blk-editor .blk-container:has(> .blk-synced_block[data-synced="copy"]) .blk-synced-copy`
+      const UNSYNC = (id) => `[data-block-id="${id}"] > .blk-synced_block .blk-synced-unsync`
+      const noticeOf = (text) => `[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes(${JSON.stringify(text)}))`
+      const lock = (page, on) => fetch(`${pagesUrl}/${page}/lock`, { method: on ? 'PUT' : 'DELETE', headers: authed })
+      const open = async (page, ready) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        return waitFor(ready, 15000)
+      }
+      const editableA = `!!document.querySelector('[data-block-id="${sc.aEnd}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`
+
+      try {
+        // ① 복제 — 복제본의 동기화 블록은 X 의 사본 · 열면 X 의 내용 · A 를 고치면 복제본에도
+        const dupRes = await fetch(`${pagesUrl}/${pageA}/duplicate`, { method: 'POST', headers: authed, body: '{}' })
+        const dup = (await dupRes.json()).page?.id ?? ''
+        const dupTree = dup === '' ? [] : await tree(dup)
+        check('★ 페이지를 복제하면 원본은 X 의 사본이 된다 — 내용을 복사하지 않는다(서버)',
+          dupRes.ok && JSON.stringify(dupTree) === JSON.stringify([`→${sc.x}`, 'A 끝']) && !JSON.stringify((await readBody(dup)).doc).includes('원본 글'), JSON.stringify(dupTree))
+        check('★ 복제본을 열면 사본이 X 의 내용을 그린다', await open(dup, `document.querySelector('${ANY_COPY}')?.dataset.copyState === 'ok' && document.querySelector('${ANY_COPY}').innerText.includes('원본 글')`),
+          await evaluate(`document.querySelector('${ANY_COPY}')?.innerText ?? '없음'`))
+        await saveBody(pageA, bodyA('원본 이어짐'))
+        check('★ 복제본도 동기화가 이어진다 — A 를 고치면 복제본의 사본에 곧바로', await waitFor(`(document.querySelector('${ANY_COPY}')?.innerText ?? '').includes('원본 이어짐')`, 15000),
+          await evaluate(`document.querySelector('${ANY_COPY}')?.innerText ?? '없음'`))
+
+        // ② 두 창 — 주 탭은 C(사본을 본다) · 둘째 창은 A(블록 메뉴로 X 를 지운다 → 묻는다 → 되돌린다)
+        check('전제 — C 의 사본이 내용을 그린다', await open(pageC, `document.querySelector('${COPY(sc.copyC)}')?.dataset.copyState === 'ok'`))
+        const tab = await openTab(`${BASE}/w/${workspaceId}/${pageA}`)
+        try {
+          check('전제 — 둘째 창에 A(고칠 수 있다)', await tab.waitFor(editableA, 15000))
+          const centerOf = (sel) => tab.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(sel)})?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null })()`)
+          const tabMouse = async (type, at) => tab.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: type === 'mouseMoved' ? 'none' : 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 })
+          await tab.evaluate(`window.confirm = (m) => { window.__asked = m; return true }`)
+          // X 의 머리 줄에 마우스 → 손잡이 → 누르면 X 를 고르고 블록 메뉴가 열린다
+          const head = await centerOf(`[data-block-id="${sc.x}"] > .blk-synced_block .blk-synced-badge`)
+          await tabMouse('mouseMoved', head)
+          await tab.waitFor(`!!document.querySelector('.blk-gutter-grip')`, 5000)
+          const grip = await centerOf('.blk-gutter-grip')
+          for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await tabMouse(type, grip)
+          const menuOpen = await tab.waitFor(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]') && [...document.querySelectorAll('.blk-selected')].some((e) => e.getAttribute('data-block-id') === '${sc.x}')`, 5000)
+          check('전제 — 손잡이로 X 를 고르고 블록 메뉴가 열렸다', menuOpen)
+          await tab.evaluate(`[...document.querySelectorAll('[role="menu"][aria-label="블록 메뉴"] [role="menuitem"]')].find((e) => e.textContent.trim().startsWith('삭제'))?.click()`)
+          const removed = await tab.waitFor(`!document.querySelector('[data-block-id="${sc.x}"]')`, 8000)
+          const asked = await tab.evaluate(`window.__asked ?? ''`)
+          check('★ 블록 메뉴로 사본이 있는 원본을 지우면 묻는다 — 사본 수(다른 페이지까지 · 이름 없이)', removed && asked.includes('사본 4개'), asked || '묻지 않았다')
+          check('★ 원본을 지우면 C 의 사본이 "원본이 삭제되었습니다" 가 된다(새로 열지 않아도)',
+            (await waitFor(`document.querySelector('${COPY(sc.copyC)}')?.dataset.copyState === 'missing'`, 15000)) && (await evaluate(`document.querySelector('${COPY(sc.copyC)}').innerText`)).includes('원본이 삭제되었습니다'),
+            await evaluate(`document.querySelector('${COPY(sc.copyC)}')?.innerText ?? '없음'`))
+          await tab.evaluate(`document.querySelector('.blk-editor')?.focus()`)
+          const z = { key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: MOD }
+          await tab.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...z })
+          await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', ...z })
+          check('전제 — A 의 되돌리기로 X 가 돌아왔다', await tab.waitFor(`!!document.querySelector('[data-block-id="${sc.x}"] > .blk-synced_block')`, 8000))
+          check('★ A 를 되돌리면 C 의 사본이 다시 이어진다(같은 id)',
+            await waitFor(`document.querySelector('${COPY(sc.copyC)}')?.dataset.copyState === 'ok' && document.querySelector('${COPY(sc.copyC)}').innerText.includes('원본 이어짐')`, 15000),
+            await evaluate(`document.querySelector('${COPY(sc.copyC)}')?.innerText ?? '없음'`))
+        } finally {
+          await tab.close()
+        }
+
+        // ②-b 잘라내기 — 막지 않고 알린다 · 되돌리면 돌아온다(사본 수는 X 의 행으로 A 를 찾는다 — 되돌린 X 가 투영되기를 기다린다)
+        check('전제 — 되돌린 X 가 서버에 섰다', Array.isArray((await until(() => tree(pageA), (t) => Array.isArray(t[0])))[0]))
+        check('전제 — A 를 연다', await open(pageA, editableA))
+        const head = await line(sc.x)
+        await move(head.x + 30, head.y + head.h / 2)
+        await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
+        const g = await rect('.blk-gutter-grip')
+        await click(g.x + g.w / 2, g.y + g.h / 2)
+        await waitFor(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')`, 3000)
+        await key('Escape')
+        const pickedX = await waitFor(`[...document.querySelectorAll('.blk-selected')].map((e) => e.getAttribute('data-block-id')).join() === '${sc.x}'`, 3000)
+        await evaluate(`document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('cut', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true }))`)
+        const cutGone = await waitFor(`!document.querySelector('[data-block-id="${sc.x}"]')`, 3000)
+        const cutNotice = await waitFor(noticeOf('다른 페이지의 사본 4개가 끊깁니다'), 8000)
+        await key('z', MOD)
+        const cutBack = await waitFor(`!!document.querySelector('[data-block-id="${sc.x}"] > .blk-synced_block')`, 5000)
+        check('★ 사본이 있는 원본을 잘라내면 알린다 — "다른 페이지의 사본 4개가 끊깁니다" · 되돌리면 돌아온다', pickedX && cutGone && cutNotice && cutBack,
+          JSON.stringify({ pickedX, cutGone, cutNotice, cutBack }))
+        await until(() => tree(pageA), (t) => Array.isArray(t[0]))
+
+        // ③ 사본 하나의 해제(B) — 머리의 단추 · 그 자리에 X 의 글(새 id) · 그 뒤 A 를 고쳐도 B 는 그대로
+        check('전제 — B 의 사본이 내용을 그린다', await open(pageB, `document.querySelector('${COPY(sc.copyB)}')?.dataset.copyState === 'ok' && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`))
+        check('사본의 "동기화 해제" 단추가 보인다(내용을 그렸고 B 를 고칠 수 있다)', await evaluate(`getComputedStyle(document.querySelector('${UNSYNC(sc.copyB)}')).display !== 'none'`))
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await sleep(300)
+        const narrow = await evaluate(`(() => { const r = document.querySelector('${UNSYNC(sc.copyB)}').getBoundingClientRect()
+          return { right: Math.round(r.right), width: innerWidth, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth } })()`)
+        await send('Emulation.clearDeviceMetricsOverride')
+        check('좁은 화면(390px) — 사본의 해제 단추가 화면 안이고 가로로 넘치지 않는다', narrow.right <= narrow.width && narrow.overflow <= 0, JSON.stringify(narrow))
+        const theme = await evaluate(`document.documentElement.dataset.theme ?? ''`)
+        const unsyncColor = () => evaluate(`getComputedStyle(document.querySelector('${UNSYNC(sc.copyB)}')).color`)
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+        await sleep(200)
+        const dark = await unsyncColor()
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+        await sleep(200)
+        const light = await unsyncColor()
+        await send('Emulation.setEmulatedMedia', { features: [] })
+        check('어두운 테마 — 사본의 해제 단추 색이 바뀐다(테마가 시스템을 따를 때)', theme !== 'system' || dark !== light, JSON.stringify({ theme, dark, light }))
+        await clickSelector(UNSYNC(sc.copyB))
+        const bTree = await until(() => tree(pageB), (t) => t[0] === '원본 이어짐')
+        const bIds = (await readBody(pageB)).doc.blocks.map((b) => b.id)
+        check('★ 사본 하나의 해제 — 그 자리에 X 의 글(보통 블록 · 새 id · 서버)', JSON.stringify(bTree) === JSON.stringify(['원본 이어짐', 'B 끝']) && !bIds.includes(sc.a1) && !bIds.includes(sc.copyB), JSON.stringify(bTree))
+        await saveBody(pageA, bodyA('원본 바뀜'))
+        await sleep(1500)
+        check('★ 해제한 뒤에는 따로 — A 를 고쳐도 B 는 그대로(서버 · 화면)',
+          JSON.stringify(await tree(pageB)) === JSON.stringify(['원본 이어짐', 'B 끝']) && !(await evaluate(`document.querySelector('.blk-editor').innerText`)).includes('원본 바뀜'), JSON.stringify(await tree(pageB)))
+
+        // ④ 모두 해제 — D 를 잠그고 A 의 원본에서 "동기화 해제"
+        check('전제 — D 를 잠갔다', (await lock(pageD, true)).ok)
+        check('전제 — A 를 연다', await open(pageA, `${editableA} && (document.querySelector('[data-block-id="${sc.a1}"] p')?.textContent ?? '') === '원본 바뀜'`))
+        await clickSelector(UNSYNC(sc.x))
+        check('★ 모두 해제 — "고칠 수 없는 페이지 1곳의 사본은 끊겼습니다" 를 알린다', await waitFor(noticeOf('고칠 수 없는 페이지 1곳의 사본은 끊겼습니다'), 10000),
+          await evaluate(`[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].map((e) => e.textContent).join(' | ')`))
+        const aTree = await until(() => tree(pageA), (t) => t[0] === '원본 바뀜')
+        check('★ 모두 해제 — A 의 X 는 껍데기만 벗는다(자식이 제자리 · 서버)', JSON.stringify(aTree) === JSON.stringify(['원본 바뀜', 'A 끝']) && (await readBody(pageA)).doc.blocks[0]?.id === sc.a1, JSON.stringify(aTree))
+        const cTree = await tree(pageC)
+        const dupAfter = await tree(dup)
+        check('★ 고칠 수 있는 페이지(C · 복제본)의 사본은 X 의 글이 된다(서버)',
+          JSON.stringify(cTree) === JSON.stringify(['원본 바뀜', 'C 끝']) && JSON.stringify(dupAfter) === JSON.stringify(['원본 바뀜', 'A 끝']), JSON.stringify({ cTree, dupAfter }))
+        const dTree = await tree(pageD)
+        check('★ 잠긴 D 의 사본은 그대로 — X 의 글이 쓰이지 않는다(서버)',
+          JSON.stringify(dTree) === JSON.stringify([`→${sc.x}`, 'D 끝']) && !JSON.stringify((await readBody(pageD)).doc).includes('원본 바뀜'), JSON.stringify(dTree))
+        check('전제 — D 를 연다', await open(pageD, `!!document.querySelector('[data-block-id="${sc.dEnd}"] p') && !!document.querySelector('${COPY(sc.copyD)}')`))
+        const cutOff = await waitFor(`document.querySelector('${COPY(sc.copyD)}')?.dataset.copyState === 'missing'`, 15000)
+        const dText = await evaluate(`document.querySelector('${COPY(sc.copyD)}')?.innerText ?? ''`)
+        check('★ 고칠 수 없는 페이지의 사본은 끊긴 자리 — "원본이 삭제되었습니다" · 잠겨 "사본 지우기" 가 없다 · X 의 글이 없다',
+          cutOff && dText.includes('원본이 삭제되었습니다') && !dText.includes('사본 지우기') && !(await evaluate(`document.body.innerText`)).includes('원본 바뀜'), dText)
+      } finally {
+        await lock(pageD, false).catch(() => undefined)
+      }
+      await sleep(500)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

@@ -1485,6 +1485,8 @@ span.blk-equation {
 .blk-synced_block .blk-synced-unsync:hover { background: rgba(55, 53, 47, 0.06); color: #37352f; }
 .blk-synced_block .blk-synced-unsync:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
 .blk-editor[contenteditable='false'] .blk-synced-unsync, .blk-synced_block [hidden] { display: none; }
+/* 사본의 해제(SB-4 · ⑫ⓐ) — 원본의 내용을 그렸을 때만(자리에서는 펼 내용이 없다) */
+.blk-synced_block[data-synced='copy']:not(:has(> .blk-synced-copy[data-copy-state='ok'])) > .blk-synced-unsync { display: none; }
 /* 원본의 "복사"(SB-2 · ⑪ⓑ) — 해제 단추와 같은 모양 · 읽기 전용에서도 선다(복사는 읽기다). 해제가 숨으면 오른쪽 끝으로 */
 .blk-synced_block .blk-synced-copy-button {
   margin-left: auto; border: 0; border-radius: 4px; background: none; padding: 0 6px; color: #6b7280; font: inherit; cursor: pointer;
