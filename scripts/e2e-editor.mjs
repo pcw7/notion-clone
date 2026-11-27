@@ -3507,7 +3507,11 @@ async function main() {
       // 설정의 사람 절 멤버 목록(정본 §3.3 [보강] 멤버 내보내기 ⑧) — 다룰 수 있는 줄에만 역할 고르개 · 내보내기(한 번 더 묻는다) · 거부는
       // 이유를(teamspace 의 이름들). membership_admin 으로 보면 관리 역할은 고를 수 없고 owner 의 줄에는 아무것도 없다. 이 판의
       // 워크스페이스는 모든 절이 함께 쓰므로 새로 만든 사람들만 다룬다.
+      // 공용 워크스페이스는 판을 거듭할수록 멤버가 수천이 되어 목록 첫 쪽에 새 사람이 없다 — 이 절은 따로 만든 워크스페이스를 쓴다.
       const stamp = Date.now() % 100000
+      const workspaceId = await createBareWorkspace(`화면 멤버 ${stamp}`)
+      const owner = await joinAs(workspaceId, await createUser(`화면소유자 ${stamp}`), 'owner')
+      const ctx = { userId: owner.userId }
       const mate = await joinAs(workspaceId, await createUser(`화면동료 ${stamp}`), 'member')
       const lead = await joinAs(workspaceId, await createUser(`화면팀장 ${stamp}`), 'member')
       const hana = await joinAs(workspaceId, await createUser(`화면하나 ${stamp}`), 'member')
@@ -3526,6 +3530,8 @@ async function main() {
       const problem = () => evaluate(`document.querySelector('[data-testid="member-error"]')?.textContent ?? ''`)
       const PEOPLE = `${BASE}/w/${workspaceId}/settings?s=workspace.people`
 
+      try {
+      await send('Network.setCookie', { name: 'nc_session', value: owner.token, domain: 'localhost', path: '/', httpOnly: true })
       await send('Page.navigate', { url: PEOPLE })
       await waitFor(`!!document.querySelector('${row(mate.userId)}')`, 15000)
       check('★ owner 에게 — 다른 사람의 줄에 역할 고르개(이름 넷) · 자기 줄에는 내보내기가 없다',
@@ -3535,16 +3541,50 @@ async function main() {
 
       // 고르면 곧바로 바꾼다 — 서버가 그린 고르개는 React 가 붙은 뒤에 바꾼다(10n-11)
       await waitHydrated(`${row(mate.userId)} [data-testid="member-role-select"]`)
+      // 설정 패널은 늦게 실리고 하이드레이션 뒤 멤버 줄이 다시 그려져 고르개 노드가 바뀔 수 있다 — 쏜 노드가 문서에서 떨어졌을 때만
+      // 새 노드에 다시 쏜다(최대 3번). 노드가 그대로인데 알림이 없으면 다시 쏘지 않는다 — 진짜 결함을 가리지 않는다.
+      const NOTICED = `(document.querySelector('[data-testid="member-notice"]')?.textContent ?? '').includes('제한된 멤버')`
+      // 진단 — 페이지 안에서 fetch 의 PATCH 와 오류를 이 절 동안만 모은다
+      const errorsBefore = pageErrors.length
       await evaluate(`(() => {
-        const s = document.querySelector('${row(mate.userId)} [data-testid="member-role-select"]')
-        s.value = 'restricted_member'
-        s.dispatchEvent(new Event('change', { bubbles: true }))
+        window.__patches = []; window.__errs = []
+        const orig = window.fetch
+        window.fetch = async (...a) => {
+          const m = String(a[1]?.method ?? 'GET').toUpperCase()
+          const rec = m === 'GET' ? null : { m, url: String(a[0]?.url ?? a[0]).replace(/^https?:\\/\\/[^/]+/, ''), status: 'pending' }
+          if (rec) window.__patches.push(rec)
+          try { const r = await orig(...a); if (rec) rec.status = r.status; return r } catch (e) { if (rec) rec.status = 'throw ' + e; throw e }
+        }
+        window.addEventListener('error', (e) => window.__errs.push(String(e.message)))
+        window.addEventListener('unhandledrejection', (e) => window.__errs.push('rej ' + String(e.reason)))
       })()`)
+      const selState = () => evaluate(`(() => {
+        const r = document.querySelector('${row(mate.userId)}')
+        const s = r?.querySelector('[data-testid="member-role-select"]')
+        return { disabled: s?.disabled, value: s?.value, rowError: r?.querySelector('[data-testid="member-error"]')?.textContent ?? null,
+          error: document.querySelector('[data-testid="member-error"]')?.textContent ?? '', notice: document.querySelector('[data-testid="member-notice"]')?.textContent ?? '' }
+      })()`)
+      let stateBefore = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await waitHydrated(`${row(mate.userId)} [data-testid="member-role-select"]`)
+        stateBefore = await selState()
+        await evaluate(`(() => {
+          const s = document.querySelector('${row(mate.userId)} [data-testid="member-role-select"]')
+          window.__roleSel = s
+          s.value = 'restricted_member'
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        await waitFor(`${NOTICED} || !window.__roleSel.isConnected`, 8000)
+        if (await evaluate(`window.__roleSel.isConnected`)) break
+        if (await evaluate(NOTICED)) break
+        console.log('고르개가 다시 그려져 다시 골랐다')
+      }
       check('★ 고르면 바꾼다 — 알림 · 서버의 역할 · 고르개의 값',
         (await waitFor(`(document.querySelector('[data-testid="member-notice"]')?.textContent ?? '').includes('제한된 멤버')`, 8000))
           && (await roleOf(mate.userId))?.role === 'restricted_member'
           && (await waitFor(`document.querySelector('${row(mate.userId)} [data-testid="member-role-select"]')?.value === 'restricted_member'`, 8000)),
-        JSON.stringify({ notice: await notice(), error: await problem(), server: await roleOf(mate.userId) }))
+        JSON.stringify({ notice: await notice(), error: await problem(), server: await roleOf(mate.userId), stateBefore, stateAfter: await selState(),
+          patches: await evaluate(`window.__patches`), pageErrs: await evaluate(`window.__errs`), harnessErrors: pageErrors.slice(errorsBefore) }))
 
       await clickSelector(`${row(lead.userId)} [data-testid="member-remove"]`)
       check('내보내기는 한 번 더 묻는다 — 들어오지 못하고 30일 안에 다시 초대하면 돌아온다고 말한다',
@@ -3577,6 +3617,10 @@ async function main() {
           (await evaluate(`[...(document.querySelector('select[aria-label="초대할 역할"]')?.options ?? [])].map((o) => o.textContent).join(',')`)) === '멤버',
           await evaluate(`[...(document.querySelector('select[aria-label="초대할 역할"]')?.options ?? [])].map((o) => o.textContent).join(',')`))
       } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+      } finally {
+        // 절 전용 owner 로 바꾼 세션을 장면 중간에 throw 해도 주 세션으로 되돌린다
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
     } catch (thrown) { await sectionThrew(thrown) } }
