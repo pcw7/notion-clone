@@ -37,7 +37,6 @@ import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 import { parseDelta, type DeltaJson } from '@/lib/database/delta-merge'
 import { VIEW_ORIGIN_HEADER, viewOrigin } from '@/lib/database/view-origin'
 import { buttonActionProblemMessage } from './button-messages'
-import { automationProblemMessage } from './automation-messages'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
@@ -1369,6 +1368,8 @@ export async function saveDbAutomation(
     const json = (await res.json().catch(() => null)) as (ErrorBody & { automation?: DbAutomationJson; problem?: string; index?: number }) | null
     if (res.ok && json?.automation !== undefined) return { ok: true, value: json.automation }
     if (json?.error === 'invalid_action') return { ok: false, message: buttonActionProblemMessage(json.problem, json.index) }
+    // 자동화 문구는 실패했을 때만 받는다(BD-2) — 표 화면 · 템플릿의 첫 JS 에서 뺀다(자동화 패널은 이미 받아 두었다)
+    const { automationProblemMessage } = await import('./automation-messages')
     return { ok: false, message: automationProblemMessage(json?.error, json?.problem, json?.index) ?? messageOf(res.status, json) }
   } catch {
     return { ok: false, message: '연결에 실패했습니다. 자동화가 저장되지 않았습니다.' }

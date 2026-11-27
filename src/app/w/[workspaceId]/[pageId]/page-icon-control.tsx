@@ -26,7 +26,7 @@ import { randomEmoji } from '@/lib/emoji/catalog'
 import { EmojiPickerLazy } from './body-popups-lazy'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 import { PageIconView } from '../page-icon-view'
-import { useHasPageCover } from './page-cover'
+import { useHasPageCover } from './page-cover-context'
 
 type IconOwner = 'page' | 'database'
 

@@ -133,14 +133,22 @@ import {
   type RelationIcons,
   type RelationLabels,
 } from './cell-view'
-import { PeopleEditor } from './people-editor'
 import { usePeopleNames } from './use-people-names'
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
 import type { OptionEditActions } from './select-editor'
-import { ButtonEditFormLazy, FilesEditorLazy, FormulaEditFormLazy, PlaceEditorLazy, RelationEditorLazy, RollupSourceEditorLazy, SelectEditorLazy } from './editors-lazy'
+import {
+  ButtonEditFormLazy,
+  FilesEditorLazy,
+  FormulaEditFormLazy,
+  PeopleEditorLazy as PeopleEditor,
+  PlaceEditorLazy,
+  RelationEditorLazy,
+  RollupSourceEditorLazy,
+  SelectEditorLazy,
+} from './editors-lazy'
 import { containsAcrossLayers } from '../../anchored-layer'
 import { AddColumn } from './add-column'
 import { noteSync, syncStatsOf, useRenderedChangeCursor, useTableChanges } from './use-table-changes'

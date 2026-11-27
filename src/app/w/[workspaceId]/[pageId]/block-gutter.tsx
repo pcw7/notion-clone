@@ -60,7 +60,8 @@ import {
 import { isBlockSelection } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { findContainerById } from '@/lib/editor/pm-blocks'
-import { BlockMenu } from './block-menu'
+// 메뉴는 연 뒤에야 받는다(BD-2) — 편집기가 준비되면 미리 받는다(`prefetchEditorPopups`)
+import { BlockMenuLazy as BlockMenu } from './body-popups-lazy'
 import { GripVertical, Plus } from 'lucide-react'
 
 /** 한 단 들여쓰기 = `.blk-group` 의 margin-left(1.5rem). 둘이 어긋나면 자식 드롭 판정이 틀린다. */
