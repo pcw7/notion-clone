@@ -23,6 +23,7 @@ import {
   REQUEST_SENT,
   accessRequestFailureMessage,
 } from '../access-request-messages'
+import { NoticeBack } from '../notice-back'
 
 export function NoAccess({
   workspaceId,
@@ -97,6 +98,8 @@ export function NoAccess({
           {error}
         </p>
       )}
+      {/* "뒤로"(NV-2 · ⑥) — 404 화면과 같은 단추. 밖의 사람에게 워크스페이스 홈은 404 라 앞 항목이 없으면 `/`(자기 워크스페이스 목록) */}
+      <NoticeBack fallbackHref={outsider ? '/' : undefined} />
     </main>
   )
 }
