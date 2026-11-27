@@ -9,7 +9,7 @@
  *   ③ 묶기 — X 의 그룹에 중첩 편집기(`synced-copy-binding.ts`). **고칠 수 있는지는 SY7**(`synced-copy-edit.ts` — A 쪽은 서버가 정한 연결의 모드 ·
  *      B 쪽은 이 편집기의 편집 가능 · 제안 모드). 쓰기 길이 있는 묶기 ↔ 없는 묶기가 바뀌면 다시 만든다(B 가 읽기 전용이면 쓰지도 보내지도
  *      않는다) · 끊김처럼 잠깐이면 입력만 막는다. 그룹이 바뀌면(끌기 · 되돌리기) 다시 묶고, 못 찾으면 "삭제됨" 을 그리되 지켜본다(⑨ · ⑮)
- *   ④ 자리 넷(⑦) — 불러오는 중 · 권한 없음(+ 접근 요청 — X 로 보낸다 · 화면은 A 를 모른다) · 휴지통 · 삭제됨(+ "사본 지우기" — 이 페이지를
+ *   ④ 자리 넷(⑦ · 오프라인이면 다섯째 자리 — SB-5 ㉑) — 불러오는 중 · 권한 없음(+ 접근 요청 — X 로 보낸다 · 화면은 A 를 모른다) · 휴지통 · 삭제됨(+ "사본 지우기" — 이 페이지를
  *      고칠 수 있을 때). 연결이 닫히면(권한을 잃었다 — 5c) 다시 해석해 자리로 바꾼다
  *   ⑤ 다른 페이지 줄(㉑ · SB-3) — `GET …/synced-blocks/{X}/places`. 이 페이지를 뺀 곳이 있으면 "다른 N개 페이지에서 편집 중" · 누르면 목록 ·
  *      항목은 그 페이지의 그 블록으로 간다
@@ -33,7 +33,10 @@ import { createEmbedPool, type EmbedLease, type EmbedPool } from './synced-copy-
 
 type Resolution = { readonly state: 'ok'; readonly pageId: string } | { readonly state: 'no_access' | 'trashed' | 'missing' }
 /** `elsewhere` — 맥락이 없는 편집기(미리보기 · 버전 보기)라 붙지 않는다. */
-type CopyState = 'loading' | 'ok' | 'no_access' | 'trashed' | 'missing' | 'elsewhere'
+type CopyState = 'loading' | 'ok' | 'no_access' | 'trashed' | 'missing' | 'elsewhere' | 'offline'
+
+/** 브라우저가 오프라인인가(SB-5 · ㉑). */
+const offline = (): boolean => typeof navigator !== 'undefined' && navigator.onLine === false
 
 /** `missing` 을 다시 묻는 간격(⑨). */
 const MISSING_RETRY_MS = [1000, 3000]
@@ -103,6 +106,7 @@ const PLACE_TEXT: Readonly<Record<Exclude<CopyState, 'ok'>, string>> = {
   trashed: '원본 페이지가 휴지통에 있습니다.',
   missing: '원본이 삭제되었습니다.',
   elsewhere: '동기화 블록의 사본입니다 — 내용은 페이지에서 볼 수 있습니다.',
+  offline: '오프라인에서는 원본을 볼 수 없습니다.',
 }
 
 export function mountSyncedCopy(
@@ -335,6 +339,11 @@ export function mountSyncedCopy(
       return
     }
     if (resolving) return
+    // 오프라인(SB-5 · ㉑) — 원본은 함께 내려받지 않는다 · 다시 연결되면(`online`) 다시 묻는다
+    if (offline()) {
+      render('offline')
+      return
+    }
     resolving = true
     const mine = ++generation
     render('loading')
@@ -342,8 +351,11 @@ export function mountSyncedCopy(
       for (let attempt = 0; ; attempt += 1) {
         const resolution = await resolveCopy(host.workspaceId, originalId)
         if (destroyed || mine !== generation) return
-        // 못 물었다(연결 · 서버) — "불러오는 중" 으로 두고 다시 보일 때 다시 묻는다
-        if (resolution === null) return
+        // 못 물었다(연결 · 서버) — "불러오는 중"(오프라인이면 그 자리)으로 두고 다시 보일 때 다시 묻는다
+        if (resolution === null) {
+          if (offline()) render('offline')
+          return
+        }
         if (resolution.state === 'missing' && attempt < MISSING_RETRY_MS.length) {
           await new Promise<void>((resolve) => (retryTimer = setTimeout(resolve, MISSING_RETRY_MS[attempt])))
           retryTimer = null
@@ -381,6 +393,7 @@ export function mountSyncedCopy(
     }
   }
   window.addEventListener('focus', recheck)
+  window.addEventListener('online', recheck)
   return {
     setVisible(now) {
       visible = now
@@ -399,6 +412,7 @@ export function mountSyncedCopy(
       destroyed = true
       generation += 1
       window.removeEventListener('focus', recheck)
+      window.removeEventListener('online', recheck)
       if (retryTimer !== null) clearTimeout(retryTimer)
       unsubscribe?.()
       release()

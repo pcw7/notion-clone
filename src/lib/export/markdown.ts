@@ -114,12 +114,14 @@ export type MarkdownLosses = {
   readonly omittedImages: number
   /** `links.file` 이 뺀 파일(F-1a). 출처가 없는 빈 파일 블록은 세지 않는다. */
   readonly omittedFiles: number
+  /** 원본을 읽을 수 없거나 없는 동기화 블록 사본(SB-5 · ⑰). 주석 한 줄만 남겼다. */
+  readonly omittedSyncedBlocks: number
 }
 
 type Counters = { -readonly [K in keyof MarkdownLosses]: number }
 
 export function emptyLosses(): MarkdownLosses {
-  return { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0, omittedFiles: 0 }
+  return { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0, omittedFiles: 0, omittedSyncedBlocks: 0 }
 }
 
 export type MarkdownResult = {
@@ -684,11 +686,11 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       return renderSiblings(block.children ?? [], ctx).lines
 
     case SYNCED_BLOCK_TYPE:
-      // 동기화 블록(SB-1 · 정본 [보강 SB-0] ⑰) — 원본은 컬럼처럼 감싸개 없이 내용을 편다(잃은 것이 아니다). 사본은 이 페이지에 내용이
-      // 없다 — 펼치기는 SB-5(원본 페이지를 읽을 수 있을 때) · 그 전에는 주석 한 줄이고 모르는 블록으로 센다. 노션의 `<synced_block>` 은
-      // 쓰지 않는다(우리 가져오기가 읽지 못한다).
-      if (isSyncedCopyProps(block.properties)) {
-        losses.unsupported += 1
+      // 동기화 블록(SB-1 · SB-5 · 정본 [보강 SB-0] ⑰) — 원본도, 내보내기가 펼친 사본(자식 = 원본의 내용 — 내보내는 사람이 원본을 읽을 수 있을
+      // 때만 단다 · `snapshot.ts`)도 컬럼처럼 감싸개 없이 내용을 편다(잃은 것이 아니다). 자식이 없는 사본(못 읽거나 없는 원본)은 주석 한 줄이고
+      // 생략으로 센다(원본의 id 를 싣지 않는다). 노션의 `<synced_block>` 은 쓰지 않는다(우리 가져오기가 읽지 못한다).
+      if (isSyncedCopyProps(block.properties) && (block.children ?? []).length === 0) {
+        losses.omittedSyncedBlocks += 1
         return ['<!-- synced block omitted -->']
       }
       return renderSiblings(block.children ?? [], ctx).lines

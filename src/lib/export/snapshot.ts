@@ -46,6 +46,8 @@ import { BOOKMARK_TYPE, bookmarkCacheUrl, readBookmarkUrl } from '../block/bookm
 import { readLinkPreviews } from '../link-preview/link-preview.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE, isRefType } from '../block/types.ts'
+import { SYNCED_BLOCK_TYPE, syncedFromOf } from '../block/synced-block.ts'
+import { syncedOriginalPagesIn } from '../block/synced-block-resolve.ts'
 import { withVerificationExpiry } from '../database/verification-cell.ts'
 import { AUTO_META_TYPES, DEFAULT_PROPERTY_TYPE, hasOptionRegistry, isAutoMetaTimeType, isMvpPropertyType, type AutoMetaType } from '../database/property-types.ts'
 import { editorLabel } from '../block/edit-info.ts'
@@ -152,6 +154,10 @@ export async function readExportSnapshot(
       [ctx.workspaceId, scopes, maxBlocks + 1, ...rangeParams],
     )
     if (placeholders.length > maxBlocks) return { ok: false, reason: 'too_large' } as const
+
+    // ── ②' 동기화 블록 사본이 가리키는 원본의 내용(SB-5 · 정본 [보강 SB-0] ⑰ [SB-5 고침] ⓐ) — 같은 스냅숏 · 같은 범위 술어 ──
+    const synced = await readSyncedContents(tx, ctx.workspaceId, scopes, blocks, maxBlocks - blocks.length)
+    if (synced === null) return { ok: false, reason: 'too_large' } as const
 
     // ── ③ DB 행의 셀. 템플릿 행은 내보내지 않는다(불변식 R1) ──
     // 고유 ID 는 셀이 아니다(C1) — 행의 번호(`unique_seq`)와 표의 접두사를 함께 읽어 그 행의 ID 칸에 끼운다(`uniqueIdCell` · 2a-2b).
@@ -299,7 +305,7 @@ export async function readExportSnapshot(
     const nodes = new Map<string, ExportNode>()
     for (const node of nodeRows) {
       if (node.type !== PAGE_TYPE) continue
-      const doc = rowsToDoc(node.id, bodyRows.get(node.id) ?? [])
+      const doc = withSyncedContents(rowsToDoc(node.id, bodyRows.get(node.id) ?? []), synced.contents)
       nodes.set(node.id, {
         kind: 'page',
         id: node.id,
@@ -333,13 +339,65 @@ export async function readExportSnapshot(
         exportedAt: now,
         rootIds: roots.sort(byOrder).map((root) => root.id),
         nodes,
-        files: await readFiles(tx, ctx, blocks),
+        // 펼친 사본의 이미지 · 파일 · 북마크도(SB-5 — 그 페이지의 첨부로 나간다)
+        files: await readFiles(tx, ctx, [...blocks, ...synced.rows]),
         // 북마크의 제목(F-4b) — 메타 캐시를 읽기만
-        bookmarkTitles: await readBookmarkTitles(blocks),
+        bookmarkTitles: await readBookmarkTitles([...blocks, ...synced.rows]),
         excluded: {},
       },
     } as const
   })
+}
+
+/**
+ * 사본이 가리키는 원본 X 들의 내용(SB-5 · ⑰) — X 의 행이 살아 있는 원본이고 X 의 페이지 A 가 살아 있으며 **X 의 범위를 내보내는 사람이 읽을 수
+ * 있을 때만**(SY10 — B 를 읽을 수 있다고 A 를 내주지 않는다) X 의 하위 행을 같은 범위 술어로 읽는다. 못 읽는 X 는 지도에 없다 — 그 사본은 자식이
+ * 없고 마크다운이 주석 한 줄로 센다. 펼친 행은 블록 상한(`room`)에 든다 — 넘으면 null.
+ */
+async function readSyncedContents(
+  tx: Tx,
+  workspaceId: string,
+  scopes: readonly string[],
+  blocks: readonly BlockRow[],
+  room: number,
+): Promise<{ readonly contents: ReadonlyMap<string, readonly EditorBlock[]>; readonly rows: readonly BlockRow[] } | null> {
+  const wanted = blocks.flatMap((b) => {
+    const from = b.type === SYNCED_BLOCK_TYPE ? syncedFromOf(b.properties, b.id) : null
+    return from === null ? [] : [from]
+  })
+  if (wanted.length === 0) return { contents: new Map(), rows: [] }
+  const readable = new Set(scopes)
+  const originals = [...(await syncedOriginalPagesIn(tx, workspaceId, wanted))]
+    .filter(([, page]) => page.live && readable.has(page.permScopeId))
+    .map(([id]) => id)
+  if (originals.length === 0) return { contents: new Map(), rows: [] }
+  const rows = await tx.query<BlockRow>(
+    `SELECT b.id, b.type, b.parent_type, b.parent_id, b.order_key, b.ancestor_path, b.properties, b.format
+       FROM live_block b
+      WHERE b.workspace_id = $1 AND b.perm_scope_id = ANY($2::uuid[]) AND b.ancestor_path && $3::uuid[]
+      LIMIT $4`,
+    [workspaceId, scopes, originals, Math.max(0, room) + 1],
+  )
+  if (rows.length > room) return null
+  const set = new Set(originals)
+  const under = new Map<string, BlockRow[]>()
+  for (const row of rows) {
+    const x = row.ancestor_path.find((id) => set.has(id))
+    if (x !== undefined) push(under, x, row)
+  }
+  return { contents: new Map(originals.map((x) => [x, rowsToDoc(x, under.get(x) ?? []).blocks])), rows }
+}
+
+/** 사본마다 원본의 내용을 자식으로 — 지도에 없는(못 읽거나 없는) 원본의 사본은 그대로(자식 없음). */
+function withSyncedContents(doc: EditorDoc, contents: ReadonlyMap<string, readonly EditorBlock[]>): EditorDoc {
+  if (contents.size === 0) return doc
+  const walk = (blocks: readonly EditorBlock[]): EditorBlock[] =>
+    blocks.map((block) => {
+      const from = block.type === SYNCED_BLOCK_TYPE ? syncedFromOf(block.properties, block.id) : null
+      if (from !== null) return { ...block, children: contents.get(from) ?? [] }
+      return block.children && block.children.length > 0 ? { ...block, children: walk(block.children) } : block
+    })
+  return { blocks: walk(doc.blocks) }
 }
 
 function push<T>(map: Map<string, T[]>, key: string, value: T): void {

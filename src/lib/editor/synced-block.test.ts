@@ -368,6 +368,20 @@ describe('⑦ 검증 · 읽는 길', () => {
     assert.equal(markdown, '# T\n\n앞\n\n동기화 내용\n')
     assert.equal(losses.unsupported, 0)
   })
+
+  test('★ 마크다운(SB-5 · ⑰) — 내보내기가 펼친 사본은 내용을 · 자식 없는 사본은 주석 한 줄 · 생략으로 센다(원본 id 없음)', () => {
+    const [c1, c2, x, a] = [nextId(), nextId(), nextId(), nextId()]
+    const copy = (id: string, children: EditorBlock[]): EditorBlock => blk(id, SYNCED_BLOCK_TYPE, '', children, { synced_from: x })
+    const { markdown, losses } = pageToMarkdown(
+      { title: [textRun('T')], doc: { blocks: [copy(c1, [blk(a, 'paragraph', '원본 글')]), copy(c2, [])] } },
+      { page: () => null, image: () => null },
+      { untitled: '제목 없음' },
+    )
+    assert.equal(markdown, '# T\n\n원본 글\n\n<!-- synced block omitted -->\n')
+    assert.equal(losses.omittedSyncedBlocks, 1)
+    assert.equal(losses.unsupported, 0, '모르는 블록이 아니다')
+    assert.ok(!markdown.includes(x), '원본 id 를 싣지 않는다')
+  })
 })
 
 describe('⑧ 수명 (SB-4 · ⑪ⓒ ⑫ⓐ ⑬ ⑭)', () => {

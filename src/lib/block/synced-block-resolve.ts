@@ -11,7 +11,7 @@
  *
  * 접근 요청은 X 로 보낸다 — 서버가 A 를 찾아 A 의 `page_access` 요청을 연다. 화면은 A 의 id · 제목을 모른다.
  *
- * 사본 수(SB-4 · ⑬ · ⑪ⓒ)도 여기다 — 원본을 지우거나 잘라낼 때 화면이 묻는다.
+ * 사본 수(SB-4 · ⑬ · ⑪ⓒ)도 여기다 — 원본을 지우거나 잘라낼 때 화면이 묻는다. 읽는 길(SB-5)의 원본 찾기(`syncedOriginalPagesIn`)도.
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -44,6 +44,30 @@ async function originalPageOf(tx: Tx, ctx: SessionContext, blockId: string): Pro
     [blockId.toLowerCase(), ctx.workspaceId, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY],
   )
   return row === null || row.page_id === null || row.lifecycle === null ? null : { id: row.page_id, lifecycle: row.lifecycle }
+}
+
+/** 원본 X 가 든 페이지 A — 읽는 길(SB-5)이 저마다의 주체로 권한을 묻는 재료. */
+export type SyncedOriginalPage = { readonly pageId: string; readonly live: boolean; readonly permScopeId: string }
+
+/**
+ * 원본 X 들의 페이지 — X 의 행이 살아 있는 원본일 때만(해석 ⑨ 와 같은 술어 · 이 워크스페이스에 묶인다 — SY6). **권한을 보지 않는다** — 읽는
+ * 길(내보내기 · AI · API 쓰기)이 그 길의 주체로 묻는다(SY10 · 정본 [SB-5 고침]). 공개 화면은 이 함수를 쓰지 않는다(자기 질의).
+ */
+export async function syncedOriginalPagesIn(tx: Tx, workspaceId: string, ids: readonly string[]): Promise<Map<string, SyncedOriginalPage>> {
+  const wanted = [...new Set(ids.filter(isUuid).map((id) => id.toLowerCase()))]
+  if (wanted.length === 0) return new Map()
+  const rows = await tx.query<{ id: string; perm_scope_id: string; page_id: string; lifecycle: string }>(
+    `SELECT b.id, b.perm_scope_id, p.id AS page_id, p.lifecycle::text AS lifecycle
+       FROM block b
+       JOIN LATERAL (
+         SELECT a.id, a.lifecycle FROM unnest(b.ancestor_path) WITH ORDINALITY AS t(id, depth)
+           JOIN block a ON a.id = t.id AND a.type = 'page'
+          ORDER BY t.depth DESC LIMIT 1
+       ) p ON true
+      WHERE b.id = ANY($1::uuid[]) AND b.workspace_id = $2 AND b.type = $3 AND NOT (b.properties ? $4)`,
+    [wanted, workspaceId, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY],
+  )
+  return new Map(rows.map((r) => [r.id, { pageId: r.page_id, live: r.lifecycle === 'live', permScopeId: r.perm_scope_id }]))
 }
 
 /** 해석(⑨) — 머리말의 넷. */

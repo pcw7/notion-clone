@@ -200,7 +200,6 @@ const p = (text = 'a', extra: Record<string, unknown> = {}) => ({ type: 'paragra
 
 test('★ 받기의 거부 — 우리에게 없는 타입은 그 이름을 말한다 · child_page 는 POST /v1/pages 로', () => {
   reject([{ type: 'link_to_page', link_to_page: { page_id: PAGE } }], /body\.children\[0\]\.type "link_to_page" is not supported/)
-  reject([{ synced_block: { synced_from: null } }], /"synced_block" is not supported/)
   reject([{ type: 'child_page', child_page: { title: '새' } }], /child_page.*POST \/v1\/pages/)
   reject([{ type: 'child_database', child_database: { title: '표' } }], /"child_database" cannot be created/)
   reject([{ type: 'foo', foo: {} }], /type should be a block type, instead was `"foo"`/)
@@ -328,4 +327,43 @@ test('★ 고치기 — 준 키만 바꾼다 · 글을 주지 않으면 textChan
     assert.ok(!r.ok, JSON.stringify(payload))
     if (!r.ok) assert.match(r.message, pattern)
   }
+})
+
+test('★ 동기화 블록 만들기(SB-5 · ⑳) — 원본(빈 것은 빈 문단) · 사본(원본 id 는 DB 가 본다) · 안에는 못 둔다 · 고치기는 400', () => {
+  const X = '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d'
+  const made = parseApiChildren(
+    [
+      { type: 'synced_block', synced_block: { synced_from: null, children: [p('원본 글')] } },
+      { synced_block: { synced_from: null } },
+      { type: 'synced_block', synced_block: { synced_from: { type: 'block_id', block_id: X.toUpperCase() } } },
+      { type: 'toggle', toggle: { rich_text: [], children: [{ type: 'synced_block', synced_block: { synced_from: { block_id: X } } }] } },
+    ],
+    'body.children', 'page', nextId,
+  )
+  assert.ok(made.ok, made.ok ? '' : made.message)
+  if (!made.ok) return
+  const [original, empty, copy, toggle] = made.blocks
+  assert.deepEqual([original!.type, original!.properties, original!.children!.map((c) => c.type)], ['synced_block', {}, ['paragraph']])
+  assert.deepEqual(empty!.children!.map((c) => [c.type, c.title]), [['paragraph', []]], '빈 원본은 빈 문단 하나(⑥ⓐ)')
+  assert.deepEqual([copy!.properties, copy!.children], [{ synced_from: X }, []], '사본 — 소문자 uuid · 자식 없음')
+  assert.deepEqual(toggle!.children![0]!.properties, { synced_from: X })
+  assert.deepEqual(made.syncedRefs.map((r) => r.path), ['body.children[2].synced_block.synced_from.block_id', 'body.children[3].toggle.children[0].synced_block.synced_from.block_id'])
+
+  reject([{ type: 'synced_block', synced_block: {} }], /synced_block\.synced_from should be defined/)
+  reject([{ type: 'synced_block', synced_block: { synced_from: 'x' } }], /synced_from should be null or an object/)
+  reject([{ type: 'synced_block', synced_block: { synced_from: { type: 'page_id', block_id: X } } }], /synced_from\.type should be "block_id"/)
+  reject([{ type: 'synced_block', synced_block: { synced_from: { block_id: 'nope' } } }], /synced_from\.block_id should be a valid uuid/)
+  reject([{ type: 'synced_block', synced_block: { synced_from: { block_id: X }, children: [p()] } }], /children should be not present — a synced_block copy has no children/)
+  reject([{ type: 'synced_block', synced_block: { synced_from: null, color: 'red' } }], /synced_block\.color should be not present/)
+  // SY5 — 요청 안에서 동기화 블록 밑 · 붙이는 곳이 동기화 블록 안
+  reject([{ type: 'synced_block', synced_block: { synced_from: null, children: [{ type: 'synced_block', synced_block: { synced_from: { block_id: X } } }] } }], /"synced_block" cannot be placed inside a synced_block/)
+  reject([{ type: 'synced_block', synced_block: { synced_from: { block_id: X } } }], /"synced_block" cannot be placed inside a synced_block/, 'synced_block')
+  const inside = parseApiChildren([{ type: 'synced_block', synced_block: { synced_from: null } }], 'body.children', 'toggle', nextId, { insideSynced: true })
+  assert.ok(!inside.ok && /cannot be placed inside a synced_block/.test(inside.message), '조상이 동기화 블록이면')
+  assert.ok(parseApiChildren([p()], 'body.children', 'toggle', nextId, { insideSynced: true }).ok, '보통 블록은 된다')
+  // 깊이 — 보통과 같다(2단)
+  reject([{ type: 'toggle', toggle: { rich_text: [], children: [{ type: 'toggle', toggle: { rich_text: [], children: [{ type: 'synced_block', synced_block: { synced_from: null, children: [p()] } }] } }] } }], /nest children at most 2 levels/)
+  // 고치기는 400
+  const update = parseApiBlockUpdate(block('synced_block'), { synced_from: null }, 'body.synced_block')
+  assert.ok(!update.ok && /blocks of type "synced_block" are not editable/.test(update.message))
 })

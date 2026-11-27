@@ -19,6 +19,9 @@ export const SYNCED_BLOCK_TYPE = 'synced_block' as const
 /** 사본이 가리키는 원본 — 원본 · 다른 타입에는 없다(SY2). */
 export const SYNCED_FROM_KEY = 'synced_from'
 
+/** 읽는 길(공개 · AI — SB-5 · 정본 ⑲ [SB-5 고침])이 한 번에 펼치는 원본 페이지 수 — 넘는 것은 펴지 않는다. */
+export const SYNCED_EXPAND_PAGES = 20
+
 /** CHECK `ck_synced_from_shape` 의 모양 — 소문자 uuid. */
 const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 

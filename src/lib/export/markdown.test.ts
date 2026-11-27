@@ -538,6 +538,7 @@ describe('④ 참조와 잃은 것', () => {
       omittedPages: 0,
       omittedImages: 0,
       omittedFiles: 0,
+      omittedSyncedBlocks: 0,
     })
   })
 })

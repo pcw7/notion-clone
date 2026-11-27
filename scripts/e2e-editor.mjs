@@ -40973,6 +40973,139 @@ async function main() {
       await sleep(500)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('동기화 블록 — 읽는 길 (SB-5 · F-01-11)')) { try {
+      // 원본 페이지 A(소유자만의 페이지)의 원본 X 를 B(워크스페이스 페이지)의 사본이 가리킨다. ① 내보내기 — 소유자의 ZIP 에는 사본 자리에 원본의
+      // 글 · A 를 볼 수 없는 동료의 ZIP 에는 주석 한 줄(A 의 글 · id 없음) · 보고서의 omitted_synced_blocks. ② 공개 — B 만 게시하면 공개 화면에
+      // A 의 글 · id 가 없다 · A 도 게시하면 사본 자리에 원본의 글. ③ API 쓰기 — 토큰으로 원본을 만들면 B 에 원본이 선다 · 동료의 토큰은 볼 수
+      // 없는 X 의 사본을 400 으로 거부(없는 원본과 같은 글) · 소유자의 토큰이 만든 사본은 화면에서 X 의 내용을 그린다. ④ 오프라인 — 브라우저가
+      // 오프라인이면 사본은 "오프라인에서는 원본을 볼 수 없습니다" 자리 · 다시 연결되면 내용. 스스로 데이터를 만든다 — E2E_ONLY 로 홀로 돈다.
+      // 끝에 게시를 내린다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (body, headers = authed) => (await (await fetch(pagesUrl, { method: 'POST', headers, body: JSON.stringify(body) })).json()).page.id
+      const pageA = await newPage({ title: `읽는 길 원본 ${stamp}`, privateTop: true })
+      const pageB = await newPage({ title: `읽는 길 사본 ${stamp}` })
+      const word = `원본글${stamp % 100000}`
+      const sc = { x: randomUUID(), a1: randomUUID(), b1: randomUUID(), copy: randomUUID(), bEnd: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(pageA, { blocks: [{ id: sc.x, type: 'synced_block', title: [], properties: {}, format: {}, children: [para(sc.a1, word)] }] })
+      await saveBody(pageB, { blocks: [para(sc.b1, 'B 앞'), { id: sc.copy, type: 'synced_block', title: [], properties: { synced_from: sc.x }, format: {}, children: [] }, para(sc.bEnd, 'B 끝')] })
+      const mate = await joinAs(workspaceId, await createUser(`읽는 길의 동료 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      /** A 의 것이 없는가 — 글 · 원본 안의 블록 id · A 의 페이지 id. */
+      const noA = (text) => !text.includes(word) && !text.includes(sc.a1) && !text.includes(pageA)
+      const publish = async (page, on) => (await fetch(`${pagesUrl}/${page}/publish`, { method: on ? 'PUT' : 'DELETE', headers: authed })).json().catch(() => ({}))
+      const COPY = (id) => `[data-block-id="${id}"] .blk-synced-copy`
+
+      /** B 의 ZIP — 마크다운 글 · 보고서. */
+      const exportAs = async (headers) => {
+        const res = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${pageB}`, { headers })
+        const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-synced-export-'))
+        try {
+          const file = join(dir, 'export.zip')
+          writeFileSync(file, Buffer.from(await res.arrayBuffer()))
+          const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+          const python = findPython()
+          const zip = python === null
+            ? { texts: {}, error: 'python 을 찾지 못했다' }
+            : runPythonJson(python, [
+                'import sys, json, zipfile',
+                'z = zipfile.ZipFile(sys.argv[1])',
+                "print(json.dumps({'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith('.md') or n.endswith('.json')}}))",
+              ].join('\n'), [file])
+          const texts = Object.entries(zip.texts ?? {})
+          const markdown = texts.filter(([n]) => n.endsWith('.md')).map(([, t]) => t).join('\n')
+          const report = JSON.parse(texts.find(([n]) => n.endsWith('_export_report.json'))?.[1] ?? '{}')
+          return { status: res.status, markdown, report, error: zip.error ?? '' }
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+
+      try {
+        // ① 내보내기
+        const own = await exportAs(authed)
+        check('★ 내보내기 — 원본을 읽을 수 있는 사람의 ZIP 에는 사본 자리에 원본의 글',
+          own.status === 200 && new RegExp(`B 앞[\\s\\S]*${word}[\\s\\S]*B 끝`).test(own.markdown) && own.report.markdown_losses?.omitted_synced_blocks === 0,
+          `${own.status} ${own.error} ${JSON.stringify(own.markdown.slice(0, 300))}`)
+        const theirs = await exportAs(asMate)
+        check('★ 내보내기 — 원본을 볼 수 없는 동료의 ZIP 에는 주석 한 줄 · A 의 글 · id 가 없다 · 보고서가 생략으로 센다',
+          theirs.status === 200 && theirs.markdown.includes('<!-- synced block omitted -->') && noA(theirs.markdown) && theirs.report.markdown_losses?.omitted_synced_blocks === 1,
+          `${theirs.status} ${theirs.error} ${JSON.stringify(theirs.markdown.slice(0, 300))} ${JSON.stringify(theirs.report.markdown_losses ?? {})}`)
+
+        // ② 공개
+        const token = (await publish(pageB, true))?.token
+        const publicHtml = async () => (token ? await (await fetch(`${BASE}/p/${token}`)).text() : '')
+        const closedHtml = await publicHtml()
+        check('★ 공개 — 원본 페이지가 웹에 열려 있지 않으면 사본을 뺀다(공개 화면에 A 의 글 · id 가 없다)',
+          typeof token === 'string' && closedHtml.includes('B 끝') && noA(closedHtml) && !closedHtml.includes(sc.copy), `토큰 ${token ?? '없음'} · A 의 것 ${!noA(closedHtml)}`)
+        await publish(pageA, true)
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        const shown = await waitFor(`/B 앞[\\s\\S]*${word}[\\s\\S]*B 끝/.test(document.body.innerText)`, 15000)
+        check('★ 공개 — 원본 페이지도 게시하면 사본 자리에 원본의 글(공개 화면)', shown, await evaluate(`document.body.innerText.slice(0, 300)`))
+
+        // ③ API 쓰기
+        const VERSION = '2025-09-03'
+        const tokenFor = async (headers) =>
+          (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/api-tokens`, { method: 'POST', headers, body: JSON.stringify({ name: `SB-5 e2e ${stamp}` }) })).json().catch(() => null))?.token
+        const v1As = (apiToken) => async (method, path, body) => {
+          const res = await fetch(`${BASE}${path}`, {
+            method,
+            headers: { authorization: `Bearer ${apiToken}`, 'notion-version': VERSION, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+            body: body === undefined ? undefined : JSON.stringify(body),
+          })
+          return { status: res.status, body: await res.json().catch(() => null) }
+        }
+        const ownerApi = v1As(await tokenFor(authed))
+        const mateApi = v1As(await tokenFor(asMate))
+        const copyReq = (id) => ({ type: 'synced_block', synced_block: { synced_from: { type: 'block_id', block_id: id } } })
+        const made = await ownerApi('PATCH', `/v1/blocks/${pageB}/children`, {
+          children: [{ type: 'synced_block', synced_block: { synced_from: null, children: [{ type: 'paragraph', paragraph: { rich_text: [{ text: { content: `API 원본 ${stamp}` } }] } }] } }],
+        })
+        const madeOriginal = made.body?.results?.[0]
+        const bodyB = JSON.stringify((await readBody(pageB)).doc)
+        check('★ API 쓰기 — synced_from: null 이면 원본이 선다(자식 그대로 · has_children)',
+          made.status === 200 && madeOriginal?.type === 'synced_block' && madeOriginal?.has_children === true && bodyB.includes(`API 원본 ${stamp}`), JSON.stringify(made.body).slice(0, 300))
+        const matePage = await newPage({ title: `읽는 길 동료 ${stamp}` }, asMate)
+        const refused = await mateApi('PATCH', `/v1/blocks/${matePage}/children`, { children: [copyReq(sc.x)] })
+        const unknownId = randomUUID()
+        const unknown = await mateApi('PATCH', `/v1/blocks/${matePage}/children`, { children: [copyReq(unknownId)] })
+        check('★ API 쓰기 — 볼 수 없는 원본의 사본은 400 · 없는 원본과 같은 글(존재를 가르지 않는다) · A 의 것이 없다',
+          refused.status === 400 && unknown.status === 400 && String(refused.body?.message).replace(sc.x, '<id>') === String(unknown.body?.message).replace(unknownId, '<id>') && noA(JSON.stringify(refused.body)),
+          `${refused.status} ${refused.body?.message} | ${unknown.status}`)
+        const copied = await ownerApi('PATCH', `/v1/blocks/${pageB}/children`, { children: [copyReq(sc.x)] })
+        const apiCopy = copied.body?.results?.[0]?.id ?? ''
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageB}` })
+        const drawn = await waitFor(`document.querySelector('${COPY(apiCopy)}')?.dataset.copyState === 'ok' && document.querySelector('${COPY(apiCopy)}').innerText.includes('${word}')`, 15000)
+        check('★ API 쓰기 — 원본을 볼 수 있는 토큰이 만든 사본은 화면에서 원본의 내용을 그린다', copied.status === 200 && drawn,
+          `${copied.status} ${JSON.stringify(copied.body).slice(0, 200)} · ${await evaluate(`document.querySelector('${COPY(apiCopy)}')?.innerText ?? '없음'`)}`)
+        const toCopy = await ownerApi('PATCH', `/v1/blocks/${sc.copy}/children`, { children: [{ type: 'paragraph', paragraph: { rich_text: [] } }] })
+        const patched = await ownerApi('PATCH', `/v1/blocks/${sc.x}`, { synced_block: { synced_from: null } })
+        check('API 쓰기 — 사본에 붙이기 · synced_block 고치기는 400', toCopy.status === 400 && patched.status === 400, `${toCopy.status} · ${patched.status}`)
+
+        // ④ 오프라인 — 브라우저가 오프라인이라고 말하게 하고 B 를 연다 → 자리 · 다시 연결되면 내용
+        const { identifier: offlineScript } = await send('Page.addScriptToEvaluateOnNewDocument', {
+          source: `Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => window.__e2eOnline === true })`,
+        })
+        try {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageB}` })
+          const placed = await waitFor(`document.querySelector('${COPY(sc.copy)}')?.dataset.copyState === 'offline'`, 15000)
+          const placeText = await evaluate(`document.querySelector('${COPY(sc.copy)}')?.innerText ?? ''`)
+          check('★ 오프라인 — 사본은 "오프라인에서는 원본을 볼 수 없습니다" 자리 · 원본의 글이 없다', placed && placeText.includes('오프라인에서는 원본을 볼 수 없습니다') && !placeText.includes(word), placeText)
+          await evaluate(`window.__e2eOnline = true; window.dispatchEvent(new Event('online'))`)
+          check('★ 오프라인 — 다시 연결되면 원본의 내용을 그린다',
+            await waitFor(`document.querySelector('${COPY(sc.copy)}')?.dataset.copyState === 'ok' && document.querySelector('${COPY(sc.copy)}').innerText.includes('${word}')`, 15000),
+            await evaluate(`document.querySelector('${COPY(sc.copy)}')?.innerText ?? '없음'`))
+        } finally {
+          await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: offlineScript }).catch(() => undefined)
+        }
+      } finally {
+        await publish(pageA, false).catch(() => undefined)
+        await publish(pageB, false).catch(() => undefined)
+      }
+      await sleep(500)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

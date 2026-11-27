@@ -44,7 +44,7 @@ import { textRun, toPlainText, type RichTextRun } from '../contracts/rich-text.t
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { inlineExtensionFor, isAllowedMime, isVideoMime } from '../file/limits.ts'
 import { cellPlainText, tableToCsv, type CsvColumn } from './csv.ts'
-import { pageToMarkdown, type MarkdownLinks, type MarkdownLosses } from './markdown.ts'
+import { emptyLosses, pageToMarkdown, type MarkdownLinks, type MarkdownLosses } from './markdown.ts'
 import { encodeHrefSegment, resolveNames, safeFileName, type NameRequest } from './names.ts'
 import { internalTargetOf, relativeHref } from './internal-links.ts'
 import { MAX_ZIP_BYTES, MAX_ZIP_ENTRIES } from './zip.ts'
@@ -141,6 +141,8 @@ export type ExportReport = {
     readonly omitted_images: number
     /** `links.file` 이 뺀 파일 블록(F-1a) — 파일 정보를 찾지 못한 올린 파일. */
     readonly omitted_files: number
+    /** 원본을 읽을 수 없거나 없는 동기화 블록 사본(SB-5) — 주석 한 줄만 남겼다. */
+    readonly omitted_synced_blocks: number
   }
   readonly csv_guarded_formulas: number
   /** 흘려보내며 저장소에서 읽지 못한 첨부. 계획 단계에서는 0 이고 `archive.ts` 가 채운다. */
@@ -171,7 +173,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
   const { untitled } = options
   const entries: ExportEntry[] = []
   const visited = new Set<string>()
-  const losses: Counters = { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0, omittedFiles: 0 }
+  const losses: Counters = { ...emptyLosses() }
   const counts = { pages: 0, databases: 0, rows: 0, attachments: 0 }
   let renamedFiles = 0
   let guardedFormulas = 0
@@ -375,6 +377,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
         omitted_pages: losses.omittedPages,
         omitted_images: losses.omittedImages,
         omitted_files: losses.omittedFiles,
+        omitted_synced_blocks: losses.omittedSyncedBlocks,
       },
       csv_guarded_formulas: guardedFormulas,
       missing_attachments: 0,
@@ -496,6 +499,7 @@ export function reportNotes(report: ExportReport): string[] {
   if (m.omitted_pages > 0) notes.push(`볼 수 없거나 범위 밖인 하위 페이지 참조 ${m.omitted_pages}개를 문서에서 뺐다.`)
   if (m.omitted_images > 0) notes.push(`파일 정보를 찾지 못한 이미지 ${m.omitted_images}개를 문서에서 뺐다.`)
   if (m.omitted_files > 0) notes.push(`파일 정보를 찾지 못한 파일 ${m.omitted_files}개를 문서에서 뺐다.`)
+  if (m.omitted_synced_blocks > 0) notes.push(`볼 수 없거나 없는 원본의 동기화 블록 ${m.omitted_synced_blocks}개는 내용 없이 HTML 주석만 남겼다.`)
   if (report.missing_attachments > 0) {
     notes.push(`저장소에서 읽지 못한 첨부 파일 ${report.missing_attachments}개는 ZIP 에 없다 — 문서 안의 그 링크는 열리지 않는다.`)
   }

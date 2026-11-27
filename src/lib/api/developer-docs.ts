@@ -185,7 +185,9 @@ export const DIFFERENCES: readonly { readonly title: string; readonly items: rea
     title: '블록 (⑦)',
     items: [
       '지운 본문 블록은 되살릴 수 없다 — 버전 기록으로 되돌린다(in_trash: false 는 페이지만).',
-      '토글 헤딩 · 이모지가 아닌 콜아웃 아이콘 · link_to_page · synced_block · pdf · audio · template 쓰기는 400.',
+      '토글 헤딩 · 이모지가 아닌 콜아웃 아이콘 · link_to_page · pdf · audio · template 쓰기는 400.',
+      'synced_block 은 붙이기(PATCH …/children · POST /v1/pages 의 children)로 만든다 — synced_from: null 이면 원본(children 이 없으면 빈 문단 하나) · synced_from: {block_id} 면 사본(children 없음 · 이 토큰이 원본 페이지를 볼 수 있어야 한다 — 아니면 없는 원본과 같은 400). 동기화 블록 안에 동기화 블록 · 사본에 붙이기 · synced_block 고치기는 400.',
+      '사본은 has_children: false 이고 자식 목록이 빈 배열이다 — 내용은 synced_from.block_id 의 자식을 읽는다(원본 페이지를 볼 수 있을 때만).',
       '버튼 · 출처 없는 미디어는 unsupported 로 읽힌다.',
     ],
   },

@@ -11,6 +11,7 @@
  *   · 하위 페이지 참조 — 열 수 없는 것은 문서에서 뺀다
  *   · 페이지 멘션 — 열 수 없는 것은 지도에 없다(화면이 "비공개 페이지"로 가린다 · 제목을 싣지 않는다)
  *   · 사람 멘션 — 이 워크스페이스의 사람만 이름을 준다(멘션의 id 는 저장된 값이다 — 밖의 사람 이름을 조회하는 길로 쓰이지 않게)
+ *   · 동기화 블록 사본(SB-5) — 원본 페이지가 지금 웹에 열려 있을 때만 원본의 내용으로 편다 · 아니면 뺀다
  */
 
 import { readTitle } from '../block/page.ts'
@@ -26,7 +27,8 @@ import { readLinkPreviews, type LinkPreview } from '../link-preview/link-preview
 import { customEmojiIdOfRun, mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
-import { openablePagesIn, resolvePublicPageIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE, SYNCED_EXPAND_PAGES, SYNCED_FROM_KEY, syncedFromOf } from '../block/synced-block.ts'
+import { openablePagesIn, resolvePublicPageIn, webExposureIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
 import type { WindowQuery } from './public-window.ts'
 import { publicTableOf, readPublicRowPropertiesIn, readPublicTableIn, type PublicRowProperties, type PublicTable } from './public-database.ts'
 import { resolveSiteTokenIn, siteBasePath } from './site.ts'
@@ -104,7 +106,9 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
 
     // 하위 페이지 · 인라인 데이터베이스(I-4b) 참조 · 페이지 멘션 중 이 토큰으로 열 수 있는 것
     const refIds = scope.filter((row) => isRefType(row.type)).map((row) => row.id)
-    const draft = rowsToDoc(target.pageId, scope.filter((row) => row.lifecycle === 'live'))
+    // 동기화 블록 사본(SB-5 · 정본 [보강 SB-0] ⑱ [SB-5 고침] ⓑ) — 원본 페이지가 지금 웹에 열려 있을 때만 원본의 내용으로 펴고 아니면 뺀다. 멘션 ·
+    // 파일 · 북마크를 모으기 전에 편다(펼친 내용도 이 링크의 닫힌 참조 거르기를 지난다 · 원본 안에는 참조가 없다 — SY5)
+    const draft = await withPublicSyncedContents(tx, target.workspaceId, rowsToDoc(target.pageId, scope.filter((row) => row.lifecycle === 'live')))
     const mentions = mentionsOf(draft.blocks)
     const openable = await openablePagesIn(tx, target.workspaceId, target.rootId, [...refIds, ...mentions.pages])
     // 본문 안의 인라인 데이터베이스(I-4b) — 열 수 있는 것마다 공개 표(공개 표와 같은 규칙 · 서버가 한 번에 그린다). 소유한 소스가 없는
@@ -206,6 +210,67 @@ async function readScope(tx: Tx, workspaceId: string, pageId: string): Promise<S
      SELECT * FROM doc_scope`,
     [pageId, workspaceId, PAGE_TYPE],
   )
+}
+
+/**
+ * 사본을 원본의 내용으로 편다(SB-5 · ⑱) — 이 파일의 질의로 원본 X 의 페이지 A 를 찾고(X 의 행이 살아 있는 원본 · 조상 중 가장 깊은 페이지) A 가
+ * **지금 웹에 열려 있으면**(`webExposureIn(…).open` — 어느 게시 루트든 · 상속 절단 · 휴지통 · 테이크다운 · 정책) X 의 하위 행을 자식으로 단다.
+ * 아니면 사본을 블록째 뺀다(공개로 보는 사람에게 자리 · 접근 요청을 보이지 않는다). 원본 페이지는 문서 차례로 `SYNCED_EXPAND_PAGES` 개까지.
+ */
+async function withPublicSyncedContents(tx: Tx, workspaceId: string, doc: EditorDoc): Promise<EditorDoc> {
+  const wanted: string[] = []
+  const collect = (blocks: readonly EditorBlock[]): void => {
+    for (const block of blocks) {
+      const from = block.type === SYNCED_BLOCK_TYPE ? syncedFromOf(block.properties, block.id) : null
+      if (from !== null) wanted.push(from)
+      else collect(block.children ?? [])
+    }
+  }
+  collect(doc.blocks)
+  const open = new Map<string, readonly EditorBlock[]>()
+  if (wanted.length > 0) {
+    const originals = await tx.query<{ id: string; page_id: string }>(
+      `SELECT x.id, p.id AS page_id
+         FROM block x
+         JOIN LATERAL (
+           SELECT a.id FROM unnest(x.ancestor_path) WITH ORDINALITY AS t(id, depth)
+             JOIN block a ON a.id = t.id AND a.type = 'page'
+            ORDER BY t.depth DESC LIMIT 1
+         ) p ON true
+        WHERE x.id = ANY($1::uuid[]) AND x.workspace_id = $2 AND x.type = $3 AND NOT (x.properties ? $4)`,
+      [[...new Set(wanted)], workspaceId, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY],
+    )
+    const pageOf = new Map(originals.map((r) => [r.id, r.page_id]))
+    const pages = [...new Set(wanted.flatMap((x) => (pageOf.has(x) ? [pageOf.get(x)!] : [])))].slice(0, SYNCED_EXPAND_PAGES)
+    const exposed = new Set<string>()
+    for (const page of pages) if ((await webExposureIn(tx, workspaceId, page)).open) exposed.add(page)
+    const shown = originals.filter((r) => exposed.has(r.page_id)).map((r) => r.id)
+    if (shown.length > 0) {
+      const rows = await tx.query<BodyRow & { ancestor_path: string[] }>(
+        `SELECT b.id, b.type, b.parent_id, b.order_key, b.properties, b.format, b.ancestor_path
+           FROM block b
+          WHERE b.workspace_id = $1 AND b.ancestor_path && $2::uuid[] AND b.parent_type = 'block' AND b.lifecycle = 'live'`,
+        [workspaceId, shown],
+      )
+      const set = new Set(shown)
+      const under = new Map<string, BodyRow[]>(shown.map((x) => [x, []]))
+      for (const row of rows) {
+        const x = row.ancestor_path.find((id) => set.has(id))
+        if (x !== undefined) under.get(x)!.push(row)
+      }
+      for (const [x, list] of under) open.set(x, rowsToDoc(x, list).blocks)
+    }
+  }
+  const walk = (blocks: readonly EditorBlock[]): EditorBlock[] =>
+    blocks.flatMap((block) => {
+      if (block.type !== SYNCED_BLOCK_TYPE || !isSyncedCopyProps(block.properties)) {
+        return [block.children && block.children.length > 0 ? { ...block, children: walk(block.children) } : block]
+      }
+      const from = syncedFromOf(block.properties, block.id)
+      const content = from === null ? undefined : open.get(from)
+      return content === undefined ? [] : [{ ...block, children: content }]
+    })
+  return { blocks: walk(doc.blocks) }
 }
 
 /** 열 수 없는 하위 페이지 · 인라인 데이터베이스 참조를 뺀다 — 자식까지(참조는 자식이 없지만 계약 밖의 값에도 안전하게). */
