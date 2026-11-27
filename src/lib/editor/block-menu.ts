@@ -47,6 +47,8 @@ import { blockTypeOf, containerAt, findContainerById } from './pm-blocks.ts'
 import { colorable, setBlockColorAt } from './block-color.ts'
 import { colorLabel } from './color-names.ts'
 import { blockTypeLabel } from './slash-menu.ts'
+import { canWrapInSyncedBlock, isSyncedOriginal } from './synced-block.ts'
+import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { tableShape, type TableEdit } from './table.ts'
 import { reducesMotion } from '../settings/device-preferences.ts'
 
@@ -89,6 +91,9 @@ export type BlockMenuAction =
   | { readonly kind: 'embed_swap'; readonly blockId: string }
   // 심플 테이블(Phase 2 1d-2 · F-01-18) — 머리 줄 · 머리 열 · 행 · 열. 블록 메뉴의 '표' 와 셀 위 손잡이 메뉴가 같은 동작이다.
   | { readonly kind: 'table_edit'; readonly blockId: string; readonly change: TableEdit }
+  // 동기화 블록(SB-1) — 고른 블록들을 새 원본으로 감싼다(변환 목록의 끝) · 원본의 껍데기를 벗긴다(사본 없는 원본 ⑫ⓒ).
+  | { readonly kind: 'synced_wrap' }
+  | { readonly kind: 'synced_unsync'; readonly blockId: string }
 
 export type MenuItem = {
   readonly id: string
@@ -137,6 +142,8 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps, ownHosts: 
     checked: blocks.length > 0 && blocks.every((b) => b.type === type),
     action: { kind: 'turn_into', type },
   }))
+  // 동기화 블록(SB-1 · 정본 ⑪ⓐ) — 타입 변환이 아니라 감싸기다. 목록 끝에 둔다(`Mod-Alt-숫자` 의 자리를 밀지 않는다).
+  turnInto.push({ id: `turn_into:${SYNCED_BLOCK_TYPE}`, label: '동기화 블록', enabled: canWrapInSyncedBlock(state), action: { kind: 'synced_wrap' } })
 
   const paintable = blocks.filter((b) => colorable(b.type))
   const currentColor = (b: (typeof blocks)[number]): Color =>
@@ -195,6 +202,10 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps, ownHosts: 
     action: { kind: 'embed_swap', blockId: only?.id ?? '' },
   }
 
+  // 동기화 해제(SB-1 · ⑫ⓒ) — 원본 하나를 골랐을 때. 자리는 늘 있다.
+  const original = only !== null && only.type === SYNCED_BLOCK_TYPE && isSyncedOriginal(state.doc.nodeAt(only.pos)!) ? only : null
+  const unsync: MenuItem = { id: 'synced_unsync', label: '동기화 해제', enabled: original !== null, action: { kind: 'synced_unsync', blockId: original?.id ?? '' } }
+
   return [
     {
       id: 'turn_into',
@@ -207,6 +218,7 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps, ownHosts: 
     { id: 'code', label: '코드', enabled: allCode, children: code },
     { id: 'table', label: '표', enabled: shape !== null, children: table },
     embedSwap,
+    unsync,
     {
       id: 'duplicate',
       label: '복제',

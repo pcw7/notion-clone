@@ -37,6 +37,11 @@
  *   ⑤ 표(Phase 2 1d) — 행은 표의 내용 노드 안에 산다(컨테이너가 아니다). 행이 아닌 것 · 셀이 아닌 것은 버리고, 셀의 인라인은 텍스트
  *      블록과 같은 청소, 셀의 병합 칸(colspan · rowspan · colwidth)은 1 · null(병합은 저장 모양에 자리가 없다), 행 id 는 블록 id 와
  *      같은 규칙(같은 이름 공간이다). 열을 버리지 않는다 — 모자란 행을 채운다
+ *   ⑥ 동기화 블록(SB-1 · 정본 [보강 SB-0] ⑥ — 협업 참여자 · 옛 클라이언트가 쓸 수 있다): ⓐ 자식 없는 원본은 빈 문단 하나(씨앗 id)
+ *      ⓑ 자식을 가진 사본은 자식을 사본 바로 뒤 형제로 ⓒ 동기화 블록 안의 원본은 껍데기를 벗겨 자식을 그 자리에, 사본은 뺀다(내용은
+ *      원본에 있다) ⓓ 동기화 블록 안의 하위 페이지 · 인라인 데이터베이스 참조는 가장 바깥 동기화 블록 바로 뒤로(빼면 X-3 에 따라 그
+ *      페이지가 휴지통으로 간다) ⓔ 모양이 틀린 `synced_from`(소문자 uuid 가 아님 · 자기 id)의 사본은 뺀다. ⓒⓓ 는 타입 이름이 아니라
+ *      레지스트리의 `excludedDescendantTypes` 를 읽는다(깊이에 상관없이 — 범위가 아래로 내려간다)
  *   ③ 동시 편집이 아니어도 생긴다(휴지통 · 다른 본문으로 간 페이지를 가리키는 낡은 참조). 서브트리의 높이와 페이지가 어디
  *      사는지는 문서 밖(DB)에 있어 받았을 때만 본다(`pageRefDepth` · `pageRefs`) — 투영과 그 수선이 넘긴다(HANDOFF §3.2-23 · §3.2-24)
  *
@@ -53,6 +58,7 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 
 import { sanitizeBlockAttrs } from '../block/props.ts'
+import { isSyncedCopyProps, syncedFromOf, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { isRefType, MAX_TREE_DEPTH, MIN_COLUMNS, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import { isPlainRecord, jsonSafe, sameJsonValue, withoutNul } from '../contracts/json-safe.ts'
 import { isUuid } from '../ids.ts'
@@ -137,6 +143,16 @@ export type NormalizeFix =
   | 'table_cells_padded'
   /** 셀의 병합 칸(colspan · rowspan · colwidth)을 1 · null 로 되돌렸다 — 병합은 저장 모양에 자리가 없다. */
   | 'table_cell_reset'
+  /** ⑥ⓐ 자식 없는 동기화 블록(원본) — 빈 문단 하나를 넣었다(씨앗 id · 동기화 관계는 남는다). */
+  | 'synced_original_filled'
+  /** ⑥ⓑ 자식을 가진 사본 — 자식을 사본 바로 뒤 형제로 올렸다(내용은 원본에 있다). */
+  | 'synced_copy_children_lifted'
+  /** ⑥ⓒ 동기화 블록 안(어느 깊이든)의 동기화 블록 — 원본은 껍데기를 벗겨 자식을 그 자리에 두고, 사본은 뺐다. */
+  | 'synced_nested_unwrapped'
+  /** ⑥ⓓ 동기화 블록 안의 하위 페이지 · 인라인 데이터베이스 참조 — 가장 바깥 동기화 블록 바로 뒤로 올렸다. */
+  | 'synced_ref_lifted'
+  /** ⑥ⓔ `synced_from` 이 소문자 uuid 가 아니거나 자기 id 인 사본 — 뺐다(자식이 있었으면 그 자리에 남는다). */
+  | 'synced_copy_dropped'
 
 export type NormalizeResult = {
   /** 스키마에 맞는 문서. 고칠 것이 없었어도 새로 조립한 노드다 — 입력과는 `eq` 로 비교한다. */
@@ -172,6 +188,12 @@ export type NormalizeOptions = {
 
 const { doc: DOC, blockGroup: GROUP, blockContainer: CONTAINER, paragraph: PARAGRAPH } = blockSchema.nodes
 const { [TABLE_ROW_NODE]: TABLE_ROW, [TABLE_CELL_NODE]: TABLE_CELL } = blockSchema.nodes
+
+/**
+ * 배제 범위(⑥ · `excludedDescendantTypes`) — 가장 바깥에서 그 칸을 가진 블록이 연다. 안에서 만난 배제 타입은 껍데기를 벗기거나(ⓒ)
+ * 참조면 `lifted` 에 모아 그 블록 바로 뒤로 올린다(ⓓ).
+ */
+type Scope = { readonly excluded: ReadonlySet<BlockType>; readonly lifted: PmNode[] } | null
 
 /** 컨테이너의 블록 타입. */
 const typeOfContainer = (container: PmNode): BlockType | null =>
@@ -248,6 +270,9 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     claimed.add(id)
     return id
   }
+
+  /** 씨앗 id 의 빈 문단 — 캐럿을 둘 곳(빈 컬럼 ④ · 자식 없는 동기화 원본 ⑥ⓐ). */
+  const seedParagraph = (seed: string): PmNode => CONTAINER.create({ blockId: newId(seed) }, [PARAGRAPH.create({ props: {}, format: {} })])
 
   // 전위 순회 순서로 부른다 — "문서 순서의 첫째가 id 를 갖는다"가 이 호출 순서다.
   const claimId = (raw: unknown, path: string): string => {
@@ -413,20 +438,37 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     return changed ? content.type.create(attrs, inline, content.marks) : content
   }
 
-  /** 그룹 자리에 온 노드들 → 올바른 컨테이너들. `parent` 는 그 그룹을 가진 블록의 타입(최상위면 null) — 컬럼 규칙이 본다. */
-  const containersOf = (nodes: readonly PmNode[], path: string, depth: number, parent: BlockType | null): PmNode[] => {
+  /**
+   * 그룹 자리에 온 노드들 → 올바른 컨테이너들. `parent` 는 그 그룹을 가진 블록의 타입(최상위면 null) — 컬럼 규칙이 본다. `scope` 는 배제
+   * 범위(⑥ — 동기화 블록 안이면 있다).
+   */
+  const containersOf = (nodes: readonly PmNode[], path: string, depth: number, parent: BlockType | null, scope: Scope): PmNode[] => {
     const out: PmNode[] = []
     nodes.forEach((node, i) => {
       const here = `${path}.${i}`
       if (node.type === CONTAINER) {
-        out.push(...containerOf(node, here, depth, parent))
+        out.push(...containerOf(node, here, depth, parent, scope))
       } else if (node.type === GROUP) {
         fixes.push('nested_group_flattened')
-        out.push(...containersOf(childrenOf(node), here, depth, parent))
+        out.push(...containersOf(childrenOf(node), here, depth, parent, scope))
       } else if (isBlockContent(node)) {
         fixes.push('content_wrapped')
         const blockId = newId(`wrap:${here}`)
-        out.push(CONTAINER.create({ blockId }, [cleanContent(node, here)]))
+        const content = cleanContent(node, here)
+        const type = blockTypeOfNode(content.type.name)
+        // ⑥ — 감쌀 내용이 배제 범위의 타입이거나 동기화 블록이면 컨테이너 규칙과 같이 고친다(자식이 없는 맨 내용 노드다).
+        if (scope !== null && scope.excluded.has(type)) {
+          if (isRefType(type)) {
+            fixes.push('synced_ref_lifted')
+            scope.lifted.push(CONTAINER.create({ blockId }, [content]))
+          } else fixes.push('synced_nested_unwrapped')
+        } else if (type === SYNCED_BLOCK_TYPE && isSyncedCopyProps(content.attrs.props)) {
+          if (syncedFromOf(content.attrs.props, blockId) === null) fixes.push('synced_copy_dropped')
+          else out.push(CONTAINER.create({ blockId }, [content]))
+        } else if (type === SYNCED_BLOCK_TYPE) {
+          fixes.push('synced_original_filled')
+          out.push(CONTAINER.create({ blockId }, [content, GROUP.create(null, [seedParagraph(`synced:${here}`)])]))
+        } else out.push(CONTAINER.create({ blockId }, [content]))
       } else {
         fixes.push('stray_dropped')
       }
@@ -468,7 +510,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
   }
 
   /** 컨테이너 하나 → 0개(내용이 없어 자식을 올림) · 1개 · 여러 개(자식을 뒤 형제로 올림). */
-  const containerOf = (node: PmNode, path: string, depth: number, parent: BlockType | null): PmNode[] => {
+  const containerOf = (node: PmNode, path: string, depth: number, parent: BlockType | null, scope: Scope): PmNode[] => {
     const contents: PmNode[] = []
     const inner: PmNode[] = []
     let groups = 0
@@ -483,7 +525,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
 
     if (contents.length === 0) {
       fixes.push('empty_container_lifted')
-      return containersOf(inner, path, depth, parent)
+      return containersOf(inner, path, depth, parent, scope)
     }
     if (contents.length > 1) fixes.push('type_conflict_resolved')
 
@@ -491,19 +533,63 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     const blockId = claimId(node.attrs.blockId, path)
     const content = cleanContent(contents[0], path)
     const type = blockTypeOfNode(content.type.name)
+    // ── 동기화 블록(⑥) — 배제 범위 안의 배제 타입: 참조는 가장 바깥 블록 바로 뒤로(ⓓ — 둘 수 없는 참조면 뺀다), 나머지는 껍데기를 벗겨
+    // 자식을 그 자리에(ⓒ — 사본은 자식이 없어 빠진다). ──
+    if (scope !== null && scope.excluded.has(type)) {
+      const droppable = options.pageRefs !== undefined && !options.pageRefs.has(blockId)
+      if (isRefType(type) && !droppable) {
+        fixes.push('synced_ref_lifted')
+        scope.lifted.push(CONTAINER.create({ blockId }, [content]))
+      } else fixes.push(isRefType(type) ? 'page_ref_dropped' : 'synced_nested_unwrapped')
+      return containersOf(inner, path, depth, parent, scope)
+    }
+    // ⓔ 모양이 틀린 사본은 뺀다(자식이 있었으면 그 자리에 남는다 — 잃지 않는다)
+    const copy = type === SYNCED_BLOCK_TYPE && isSyncedCopyProps(content.attrs.props)
+    if (copy && syncedFromOf(content.attrs.props, blockId) === null) {
+      fixes.push('synced_copy_dropped')
+      return containersOf(inner, path, depth, parent, scope)
+    }
     // ── 컬럼(④) — 설 수 없는 자리의 틀은 풀어 자식을 그 자리에 올린다. ──
     const allowedParents = specOf(type).parentTypes
     if (allowedParents !== undefined && (parent === null || !allowedParents.includes(parent))) {
       fixes.push('column_unwrapped')
-      return containersOf(inner, path, depth, parent)
+      return containersOf(inner, path, depth, parent, scope)
     }
     if (parent !== null && specOf(parent).excludedChildTypes?.includes(type)) {
       fixes.push('nested_columns_flattened')
-      return containersOf(inner, path, depth, parent)
+      return containersOf(inner, path, depth, parent, scope)
     }
-    const nestable = canNest(content) && depth < MAX_TREE_DEPTH
-    let children = containersOf(inner, path, nestable ? depth + 1 : depth, nestable ? type : parent)
+    // 사본은 자식을 갖지 못한다(ⓑ — 자식은 바로 뒤 형제로 · 아래 `!nestable`)
+    const nestable = canNest(content) && depth < MAX_TREE_DEPTH && !copy
+    // 배제 범위 — 가장 바깥에서 그 칸을 가진 블록이 연다. 안쪽에서 또 만나면 바깥 범위에 더한다(올릴 참조는 가장 바깥 뒤로).
+    const own = nestable ? specOf(type).excludedDescendantTypes : undefined
+    const opened: Scope = own !== undefined && scope === null ? { excluded: new Set(own), lifted: [] } : null
+    const inside: Scope = opened ?? (own !== undefined && scope !== null ? { excluded: new Set([...scope.excluded, ...own]), lifted: scope.lifted } : scope)
+    const built = buildContainer(blockId, content, type, inner, groups, path, depth, parent, nestable, copy, nestable ? inside : scope)
+    return opened === null || opened.lifted.length === 0 ? built : [...built, ...opened.lifted]
+  }
+
+  /** `containerOf` 의 나머지 — 자식을 고쳐 컨테이너(와 뒤로 올린 형제)를 짓는다. */
+  const buildContainer = (
+    blockId: string,
+    content: PmNode,
+    type: BlockType,
+    inner: readonly PmNode[],
+    groups: number,
+    path: string,
+    depth: number,
+    parent: BlockType | null,
+    nestable: boolean,
+    copy: boolean,
+    scope: Scope,
+  ): PmNode[] => {
+    let children = containersOf(inner, path, nestable ? depth + 1 : depth, nestable ? type : parent, scope)
     if (groups > 0 && children.length === 0) fixes.push('empty_group_removed')
+    // ⓐ 자식 없는 원본은 빈 문단 하나(씨앗 id — 01 *"빈 synced block — 플레이스홀더, sync 관계는 유지"*)
+    if (nestable && type === SYNCED_BLOCK_TYPE && children.length === 0) {
+      fixes.push('synced_original_filled')
+      children = [seedParagraph(`synced:${path}`)]
+    }
     if (nestable && specOf(type).childTypes?.includes('column')) {
       const { columns, orphans } = regroupColumns(children)
       if (columns.length < MIN_COLUMNS) {
@@ -514,7 +600,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     }
     if (nestable && type === 'column' && children.length === 0) {
       fixes.push('empty_column_filled')
-      children = [CONTAINER.create({ blockId: newId(`column:${path}`) }, [PARAGRAPH.create({ props: {}, format: {} })])]
+      children = [seedParagraph(`column:${path}`)]
     }
 
     // 둘 수 없는 참조는 컨테이너째 뺀다. 참조는 자식을 갖지 못하므로 자식은 이미 이 깊이로 올라와 있다 — 잃지 않는다.
@@ -525,7 +611,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
 
     if (children.length === 0) return [CONTAINER.create({ blockId }, [content])]
     if (!nestable) {
-      fixes.push('children_lifted')
+      fixes.push(copy ? 'synced_copy_children_lifted' : 'children_lifted')
       return [CONTAINER.create({ blockId }, [content]), ...children]
     }
     // 자식 자리(depth + 1)에 들어가지 못하는 참조는 이 컨테이너 뒤로 뺀다. 이 컨테이너를 받은 쪽이 한 단 위에서 다시 본다 —
@@ -557,7 +643,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
   if (rootGroups === 0) fixes.push('root_group_missing')
   else if (rootGroups > 1) fixes.push('groups_merged')
 
-  let containers = containersOf(top, 'r', 1, null)
+  let containers = containersOf(top, 'r', 1, null, null)
   if (containers.length === 0) {
     fixes.push('empty_root_filled')
     containers = [CONTAINER.create({ blockId: newId('fill') }, [PARAGRAPH.create({ props: {}, format: {} })])]

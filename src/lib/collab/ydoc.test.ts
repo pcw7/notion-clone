@@ -79,7 +79,9 @@ describe('① 왕복', () => {
         block('divider', null),
         block('image', null, { properties: { source: { type: 'file', file_id: randomUUID() }, caption: [] } }),
         block('page', '하위 페이지'),
-        block('synced_block', null, { properties: { anything: { nested: [1, 2, 3] } } }),
+        // 모르는 타입 — 전에는 `synced_block` 이었다(SB-1 부터 아는 타입이다 · 그 왕복은 아래 줄)
+        block('link_preview', null, { properties: { anything: { nested: [1, 2, 3] } } }),
+        block('synced_block', null, { children: [block('paragraph', '동기화 내용')] }),
       ],
     }
 

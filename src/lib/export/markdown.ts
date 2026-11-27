@@ -57,6 +57,7 @@ import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
 import { BUTTON_TYPE, buttonPlainText } from '../block/button.ts'
 import { calloutEmojiOf } from '../block/callout.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { isSafeLinkUrl } from '../contracts/link-url.ts'
 import { DATABASE_TYPE, PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
@@ -483,6 +484,7 @@ const NESTS: ReadonlySet<string> = new Set([
   'column_list',
   'column',
   'ai_block',
+  SYNCED_BLOCK_TYPE,
   TABLE_TYPE,
 ])
 
@@ -679,6 +681,16 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     case 'ai_block':
       // AI 블록(AI-5 · F-10-04) — 결과(자식)만 보통의 블록으로. 머리(종류 · 지시 · 단추)는 쓰지 않는다 — 잃은 것으로 세지 않는다(지시는
       // 결과를 만든 도구이지 페이지의 글이 아니다).
+      return renderSiblings(block.children ?? [], ctx).lines
+
+    case SYNCED_BLOCK_TYPE:
+      // 동기화 블록(SB-1 · 정본 [보강 SB-0] ⑰) — 원본은 컬럼처럼 감싸개 없이 내용을 편다(잃은 것이 아니다). 사본은 이 페이지에 내용이
+      // 없다 — 펼치기는 SB-5(원본 페이지를 읽을 수 있을 때) · 그 전에는 주석 한 줄이고 모르는 블록으로 센다. 노션의 `<synced_block>` 은
+      // 쓰지 않는다(우리 가져오기가 읽지 못한다).
+      if (isSyncedCopyProps(block.properties)) {
+        losses.unsupported += 1
+        return ['<!-- synced block omitted -->']
+      }
       return renderSiblings(block.children ?? [], ctx).lines
 
     case TABLE_TYPE: {

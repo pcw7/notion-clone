@@ -57,6 +57,7 @@ import type { CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
 import { balancedRatios, columnListInfo, resolvedRatios, tidyColumns, writeRatios } from './column-edit.ts'
 import { canNestUnder, columnIdAt, describeContainer, findContainerById, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
+import { dropBreaksExclusion } from './synced-block.ts'
 
 /** 그 블록의 부모가 배치의 틀(컬럼)인가 — 앞 · 뒤에 놓으면 그 틀의 직속 자식이 된다. */
 function isLayoutContainerAt(doc: PmNode, pos: number): boolean {
@@ -295,6 +296,9 @@ export function planDrop(
   if (target.kind !== 'child' && isLayoutContainerAt(doc, dest.pos) && sources.some((s) => isColumnListAt(doc, s.pos))) {
     return { kind: 'invalid_target' }
   }
+  // 동기화 블록 안(어느 깊이든)에는 동기화 블록 · 하위 페이지 · 인라인 데이터베이스를 들이지 않는다(SB-1 · SY5 — 레지스트리
+  // `excludedDescendantTypes` · 가드가 한 번 더 막는다).
+  if (dropBreaksExclusion(doc, dest.pos, target.kind, sources.map((s) => s.pos))) return { kind: 'invalid_target' }
 
   // 접힌 블록 안으로 들어가면 화면에서 사라진다 — 펼친다. `planMerge` 가 접힌
   // 대상으로 자식을 이관할 때 앞 블록을 펼치는 것과 같은 판결이다(HANDOFF §3.2-5).

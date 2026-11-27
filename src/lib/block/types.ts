@@ -78,6 +78,13 @@ export type TableBlockType = (typeof TABLE_BLOCK_TYPES)[number]
  */
 export { AI_BLOCK_TYPE } from './ai-block.ts'
 
+/**
+ * 동기화 블록(SB-1 · F-01-11 · 정본 §3.4 [보강 SB-0]) — 원본은 글 · 색 없는 원자 머리 + 자식(= 동기화 내용 · 보통의 블록), 사본은 자식 없는
+ * 원자다(`block/synced-block.ts`). 본문 타입 목록 밖이다 — 바꾸기는 타입 변환이 아니라 고른 블록을 **감싸기**고(`editor/synced-block.ts`)
+ * `/동기화 블록` 은 빈 원본째 넣는다(AI 블록과 같은 사상 · 입력 규칙에 서지 않는다).
+ */
+export { SYNCED_BLOCK_TYPE } from './synced-block.ts'
+
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
 export const PAGE_TYPE = 'page' as const
 
@@ -95,6 +102,7 @@ export type BlockType =
   | LayoutBlockType
   | TableBlockType
   | 'ai_block'
+  | 'synced_block'
   | typeof PAGE_TYPE
   | typeof DATABASE_TYPE
   | typeof UNSUPPORTED_TYPE
@@ -166,6 +174,12 @@ export type BlockTypeSpec = {
   readonly parentTypes?: readonly BlockType[]
   /** 직속 자식이 될 수 없는 타입 — 컬럼 바로 안의 컬럼 목록(중첩 금지 · F-01-12 권장). */
   readonly excludedChildTypes?: readonly BlockType[]
+  /**
+   * **깊이에 상관없이** 자손이 될 수 없는 타입 — 동기화 블록 안의 동기화 블록 · 하위 페이지 · 인라인 데이터베이스(SB-1 · 정본 [보강 SB-0]
+   * ⑤ · SY5 — 그래서 순환이 생길 수 없다). 정규화(⑥ⓒⓓ — 참조는 가장 바깥 그 블록 뒤로 올리고 나머지는 껍데기를 벗긴다) · 검증 · 편집기
+   * (가드 · 끌기 · 붙여넣기 · 바꾸기 · `/`)가 같은 칸을 읽는다 — 타입 이름으로 분기하지 않는다.
+   */
+  readonly excludedDescendantTypes?: readonly BlockType[]
   /**
    * 자식이 **내용 노드 안에** 산다(심플 테이블 — Phase 2 1d). 저장 트리(`EditorDoc` · `block` 행)에서는 보통의 자식이지만 편집기 · Y.Doc
    * 에서는 컨테이너의 자식 그룹이 아니라 내용 노드의 자식(행 노드)이다 — 그래서 편집기에서 이 블록은 자식 없는 줄 하나다(들여쓰기 ·
@@ -248,6 +262,12 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
 
   // AI 블록(AI-5 · F-10-04) — 글 · 색 없는 원자 머리 + 자식(= 결과 · 보통의 블록). 속성은 `block/ai-block.ts`.
   ai_block: { hasRichText: false, canHaveChildren: true, supportsColor: false },
+
+  // 동기화 블록(SB-1 · F-01-11) — 글 · 색 없는 원자 머리 + 자식(원본의 내용). 사본은 자식이 없다(정규화 ⑥ⓑ · `canNestUnder`).
+  synced_block: {
+    hasRichText: false, canHaveChildren: true, supportsColor: false,
+    excludedDescendantTypes: ['synced_block', 'page', 'database'],
+  },
 
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },

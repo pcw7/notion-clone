@@ -6676,6 +6676,70 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT probe')
   }
 
+  console.log('\n[103] 동기화 블록 — 본문 안에만 · synced_from 의 모양 · 역인덱스 (0155 · 0156 / §3.4 [보강 SB-0] SY2 · SY3 · SB-1)')
+  {
+    // 제약 이름으로 떨어져야 거부다 — 다른 까닭(NOT NULL · FK)으로 떨어지면 CHECK 이 없어도 통과하는 검사가 된다(10n-25)
+    const probe = async (label, sql, params, expect) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        const got = e.constraint ?? e.code
+        if (got === expect) ok(`${label} — ${expect} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${expect} 가 아니라 ${got} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'zs103', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const put = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                 VALUES ($1, $2, $3, $4::block_parent_type, $5, $6, $7, $8, $9::jsonb, '{}'::jsonb, now(), now())`
+    const inBody = (id, type, key, properties) => [id, wsId, type, 'block', root, key, [root], root, JSON.stringify(properties)]
+
+    // 정상 — 원본(빈 속성) · 그 자식 · 원본을 가리키는 사본
+    const original = randomUUID()
+    await client.query(put, inBody(original, 'synced_block', 'a0', {}))
+    await client.query(put, [randomUUID(), wsId, 'paragraph', 'block', original, 'a0', [root, original], root, JSON.stringify({ title: [] })])
+    const copy = randomUUID()
+    await client.query(put, inBody(copy, 'synced_block', 'a1', { synced_from: original }))
+    ok('원본(빈 속성) · 원본의 자식 · 원본을 가리키는 사본 정상 삽입')
+    // 원본에 FK 가 없다 — 원본이 없는 사본도 남는다(01 "참조는 살아있고 placeholder")
+    await client.query(put, inBody(randomUUID(), 'synced_block', 'a2', { synced_from: randomUUID() }))
+    ok('없는 원본을 가리키는 사본도 선다(FK 없음 — "원본이 삭제되었다" 자리)')
+
+    await probe('★ SY3: 본문 밖(사이드바 최상위)의 동기화 블록', put,
+      [randomUUID(), wsId, 'synced_block', 'workspace', wsId, 'zs104', [], randomUUID(), '{}'], 'ck_synced_block_in_body')
+    await probe('★ SY2: 다른 타입의 synced_from', put, inBody(randomUUID(), 'paragraph', 'b0', { synced_from: original, title: [] }), 'ck_synced_from_shape')
+    const self = randomUUID()
+    await probe('★ SY2: 자기 id 를 가리키는 사본', put, inBody(self, 'synced_block', 'b1', { synced_from: self }), 'ck_synced_from_shape')
+    await probe('★ SY2: uuid 가 아닌 synced_from', put, inBody(randomUUID(), 'synced_block', 'b2', { synced_from: 'not-a-uuid' }), 'ck_synced_from_shape')
+    await probe('SY2: 대문자 uuid(정화가 소문자로 고친다 — 행은 소문자만)', put, inBody(randomUUID(), 'synced_block', 'b3', { synced_from: original.toUpperCase() }), 'ck_synced_from_shape')
+    await probe('SY2: 문자열이 아닌 synced_from(null 은 키가 없는 것으로 쓴다)', put, inBody(randomUUID(), 'synced_block', 'b4', { synced_from: null }), 'ck_synced_from_shape')
+
+    // 0156 이 검증했다 — NOT VALID 로 남아 있으면 기존 행을 본 적이 없다
+    const { rows: validated } = await client.query(
+      `SELECT conname, convalidated FROM pg_constraint WHERE conrelid = 'block'::regclass AND conname IN ('ck_synced_block_in_body', 'ck_synced_from_shape') ORDER BY conname`,
+    )
+    if (validated.length === 2 && validated.every((r) => r.convalidated)) ok('두 CHECK 이 검증되었다(0156 — 기존 행도 맞다)')
+    else fail(`CHECK 이 없거나 검증되지 않았다: ${JSON.stringify(validated)}`)
+
+    // 역인덱스 — 원본을 가리키는 사본을 찾는 질의의 모양(SB-2 의 해석 · SB-4 의 모두 해제)
+    const { rows: copies } = await client.query(
+      `SELECT id FROM block WHERE workspace_id = $1 AND type = 'synced_block' AND properties ? 'synced_from' AND properties ->> 'synced_from' = $2`,
+      [wsId, original],
+    )
+    const { rows: index } = await client.query(`SELECT indexdef FROM pg_indexes WHERE tablename = 'block' AND indexname = 'ix_block_synced_copies'`)
+    if (copies.length === 1 && copies[0].id === copy && index.length === 1 && /WHERE/.test(index[0].indexdef)) ok('역인덱스(부분 식 인덱스) — 원본 → 사본을 찾는다')
+    else fail(`역인덱스가 틀렸다: ${JSON.stringify({ copies, index })}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

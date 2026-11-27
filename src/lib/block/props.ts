@@ -18,6 +18,8 @@
  *     아니면 지운다(거짓과 같다)
  *   · 콜아웃 아이콘(디자인-4c — 정본 §3.4 [보강] 콜아웃 아이콘 ③): 콜아웃의 `icon` 이 이모지 아이콘 모양이 아니면 지운다(화면은 💡).
  *     다른 타입의 `icon` 은 건드리지 않는다
+ *   · 동기화 블록(SB-1 · 정본 [보강 SB-0] ④): `synced_from` 하나만 남기고(`null` 은 지운다 · 대문자 uuid 는 소문자로), 다른 모든 타입의
+ *     `synced_from` 은 지운다 — 참조 · `unsupported` 도(행이 CHECK `ck_synced_from_shape` 을 지난다)
  *   · format: `normalizeFormat`(타입이 받지 않는 색 · 코드가 아닌 타입의 `code_wrap` · `true` 가 아닌 `code_wrap`)
  *   · 하위 페이지 참조 · `unsupported` 는 JSON 안전만 — 앞은 다른 페이지의 것이고, 뒤는 모르는 타입의 원본 보존이다. 하나 예외:
  *     하위 페이지 참조의 `format` 에서 **페이지 아이콘**(`page_icon` · 8c-1)은 뺀다 — 아이콘은 그 페이지 행의 것이고 본문은 싣지
@@ -37,6 +39,7 @@ import { clampButtonLabel } from './button.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { CALLOUT_ICON_KEY, CALLOUT_TYPE, isCalloutIcon } from './callout.ts'
 import { AI_BLOCK_TYPE, sanitizeAiBlockProps } from './ai-block.ts'
+import { sanitizeSyncedBlockProps, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY } from './synced-block.ts'
 import { isRefType, normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
 import { PAGE_COVER_KEY, PAGE_COVER_POSITION_KEY } from './page-cover.ts'
@@ -64,6 +67,13 @@ function shallowSame(a: Readonly<Record<string, unknown>>, b: Readonly<Record<st
 export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknown>, format: BlockFormat): SanitizedAttrs {
   let nextProps = safeRecord(props)
   const safeFormat = safeRecord(format) as BlockFormat
+  // 동기화 블록(SB-1) — `synced_from` 은 동기화 블록에만 산다(SY2 · CHECK `ck_synced_from_shape`). 다른 타입에 남으면 투영이 CHECK 에 걸려
+  // 그 페이지의 투영이 영구히 멈춘다 — 참조 · `unsupported` 도 지운다(그 행도 같은 CHECK 을 지난다). 동기화 블록은 그 키 하나만 남긴다.
+  if (type === SYNCED_BLOCK_TYPE) nextProps = sanitizeSyncedBlockProps(nextProps)
+  else if (Object.hasOwn(nextProps, SYNCED_FROM_KEY)) {
+    nextProps = { ...nextProps }
+    delete nextProps[SYNCED_FROM_KEY]
+  }
   // 페이지 커버(PC-1)도 같다 — 그 페이지 행의 모습이다(정본 §3.4 [보강 PC-1] ③)
   if (type === PAGE_TYPE && [PAGE_ICON_KEY, PAGE_COVER_KEY, PAGE_COVER_POSITION_KEY, ...PAGE_APPEARANCE_KEYS].some((key) => Object.hasOwn(safeFormat, key))) {
     const rest: BlockFormat = { ...safeFormat }

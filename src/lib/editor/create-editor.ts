@@ -52,6 +52,7 @@ import { containerFor, docToPm } from './pm-adapter.ts'
 import { blockSchema } from './schema.ts'
 import type { EditorBlock } from './document.ts'
 import { slashMenuPlugin } from './slash-menu.ts'
+import { syncedBlockPlugin } from './synced-block.ts'
 import { aiHintPlugin } from './ai-trigger.ts'
 import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
@@ -173,6 +174,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     aiHintPlugin(() => deps.aiHint?.() ?? false),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
+    // 동기화 블록(SB-1) — 안에 동기화 블록 · 하위 페이지 · 데이터베이스를 두는 로컬 편집을 막고, 자식 없는 원본에 빈 문단(`synced-block.ts`)
+    syncedBlockPlugin({ isRemoteChange: deps.isRemoteChange, onNotice: deps.onNotice }),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
     blockIdPlugin(),
   ]
