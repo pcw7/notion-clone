@@ -60,6 +60,7 @@ import { emojiMenuPlugin } from './emoji-menu.ts'
 import { pasteUrlPlugin } from './paste-url.ts'
 import type { EditorDoc } from './document.ts'
 import { presencePlugin } from './presence-plugin.ts'
+import { textLinkEvents } from './text-link-events.ts'
 import { SUGGEST_BLOCK_MESSAGE, suggestionModePlugin, suggestTransaction } from './suggestion-mode.ts'
 import type { LocalPresence } from '../collab/presence.ts'
 
@@ -240,6 +241,8 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     editable: options.editable,
     // ★ IME 게이트가 여기 하나뿐이다 — `createKeydownHandler` 내부.
     handleKeyDown: keys,
+    // 글 속 링크의 Ctrl/Cmd + 클릭 · 가운데 클릭 = 새 탭(NV-3) — 브라우저는 편집 가능한 글 속의 링크를 열지 않는다
+    handleDOMEvents: textLinkEvents,
     nodeViews: createNodeViews(options.deps),
     dispatchTransaction(tr) {
       const self = view ?? (this as unknown as EditorView)

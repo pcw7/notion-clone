@@ -56,6 +56,7 @@ import { readBodyYDocWithSuggestions } from '@/lib/collab/ydoc'
 import { templateTrail } from '@/lib/block/breadcrumb'
 import { upHrefOf } from '@/lib/nav/nav-keys'
 import { NavUpShortcut } from '../../../../nav-shortcut'
+import { StandaloneNav } from '../../../../standalone-nav'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
 import { formulaPlanOf } from '@/lib/database/formula-plan'
@@ -141,22 +142,26 @@ export default async function TemplatePage({
       <DocumentTitle title={templateTitle(database.value.name)} />
       {/* 위 칸 단축키(NV-1 · F-07-12) — Ctrl/Cmd + Shift + U 가 그 데이터베이스로 */}
       <NavUpShortcut href={upHrefOf(trail)} />
-      <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-        {trail.map((item, i) => (
-          <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
-            {i > 0 && <span aria-hidden>/</span>}
-            {item.href === null ? (
-              <span className="text-neutral-400">{item.label}</span>
-            ) : (
-              <Link href={item.href} className="hover:underline underline-offset-4">
-                {/* 표의 아이콘(8c-3b) — 경로는 글자의 줄이라 있을 때만 그린다(머리의 경로와 같다). */}
-                <PageIconView icon={item.icon} className="mr-1" />
-                {item.label}
-              </Link>
-            )}
-          </span>
-        ))}
-      </nav>
+      {/* 독립 창(PWA)의 뒤로 · 앞으로(NV-3) — 그 창에서만 보인다 · 경로 앞 */}
+      <div className="flex min-w-0 items-center gap-2">
+        <StandaloneNav />
+        <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
+          {trail.map((item, i) => (
+            <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
+              {i > 0 && <span aria-hidden>/</span>}
+              {item.href === null ? (
+                <span className="text-neutral-400">{item.label}</span>
+              ) : (
+                <Link href={item.href} className="hover:underline underline-offset-4">
+                  {/* 표의 아이콘(8c-3b) — 경로는 글자의 줄이라 있을 때만 그린다(머리의 경로와 같다). */}
+                  <PageIconView icon={item.icon} className="mr-1" />
+                  {item.label}
+                </Link>
+              )}
+            </span>
+          ))}
+        </nav>
+      </div>
 
       {/*
         08 의 "템플릿 편집 중" 배너. 화면이 표와 거의 같게 생겼는데 고치는 것은 **행이 아니라 템플릿**이므로,

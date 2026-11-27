@@ -43,6 +43,7 @@ import { aiBlockNodeView, type AiBlockViewDeps } from './ai-block-view.ts'
 import { AI_BLOCK_TYPE } from '../block/ai-block.ts'
 import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { syncedBlockNodeView, type SyncedBlockViewDeps } from './synced-block-view.ts'
+import { atomLinkClick } from '../nav/link-click.ts'
 
 export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & BookmarkViewDeps & EmbedViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & CalloutViewDeps & AiBlockViewDeps & SyncedBlockViewDeps & {
   isCollapsed: (blockId: string) => boolean
@@ -80,6 +81,56 @@ export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & Bookma
   pageIcon: (pageId: string) => PageIcon | null
   /** 페이지 멘션 칩 뒤의 "✓"(VF-4) — 검증된 페이지만(만료는 조용히). 없으면 그리지 않는다. */
   pageVerified?: (pageId: string) => boolean
+  /**
+   * 페이지 · 데이터베이스의 앱 안 주소(NV-3 · 정본 §3.9 [보강 NV-0] ⑪ [NV-3 고침]) — 있으면 노드 뷰의 링크(멘션 칩 · 하위 페이지 · 인라인
+   * 데이터베이스 · 미리보기 표)가 진짜 `<a href>` 다(`Ctrl/Cmd` · 가운데 클릭 = 새 탭 · `Shift` = 새 창 — 브라우저가 한다). 없으면(버전
+   * 미리보기 · 오프라인 · 검사) 전처럼 단추 — 옮겨 가지 않는다.
+   */
+  linkHref?: (kind: 'page' | 'database', id: string) => string
+}
+
+/**
+ * 원자 링크의 누르기(NV-3) — 그냥 누르면 막고 앱 안(`open`), 보조 키 · 가운데 단추는 브라우저의 것(`atomLinkClick`). 왼쪽 단추의 mousedown 만
+ * 막는다 — 누르는 순간 캐럿 · 포커스를 옮기지 않게(다른 노드 뷰와 같은 모양). 가운데 단추는 막지 않는다(브라우저의 새 탭). 끌기는 끈다 —
+ * 링크를 끌면 주소가 끌려 나가 편집기의 끌기와 엉킨다. 칩 · 블록의 링크는 스스로 탭 순서를 정한다(부르는 쪽).
+ */
+function bindAtomLink(link: HTMLAnchorElement, href: string, open: () => void): void {
+  link.href = href
+  link.draggable = false
+  link.addEventListener('mousedown', (event) => {
+    if (event.button === 0) event.preventDefault()
+  })
+  link.addEventListener('click', (event) => {
+    if (atomLinkClick(event) !== 'in-app') return
+    event.preventDefault()
+    open()
+  })
+}
+
+/** 페이지 · 데이터베이스로 가는 줄 — 주소를 알면 진짜 링크(`bindAtomLink`), 모르면 전처럼 단추(그냥 누르기만). */
+function atomLinkElement(href: string | undefined, open: () => void): HTMLAnchorElement | HTMLButtonElement {
+  if (href !== undefined) {
+    const link = document.createElement('a')
+    bindAtomLink(link, href, open)
+    return link
+  }
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.addEventListener('mousedown', (event) => event.preventDefault())
+  button.addEventListener('click', open)
+  return button
+}
+
+/** 볼 수 없는 자리 — 링크가 아니다(주소를 싣지 않는다 · 열어도 404 다). */
+function deniedLinkElement(className: string): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = className
+  button.textContent = '접근 권한 없음'
+  button.disabled = true
+  button.classList.add('blk-page-link-denied')
+  button.addEventListener('mousedown', (event) => event.preventDefault())
+  return button
 }
 
 /** 컨테이너의 blockId 를 찾는다. 노드 뷰는 내용 노드만 받으므로 위로 올라간다. */
@@ -237,28 +288,24 @@ function pageRefNodeView(
   const dom = document.createElement('div')
   dom.className = 'blk blk-page-ref'
 
-  const link = document.createElement('button')
-  link.type = 'button'
-  link.className = 'blk-page-link'
-  // 제목은 노드에 없다 — 권한으로 거른 맵에서 읽는다. 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(열어도 404 다).
+  // 제목은 노드에 없다 — 권한으로 거른 맵에서 읽는다. 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(열어도 404 다 — 주소도 싣지 않는다).
   const id = containerIdAt(view, getPos)
   const title = deps.pageRefTitle(id)
   if (title === null) {
     // 볼 수 없는 페이지 — 아이콘도 없다(서버가 주지 않는다 · 자리만).
-    link.textContent = '접근 권한 없음'
-    link.disabled = true
-    link.classList.add('blk-page-link-denied')
-  } else {
-    // 아이콘(8c-2) — 없으면 기본 글리프(페이지로 가는 줄). 아직 모르는 참조(`undefined`)도 글리프로 자리를 지킨다.
-    const icon = pageIconElement(title === undefined ? null : deps.pageIcon(id), { fallback: true, className: 'blk-page-icon', workspaceId: deps.workspaceId })
-    if (icon !== null) link.append(icon)
-    link.append(title === undefined ? '하위 페이지' : title || '제목 없음')
+    dom.append(deniedLinkElement('blk-page-link'))
+    return { dom, stopEvent: () => true }
   }
-  link.addEventListener('mousedown', (event) => event.preventDefault())
-  link.addEventListener('click', () => {
-    const id = containerIdAt(view, getPos)
-    if (id !== '' && deps.pageRefTitle(id) !== null) deps.openPage(id)
+  // 진짜 링크(NV-3) — 그냥 누르면 앱 안 · Ctrl/Cmd · 가운데 클릭은 새 탭(브라우저). 누르는 순간의 자리로 다시 묻는다(노드가 옮겨졌을 수 있다).
+  const link = atomLinkElement(id === '' ? undefined : deps.linkHref?.('page', id), () => {
+    const at = containerIdAt(view, getPos)
+    if (at !== '' && deps.pageRefTitle(at) !== null) deps.openPage(at)
   })
+  link.className = 'blk-page-link'
+  // 아이콘(8c-2) — 없으면 기본 글리프(페이지로 가는 줄). 아직 모르는 참조(`undefined`)도 글리프로 자리를 지킨다.
+  const icon = pageIconElement(title === undefined ? null : deps.pageIcon(id), { fallback: true, className: 'blk-page-icon', workspaceId: deps.workspaceId })
+  if (icon !== null) link.append(icon)
+  link.append(title === undefined ? '하위 페이지' : title || '제목 없음')
 
   dom.append(link)
   return { dom, stopEvent: () => true }
@@ -279,16 +326,18 @@ function databaseRefNodeView(
   const dom = document.createElement('div')
   dom.className = 'blk blk-database-ref'
 
-  const link = document.createElement('button')
-  link.type = 'button'
-  link.className = 'blk-database-link'
   const id = containerIdAt(view, getPos)
   const title = deps.pageRefTitle(id)
-  if (title === null) {
-    link.textContent = '접근 권한 없음'
-    link.disabled = true
-    link.classList.add('blk-page-link-denied')
-  } else {
+  if (title === null) dom.append(deniedLinkElement('blk-database-link'))
+  else {
+    // 진짜 링크(NV-3) — 열 길(`openDatabase`)과 주소가 함께 있을 때만. 열 길이 없으면(읽기 전용 미리보기 · 검사) 꺼진 단추 그대로
+    const opens = deps.openDatabase !== undefined
+    const link = atomLinkElement(opens && id !== '' ? deps.linkHref?.('database', id) : undefined, () => {
+      const at = containerIdAt(view, getPos)
+      if (at !== '' && deps.pageRefTitle(at) !== null) deps.openDatabase?.(at)
+    })
+    link.className = 'blk-database-link'
+    if (!opens && link instanceof HTMLButtonElement) link.disabled = true
     // 아이콘 — 데이터베이스의 것(없으면 표 글리프). 아직 모르는 참조(`undefined`)도 글리프로 자리를 지킨다.
     const icon = title === undefined ? null : pageIconElement(deps.pageIcon(id), { fallback: false, className: 'blk-page-icon', workspaceId: deps.workspaceId })
     if (icon !== null) link.append(icon)
@@ -300,15 +349,8 @@ function databaseRefNodeView(
       link.append(glyph)
     }
     link.append(title === undefined ? '데이터베이스' : title || '제목 없는 데이터베이스')
-    if (deps.openDatabase === undefined) link.disabled = true
+    dom.append(link)
   }
-  link.addEventListener('mousedown', (event) => event.preventDefault())
-  link.addEventListener('click', () => {
-    const at = containerIdAt(view, getPos)
-    if (at !== '' && deps.pageRefTitle(at) !== null) deps.openDatabase?.(at)
-  })
-
-  dom.append(link)
 
   // 본문 안의 표(I-3) — 볼 수 있을 때만 · 화면에 들 때 한 번 읽는다(04 F-04-14 *"뷰포트 진입 시에만 쿼리"* — 한 페이지에 여럿이면 다 읽지 않는다)
   let observer: IntersectionObserver | null = null
@@ -374,13 +416,10 @@ function renderInlinePreview(box: HTMLElement, preview: InlinePreview | null, da
     row.cells.forEach((text, i) => {
       const td = document.createElement('td')
       if (i === preview.openAt) {
-        // 제목 칸을 누르면 그 행 페이지 — 행도 페이지다
-        const open = document.createElement('button')
-        open.type = 'button'
+        // 제목 칸을 누르면 그 행 페이지 — 행도 페이지다. 진짜 링크(NV-3 — Ctrl/Cmd · 가운데 클릭은 새 탭)
+        const open = atomLinkElement(deps.linkHref?.('page', row.id), () => deps.openPage(row.id))
         open.className = 'blk-database-row-open'
         open.textContent = text
-        open.addEventListener('mousedown', (event) => event.preventDefault())
-        open.addEventListener('click', () => deps.openPage(row.id))
         td.append(open)
       } else td.textContent = text
       tr.append(td)
@@ -390,13 +429,11 @@ function renderInlinePreview(box: HTMLElement, preview: InlinePreview | null, da
   table.append(thead, tbody)
   box.append(table)
   if (preview.more) {
-    const more = document.createElement('button')
-    more.type = 'button'
+    const opens = deps.openDatabase !== undefined
+    const more = atomLinkElement(opens ? deps.linkHref?.('database', databaseId) : undefined, () => deps.openDatabase?.(databaseId))
     more.className = 'blk-database-more'
     more.textContent = '더 보기 — 데이터베이스 열기'
-    more.disabled = deps.openDatabase === undefined
-    more.addEventListener('mousedown', (event) => event.preventDefault())
-    more.addEventListener('click', () => deps.openDatabase?.(databaseId))
+    if (more instanceof HTMLButtonElement) more.disabled = !opens
     box.append(more)
   }
 }
@@ -408,20 +445,25 @@ function renderInlinePreview(box: HTMLElement, preview: InlinePreview | null, da
 function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number | undefined, deps: NodeViewDeps): NodeView {
   const emojiId = customEmojiIdOf(node.attrs.mention)
   if (emojiId !== null) return customEmojiNodeView(emojiId, deps)
-  const dom = document.createElement('span')
-  dom.className = 'blk-mention'
-  dom.contentEditable = 'false'
   const target = mentionTargetOf(node.attrs.mention)
   if (target === null) {
     // 날짜 등 아직 그리지 않는 멘션 — 저장된 평문이 있으면 그것, 없으면 표식만.
+    const dom = document.createElement('span')
+    dom.className = 'blk-mention'
+    dom.contentEditable = 'false'
     dom.textContent = String(node.attrs.plainText || '@')
     return { dom, stopEvent: () => true }
   }
-  dom.dataset.mentionKind = target.kind
-  dom.dataset.mentionId = target.id
   // 글자는 목차의 줄과 같은 규칙이다(`mention-label.ts`). 페이지 칩은 그 앞에 아이콘(8c-2 — 볼 수 없으면 없다).
   const label = deps.mentionLabel(target.kind, target.id)
   const shown = mentionDisplay(target.kind, label)
+  // 볼 수 있는 페이지 칩은 진짜 링크(NV-3) — 주소를 알 때만. 볼 수 없는 칩 · 사람 칩은 링크가 아니다(주소를 싣지 않는다).
+  const href = target.kind === 'page' && !shown.denied ? deps.linkHref?.('page', target.id) : undefined
+  const dom = document.createElement(href === undefined ? 'span' : 'a')
+  dom.className = 'blk-mention'
+  dom.contentEditable = 'false'
+  dom.dataset.mentionKind = target.kind
+  dom.dataset.mentionId = target.id
   if (target.kind === 'page' && !shown.denied) {
     const icon = pageIconElement(label === undefined ? null : deps.pageIcon(target.id), { fallback: true, className: 'blk-page-icon', workspaceId: deps.workspaceId })
     if (icon !== null) dom.append(icon)
@@ -443,11 +485,18 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
     dom.classList.add('blk-mention-denied')
     return { dom, stopEvent: () => true }
   }
+  const open = (): void => {
+    if (deps.mentionLabel('page', target.id) !== null) deps.openPage(target.id)
+  }
+  if (dom instanceof HTMLAnchorElement && href !== undefined) {
+    // 그냥 누르면 앱 안 · Ctrl/Cmd · 가운데 클릭은 새 탭(브라우저). 탭 순서에는 서지 않는다 — 전의 `span` 과 같다(편집 중 Tab 은 들여쓰기)
+    bindAtomLink(dom, href, open)
+    dom.tabIndex = -1
+    return { dom, stopEvent: () => true }
+  }
   dom.setAttribute('role', 'link')
   dom.addEventListener('mousedown', (event) => event.preventDefault())
-  dom.addEventListener('click', () => {
-    if (deps.mentionLabel('page', target.id) !== null) deps.openPage(target.id)
-  })
+  dom.addEventListener('click', open)
   return { dom, stopEvent: () => true }
 }
 

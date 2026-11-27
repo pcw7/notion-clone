@@ -1734,6 +1734,8 @@ export function BodyEditor({
       openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
       // 인라인 데이터베이스(I-2) — 데이터베이스 화면으로
       openDatabase: (id) => router.push(`/w/${workspaceId}/db/${id}`),
+      // 노드 뷰의 링크가 진짜 `<a href>` 가 되는 주소(NV-3) — 위의 두 길과 같은 주소 · Ctrl/Cmd · 가운데 클릭은 브라우저의 새 탭
+      linkHref: (kind, id) => (kind === 'database' ? `/w/${workspaceId}/db/${id}` : `/w/${workspaceId}/${id}`),
       // 본문 안의 표(I-3) — 그 데이터베이스의 첫 뷰(탭 순서)의 처음 몇 행. 권한은 그 읽기가 묻는다(볼 수 없으면 null)
       inlineDatabasePreview: inlinePreviewSource(async (id) => {
         try {

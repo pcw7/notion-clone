@@ -26934,8 +26934,8 @@ async function main() {
           const r = bar.getBoundingClientRect()
           const title = document.querySelector('input[aria-label="페이지 제목"]').getBoundingClientRect()
           const nav = bar.querySelector('nav[aria-label="상위 경로"]').getBoundingClientRect()
-          // 닫힌 페이지 메뉴(디자인-2b) 안의 단추는 빼고 — 숨어 있어 높이가 0 이다
-          const buttons = [...bar.querySelectorAll('button')].filter((b) => !b.closest('[data-testid="page-menu-list"]')).map((b) => { const c = getComputedStyle(b); return [Math.round(b.getBoundingClientRect().height), c.borderTopWidth, c.borderRadius].join(' ') })
+          // 닫힌 페이지 메뉴(디자인-2b) 안의 단추는 빼고 — 숨어 있어 높이가 0 이다. 독립 창(PWA)의 뒤로 · 앞으로(NV-3)도 브라우저 탭에서는 숨는다
+          const buttons = [...bar.querySelectorAll('button')].filter((b) => !b.closest('[data-testid="page-menu-list"], [data-testid="standalone-nav"]')).map((b) => { const c = getComputedStyle(b); return [Math.round(b.getBoundingClientRect().height), c.borderTopWidth, c.borderRadius].join(' ') })
           return { height: Math.round(r.height), top: Math.round(r.top), aboveTitle: r.bottom <= title.top, navLeft: Math.round(nav.left - r.left), buttons: [...new Set(buttons)] }
         })()`)
         check('★ 상단 바 — 높이 44 · 제목 위 · 경로가 왼쪽 끝 · 단추는 높이 28 · 테두리 없음 · 둥글기 6px',
@@ -41421,6 +41421,187 @@ async function main() {
       } finally {
         await browseAs(session).catch(() => undefined)
       }
+      await sleep(300)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('페이지 이동 · 새 탭 (NV-3 · F-07-12)')) { try {
+      // 정본 §3.9 [보강 NV-0] ⑪ [NV-3 고침]. 부모 S(하위 페이지 C · T 를 멘션한 칩 · 없는 페이지의 칩 · T 로 가는 글 속 링크) ① 칩 · 하위 페이지 블록은 진짜
+      // 링크(주소가 그 페이지) · 볼 수 없는 칩은 링크가 아니다 ② Ctrl/Cmd + 클릭(칩) · 가운데 클릭(하위 페이지) · 편집 중 글 속 링크의 Ctrl/Cmd + 클릭 —
+      // 새 탭이 그 페이지로 열리고 지금 화면은 그대로 ③ 글 속 링크를 그냥 누르면 캐럿(옮겨 가지 않는다) · 칩을 그냥 누르면 앱 안 이동(문서를 다시 받지
+      // 않는다) ④ 독립 창(PWA)의 뒤로 · 앞으로 — 브라우저 탭에서는 숨고, `display-mode: standalone` 이면 서서 히스토리를 한 칸씩 · 끝이면 꺼진다.
+      // 스스로 데이터를 만든다 — E2E_ONLY 로 홀로 돈다. 연 탭은 다 그려진 뒤 닫는다(그리는 중에 닫으면 서버가 렌더를 끊어 ⨯ 를 찍는다).
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const pageS = await newPage({ title: `새 탭 부모 ${stamp}` })
+      const pageC = await newPage({ title: `새 탭 하위 ${stamp}`, parentPageId: pageS })
+      const pageT = await newPage({ title: `새 탭 대상 ${stamp}` })
+      const urlS = `/w/${workspaceId}/${pageS}`
+      const urlC = `/w/${workspaceId}/${pageC}`
+      const urlT = `/w/${workspaceId}/${pageT}`
+      const linkRun = (text, url) => ({ ...textRun(text), href: url, text: { content: text, link: { url } } })
+      const chipBlock = randomUUID()
+      const linkBlock = randomUUID()
+      const before = (await readBody(pageS)).doc
+      await saveBody(pageS, {
+        blocks: [
+          ...before.blocks,
+          { id: chipBlock, type: 'paragraph', title: [textRun('참고 '), pageMentionRun(pageT), textRun(' · 없는 '), pageMentionRun(randomUUID())], properties: {}, format: {}, children: [] },
+          { id: linkBlock, type: 'paragraph', title: [textRun('글 속 '), linkRun('대상 링크', `${BASE}${urlT}`), textRun(' 끝')], properties: {}, format: {}, children: [] },
+        ],
+      })
+      const CHIP = `[data-block-id="${chipBlock}"] a.blk-mention-page[data-mention-id="${pageT}"]`
+      const DENIED = `[data-block-id="${chipBlock}"] .blk-mention-denied`
+      const REF = `[data-block-id="${pageC}"] a.blk-page-link`
+      const TEXT_LINK = `[data-block-id="${linkBlock}"] a[href]`
+      const at = (path) => waitFor(`location.pathname === ${JSON.stringify(path)}`, 10000)
+      const where = () => evaluate('location.pathname')
+      const pageTargets = async () => (await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json()).filter((t) => t.type === 'page')
+      /** 누를 자리 — 요소의 가운데(화면 안으로 굴린 뒤). */
+      const centerOf = (sel) => evaluate(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null
+        e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+      const pressOn = async (sel, button, modifiers = 0) => {
+        const point = await centerOf(sel)
+        if (point === null) return false
+        const buttons = button === 'middle' ? 4 : 1
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, modifiers })
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button, buttons, clickCount: 1, modifiers })
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount: 1, modifiers })
+        return true
+      }
+      /** 누르기가 연 새 탭 — 그 주소로 열렸는가 · 다 그려졌는가. 다 그려지고 살아난 뒤 닫고 주 탭을 앞에 세운다. */
+      const openedTab = async (known, path, ms = 15000) => {
+        let info = null
+        for (let waited = 0; waited < ms && info === null; waited += 200) {
+          info = (await pageTargets()).find((t) => !known.has(t.id) && t.webSocketDebuggerUrl && new URL(t.url || 'about:blank').pathname === path) ?? null
+          if (info === null) await sleep(200)
+        }
+        const strays = (await pageTargets()).filter((t) => !known.has(t.id))
+        if (info === null) {
+          for (const t of strays) await send('Target.closeTarget', { targetId: t.id }).catch(() => undefined)
+          await send('Page.bringToFront').catch(() => undefined)
+          return { opened: false, drawn: false, strays: strays.map((t) => t.url) }
+        }
+        const tab = connect(info.webSocketDebuggerUrl)
+        await tab.opened
+        tab.targetId = info.id
+        tabs.push(tab)
+        await tab.send('Runtime.enable')
+        const inTab = evaluator(tab.send, () => tab.ws.readyState === WebSocket.OPEN, 'evaluate(새 탭)')
+        const drawn = await inTab.waitFor(`document.readyState === 'complete' && location.pathname === ${JSON.stringify(path)}
+          && !!document.querySelector('[data-testid="page-topbar"]')`, ms)
+        await inTab.evaluate(`new Promise((ok) => requestIdleCallback(() => ok(true), { timeout: 3000 }))`).catch(() => undefined)
+        await sleep(500)
+        await send('Target.closeTarget', { targetId: info.id }).catch(() => undefined)
+        tab.ws.close()
+        tabs.splice(tabs.indexOf(tab), 1)
+        for (const t of strays) if (t.id !== info.id) await send('Target.closeTarget', { targetId: t.id }).catch(() => undefined)
+        await send('Page.bringToFront').catch(() => undefined)
+        return { opened: true, drawn, strays: strays.length }
+      }
+      const known = async () => new Set((await pageTargets()).map((t) => t.id))
+
+      // ① 진짜 링크 · 볼 수 없는 칩은 링크가 아니다
+      await send('Page.navigate', { url: `${BASE}${urlS}` })
+      const drawn = await waitFor(`!!document.querySelector(${JSON.stringify(CHIP)}) && !!document.querySelector(${JSON.stringify(REF)})
+        && !!document.querySelector(${JSON.stringify(TEXT_LINK)}) && !!document.querySelector('.ProseMirror[contenteditable="true"]')`, 15000)
+      const hrefs = await evaluate(`({ chip: document.querySelector(${JSON.stringify(CHIP)})?.getAttribute('href') ?? null,
+        ref: document.querySelector(${JSON.stringify(REF)})?.getAttribute('href') ?? null })`)
+      check('★ 페이지 멘션 칩 · 하위 페이지 블록은 진짜 링크다 — 주소가 그 페이지(Ctrl/Cmd · 가운데 클릭을 브라우저가 한다)',
+        drawn && hrefs.chip === urlT && hrefs.ref === urlC, JSON.stringify({ drawn, ...hrefs }))
+      const denied = await evaluate(`(() => { const e = document.querySelector(${JSON.stringify(DENIED)}); return e === null ? null
+        : { tag: e.tagName, href: e.getAttribute('href'), inLink: e.closest('a') !== null } })()`)
+      check('볼 수 없는(없는) 페이지의 칩은 링크가 아니다 — 주소를 싣지 않는다',
+        denied !== null && denied.tag !== 'A' && denied.href === null && !denied.inLink, JSON.stringify(denied))
+      await evaluate('window.__nv3Stay = true')
+
+      // ② 새 탭 — 칩의 Ctrl/Cmd + 클릭 · 하위 페이지의 가운데 클릭 · 편집 중 글 속 링크의 Ctrl/Cmd + 클릭
+      let seen = await known()
+      await pressOn(CHIP, 'left', MOD)
+      const chipTab = await openedTab(seen, urlT)
+      check('★ Ctrl/Cmd + 클릭 — 멘션 칩이 새 탭에 그 페이지로 열리고 지금 화면은 그대로다',
+        chipTab.opened && chipTab.drawn && (await where()) === urlS && (await evaluate('window.__nv3Stay === true')),
+        JSON.stringify({ ...chipTab, at: await where() }))
+      seen = await known()
+      await pressOn(REF, 'middle')
+      const refTab = await openedTab(seen, urlC)
+      check('★ 가운데 클릭 — 하위 페이지 블록이 새 탭에 열린다 · 지금 화면은 그대로',
+        refTab.opened && refTab.drawn && (await where()) === urlS, JSON.stringify({ ...refTab, at: await where() }))
+      seen = await known()
+      await pressOn(TEXT_LINK, 'left', MOD)
+      const textTab = await openedTab(seen, urlT)
+      check('★ 편집 중 글 속 링크의 Ctrl/Cmd + 클릭 — 새 탭(브라우저는 편집 중인 글의 링크를 열지 않는다 — 편집기가 연다)',
+        textTab.opened && textTab.drawn && (await where()) === urlS, JSON.stringify({ ...textTab, at: await where() }))
+
+      // ③ 그냥 누르기 — 글 속 링크는 캐럿 · 칩은 앱 안 이동
+      await pressOn(TEXT_LINK, 'left')
+      await sleep(600)
+      const caret = await evaluate(`(() => { const s = getSelection(); const n = s?.anchorNode
+        const el = n?.nodeType === 3 ? n.parentElement : n
+        return { inLink: !!el?.closest(${JSON.stringify(TEXT_LINK)}), focused: !!document.activeElement?.closest('.ProseMirror'), at: location.pathname } })()`)
+      check('★ 편집 중 글 속 링크를 그냥 누르면 캐럿이 그 글자에 선다 — 옮겨 가지 않는다',
+        caret.inLink && caret.focused && caret.at === urlS && (await pageTargets()).length === seen.size, JSON.stringify(caret))
+      await pressOn(CHIP, 'left')
+      const movedToT = await at(urlT)
+      check('★ 칩을 그냥 누르면 앱 안에서 옮겨 간다(문서를 다시 받지 않는다 · 새 탭이 없다)',
+        movedToT && (await evaluate('window.__nv3Stay === true')) && (await pageTargets()).length === seen.size,
+        JSON.stringify({ at: await where(), stay: await evaluate('window.__nv3Stay === true') }))
+
+      // ④ 독립 창의 뒤로 · 앞으로
+      const NAV = '[data-testid="standalone-nav"]'
+      const navShown = () => evaluate(`(() => { const e = document.querySelector('${NAV}'); return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0 })()`)
+      const standalone = () => evaluate(`matchMedia('(display-mode: standalone)').matches`)
+      await waitHydrated('[data-testid="standalone-back"]', 15000)
+      const inTab = { present: await evaluate(`!!document.querySelector('${NAV}')`), shown: await navShown(), standalone: await standalone() }
+      check('★ 브라우저 탭에서는 독립 창의 뒤로 · 앞으로 단추가 숨는다 — 브라우저의 단추가 있다(두 벌 두지 않는다)',
+        inTab.present && !inTab.shown && !inTab.standalone, JSON.stringify(inTab))
+      // 독립 창 흉내 — CDP 의 미디어 흉내가 `display-mode` 를 받으면 그것으로. 이 크롬은 받기만 하고 맞추지 않는다(`matchMedia` 거짓 — NV-3 판) —
+      // 그러면 문서의 CSS 에서 `display-mode: standalone` 미디어 규칙을 찾아 늘 맞게(`all`) 바꾼다. 앱에 시험 고리를 두지 않고 단추를 가르는 것이
+      // 바로 그 규칙인지를 본다. 끝에 되돌린다.
+      const FLIP = `(() => {
+        const flipped = []
+        const walk = (rules) => { for (const r of rules) {
+          if (r instanceof CSSMediaRule && /display-mode\\s*:\\s*standalone/.test(r.conditionText)) { flipped.push(r.media.mediaText); r.media.mediaText = 'all'; r.__nv3 = flipped.at(-1) }
+          if (r.cssRules) walk(r.cssRules)
+        } }
+        for (const sheet of document.styleSheets) { try { walk(sheet.cssRules) } catch {} }
+        window.__nv3Flipped = flipped.length
+        return flipped.length
+      })()`
+      const UNFLIP = `(() => {
+        const walk = (rules) => { for (const r of rules) { if (r.__nv3 !== undefined) { r.media.mediaText = r.__nv3; delete r.__nv3 } if (r.cssRules) walk(r.cssRules) } }
+        for (const sheet of document.styleSheets) { try { walk(sheet.cssRules) } catch {} }
+        return true
+      })()`
+      let how = null
+      try {
+        const viaCdp = await send('Emulation.setEmulatedMedia', { features: [{ name: 'display-mode', value: 'standalone' }] }).then(() => standalone()).catch(() => false)
+        if (viaCdp) how = 'CDP'
+        else {
+          await send('Emulation.setEmulatedMedia', { features: [] }).catch(() => undefined)
+          if ((await evaluate(FLIP)) > 0) how = 'CSS 규칙'
+        }
+        const states = () => evaluate(`({ back: document.querySelector('[data-testid="standalone-back"]')?.disabled ?? null,
+          forward: document.querySelector('[data-testid="standalone-forward"]')?.disabled ?? null })`)
+        const shownT = await navShown()
+        const onT = await states()
+        check('★ 독립 창(display-mode: standalone)이면 상단 바에 선다 — 앞의 페이지가 있어 뒤로는 켜지고 · 끝이라 앞으로는 꺼진다',
+          how !== null && shownT && onT.back === false && onT.forward === true, JSON.stringify({ how, shownT, ...onT }))
+        await clickSelector('[data-testid="standalone-back"]')
+        const backToS = await at(urlS)
+        await waitHydrated('[data-testid="standalone-forward"]', 15000)
+        const forwardOn = await waitFor(`document.querySelector('[data-testid="standalone-forward"]')?.disabled === false`, 5000)
+        check('★ 독립 창의 "뒤로" — 한 칸 뒤로(브라우저 히스토리 그대로) · 이제 앞으로가 켜진다',
+          backToS && forwardOn && (await navShown()), JSON.stringify({ at: await where(), ...(await states()) }))
+        await clickSelector('[data-testid="standalone-forward"]')
+        const forwardToT = await at(urlT)
+        const forwardOff = await waitFor(`document.querySelector('[data-testid="standalone-forward"]')?.disabled === true`, 5000)
+        check('★ 독립 창의 "앞으로" — 한 칸 앞으로 · 끝이면 다시 꺼진다', forwardToT && forwardOff, JSON.stringify({ at: await where(), ...(await states()) }))
+      } finally {
+        await send('Emulation.setEmulatedMedia', { features: [] }).catch(() => undefined)
+        if (how === 'CSS 규칙') await evaluate(UNFLIP).catch(() => undefined)
+      }
+      check('흉내를 풀면 다시 숨는다', !(await navShown()) && !(await standalone()), JSON.stringify({ how, shown: await navShown() }))
       await sleep(300)
     } catch (thrown) { await sectionThrew(thrown) } }
 
