@@ -22,7 +22,8 @@ import { mayStep, navKeyOf, type HistoryReach } from '@/lib/nav/nav-keys'
 /** Navigation API(TypeScript 의 DOM 타입에 아직 없다) — 읽는 것만. */
 type NavigationLike = { readonly canGoBack: boolean; readonly canGoForward: boolean }
 
-function historyReach(): HistoryReach {
+/** 이 탭의 같은 출처 히스토리가 어디까지 닿는가 — API 가 없는 브라우저면 null. 안내 화면의 "뒤로"(NV-2 · `notice-back.tsx`)도 쓴다. */
+export function historyReach(): HistoryReach {
   const navigation = (window as { navigation?: NavigationLike }).navigation
   return navigation === undefined ? null : { canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward }
 }

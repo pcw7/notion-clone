@@ -41252,6 +41252,178 @@ async function main() {
       await sleep(300)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 이동 · 히스토리 (NV-2 · F-07-12)')) { try {
+      // 정본 §3.9 [보강 NV-0] ⑥ ⑦ ⑨ [NV-2]. ① 자식 A → (경로 링크) 부모 B → 브라우저 뒤로 → 서버의 최근 맨 앞이 A(라우터가 받아 둔 화면을 다시
+      // 그려도 방문이다) · 앞으로 → B · 새로 연 것과 되돌아간 것이 한 번씩만 센다 ② 긴 페이지를 내려 둔 채 떠났다가 뒤로 → 본문이 붙은 뒤 그 자리 ·
+      // 사람이 먼저 움직이면 늦게 자란 문서가 끌어당기지 않는다 ③ 동료가 연 페이지를 그 사이 잃으면 뒤로 간 곳이 안내 화면에서 멈추고(방문을 남기지
+      // 않는다) "뒤로" 가 한 칸 돌아간다 · 이 탭의 첫 앱 항목이면 홈 · 없는 페이지의 404 에도 같은 단추. 스스로 데이터를 만든다 — E2E_ONLY 로 홀로
+      // 돈다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        const stamp = Date.now()
+        const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+        const newPage = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+        const pageB = await newPage({ title: `히스토리 부모 ${stamp}` })
+        const pageA = await newPage({ title: `히스토리 자식 ${stamp}`, parentPageId: pageB })
+        const urlA = `/w/${workspaceId}/${pageA}`
+        const urlB = `/w/${workspaceId}/${pageB}`
+        const home = `/w/${workspaceId}`
+        const at = (path) => waitFor(`location.pathname === ${JSON.stringify(path)}`, 10000)
+        const where = () => evaluate('location.pathname')
+        const ready = (sel = '[data-testid="page-topbar"] nav[aria-label="상위 경로"]') => waitHydrated(sel, 15000)
+        const crumb = (href) => `[data-testid="page-topbar"] nav[aria-label="상위 경로"] a[href=${JSON.stringify(href)}]`
+        /** 서버의 최근 — 이 사람 · 이 워크스페이스의 맨 앞(사이드바의 덧대기가 아니라 `recent_visit` 그대로). */
+        const topVisit = async (userId) =>
+          (await dbQuery(`SELECT block_id FROM recent_visit WHERE user_id = $1 AND workspace_id = $2 ORDER BY last_visited_at DESC LIMIT 1`, [userId, workspaceId]))[0]?.block_id ?? null
+        const visitOf = async (userId, pageId) =>
+          (await dbQuery(`SELECT visit_count, last_visited_at FROM recent_visit WHERE user_id = $1 AND block_id = $2`, [userId, pageId]))[0] ?? null
+        const waitTop = async (userId, pageId, ms = 8000) => {
+          for (let waited = 0; waited < ms; waited += 200) {
+            if ((await topVisit(userId)) === pageId) return true
+            await sleep(200)
+          }
+          return false
+        }
+
+        // ① 뒤로 · 앞으로로 연 페이지도 방문이다
+        await send('Page.navigate', { url: `${BASE}${urlA}` })
+        await ready()
+        check('전제: 처음 연 A 가 서버의 최근 맨 앞이다', await waitTop(ctx.userId, pageA), String(await topVisit(ctx.userId)))
+        await evaluate(`document.querySelector(${JSON.stringify(crumb(urlB))})?.click()`)
+        const movedToB = await at(urlB)
+        await ready()
+        const onB = movedToB && (await waitTop(ctx.userId, pageB))
+        await sleep(1200) // 표지가 부를 것이 있었다면 부를 시간
+        check('전제: 앱 안에서 옮겨 간 B 가 맨 앞 · 새로 연 것은 한 번만 센다(서버 렌더가 남기고 화면은 부르지 않는다)',
+          onB && (await visitOf(ctx.userId, pageB))?.visit_count === 1, JSON.stringify({ movedToB, top: await topVisit(ctx.userId), b: await visitOf(ctx.userId, pageB) }))
+        await evaluate('history.back()')
+        const backToA = await at(urlA)
+        await ready()
+        check('★ 브라우저 뒤로로 연 A 가 서버의 최근 맨 앞이다 — 라우터가 받아 둔 화면을 다시 그려도 방문을 남긴다',
+          backToA && (await waitTop(ctx.userId, pageA)), JSON.stringify({ at: await where(), top: await topVisit(ctx.userId) }))
+        await evaluate('history.forward()')
+        const forwardToB = await at(urlB)
+        await ready()
+        const topB = forwardToB && (await waitTop(ctx.userId, pageB))
+        await sleep(1200)
+        check('★ 앞으로 → B 가 다시 맨 앞 · 되돌아간 열기도 한 번만 센다(B 2 · A 2)',
+          topB && (await visitOf(ctx.userId, pageB))?.visit_count === 2 && (await visitOf(ctx.userId, pageA))?.visit_count === 2,
+          JSON.stringify({ at: await where(), top: await topVisit(ctx.userId), a: await visitOf(ctx.userId, pageA), b: await visitOf(ctx.userId, pageB) }))
+
+        // ② 늦게 그려지는 본문의 스크롤 복원
+        const longPage = await newPage({ title: `긴 페이지 ${stamp}` })
+        const LINES = 160
+        await saveBody(longPage, { blocks: Array.from({ length: LINES }, (_, i) => block(randomUUID(), 'paragraph', `긴 본문 ${i + 1}번 줄 — 되돌아오면 이 자리`)) })
+        const urlLong = `/w/${workspaceId}/${longPage}`
+        const bodyLoaded = `(document.querySelector('.ProseMirror')?.innerText ?? '').includes('긴 본문 ${LINES}번 줄')`
+        const TARGET = 2400
+        const scrollState = () => evaluate(`({ y: Math.round(scrollY), height: document.documentElement.scrollHeight, body: ${bodyLoaded} })`)
+        const leaveAndReturn = async () => {
+          await evaluate(`document.querySelector(${JSON.stringify(crumb(home))})?.click()`)
+          const left = await at(home)
+          await waitHydrated('section[aria-label="최근"]', 15000)
+          await evaluate('history.back()')
+          const returned = await at(urlLong)
+          return left && returned
+        }
+        await send('Page.navigate', { url: `${BASE}${urlLong}` })
+        await ready()
+        const longReady = await waitFor(bodyLoaded, 15000)
+        await evaluate(`window.scrollTo(0, ${TARGET})`)
+        await sleep(500) // 스크롤 사건이 자리를 적을 시간
+        const before = await scrollState()
+        check('전제: 긴 페이지를 내려 둔다', longReady && before.y === TARGET && before.height > TARGET + 1000, JSON.stringify(before))
+        const trip = await leaveAndReturn()
+        const restored = trip && (await waitFor(`${bodyLoaded} && Math.abs(scrollY - ${TARGET}) <= 2`, 8000))
+        check('★ 뒤로 오면 본문(협업 편집기)이 붙은 뒤 그 자리로 돌아온다 — 짧은 문서의 끝에서 잘린 채 남지 않는다', restored,
+          JSON.stringify({ trip, ...(await scrollState()) }))
+        // 사람이 먼저 움직인다 — 그 뒤에 문서가 자라도(늦게 뜬 그림 같은) 적어 둔 자리로 끌어당기지 않는다
+        const trip2 = await leaveAndReturn()
+        const restored2 = trip2 && (await waitFor(`${bodyLoaded} && Math.abs(scrollY - ${TARGET}) <= 2`, 8000))
+        await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 500, y: 300, deltaX: 0, deltaY: -900 })
+        await waitFor(`scrollY < ${TARGET - 300}`, 3000)
+        await sleep(300)
+        const moved = (await scrollState()).y
+        await evaluate(`document.body.appendChild(Object.assign(document.createElement('div'), { id: 'nv2-grow', style: 'height: 3000px' }))`)
+        await sleep(800)
+        const afterGrow = (await scrollState()).y
+        await evaluate(`document.getElementById('nv2-grow')?.remove()`)
+        check('★ 복원 중이어도 사람이 먼저 움직이면 멈춘다 — 그 뒤에 자란 문서가 자리를 옮기지 않는다',
+          restored2 && moved < TARGET - 300 && Math.abs(afterGrow - moved) <= 2, JSON.stringify({ restored2, moved, afterGrow }))
+
+        // ③ 잃은 페이지로 뒤로 — 안내 화면에서 멈추고 "뒤로" 가 한 칸
+        const mate = await joinAs(workspaceId, await createUser(`되돌아가는 동료 ${stamp}`), 'member')
+        const lostTitle = `곧 잃을 페이지 ${stamp}`
+        const lost = await newPage({ title: lostTitle })
+        const urlLost = `/w/${workspaceId}/${lost}`
+        const NOTICE = '[data-testid="no-access"], [data-testid="not-found"]'
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}${urlLost}` })
+        await ready()
+        await send('Page.navigate', { url: `${BASE}${home}` })
+        const recentLink = `section[aria-label="최근"] a[href=${JSON.stringify(urlLost)}]`
+        if (await evaluate(`!!document.querySelector('button[aria-label="사이드바 열기"]')`)) {
+          await evaluate(`document.querySelector('button[aria-label="사이드바 열기"]').click()`)
+        }
+        await waitHydrated(recentLink, 15000)
+        await evaluate(`document.querySelector(${JSON.stringify(recentLink)})?.click()`)
+        const openedLost = await at(urlLost)
+        await ready()
+        // 앱 안에서 떠난다 — 위 칸(루트 페이지 → 홈 · 새 항목)
+        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'U', code: 'KeyU', windowsVirtualKeyCode: 85, nativeVirtualKeyCode: 85, modifiers: MOD | SHIFT })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'U', code: 'KeyU', windowsVirtualKeyCode: 85, nativeVirtualKeyCode: 85, modifiers: MOD | SHIFT })
+        const leftLost = await at(home)
+        await waitHydrated('section[aria-label="최근"]', 15000)
+        const lostBefore = await visitOf(mate.userId, lost)
+        // 소유자가 동료의 읽기를 거둔다
+        const accessUrl = `${pagesUrl}/${lost}/access`
+        for (const body of [
+          { action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' },
+          { action: 'revoke', principal: { type: 'workspace_everyone' } },
+        ]) await fetch(accessUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })
+        const revoked = (await fetch(`${pagesUrl}/${lost}/access`, { headers: { ...json, cookie: `nc_session=${mate.token}` } })).status === 404
+        check('전제: 동료가 그 페이지를 앱 안에서 열었다가 떠났고 · 그 사이 읽기를 잃었다', openedLost && leftLost && revoked && lostBefore !== null,
+          JSON.stringify({ openedLost, leftLost, revoked, lostBefore }))
+        await evaluate('history.back()')
+        const backToLost = await at(urlLost)
+        const stopped = backToLost && (await waitFor(`!!document.querySelector(${JSON.stringify(NOTICE)})`, 10000))
+        await sleep(800)
+        const shownTitle = await evaluate(`document.body.innerText.includes(${JSON.stringify(lostTitle)})`)
+        check('★ 잃은 페이지로 뒤로 가면 받아 둔 화면을 계속 보이지 않고 안내 화면에서 멈춘다 — 제목이 없다',
+          stopped && !shownTitle, JSON.stringify({ at: await where(), stopped, shownTitle }))
+        const lostAfter = await visitOf(mate.userId, lost)
+        check('★ 볼 수 없게 된 페이지의 방문은 남기지 않는다',
+          lostAfter !== null && lostAfter.visit_count === lostBefore.visit_count && String(lostAfter.last_visited_at) === String(lostBefore.last_visited_at),
+          JSON.stringify({ lostBefore, lostAfter }))
+        await waitHydrated('[data-testid="notice-back"]', 15000)
+        await evaluate(`document.querySelector('[data-testid="notice-back"]').click()`)
+        check('★ 안내 화면의 "뒤로" — 한 칸 뒤로(브라우저 히스토리 그대로 · 그 앞의 홈)', await at(home), await where())
+
+        // 이 탭의 첫 앱 항목이면 "뒤로" 는 앱 밖이 아니라 홈으로
+        await send('Page.navigate', { url: 'about:blank' })
+        await sleep(300)
+        await send('Page.navigate', { url: `${BASE}${urlLost}` })
+        await waitHydrated('[data-testid="notice-back"]', 15000)
+        const firstReach = await evaluate(`window.navigation ? window.navigation.canGoBack : 'API 없음'`)
+        await evaluate(`document.querySelector('[data-testid="notice-back"]').click()`)
+        const fellBack = await at(home)
+        check('★ 이 탭의 첫 앱 항목에서 "뒤로" 는 워크스페이스 홈으로 — 앞이 다른 사이트여도 앱 밖으로 나가지 않는다',
+          firstReach === false && fellBack, JSON.stringify({ firstReach, at: await where() }))
+
+        // 없는 페이지의 404 — 상태는 그대로 404 · 같은 "뒤로". 렌더 중의 `notFound()` 라 HTML 셸은 비고 화면은 흐름 데이터로 브라우저가 그린다
+        const missingUrl = `/w/${workspaceId}/${randomUUID()}`
+        const missingStatus = (await fetch(`${BASE}${missingUrl}`, { headers: { ...json, cookie: `nc_session=${mate.token}` } })).status
+        await send('Page.navigate', { url: `${BASE}${missingUrl}` })
+        const missingScreen = await waitFor(`!!document.querySelector('[data-testid="not-found"] [data-testid="notice-back"]') && !!document.querySelector('[data-testid="sidebar-nav"]')`, 15000)
+        check('없는 페이지는 그대로 404 이고 같은 "뒤로" 단추가 선다(워크스페이스의 틀 안 — 사이드바와 함께)',
+          missingStatus === 404 && missingScreen, JSON.stringify({ missingStatus, missingScreen, title: await evaluate('document.title') }))
+      } finally {
+        await browseAs(session).catch(() => undefined)
+      }
+      await sleep(300)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

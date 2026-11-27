@@ -61,3 +61,13 @@ export function mayStep(direction: 'back' | 'forward', reach: HistoryReach): boo
   if (reach === null) return true
   return direction === 'back' ? reach.canGoBack : reach.canGoForward
 }
+
+/**
+ * 안내 화면(404 · 접근 요청)의 "뒤로"(NV-2 · ⑥) — 한 칸 뒤로인가, 앱 안의 대신 갈 곳(홈)인가. 같은 출처의 앞 항목이 있으면 뒤로 · 없으면(첫 앱
+ * 항목 — 앞이 다른 사이트이거나 새 탭) 대신 갈 곳. API 가 없는 브라우저는 앞 항목이 하나라도 있으면 뒤로(③ — 브라우저에 맡긴다) · 새 탭이면
+ * 눌러도 아무 일이 없는 단추가 되지 않게 대신 갈 곳.
+ */
+export function noticeBackOf(reach: HistoryReach, historyLength: number): 'back' | 'fallback' {
+  if (reach !== null) return reach.canGoBack ? 'back' : 'fallback'
+  return historyLength > 1 ? 'back' : 'fallback'
+}

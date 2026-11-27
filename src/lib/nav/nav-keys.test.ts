@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 
 import { breadcrumbTrail, databaseTrail, rowTrail, templateTrail } from '../block/breadcrumb.ts'
 import { COMMAND_ACTIONS } from './command-actions.ts'
-import { mayStep, navKeyOf, upHrefOf, type NavKeyEvent } from './nav-keys.ts'
+import { mayStep, navKeyOf, noticeBackOf, upHrefOf, type NavKeyEvent } from './nav-keys.ts'
 
 const WS = 'ws-1'
 
@@ -118,5 +118,18 @@ describe('mayStep — 히스토리 끝은 무시한다', () => {
   test('Navigation API 가 없는 브라우저는 브라우저에 맡긴다', () => {
     assert.equal(mayStep('back', null), true)
     assert.equal(mayStep('forward', null), true)
+  })
+})
+
+describe('noticeBackOf — 안내 화면의 "뒤로"(NV-2 · ⑥)', () => {
+  test('★ 같은 출처의 앞 항목이 있으면 한 칸 뒤로 · 없으면 앱 안의 대신 갈 곳 — 앱 밖으로 나가지 않는다', () => {
+    assert.equal(noticeBackOf({ canGoBack: true, canGoForward: false }, 3), 'back')
+    // 앞이 다른 사이트(history.length 는 그것도 센다) — API 가 이긴다
+    assert.equal(noticeBackOf({ canGoBack: false, canGoForward: false }, 5), 'fallback')
+  })
+
+  test('API 가 없는 브라우저 — 앞 항목이 있으면 뒤로(브라우저에 맡긴다) · 새 탭이면 대신 갈 곳(누르면 아무 일 없는 단추가 되지 않게)', () => {
+    assert.equal(noticeBackOf(null, 2), 'back')
+    assert.equal(noticeBackOf(null, 1), 'fallback')
   })
 })

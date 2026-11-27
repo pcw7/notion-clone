@@ -24,6 +24,8 @@ export const SCREEN_TITLES = {
   invite: '초대',
   workspaces: '워크스페이스',
   noAccess: '접근 요청',
+  // 없거나 볼 수 없는 곳(NV-2 · `w/[workspaceId]/not-found.tsx`) — 이름을 싣지 않는다
+  notFound: '찾을 수 없음',
   offline: '오프라인',
   developers: 'API 문서',
   // AI 채팅(AI-6 · F-10-17) — 사이드바의 "AI"
