@@ -29,6 +29,14 @@
 @custom-variant touch (@media (hover: none));
 
 /*
+ * 독립 창 — 59번 트랙 NV-3 (F-07-12 · 정본 §3.9 [보강 NV-0] ⑪ [NV-3 고침] ⓒ)
+ *
+ * 설치한 앱의 창(매니페스트 `display: 'standalone'`)에는 브라우저의 뒤로 · 앞으로 단추가 없다 — 그 창에서만 보이는 것에 단다
+ * (`hidden standalone:flex`). 미디어 질의라 서버가 그린 그대로 맞고 수화 전에도 깜빡이지 않는다. 브라우저 탭에서는 숨는다(두 벌 두지 않는다).
+ */
+@custom-variant standalone (@media (display-mode: standalone));
+
+/*
  * 글자색 — 디자인-1(노션 실측 · `docs/design/notion-measurements.md`). 기본 글자는 순흑이 아니라 따뜻한 짙은 회색 · 흐린 글자(목차 · 속성
  * 이름 · 보조 설명)는 그보다 옅은 회갈색. 어두운 테마 — 디자인-7a(노션 색 변수 실측: 바탕 `--c-bacPri` #191919 · 글자 `--c-texPri` #f0efed ·
  * 흐린 글자 `--c-texSec` #ada9a3). 어두운 메뉴 표면 — 디자인-8b(노션 색 변수 `--c-popBac` #252525 · 그림자 `--c-shaOutLg` — 밝은 값이 디자인-5 의

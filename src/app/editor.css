@@ -1025,6 +1025,21 @@
   color: #6b7280;
   font: inherit;
 }
+/*
+  진짜 링크(NV-3 · 정본 §3.9 [보강 NV-0] ⑪ [NV-3 고침]) — 하위 페이지 · 데이터베이스 · 미리보기 표의 줄이 `<a href>` 가 됐다(Ctrl/Cmd · 가운데
+  클릭 = 새 탭). 단추일 때의 모양 그대로 — 단추처럼 한 덩이(inline-block)로 서고, 데이터베이스 쪽은 글 속 링크의 밑줄(`.blk-editor a`)을 받지 않는다.
+*/
+.blk-page-ref a.blk-page-link,
+.blk-database-ref a.blk-database-link,
+.blk-database-preview a.blk-database-row-open,
+.blk-database-preview a.blk-database-more {
+  display: inline-block;
+}
+.blk-database-ref a.blk-database-link,
+.blk-database-preview a.blk-database-row-open,
+.blk-database-preview a.blk-database-more {
+  text-decoration: none;
+}
 :root[data-theme='dark'] .blk-database-table th,
 :root[data-theme='dark'] .blk-database-table td {
   border-color: #374151;
@@ -2187,7 +2202,9 @@ span.blk-equation {
   노드에는 id 뿐이고 이름은 노드 뷰가 권한으로 거른 맵에서 그린다(`node-views.ts`). 볼 수 없는 페이지는 자리만.
 */
 .blk-mention-user { color: #1d4ed8; font-weight: 500; }
-.blk-mention-page { cursor: pointer; text-decoration: underline; text-decoration-color: #9ca3af; text-underline-offset: 3px; }
+/* 볼 수 있는 페이지 칩은 `<a href>` 다(NV-3) — 글 속 링크의 밑줄(`.blk-editor a` — 글자색 밑줄)보다 앞선다 */
+.blk-mention-page,
+.blk-editor a.blk-mention-page { cursor: pointer; text-decoration: underline; text-decoration-color: #9ca3af; text-underline-offset: 3px; }
 .blk-mention-denied { color: #9ca3af; cursor: default; text-decoration: none; }
 /*
   커스텀 이모지(7c-3a) — 같은 멘션 노드다. 그림은 칩의 바탕 없이 글자 한 칸 높이로(유니코드 이모지처럼). 지웠거나 그림을 못 불러오면

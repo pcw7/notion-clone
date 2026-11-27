@@ -74,6 +74,7 @@ import { toVerificationCell } from '@/lib/database/verification-cell'
 import { SCREEN_TITLES, contentTitle } from '@/lib/nav/screen-title'
 import { DocumentTitle } from '../document-title'
 import { NavUpShortcut } from '../nav-shortcut'
+import { StandaloneNav } from '../standalone-nav'
 import { ScrollRestore, VisitMark } from './return-trip'
 import { randomUUID } from 'node:crypto'
 import { upHrefOf } from '@/lib/nav/nav-keys'
@@ -260,31 +261,35 @@ export async function PageContentBase({
             : 'flex flex-wrap items-center justify-between gap-2'
         }
       >
-        <nav
-          aria-label="상위 경로"
-          className="flex min-w-0 flex-wrap items-center gap-0.5 text-sm text-[rgb(44,44,43)] dark:text-neutral-200"
-        >
-          {trail.map((item, i) => (
-            <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
-              {i > 0 && <span aria-hidden className="text-neutral-300 dark:text-neutral-600">/</span>}
-              {item.href === null ? (
-                <span className="rounded-md px-1.5 py-0.5 text-neutral-400">
-                  <PageIconView icon={item.icon} className="mr-1" />
-                  {item.label}
-                </span>
-              ) : (
-                <Link
-                  href={item.href}
-                  data-testid={item.kind === 'teamspace' ? 'breadcrumb-teamspace' : undefined}
-                  className="rounded-md px-1.5 py-0.5 hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5"
-                >
-                  <PageIconView icon={item.icon} className="mr-1" />
-                  {item.label}
-                </Link>
-              )}
-            </span>
-          ))}
-        </nav>
+        {/* 독립 창(PWA)의 뒤로 · 앞으로(NV-3) — 그 창에서만 보인다 · 경로 앞. 피크는 데이터베이스 화면의 것 */}
+        <div className="flex min-w-0 items-center gap-1">
+          {frame === 'page' && <StandaloneNav />}
+          <nav
+            aria-label="상위 경로"
+            className="flex min-w-0 flex-wrap items-center gap-0.5 text-sm text-[rgb(44,44,43)] dark:text-neutral-200"
+          >
+            {trail.map((item, i) => (
+              <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
+                {i > 0 && <span aria-hidden className="text-neutral-300 dark:text-neutral-600">/</span>}
+                {item.href === null ? (
+                  <span className="rounded-md px-1.5 py-0.5 text-neutral-400">
+                    <PageIconView icon={item.icon} className="mr-1" />
+                    {item.label}
+                  </span>
+                ) : (
+                  <Link
+                    href={item.href}
+                    data-testid={item.kind === 'teamspace' ? 'breadcrumb-teamspace' : undefined}
+                    className="rounded-md px-1.5 py-0.5 hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5"
+                  >
+                    <PageIconView icon={item.icon} className="mr-1" />
+                    {item.label}
+                  </Link>
+                )}
+              </span>
+            ))}
+          </nav>
+        </div>
 
         <div className="flex flex-wrap items-center gap-0.5 md:flex-none md:flex-nowrap">
           {/* 잠김 표시는 상단 바에 · 잠그기 단추는 페이지 메뉴에(디자인-2b) */}

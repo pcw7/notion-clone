@@ -14,29 +14,34 @@ import type { BreadcrumbTrail } from '@/lib/block/breadcrumb'
 import { upHrefOf } from '@/lib/nav/nav-keys'
 import { PageIconView } from '../../page-icon-view'
 import { NavUpShortcut } from '../../nav-shortcut'
+import { StandaloneNav } from '../../standalone-nav'
 
 export function DatabaseTrailNav({ trail }: { trail: BreadcrumbTrail }) {
   return (
     <>
       <NavUpShortcut href={upHrefOf(trail)} />
-      <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-        {trail.map((item, i) => (
-          <Fragment key={`${item.kind}:${item.id}`}>
-            {i > 0 && <span aria-hidden>/</span>}
-            {item.href === null ? (
-              <span className="text-neutral-400">
-                <PageIconView icon={item.icon} className="mr-1" />
-                {item.label}
-              </span>
-            ) : (
-              <Link href={item.href} className="hover:underline underline-offset-4">
-                {item.icon !== null && <PageIconView icon={item.icon} className="mr-1" />}
-                {item.label}
-              </Link>
-            )}
-          </Fragment>
-        ))}
-      </nav>
+      {/* 독립 창(PWA)의 뒤로 · 앞으로(NV-3) — 그 창에서만 보인다 · 경로 앞 */}
+      <div className="flex min-w-0 items-center gap-2">
+        <StandaloneNav />
+        <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
+          {trail.map((item, i) => (
+            <Fragment key={`${item.kind}:${item.id}`}>
+              {i > 0 && <span aria-hidden>/</span>}
+              {item.href === null ? (
+                <span className="text-neutral-400">
+                  <PageIconView icon={item.icon} className="mr-1" />
+                  {item.label}
+                </span>
+              ) : (
+                <Link href={item.href} className="hover:underline underline-offset-4">
+                  {item.icon !== null && <PageIconView icon={item.icon} className="mr-1" />}
+                  {item.label}
+                </Link>
+              )}
+            </Fragment>
+          ))}
+        </nav>
+      </div>
     </>
   )
 }
