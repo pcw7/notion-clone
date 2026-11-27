@@ -27,7 +27,7 @@ import { readEmbedUrl } from '../block/embed-block.ts'
 import { equationExpressionOf, MAX_EQUATION_LENGTH } from '../block/equation.ts'
 import { externalFileName } from '../block/file-block.ts'
 import { isSafeImageUrl, readImageSource } from '../block/image.ts'
-import { isSyncedCopyProps, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
+import { isSyncedCopyProps, syncedFromOf, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_CELLS_KEY, TABLE_ROW_TYPE, TABLE_TYPE } from '../block/table.ts'
 import { COLUMN_RATIO_KEY, isColumnRatio, MIN_COLUMNS, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import { isSingleEmoji } from '../contracts/emoji.ts'
@@ -88,8 +88,8 @@ export type ApiBlockContent = { readonly type: string; readonly payload: Readonl
 export function apiTypeOf(block: EditorBlock): string {
   if (block.type === 'page') return 'child_page'
   if (block.type === 'database') return 'child_database'
-  // 동기화 블록의 원본(SB-1) — 읽기의 이름. 고치기 · 붙이기는 받지 않는다(`UNWRITABLE` — 정본 ⑳ · SB-5 까지 400)
-  if (block.type === SYNCED_BLOCK_TYPE && !isSyncedCopyProps(block.properties)) return SYNCED_BLOCK_TYPE
+  // 동기화 블록(원본 SB-1 · 사본 SB-2) — 읽기의 이름. 고치기 · 붙이기는 받지 않는다(`UNWRITABLE` — 정본 ⑳ · SB-5 까지 400)
+  if (block.type === SYNCED_BLOCK_TYPE) return !isSyncedCopyProps(block.properties) || syncedFromOf(block.properties, block.id) !== null ? SYNCED_BLOCK_TYPE : 'unsupported'
   if (MEDIA_TYPES.has(block.type)) return readImageSource(block.properties) === null ? 'unsupported' : block.type
   return WRITABLE.has(block.type) ? block.type : 'unsupported'
 }
@@ -199,11 +199,13 @@ export function blockContentToApi(block: EditorBlock, read: BlockReadContext): A
     case 'ai_block':
       // AI 블록(AI-5 · F-10-04) — 노션 API 처럼 `unsupported` · 결과(자식)는 보통의 블록이라 `has_children` 으로 따라가 읽는다
       return make('unsupported', {})
-    case SYNCED_BLOCK_TYPE:
-      // 동기화 블록(SB-1 · 정본 [보강 SB-0] ⑳) — 원본은 `synced_from: null` · 자식은 보통의 블록. 사본은 SB-2 부터(`{type:'block_id'}`) —
-      // 그 전에는 `unsupported` 다(펼칠 내용이 이 페이지에 없다)
-      if (isSyncedCopyProps(props)) return make('unsupported', {}, false)
-      return make(SYNCED_BLOCK_TYPE, { synced_from: null })
+    case SYNCED_BLOCK_TYPE: {
+      // 동기화 블록(정본 [보강 SB-0] ⑳) — 원본은 `synced_from: null` · 자식은 보통의 블록(SB-1). 사본은 `{type:'block_id'}` · 자식 없음(SB-2 —
+      // 클라이언트가 `synced_from` 을 따라간다 · 원본의 내용은 그 페이지의 권한으로 읽는다). 모양이 틀린 사본은 정규화가 빼므로 오지 않는다
+      if (!isSyncedCopyProps(props)) return make(SYNCED_BLOCK_TYPE, { synced_from: null })
+      const from = syncedFromOf(props, block.id)
+      return from === null ? make('unsupported', {}, false) : make(SYNCED_BLOCK_TYPE, { synced_from: { type: 'block_id', block_id: from } }, false)
+    }
     default:
       // 버튼 · 감싸 둔 모르는 타입 — 노션의 모양이 없다
       return make('unsupported', {}, false)

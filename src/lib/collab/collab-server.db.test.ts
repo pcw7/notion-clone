@@ -221,6 +221,25 @@ describe('② 볼 수만 있는 연결', () => {
     assert.deepEqual(textsOf(bodyOf(writer.doc, pageId)), ['원문'], '읽기 전용 연결의 편집이 퍼졌다')
     assert.deepEqual(await logOf(pageId), before, '읽기 전용 연결의 편집이 쌓였다')
   })
+
+  test('★ 동기화 블록 사본의 연결(embed=1 · SB-2)은 고칠 수 있는 사람이어도 읽기 전용이다 — 보낸 편집은 쌓이지도 퍼지지도 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const server = await startServer(t)
+    // 멤버는 이 페이지를 고칠 수 있다(모두에게 열린 최상위) — 클라이언트는 보내지 않지만 서버가 문이다
+    const [writer, embed] = [join(t, server.url, name, cookieOf(owner)), join(t, `${server.url}?embed=1`, name, cookieOf(member))]
+    await ready(writer, embed)
+    assert.equal(embed.provider.authorizedScope, 'readonly')
+    assert.deepEqual(embed.stateless.filter((p) => p.startsWith('collab:mode:')), [], '모드 알림이 없다(읽기 전용)')
+    const before = await logOf(pageId)
+
+    edit(embed.doc, insertAtStart(ids[0], '사본에서 '))
+    embed.provider.setAwarenessField('ts', 525252)
+    await waitFor('사본 쪽의 awareness 가 닿는다', () => writer.provider.awareness?.getStates().get(embed.doc.clientID)?.ts === 525252)
+    assert.deepEqual(textsOf(bodyOf(writer.doc, pageId)), ['원문'], '사본의 연결로 보낸 편집이 퍼졌다')
+    assert.deepEqual(await logOf(pageId), before, '사본의 연결로 보낸 편집이 쌓였다')
+    assert.deepEqual(embed.closed, [], '올라간 모드로 닫지 않는다')
+  })
 })
 
 // ── ③ 편집 ───────────────────────────────────────────────────────────

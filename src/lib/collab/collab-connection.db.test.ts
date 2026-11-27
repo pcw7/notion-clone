@@ -741,3 +741,62 @@ describe('⑪ 의존보다 먼저 가는 update (10n-13 · 정본 §3.7 [보강]
     assert.equal(textOf(me.doc(), pageId), '가나앞원문')
   })
 })
+
+// ── ⑫ 사본의 연결 (embed · SB-2) ──────────────────────────────────────
+
+describe('⑫ 동기화 블록 사본의 연결 (embed · SB-2 · SY8)', () => {
+  test('★ 고칠 수 있어도 읽기 전용으로 받고 · A 의 편집을 곧바로 받고 · 아무것도 보내지 않고 · presence(AW-2) · 보존본이 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, member, pageId, blockId } = await fixture()
+    const records: Map<string, boolean>[] = []
+    const running = await startServer(t, { presenceStore: { record: (_page, viewers) => void records.push(new Map(viewers)) } })
+    // 같은 사람이 A 를 연 탭의 보존본 — embed 는 읽지도 지우지도 않는다
+    const store = memoryPendingEditStore()
+    const key = `${member.userId}:${pageId}`
+    const kept = new Uint8Array([1, 2, 3])
+    await store.write(key, kept)
+
+    const embed = await open(t, running, member, { workspaceId, pageId }, store, { offline: false }, { embed: true, keepAliveMs: 50 })
+    await waitFor('연결', settled(embed))
+    assert.equal(embed.connection.snapshot().readOnly, true, '멤버는 고칠 수 있다 — 그래도 읽기 전용이다')
+    assert.equal(embed.connection.snapshot().mode, null, '모드 알림을 받지 않는다(읽기 전용 연결)')
+
+    const writer = await open(t, running, owner, { workspaceId, pageId }, memoryPendingEditStore())
+    await waitFor('쓰는 쪽 연결', settled(writer))
+    // 둘 다 자리를 싣는다 — 화면이 사본의 연결에 자리를 넘겨도 나가지 않아야 한다
+    writer.connection.setPresence({ cursor: null, block_selection: [], mode: 'edit' })
+    embed.connection.setPresence({ cursor: null, block_selection: [], mode: 'view' })
+    edit(writer.doc(), typeAt(blockId, 'A에서 '))
+    await waitFor('사본이 곧바로 받는다', () => textOf(embed.doc(), pageId) === 'A에서 원문')
+
+    // 사본 쪽 문서에 무엇이 쓰여도 나가지 않는다 — 다음 편집이 건너온 뒤에도 로그 · 소켓에 없다
+    edit(embed.doc(), typeAt(blockId, '몰래 '))
+    edit(writer.doc(), typeAt(blockId, '다음 '))
+    await waitFor('다음 편집이 건너왔다', () => textOf(embed.doc(), pageId).includes('다음'))
+    await waitFor('소켓 살리기가 나갔다', () => embed.wire.sent.some((bytes) => includesText(bytes, 'keepalive-')))
+    assert.equal(await logTexts(pageId, '몰래'), false, '서버 로그에 없다')
+    assert.equal(embed.wire.sent.some((bytes) => includesText(bytes, '몰래')), false, '소켓으로 나가지 않았다')
+    assert.equal(textOf(writer.doc(), pageId).includes('몰래'), false)
+    assert.equal(embed.wire.sockets.length, 1, '다시 붙지 않았다')
+
+    assert.equal(store.entries.get(key), kept, '보존본을 건드리지 않는다')
+    assert.ok(records.length > 0, '전제: 서버가 접속자를 적고 있다(쓰는 쪽)')
+    assert.equal(records.some((viewers) => viewers.has(member.userId)), false, '사본을 보는 사람을 A 를 보는 사람으로 세지 않는다(AW-2)')
+  })
+
+  test('★ 볼 수 없게 되면 not_found 로 닫는다 — A 의 보존본은 지우지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, member, pageId } = await fixture()
+    const running = await startServer(t)
+    const store = memoryPendingEditStore()
+    const key = `${member.userId}:${pageId}`
+    await store.write(key, new Uint8Array([9]))
+    const embed = await open(t, running, member, { workspaceId, pageId }, store, { offline: false }, { embed: true })
+    await waitFor('연결', settled(embed))
+
+    assert.equal((await revokeAccess(owner.ctx, pageId, { type: 'workspace_everyone' })).ok, true)
+    await waitFor('닫았다', () => embed.connection.snapshot().closed === 'not_found')
+    assert.equal(store.entries.size, 1, 'embed 의 닫힘은 그 페이지의 보존본을 지우지 않는다')
+    assert.deepEqual(embed.discarded.map((d) => [d.reason, d.unconfirmed]), [['not_found', false]])
+  })
+})

@@ -9,7 +9,7 @@
  *   · 자식 없는 원본 — 마지막 자식을 지우면 빈 문단 하나를 넣는다(정규화 ⑥ⓐ 와 같은 모양 · 캐럿을 둘 곳)
  *   · 바꾸기 → 동기화 블록(⑪ⓐ) — 같은 부모의 이웃 블록들을 새 원본(새 id)으로 감싼다
  *   · 동기화 해제(⑫ⓒ) — 사본 없는 원본의 껍데기를 벗긴다(자식은 제자리)
- *   · 붙여넣기 — 붙이는 블록의 동기화 블록은 내용만 편다(사본 붙이기는 SB-2 의 클립보드 v2)
+ *   · 붙여넣기(⑪ⓑ~ⓔ · SB-2) — 복사한 동기화 블록은 같은 원본의 새 사본 · 잘라 붙이기 · 동기화 블록 안 · 다른 워크스페이스(`planSyncedPaste`)
  *
  * 변경 범위만 본다 — 타이핑 한 글자는 조상 몇 개를 볼 뿐이다. 문서 전체를 훑지 않는다.
  */
@@ -17,7 +17,7 @@
 import type { Node as PmNode, ResolvedPos } from '@tiptap/pm/model'
 import { Plugin, PluginKey, type Command, type EditorState, type Transaction } from '@tiptap/pm/state'
 
-import { isSyncedCopyProps, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY } from '../block/synced-block.ts'
 import { BLOCK_TYPES, isRefType, specOf, type BlockType } from '../block/types.ts'
 import { BlockSelection, isBlockSelection } from './block-selection.ts'
 import type { EditorBlock } from './document.ts'
@@ -29,8 +29,6 @@ const { blockContainer: CONTAINER, blockGroup: GROUP, paragraph: PARAGRAPH } = b
 
 /** 막은 편집의 까닭. */
 export const SYNCED_NESTING_NOTICE = '동기화 블록 안에는 동기화 블록 · 하위 페이지 · 데이터베이스를 둘 수 없습니다.'
-/** 붙여넣은 동기화 블록을 내용으로 편 까닭. */
-export const SYNCED_PASTE_NOTICE = '동기화 블록은 내용만 붙여넣었습니다.'
 
 /** 어딘가의 `excludedDescendantTypes` 에 든 타입 — 이 밖의 타입은 가드가 조상을 볼 필요가 없다. */
 const EXCLUDABLE: ReadonlySet<BlockType> = new Set(
@@ -269,26 +267,77 @@ export function unsyncSyncedBlockCommand(blockId: string, newId: () => string = 
   }
 }
 
-// ── 붙여넣기 ───────────────────────────────────────────────────────────
+// ── 붙여넣기 (⑪ⓑ~ⓔ · SB-2) ───────────────────────────────────────────
+
+/** 붙여넣기가 놓이는 곳 · 클립보드가 온 곳. */
+export type SyncedPasteContext = {
+  /** 클립보드가 온 워크스페이스 · 페이지 — 옛 모양(v1) · 모르는 곳이면 null(같은 곳으로 읽는다 — 옛 모양은 복사다). */
+  readonly from: { readonly workspaceId: string | null; readonly pageId: string | null }
+  /** 붙이는 편집기의 워크스페이스 · 페이지 — 모르면 null. */
+  readonly to: { readonly workspaceId: string; readonly pageId: string } | null
+  /** 잘라낸 것이다(클립보드 v2 의 표지). */
+  readonly cut: boolean
+  /** 붙이는 자리가 동기화 블록 안이다(어느 깊이든 — SY5). */
+  readonly insideSynced: boolean
+  /** 이 문서에 이 id 의 블록이 있는가 — 잘라 붙이기의 같은 id 되살리기(ⓒ). */
+  readonly hasBlock: (id: string) => boolean
+}
+
+export type SyncedPastePlan = {
+  readonly blocks: EditorBlock[]
+  /** 새 id 를 받지 않는 블록 — 같은 페이지에 잘라 붙인 원본(ⓒ — 그 사본들이 이어진다). */
+  readonly keepIds: ReadonlySet<string>
+  /** 내용으로 편 원본 수(ⓓⓔ). */
+  readonly unwrapped: number
+  /** 뺀 사본 수(ⓓⓔ). */
+  readonly dropped: number
+}
+
+/** 펴거나 뺀 것이 있을 때의 안내(ⓓⓔ). */
+export const SYNCED_PASTE_NOTICE = '이곳에는 동기화 블록을 둘 수 없어 내용만 붙여넣었습니다(사본은 뺐습니다).'
 
 /**
- * 붙일 블록들의 동기화 블록을 내용으로 편다 — 원본은 껍데기를 벗겨 자식을 그 자리에(재귀), 사본은 뺀다(내용이 이 클립보드에 없다).
- * 하위 페이지 · 인라인 데이터베이스는 클립보드가 이미 뺐다(`stripPageRefs`). 바꾼 수를 함께 돌려준다.
+ * 붙일 블록들의 동기화 블록을 정한다(정본 ⑪ — 판단은 이 한 곳).
  *
- * SB-1 에서는 어디에 붙이든 편다 — 사본이 아직 없어 붙인 원본이 독립된 새 원본이 되면 "동기화된다" 고 잘못 읽힌다. SB-2(클립보드 v2)가
- * 동기화 블록 밖에 붙이는 것을 "X 를 가리키는 새 사본" 으로 바꾸고(⑪ⓑ), 동기화 블록 안이면 여전히 편다(⑪ⓓ).
+ *   ⓑ 복사 → 붙이기 — 원본이든 사본이든 **X 를 가리키는 새 사본**(내용은 붙이지 않는다 · 같은 페이지여도 — SY1 은 사본이라 지켜진다)
+ *   ⓒ 잘라 붙이기 — 원본 X 를 **같은 페이지**에 붙이고 이 문서에 X 가 없으면 같은 id 로 되살린다(사본이 이어진다) · 아니면 새 원본(새 id ·
+ *      붙인 내용). 사본은 같은 원본의 새 사본
+ *   ⓓ 붙이는 곳이 동기화 블록 안 · ⓔ 다른 워크스페이스 — 원본은 내용만 펴고(재귀) 사본은 뺀다(SY5 · SY6)
+ *
+ * 하위 페이지 · 인라인 데이터베이스는 클립보드가 이미 뺐다(`stripPageRefs`). id 는 붙일 때 새로 받는다(`keepIds` 만 빼고).
  */
-export function unwrapSyncedBlocks(blocks: readonly EditorBlock[]): { blocks: EditorBlock[]; unwrapped: number } {
+export function planSyncedPaste(blocks: readonly EditorBlock[], ctx: SyncedPasteContext): SyncedPastePlan {
+  const otherWorkspace = ctx.from.workspaceId !== null && ctx.to !== null && ctx.from.workspaceId !== ctx.to.workspaceId
+  const flatten = ctx.insideSynced || otherWorkspace
+  const samePage = ctx.from.pageId !== null && ctx.to !== null && ctx.from.pageId === ctx.to.pageId
+  const keepIds = new Set<string>()
   let unwrapped = 0
+  let dropped = 0
   const walk = (list: readonly EditorBlock[]): EditorBlock[] =>
-    list.flatMap((block) => {
+    list.flatMap((block): EditorBlock[] => {
       if (block.type === SYNCED_BLOCK_TYPE) {
-        unwrapped += 1
-        return isSyncedCopyProps(block.properties) ? [] : walk(block.children ?? [])
+        const copy = isSyncedCopyProps(block.properties)
+        if (flatten) {
+          if (copy) {
+            dropped += 1
+            return []
+          }
+          unwrapped += 1
+          return walk(block.children ?? [])
+        }
+        if (copy) return [{ ...block, children: [] }]
+        if (!ctx.cut) return [syncedCopyBlock(block.id)]
+        if (samePage && !ctx.hasBlock(block.id)) keepIds.add(block.id)
+        return [{ ...block, children: walk(block.children ?? []) }]
       }
       if (isRefType(block.type)) return [block]
       const children = block.children ?? []
       return [children.length > 0 ? { ...block, children: walk(children) } : block]
     })
-  return { blocks: walk(blocks), unwrapped }
+  return { blocks: walk(blocks), keepIds, unwrapped, dropped }
+}
+
+/** 원본 X 를 가리키는 사본 하나(id 는 붙일 때 새로 받는다 · 원본의 "복사" 단추도 이것을 싣는다). */
+export function syncedCopyBlock(originalId: string): EditorBlock {
+  return { id: newBlockId(), type: SYNCED_BLOCK_TYPE, title: [], properties: { [SYNCED_FROM_KEY]: originalId.toLowerCase() }, format: {}, children: [] }
 }

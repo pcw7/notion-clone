@@ -72,16 +72,26 @@ import {
 import type { CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
 import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
-import { containerAt, inTableCell } from './pm-blocks.ts'
+import { containerAt, findContainerById, inTableCell } from './pm-blocks.ts'
 import { canPasteUrl, pastedUrlOf, pasteUrlCommand } from './paste-url.ts'
 import { blockSchema, isPlainTextNode } from './schema.ts'
-import { SYNCED_PASTE_NOTICE, unwrapSyncedBlocks } from './synced-block.ts'
+import { excludedAt, planSyncedPaste, SYNCED_PASTE_NOTICE, syncedCopyBlock } from './synced-block.ts'
+import { SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
 export const BLOCKS_MIME = 'application/x-notion-clone-blocks+json'
 
-/** 포맷 버전. 모르는 버전은 평문으로 떨어진다(머리말). */
-export const CLIPBOARD_VERSION = 1
+/**
+ * 포맷 버전. 모르는 버전은 평문으로 떨어진다(머리말).
+ *
+ * v2(SB-2 · 정본 [보강 SB-0] ⑪ⓒ) — 클립보드가 온 워크스페이스 · 페이지와 잘라냄 표지를 더했다(`{ version, workspaceId, pageId, cut, blocks }` ·
+ * 모르면 null). 동기화 블록의 붙여넣기가 읽는다(`planSyncedPaste`). v1 도 읽는다 — 온 곳을 모르는 복사로.
+ */
+export const CLIPBOARD_VERSION = 2
+const READABLE_VERSIONS: ReadonlySet<unknown> = new Set([1, 2])
+
+/** 클립보드가 온 곳 · 붙이는 곳 — 편집기가 든 워크스페이스 · 페이지. */
+export type ClipboardPlace = { readonly workspaceId: string; readonly pageId: string }
 
 /** 정본 엣지 케이스: *"1회 블록 수 상한(예: 5000)"*. */
 export const MAX_PASTE_BLOCKS = 5000
@@ -235,8 +245,13 @@ export type SerializedSelection = {
   readonly blocks: readonly EditorBlock[]
 }
 
-/** 선택된 최상위 블록들을 클립보드에 실을 형태로. */
-export function serializeBlocks(doc: PmNode, rootPositions: readonly number[]): SerializedSelection | null {
+/** 클립보드 JSON(v2) — 온 곳을 모르면 null. */
+export function clipboardJson(blocks: readonly EditorBlock[], place: ClipboardPlace | null, cut: boolean): string {
+  return JSON.stringify({ version: CLIPBOARD_VERSION, workspaceId: place?.workspaceId ?? null, pageId: place?.pageId ?? null, cut, blocks })
+}
+
+/** 선택된 최상위 블록들을 클립보드에 실을 형태로. `place` 는 이 편집기가 든 곳(v2 — 동기화 블록의 붙여넣기가 읽는다). */
+export function serializeBlocks(doc: PmNode, rootPositions: readonly number[], place: ClipboardPlace | null = null, cut = false): SerializedSelection | null {
   const source: EditorBlock[] = []
   for (const pos of rootPositions) {
     const node = doc.nodeAt(pos)
@@ -246,18 +261,29 @@ export function serializeBlocks(doc: PmNode, rootPositions: readonly number[]): 
 
   const { blocks, dropped } = stripPageRefs(source)
   return {
-    json: JSON.stringify({ version: CLIPBOARD_VERSION, blocks }),
+    json: clipboardJson(blocks, place, cut),
     text: plainTextForBlocks(blocks),
     dropped,
     blocks,
   }
 }
 
+/**
+ * 원본의 "복사" 단추(정본 ⑪ⓑ · 시나리오 2) — X 를 가리키는 사본 하나를 싣는다. 평문에는 실을 글이 없다(사본은 원자다) — 빈 글자 대신
+ * 안내 한 줄을 싣지 않는다(다른 앱에 붙이면 아무것도 들어가지 않는다).
+ */
+export function syncedCopyClipboard(originalId: string, place: ClipboardPlace | null): string {
+  return clipboardJson([syncedCopyBlock(originalId)], place, false)
+}
+
 // ── 읽기 ──────────────────────────────────────────────────────────────
 
+/** 클립보드가 온 곳(v2) — v1 이면 모른다. */
+export type ClipboardOrigin = { readonly workspaceId: string | null; readonly pageId: string | null; readonly cut: boolean }
+
 export type ParsedClipboard =
-  /** `unwrapped` — 내용으로 편 동기화 블록 수(SB-1 — 0 이 아니면 알린다). */
-  | { readonly ok: true; readonly blocks: EditorBlock[]; readonly unwrapped?: number }
+  /** 동기화 블록은 그대로다 — 붙이는 자리에 따라 붙여넣기가 정한다(`planSyncedPaste`). */
+  | { readonly ok: true; readonly blocks: EditorBlock[]; readonly origin: ClipboardOrigin }
   /** 우리 포맷이 아니거나 읽을 수 없다 — 부르는 쪽은 평문 경로로 간다. */
   | { readonly ok: false; readonly reason: 'absent' | 'unreadable' | 'other_version' | 'too_many' }
 
@@ -278,28 +304,30 @@ export function parseClipboardBlocks(raw: string | null | undefined): ParsedClip
     return { ok: false, reason: 'unreadable' }
   }
 
-  const value = payload as { version?: unknown; blocks?: unknown }
-  if (value?.version !== CLIPBOARD_VERSION) return { ok: false, reason: 'other_version' }
+  const value = payload as { version?: unknown; blocks?: unknown; workspaceId?: unknown; pageId?: unknown; cut?: unknown }
+  if (!READABLE_VERSIONS.has(value?.version)) return { ok: false, reason: 'other_version' }
   if (!Array.isArray(value.blocks)) return { ok: false, reason: 'unreadable' }
 
   const blocks = value.blocks as EditorBlock[]
   if (countBlocks(blocks) > MAX_PASTE_BLOCKS) return { ok: false, reason: 'too_many' }
   if (validateDoc({ blocks }).length > 0) return { ok: false, reason: 'unreadable' }
 
-  // 하위 페이지는 복사될 때 빠지지만, 다른 버전·손으로 만든 클립보드가 들고 올 수 있다. 동기화 블록은 내용으로 편다(SB-1 · `unwrapSyncedBlocks`).
-  const unwrapped = unwrapSyncedBlocks(stripPageRefs(blocks).blocks)
-  return { ok: true, blocks: unwrapped.blocks, unwrapped: unwrapped.unwrapped }
+  // 하위 페이지는 복사될 때 빠지지만, 다른 버전·손으로 만든 클립보드가 들고 올 수 있다.
+  const text = (raw: unknown): string | null => (typeof raw === 'string' && raw !== '' ? raw : null)
+  const origin: ClipboardOrigin = { workspaceId: text(value.workspaceId), pageId: text(value.pageId), cut: value.cut === true }
+  return { ok: true, blocks: stripPageRefs(blocks).blocks, origin }
 }
 
-/** 붙는 모든 블록에 새 id 를 준다(머리말). */
+/** 붙는 모든 블록에 새 id 를 준다(머리말) — `keep` 의 id 만 그대로(같은 페이지에 잘라 붙인 동기화 원본 · ⑪ⓒ). */
 export function withFreshBlockIds(
   blocks: readonly EditorBlock[],
   newId: () => string = newBlockId,
+  keep: ReadonlySet<string> = new Set(),
 ): EditorBlock[] {
   return blocks.map((block) => ({
     ...block,
-    id: newId(),
-    children: withFreshBlockIds(block.children ?? [], newId),
+    id: keep.has(block.id) ? block.id : newId(),
+    children: withFreshBlockIds(block.children ?? [], newId, keep),
   }))
 }
 
@@ -377,11 +405,11 @@ function blocksFromHtml(html: string): EditorBlock[] {
   return out
 }
 
-export function pasteBlocksCommand(blocks: readonly EditorBlock[], deps: CommandDeps): Command {
+export function pasteBlocksCommand(blocks: readonly EditorBlock[], deps: CommandDeps, keepIds: ReadonlySet<string> = new Set()): Command {
   return (state, dispatch) => {
     if (blocks.length === 0) return false
 
-    const fresh = withFreshBlockIds(blocks, deps.newId ?? newBlockId)
+    const fresh = withFreshBlockIds(blocks, deps.newId ?? newBlockId, keepIds)
     const containers = fresh.map(containerFor)
     const sel = state.selection
     const tr = state.tr
@@ -440,7 +468,7 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
     const data = event.clipboardData
     if (!data) return false
 
-    const out = serializeBlocks(view.state.doc, sel.rootPositions)
+    const out = serializeBlocks(view.state.doc, sel.rootPositions, deps.clipboardPlace?.() ?? null, cut)
     if (!out) return false
 
     event.preventDefault()
@@ -501,8 +529,17 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
           // 우리 포맷이 아니다 — HTML·평문 기본 경로로 넘긴다.
           return false
         }
-        if ((parsed.unwrapped ?? 0) > 0) deps.onRefused?.(SYNCED_PASTE_NOTICE)
-        return pasteBlocksCommand(parsed.blocks, deps)(view.state, view.dispatch.bind(view))
+        // 동기화 블록(⑪ⓑ~ⓔ · SB-2) — 붙이는 자리 · 클립보드가 온 곳에 따라 새 사본 · 되살리기 · 새 원본 · 내용으로 편다
+        const state = view.state
+        const plan = planSyncedPaste(parsed.blocks, {
+          from: parsed.origin,
+          to: deps.clipboardPlace?.() ?? null,
+          cut: parsed.origin.cut,
+          insideSynced: excludedAt(state.selection.$from).has(SYNCED_BLOCK_TYPE),
+          hasBlock: (id) => findContainerById(state.doc, id) !== null,
+        })
+        if (plan.unwrapped + plan.dropped > 0) deps.onRefused?.(SYNCED_PASTE_NOTICE)
+        return pasteBlocksCommand(plan.blocks, deps, plan.keepIds)(state, view.dispatch.bind(view))
       },
 
       /**

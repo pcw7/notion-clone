@@ -152,7 +152,15 @@ export type CollabContext = {
   readonly userName: string
   /** 받을 때의 연결 모드(SG-5b) — 다시 판정할 때 지금 권한의 모드와 견준다. `view` 면 읽기 전용 연결이다. */
   readonly mode: Exclude<PageAccess, 'none'>
+  /**
+   * 동기화 블록 사본의 연결(SB-2 · 정본 [보강 SB-0] ⑧ · SY7)이다 — 주소의 `embed=1`. 고칠 수 있는 사람이어도 **늘 읽기 전용**이고
+   * (모드 `view`) 다시 판정은 볼 수 있는지만 본다(올라가도 `upgraded` 로 닫지 않는다). 사본에서 고치기는 SB-3.
+   */
+  readonly embed: boolean
 }
+
+/** 사본의 연결을 가르는 주소 매개변수(`collab-connection.ts` 의 embed 갈래가 붙인다). */
+export const EMBED_PARAMETER = 'embed'
 
 /** provider 가 받는 거부 이유 — 머리말. 쓰기 거부는 `appendDocUpdate` 의 이유 그대로다. */
 export type CollabRejection =
@@ -344,7 +352,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       feed = null
     },
 
-    async onAuthenticate({ documentName, requestHeaders, connectionConfig }) {
+    async onAuthenticate({ documentName, requestHeaders, requestParameters, connectionConfig }) {
       const origin = requestHeaders.get('origin')
       if (origin !== null && !options.allowedOrigins.includes(origin)) throw rejection('forbidden_origin')
 
@@ -357,13 +365,15 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
 
       const access = await pageAccess(resolved.context, address.pageId)
       if (access === 'none') throw rejection('not_found')
-      connectionConfig.readOnly = access === 'view'
+      // 사본의 연결(SB-2)은 고칠 수 있어도 읽기 전용이다 — 클라이언트가 보내지 않는 것에 기대지 않는다(SY7 · 서버가 문이다)
+      const embed = requestParameters.get(EMBED_PARAMETER) === '1'
+      connectionConfig.readOnly = embed || access === 'view'
 
       // 접속자 표시(AW-1) — awareness 의 이름은 서버가 채운다. 연결을 받을 때 한 번 읽는다(이름을 바꾸면 다시 붙을 때 바뀐다).
       const named = await withReadTransaction((tx) =>
         tx.queryMaybe<{ name: string }>(`SELECT name FROM "user" WHERE id = $1`, [resolved.context.userId]),
       )
-      const context: CollabContext = { token, ...address, session: resolved.context, userName: named?.name ?? '', mode: access }
+      const context: CollabContext = { token, ...address, session: resolved.context, userName: named?.name ?? '', mode: embed ? 'view' : access, embed }
       return context
     },
 
@@ -504,6 +514,8 @@ async function connectionVerdict(context: CollabContext): Promise<CollabRejectio
   if (!resolved.ok) return sessionRejection(resolved.reason)
   const access = await pageAccess(resolved.context, context.pageId)
   if (access === 'none') return 'not_found'
+  // 사본의 연결(SB-2)은 늘 읽기 전용이다 — 볼 수 있으면 그대로(오르내린 모드로 닫으면 사본이 쓸데없이 다시 붙는다)
+  if (context.embed) return null
   if (MODE_RANK[access] < MODE_RANK[context.mode]) return 'forbidden'
   // 올라갔다(10n-67 · SG-5b) — 연결의 모드를 그 자리에서 바꾸지 않고 닫는다(머리말). 받을 때는 지금 권한으로 정하므로 첫 동기화에서는 드물다
   if (MODE_RANK[access] > MODE_RANK[context.mode]) return 'upgraded'

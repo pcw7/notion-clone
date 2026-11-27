@@ -30,7 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import { NodeSelection, TextSelection, type EditorState } from '@tiptap/pm/state'
-import type { EditorView } from '@tiptap/pm/view'
+import { EditorView } from '@tiptap/pm/view'
 import type * as Y from 'yjs'
 
 import { textRun } from '@/lib/contracts/rich-text'
@@ -67,8 +67,9 @@ import {
   type SlashCommand,
 } from '@/lib/editor/slash-menu'
 import { excludedAt } from '@/lib/editor/synced-block'
+import { createCopyEditorState, watchSyncedGroup } from '@/lib/editor/synced-copy-binding'
 import { createCollabEditorState } from '@/lib/collab/collab-editor'
-import { openCollabConnection, type CollabConnection, type CollabSnapshot, type DiscardedDoc } from '@/lib/collab/collab-connection'
+import { memoryPendingEditStore, openCollabConnection, type CollabConnection, type CollabSnapshot, type DiscardedDoc } from '@/lib/collab/collab-connection'
 import { decodeBodyState } from '@/lib/collab/collab-protocol'
 import { openPendingEditStore, pendingEditKey } from '@/lib/collab/pending-store'
 import { BODY_FRAGMENT, readBodyYDocWithSuggestions } from '@/lib/collab/ydoc'
@@ -144,6 +145,9 @@ import {
   setSuggestionPanelOpen,
   subscribeSuggestionMode,
 } from './suggestion-mode-store'
+
+/** 동기화 블록 사본의 묶기(SB-2) — 이 편집기가 이미 가진 y-prosemirror 로 사본의 지연 구현에 넘긴다(`synced-block-view.ts` `CopyBinding`). */
+const SYNCED_COPY_BINDING = { createCopyEditorState, watchSyncedGroup, EditorView }
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
 const SYNCING_AFTER_MS = 3000
@@ -1832,6 +1836,21 @@ export function BodyEditor({
         return () => aiBlockListenersRef.current.delete(listener)
       },
       takeAiBlockFocus: (id) => aiBlockFocusRef.current.delete(id),
+      // 클립보드 v2(SB-2) — 복사할 때 싣고 붙일 때 견준다(동기화 블록의 붙여넣기 ⑪ⓑ~ⓔ)
+      clipboardPlace: () => ({ workspaceId, pageId }),
+      // 동기화 블록의 사본(SB-2) — 같은 페이지면 이 문서에, 다른 페이지면 embed 연결로 원본에 붙는다(노드 뷰가 화면에 들 때 묻는다)
+      syncedCopyHost: () => ({
+        workspaceId,
+        pageId,
+        collabUrl,
+        doc: boundDocRef.current,
+        editable: editableRef.current,
+        // embed 갈래 — presence · 보존본 · 보내기가 없다(`collab-connection.ts`)
+        openEmbed: (target, onChange) =>
+          openCollabConnection({ url: collabUrl, workspaceId, pageId: target, store: memoryPendingEditStore(), storeKey: '', embed: true, onChange }),
+        // 묶기는 이 편집기가 준다 — 지연 청크 · 노드 뷰가 y-prosemirror 를 가져오지 않게(`synced-block-view.ts` `CopyBinding`)
+        binding: SYNCED_COPY_BINDING,
+      }),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.

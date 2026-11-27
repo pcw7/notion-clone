@@ -1485,13 +1485,42 @@ span.blk-equation {
 .blk-synced_block .blk-synced-unsync:hover { background: rgba(55, 53, 47, 0.06); color: #37352f; }
 .blk-synced_block .blk-synced-unsync:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
 .blk-editor[contenteditable='false'] .blk-synced-unsync, .blk-synced_block [hidden] { display: none; }
+/* 원본의 "복사"(SB-2 · ⑪ⓑ) — 해제 단추와 같은 모양 · 읽기 전용에서도 선다(복사는 읽기다). 해제가 숨으면 오른쪽 끝으로 */
+.blk-synced_block .blk-synced-copy-button {
+  margin-left: auto; border: 0; border-radius: 4px; background: none; padding: 0 6px; color: #6b7280; font: inherit; cursor: pointer;
+}
+.blk-synced_block .blk-synced-copy-button + .blk-synced-unsync { margin-left: 0; }
+.blk-synced_block .blk-synced-copy-button:hover { background: rgba(55, 53, 47, 0.06); color: #37352f; }
+.blk-synced_block .blk-synced-copy-button:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
+/*
+ * 사본의 내용(SB-2) — 머리 줄 아래 한 줄을 다 쓴다. 머리의 작은 붉은 글씨를 물려받지 않게 본문 글자로 되돌린다. 중첩 편집기는 읽기 전용이라
+ * `.blk-editor[contenteditable='false']` 규칙이 편집 크롬을 숨긴다. 자리(불러오는 중 · 권한 없음 · 휴지통 · 삭제됨)는 흐린 글 한 줄 + 단추.
+ */
+.blk-synced_block .blk-synced-copy {
+  flex: 1 0 100%; min-width: 0; font-size: 16px; line-height: 1.5; color: var(--foreground); user-select: text; cursor: text;
+}
+.blk-synced-copy .blk-editor.blk-synced-nested { min-height: 0; }
+.blk-synced-copy[data-copy-state='ok'] > .blk-synced-place { display: none; }
+.blk-synced-copy .blk-synced-place {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 4px 2px; font-size: 0.875rem; color: var(--foreground-muted);
+  user-select: none; cursor: default; overflow-wrap: anywhere;
+}
+.blk-synced-copy .blk-synced-place button {
+  border: 1px solid rgba(55, 53, 47, 0.16); border-radius: 4px; background: none; padding: 0 8px; color: var(--foreground); font: inherit;
+  line-height: 24px; cursor: pointer;
+}
+.blk-synced-copy .blk-synced-place button:hover { background: rgba(55, 53, 47, 0.06); }
+.blk-synced-copy .blk-synced-place button:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
+.blk-synced-copy .blk-synced-place button:disabled { opacity: 0.5; cursor: default; }
 :root {
   @variant dark {
     .blk-editor .blk-container:has(> .blk-synced_block) { border-color: rgba(255, 123, 114, 0.45); }
     .blk-synced_block { color: #fca5a5; }
     .blk-synced_block .blk-synced-badge { background: rgba(255, 123, 114, 0.14); }
-    .blk-synced_block .blk-synced-unsync { color: #a3a3a3; }
-    .blk-synced_block .blk-synced-unsync:hover { background: rgba(255, 255, 255, 0.055); color: #e5e5e5; }
+    .blk-synced_block .blk-synced-unsync, .blk-synced_block .blk-synced-copy-button { color: #a3a3a3; }
+    .blk-synced_block .blk-synced-unsync:hover, .blk-synced_block .blk-synced-copy-button:hover { background: rgba(255, 255, 255, 0.055); color: #e5e5e5; }
+    .blk-synced-copy .blk-synced-place button { border-color: rgba(255, 255, 255, 0.16); }
+    .blk-synced-copy .blk-synced-place button:hover { background: rgba(255, 255, 255, 0.055); }
   }
 }
 
