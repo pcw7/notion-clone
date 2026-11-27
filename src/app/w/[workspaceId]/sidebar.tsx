@@ -50,9 +50,9 @@ import Link from '@/app/link'
 import { usePathname, useRouter } from 'next/navigation'
 
 import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
-import { TeamspaceCreateForm } from './teamspace-create'
+import dynamic from 'next/dynamic'
 import { WorkspaceSwitcher, type SwitcherOtherAccount, type SwitcherWorkspace } from './workspace-switcher'
-import { ImportButton } from './import-dialog'
+import { ImportButton } from './import-button'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { SIDEBAR_TOGGLE_EVENT } from './app-commands'
@@ -67,6 +67,12 @@ import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/
 import { RECENT_FETCH_LIMIT, SECTION_COUNT_OPTIONS, sectionCount, sectionCountLabel, visibleRowCount, type NavSectionKey, type SectionCounts } from '@/lib/nav/section-count'
 import { overlayVisits } from '@/lib/nav/recent-overlay'
 import { AnchoredLayer, containsAcrossLayers } from './anchored-layer'
+
+// teamspace 만들기 폼(BD-2) — "+" 를 누른 뒤에야 선다 · 단추에 올리거나 포커스하면 미리 받는다
+const TeamspaceCreateForm = dynamic(() => import('./teamspace-create').then((m) => m.TeamspaceCreateForm))
+const prefetchTeamspaceCreate = (): void => {
+  void import('./teamspace-create').catch(() => undefined)
+}
 
 export type SidebarNode = {
   id: string
@@ -552,6 +558,8 @@ export function Sidebar({
                   aria-expanded={creatingTeamspace}
                   title="teamspace 만들기"
                   onClick={() => setCreatingTeamspace((open) => !open)}
+                  onPointerEnter={prefetchTeamspaceCreate}
+                  onFocus={prefetchTeamspaceCreate}
                   className="rounded px-1 text-sm text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
                 >
                   +

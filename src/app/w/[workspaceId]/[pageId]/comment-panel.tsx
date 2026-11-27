@@ -26,9 +26,16 @@
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useState } from 'react'
 
-import { CommentReactions, type EmojiLabel, type ReactionView } from './comment-reactions'
+import dynamic from 'next/dynamic'
+import type { EmojiLabel, ReactionView } from './comment-reactions'
 // 여는 이벤트는 따로 둔다(BD-1) — 본문 편집기가 이 패널 모듈 전체를 끌고 오지 않게
 import { COMMENT_FOCUS_EVENT as FOCUS_EVENT } from './comment-events'
+
+// 반응 줄(BD-2) — 패널을 열고 목록이 온 뒤에야 선다 · 단추에 올리거나 패널을 열면 미리 받는다
+const CommentReactions = dynamic(() => import('./comment-reactions').then((m) => m.CommentReactions))
+const prefetchReactions = (): void => {
+  void import('./comment-reactions').catch(() => undefined)
+}
 
 type Run = { plain_text?: string }
 
@@ -134,6 +141,8 @@ export function CommentPanel({
 
   useEffect(() => {
     if (!open) return
+    // 목록이 오기 전에 반응 줄의 청크를 받아 둔다(BD-2)
+    prefetchReactions()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
     }
@@ -208,6 +217,8 @@ export function CommentPanel({
             }
           }}
           aria-expanded={open}
+          onPointerEnter={prefetchReactions}
+          onFocus={prefetchReactions}
           className={TOPBAR_BUTTON}
         >
           코멘트{openCount > 0 ? ` ${openCount}` : ''}

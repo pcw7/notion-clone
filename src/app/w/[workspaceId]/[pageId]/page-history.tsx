@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * 페이지 기록 — 머리의 "기록" 단추와 기록 창 (잔여 묶음 8d-2 · F-11-01)
+ * 페이지 기록 — 기록 창 (잔여 묶음 8d-2 · F-11-01). 머리의 "기록" 단추는 `page-history-button.tsx`(BD-2 — 창은 연 뒤에야 받는다).
  *
  * 노션의 Page history 와 같은 모양이다(F-11-01 시나리오): 왼쪽은 고른 버전의 본문(읽기 전용 미리보기), 오른쪽은 버전 목록(최신순 · 시각 ·
  * 고친 사람). 처음 열면 가장 최근 버전을 보여 준다. Esc · 닫기 · 바깥 누르기로 닫고 포커스를 "기록" 단추로 돌려준다(검색 창과 같은 관례).
@@ -15,9 +15,7 @@
  * 협업 서버가 퍼뜨린 update 로 따라온다.
  */
 
-import { TOPBAR_BUTTON } from '../topbar-style'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { MENU_ROW, usePageMenu } from './page-menu'
+import { useEffect, useRef, useState } from 'react'
 
 import type { VersionSummary } from '@/lib/history/version'
 import type { EditorDoc } from '@/lib/editor/document'
@@ -40,48 +38,13 @@ const RESTORE_MESSAGES: Record<string, string> = {
 
 type Preview = { readonly id: string; readonly doc: EditorDoc; readonly labels: PreviewLabels }
 
-export function PageHistoryButton({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
-  const [open, setOpen] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement | null>(null)
-  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
-  const menu = usePageMenu()
-  useEffect(() => menu?.register('history', () => {
-    setOpen(false)
-  }), [menu])
-  useEffect(() => {
-    menu?.hold('history', open)
-  }, [menu, open])
-  useEffect(() => () => menu?.hold('history', false), [menu])
-  const close = useCallback(() => {
-    setOpen(false)
-    // 메뉴 안의 줄은 닫힌 카드 안이라 포커스를 받을 수 없다 — "···" 단추로
-    if (menu) menu.focusTrigger()
-    else triggerRef.current?.focus()
-  }, [menu])
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        type="button"
-        data-testid="page-history-open"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen(true)}
-        className={menu ? MENU_ROW : TOPBAR_BUTTON}
-      >
-        {menu ? '버전 기록' : '기록'}
-      </button>
-      {open && <PageHistoryDialog workspaceId={workspaceId} pageId={pageId} onClose={close} />}
-    </>
-  )
-}
-
 async function getJson(url: string): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(url)
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> }
 }
 
-function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: string; pageId: string; onClose: () => void }) {
+/** 기록 창 — 단추(`page-history-button.tsx`)가 연 뒤에야 받는다(BD-2). */
+export function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: string; pageId: string; onClose: () => void }) {
   const base = `/api/workspaces/${workspaceId}/pages/${pageId}/versions`
   const [versions, setVersions] = useState<readonly VersionSummary[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)

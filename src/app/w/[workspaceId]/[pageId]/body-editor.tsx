@@ -86,7 +86,7 @@ import { searchCustomEmoji } from '@/lib/emoji/custom-emoji-rules'
 import { closeEmojiMenu, emojiMenuState, insertCustomEmoji, replaceColonEmoji } from '@/lib/editor/emoji-menu'
 import { BlockGutter } from './block-gutter'
 import { TableControls } from './table-controls'
-import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
+import type { FormatToolbarAt } from './format-toolbar'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { AiEntry } from '@/lib/ai/usage'
 import {
@@ -97,8 +97,11 @@ import {
   CodeLanguageMenuLazy,
   EmojiPickerLazy,
   EquationEditorLazy,
+  FindBarLazy as FindBar,
+  FormatToolbarLazy as FormatToolbar,
   ImageAltDialogLazy,
   LinkedDatabasePickerLazy,
+  prefetchEditorPopups,
   SuggestionCardLazy,
   SuggestionPanelLazy,
 } from './body-popups-lazy'
@@ -118,7 +121,6 @@ import {
   videoCaptionInfo,
 } from '@/lib/editor/file-block-commands'
 import type { ImageAlt } from '@/lib/block/image'
-import { FindBar } from './find-bar'
 import { perfEditorReady, perfEditorStarted } from '../perf-reporter'
 import { buttonRunMessage } from '../db/[databaseId]/button-messages'
 import { BUTTON_TYPE } from '@/lib/block/button'
@@ -1941,6 +1943,8 @@ export function BodyEditor({
       if (suggestingRef.current) view.dispatch(setSuggestionMode(view.state.tr, userId))
       // 성능 계측(10e-1b) — 쓸 수 있게 됐다(첫 편집기만 뜻이 있다 — 수집기가 거른다)
       perfEditorReady()
+      // 서식 툴바 · 찾기 · 블록 메뉴의 청크(BD-2) — 단축키로 열고 곧바로 치는 것이라 지금 받아 둔다
+      prefetchEditorPopups()
       // 한글 IME — 조합 중에는 후보를 묻지 않고, 조합이 끝나면 그때의 쿼리로 묻는다.
       // 서식 툴바(1e-2) — 끄는 동안은 접고 놓을 때 잰다 · 편집기 밖으로 포커스가 나가면 접는다(툴바 자신은 빼고).
       view.dom.addEventListener('mousedown', () => {

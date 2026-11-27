@@ -58,7 +58,7 @@ import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary } from '@/lib/database/property'
 import * as api from './table-api'
 import { TYPE_ICON, TYPE_LABEL } from './cell-view'
-import { FormulaEditor } from './formula-editor'
+import { FormulaEditorLazy as FormulaEditor } from './editors-lazy'
 import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan'
 import { AnchoredLayer } from '../../anchored-layer'
 

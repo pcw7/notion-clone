@@ -12,14 +12,20 @@
  * 아래에 페이지 웹훅 칸(`page-webhooks.tsx` — 4e-3)이 선다 — 노션의 "Connect Slack channel" 자리.
  */
 
+import dynamic from 'next/dynamic'
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
+import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu, usePageMenuOpen } from './page-menu'
 
 import type { PageActivityType } from '@/lib/notification/page-activity'
 import { formatVersionTime } from '@/lib/history/format'
 import { ACTIVITY_ERRORS, activityActorLabel, activityLine } from './activity-messages'
-import { PageWebhooks } from './page-webhooks'
+
+// 웹훅 칸(BD-2) — 패널을 연 뒤에야 선다 · 메뉴가 열리거나 단추에 올리면 미리 받는다
+const PageWebhooks = dynamic(() => import('./page-webhooks').then((m) => m.PageWebhooks))
+const prefetchWebhooks = (): void => {
+  void import('./page-webhooks').catch(() => undefined)
+}
 
 type Item = {
   readonly id: string
@@ -40,6 +46,10 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
   const menu = usePageMenu()
+  const menuOpen = usePageMenuOpen()
+  useEffect(() => {
+    if (menuOpen) prefetchWebhooks()
+  }, [menuOpen])
   useEffect(() => menu?.register('updates', () => {
     ticket.current++
     setOpen(false)
@@ -112,6 +122,8 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
           setListed(null)
           void load(null)
         }}
+        onPointerEnter={prefetchWebhooks}
+        onFocus={prefetchWebhooks}
         className={menu ? MENU_ROW : TOPBAR_BUTTON}
       >
         업데이트

@@ -1396,7 +1396,8 @@ async function main() {
     await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
     const g = await rect('.blk-gutter-grip')
     await click(g.x + g.w / 2, g.y + g.h / 2)
-    await sleep(60)
+    // 메뉴는 지연 청크다(BD-2) — 서고 포커스가 든 뒤에 본다
+    await waitFor(`!!document.activeElement?.closest('[role="menu"][aria-label="블록 메뉴"]')`, 3000)
     check('핸들을 누르면 그 블록이 선택된다', same(await selected(), ['A']), JSON.stringify(await selected()))
     check('핸들을 누르면 블록 메뉴가 열리고 포커스가 메뉴로 간다', await evaluate(`!!document.activeElement?.closest('[role="menu"]')`))
     await key('Escape')
@@ -1450,12 +1451,14 @@ async function main() {
     section('블록 메뉴 (F-01-08 · F-12-01 · F-12-13)')
     // 지금 문서: T > C, T > t1, A, D > B. A 를 대상으로 한다.
     const menuOpen = () => evaluate(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')`)
+    // 메뉴는 지연 청크다(BD-2) — 서고 포커스가 들어간 뒤에 키를 보낸다
+    const menuReady = () => waitFor(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')?.contains(document.activeElement)`, 3000)
     const typeOf = (id) => evaluate(`document.querySelector('[data-block-id="${id}"] > [data-block-type]')?.getAttribute('data-block-type') ?? null`)
     const aText = await rect(`[data-block-id="${ids.A}"] > *:first-child`)
     await click(aText.x + aText.w / 2, aText.y + aText.h / 2)
     await sleep(60)
     await key('/', MOD)
-    await sleep(80)
+    await menuReady()
     check('Mod+/ — 편집 모드에서도 그 블록을 선택하고 메뉴를 연다', (await menuOpen()) && same(await selected(), ['A']), JSON.stringify(await selected()))
     check('처음 포커스는 첫 켜진 항목(변환)', (await evaluate(`document.activeElement?.textContent`))?.startsWith('변환'))
 
@@ -1468,7 +1471,7 @@ async function main() {
     check('실행하면 메뉴가 닫히고 에디터로 포커스가 온다', !(await menuOpen()) && (await evaluate(`document.activeElement === document.querySelector('.blk-editor')`)))
 
     await key('/', MOD)
-    await sleep(60)
+    await menuReady()
     await key('ArrowDown')
     await key('ArrowRight')
     await key('End')
@@ -1479,27 +1482,27 @@ async function main() {
     check('색 — 블록 색(format.block_color)이 칠해진다', (await evaluate(`document.querySelector('[data-block-id="${ids.A}"] > [data-block-type]')?.getAttribute('data-color')`)) === 'red_background')
 
     await key('/', MOD)
-    await sleep(60)
+    await menuReady()
     await key('ArrowDown')
     await key('ArrowDown')
     await key('ArrowDown')
     await key('Enter')
     await sleep(150)
-    const notice = await evaluate(`[...document.querySelectorAll('[role="status"]')].map((e) => e.textContent).join(' ')`)
+    const notice =await evaluate(`[...document.querySelectorAll('[role="status"]')].map((e) => e.textContent).join(' ')`)
     check('블록 링크 복사 — 안내가 뜬다', notice.includes('블록 링크를 복사했습니다'), notice)
     const copied = await evaluate(`navigator.clipboard.readText()`)
     check('클립보드에 /w/{ws}/{page}#{blockId} 가 들어간다', copied.endsWith(`/w/${workspaceId}/${pageId}#${ids.A}`), copied)
 
     await key('/', MOD)
-    await sleep(60)
+    await menuReady()
     await key('ArrowDown')
     await key('ArrowDown')
     await key('Enter')
     await sleep(100)
-    const countA = async () => (await order()).filter((t) => t === 'A').length
+    const countA =async () => (await order()).filter((t) => t === 'A').length
     check('복제 — A 가 둘이 된다', (await countA()) === 2, JSON.stringify(await order()))
     await key('/', MOD)
-    await sleep(60)
+    await menuReady()
     await key('End')
     await key('Enter')
     await sleep(100)
@@ -1548,6 +1551,8 @@ async function main() {
     await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
     const tGrip = await rect('.blk-gutter-grip')
     await click(tGrip.x + tGrip.w / 2, tGrip.y + tGrip.h / 2)
+    // 핸들을 누르면 메뉴가 선다 — 지연 청크라(BD-2) 선 뒤에 Esc 로 닫는다(먼저 치면 Esc 가 편집기로 가고 늦게 선 메뉴가 포커스를 가져간다)
+    await menuReady()
     await key('Escape')
     await sleep(60)
     check('복사할 블록을 고른다(T · 자식 둘)', same(await selected(), ['T']), JSON.stringify(await selected()))
@@ -1597,6 +1602,7 @@ async function main() {
     // 핸들이 늦게 뜨면 null — 그대로 읽으면 스크립트가 통째로 죽어 뒤의 절이 모두 사라진다(8b-2 의 전체 판에서 한 번). 검사로 떨어뜨린다.
     check('전제 — 하위 페이지 줄에 핸들이 떴다', subGrip !== null)
     if (subGrip) await click(subGrip.x + subGrip.w / 2, subGrip.y + subGrip.h / 2)
+    if (subGrip) await menuReady()
     await key('Escape')
     await sleep(60)
     const subPayload = await evaluate(`(() => {

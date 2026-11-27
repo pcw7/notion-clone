@@ -16,7 +16,7 @@
  * 같다). 다른 곳에서 바뀌어 서버 렌더가 새 값을 주면 따라간다.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import {
@@ -36,6 +36,8 @@ import {
 import { imageContentPath } from '@/lib/block/image'
 import { ALLOWED_IMAGE_MIME } from '@/lib/file/limits'
 import { uploadImageFile } from '@/lib/file/upload-client'
+// 상태 통로는 따로 둔다(BD-2) — 아이콘 칸이 이 모듈 전체를 끌고 오지 않게
+import { CoverContext, type CoverState } from './page-cover-context'
 
 const MESSAGES: Record<string, string> = {
   locked: '잠긴 페이지입니다 — 잠금을 풀어야 커버를 바꿀 수 있습니다.',
@@ -43,19 +45,6 @@ const MESSAGES: Record<string, string> = {
   invalid_cover: '커버는 내장 커버 · http(s) 이미지 주소 · 이 워크스페이스에 올린 이미지여야 합니다.',
   invalid_cover_position: '위치는 그림 커버(올린 이미지 · 이미지 주소)에만 정할 수 있습니다.',
 }
-
-type CoverState = {
-  readonly workspaceId: string
-  readonly cover: PageCover | null
-  /** 커버의 세로 위치(PC-3) — 0~1 · 가운데 0.5. */
-  readonly position: number
-  readonly readOnly: boolean
-  readonly error: string | null
-  save(next: PageCover | null): Promise<void>
-  savePosition(next: number): Promise<void>
-}
-
-const CoverContext = createContext<CoverState | null>(null)
 
 export function PageCoverProvider({
   workspaceId,
@@ -165,11 +154,6 @@ export function PageCoverProvider({
     [workspaceId, cover, position, readOnly, error, save, savePosition],
   )
   return <CoverContext.Provider value={value}>{children}</CoverContext.Provider>
-}
-
-/** 아이콘 칸이 배너에 걸칠지 — 커버가 있으면 참. 공급자가 없으면(데이터베이스 머리) 거짓. */
-export function useHasPageCover(): boolean {
-  return (useContext(CoverContext)?.cover ?? null) !== null
 }
 
 function CoverError({ error }: { error: string | null }) {
