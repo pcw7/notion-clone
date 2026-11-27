@@ -85,6 +85,7 @@ const prefetchPeopleEditor = (): void => {
   void import('./db/[databaseId]/people-editor').catch(() => undefined)
 }
 import { appActionsFor, formatCommandShortcut, rankByQuery, type CommandAction, type CommandShortcut } from '@/lib/nav/command-actions'
+import { navKeyOf } from '@/lib/nav/nav-keys'
 import { usePageCommands, type PageCommand } from './page-commands'
 import { requestSidebarToggle, toggleThemeNow } from './app-commands'
 
@@ -286,6 +287,31 @@ export function SearchOverlay({
     return () => clearTimeout(timer)
   }, [notice])
 
+  /** 그 페이지의 정식 주소를 복사한다 — 팔레트의 "링크 복사"(CP-1)와 `Ctrl/Cmd + L`(NV-1)이 함께 쓴다. 클립보드가 거부하면 말한다(07 엣지). */
+  const copyPageLink = useCallback(
+    (pageId: string) => {
+      const url = `${window.location.origin}/w/${workspaceId}/${pageId}`
+      void navigator.clipboard
+        .writeText(url)
+        .then(() => setNotice({ text: '링크를 복사했습니다.', error: false }))
+        .catch(() => setNotice({ text: '링크를 복사하지 못했습니다 — 브라우저가 클립보드를 막았습니다.', error: true }))
+    },
+    [workspaceId],
+  )
+
+  // ── 링크 복사 단축키(NV-1 · F-07-12 · 정본 §3.9 [보강 NV-0] ⑤) ──
+  // 페이지가 열린 화면에서만 가로챈다 — 다른 화면에서는 브라우저의 Ctrl+L(주소창)이 그대로 선다.
+  useEffect(() => {
+    if (currentPageId === null) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (navKeyOf(event) !== 'copy-link') return
+      event.preventDefault()
+      copyPageLink(currentPageId)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [currentPageId, copyPageLink])
+
   const close = useCallback(() => {
     setOpen(false)
     setPicker(null)
@@ -436,15 +462,9 @@ export function SearchOverlay({
             })
             .catch(() => setNotice({ text: '새 페이지를 만들지 못했습니다.', error: true }))
           return
-        case 'copy-link': {
-          if (currentPageId === null) return
-          const url = `${window.location.origin}/w/${workspaceId}/${currentPageId}`
-          void navigator.clipboard
-            .writeText(url)
-            .then(() => setNotice({ text: '링크를 복사했습니다.', error: false }))
-            .catch(() => setNotice({ text: '링크를 복사하지 못했습니다 — 브라우저가 클립보드를 막았습니다.', error: true }))
+        case 'copy-link':
+          if (currentPageId !== null) copyPageLink(currentPageId)
           return
-        }
         case 'toggle-theme':
           toggleThemeNow(workspaceId, () => router.refresh())
           return
@@ -462,7 +482,7 @@ export function SearchOverlay({
           return
       }
     },
-    [close, currentPageId, router, workspaceId],
+    [close, copyPageLink, currentPageId, router, workspaceId],
   )
 
   useEffect(() => {

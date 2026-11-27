@@ -29,7 +29,8 @@ export type CommandAction = {
 
 export const COMMAND_ACTIONS: readonly CommandAction[] = [
   { id: 'new-page', label: '새 페이지', keywords: ['만들기', '추가', 'new page', 'create'], shortcut: null, needsPage: false },
-  { id: 'copy-link', label: '링크 복사', keywords: ['주소', 'url', 'copy link', '공유'], shortcut: null, needsPage: true },
+  // 단축키는 NV-1(F-07-12 · 정본 §3.9 [보강 NV-0] ⑤) — 페이지가 열린 화면에서만 가로챈다
+  { id: 'copy-link', label: '링크 복사', keywords: ['주소', 'url', 'copy link', '공유'], shortcut: { mod: true, key: 'L' }, needsPage: true },
   { id: 'toggle-theme', label: '테마 바꾸기(밝게 · 어둡게)', keywords: ['다크 모드', '어둡게', '밝게', 'theme', 'dark mode'], shortcut: { mod: true, shift: true, key: 'L' }, needsPage: false },
   { id: 'toggle-sidebar', label: '사이드바 접기 · 펴기', keywords: ['사이드바', '숨기기', 'sidebar', 'toggle sidebar'], shortcut: { mod: true, key: '\\' }, needsPage: false },
   { id: 'open-settings', label: '설정 열기', keywords: ['설정', '환경설정', 'settings', 'preferences'], shortcut: null, needsPage: false },

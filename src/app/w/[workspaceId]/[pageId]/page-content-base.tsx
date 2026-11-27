@@ -73,6 +73,8 @@ import { RowProperties, RowTitle, VerificationBadge } from './row-page-lazy'
 import { toVerificationCell } from '@/lib/database/verification-cell'
 import { SCREEN_TITLES, contentTitle } from '@/lib/nav/screen-title'
 import { DocumentTitle } from '../document-title'
+import { NavUpShortcut } from '../nav-shortcut'
+import { upHrefOf } from '@/lib/nav/nav-keys'
 import { readAiConfig } from '@/lib/ai/config'
 import { aiEntryFor } from '@/lib/ai/usage'
 
@@ -236,6 +238,8 @@ export async function PageContentBase({
     >
       {/* 탭 제목(10d-7b) — 그 페이지의 평문 제목(행 페이지도). 피크는 탭을 바꾸지 않는다(화면은 데이터베이스다) */}
       {frame === 'page' && <DocumentTitle title={contentTitle(page.plainTitle)} />}
+      {/* 위 칸 단축키(NV-1 · F-07-12) — Ctrl/Cmd + Shift + U 가 경로의 바로 위 칸으로(권한으로 거른 줄 · 행이면 데이터베이스). 피크는 데이터베이스 화면의 것 */}
+      {frame === 'page' && <NavUpShortcut href={upHrefOf(trail)} />}
       {/*
         상단 바(디자인-2a · 노션 실측: 높이 44px · 배경과 같은 바탕 · 아래 선 없음) — 왼쪽 경로 · 오른쪽 머리 단추. 페이지는 본문 칸 밖에서
         위에 고정한다(스크롤해도 남는다). 좁은 화면(md 미만 · 10j-1)에서는 감는다 — 한 줄이면 폰에서 문서 폭이 715px 로 늘었다.

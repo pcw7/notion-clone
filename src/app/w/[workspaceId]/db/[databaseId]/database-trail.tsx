@@ -3,33 +3,40 @@
  *
  * 정본: 00-canonical-data-model.md §3.5 [보강 I-1] ⑥(I-4c) · 줄은 `databaseTrail`(block/breadcrumb.ts)이 만든다. 모양은 전의 줄 그대로다
  * (링크는 밑줄 · 지금 것은 옅은 글자) — 최상위 데이터베이스는 전과 같은 두 칸이다.
+ *
+ * 위 칸 단축키(NV-1 · F-07-12 · 정본 §3.9 [보강 NV-0] ④)도 이 줄에서 고른다 — `Ctrl/Cmd + Shift + U` 가 바로 위 칸(놓인 페이지 또는 홈)으로.
  */
 
 import { Fragment } from 'react'
 
 import Link from '@/app/link'
 import type { BreadcrumbTrail } from '@/lib/block/breadcrumb'
+import { upHrefOf } from '@/lib/nav/nav-keys'
 import { PageIconView } from '../../page-icon-view'
+import { NavUpShortcut } from '../../nav-shortcut'
 
 export function DatabaseTrailNav({ trail }: { trail: BreadcrumbTrail }) {
   return (
-    <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-      {trail.map((item, i) => (
-        <Fragment key={`${item.kind}:${item.id}`}>
-          {i > 0 && <span aria-hidden>/</span>}
-          {item.href === null ? (
-            <span className="text-neutral-400">
-              <PageIconView icon={item.icon} className="mr-1" />
-              {item.label}
-            </span>
-          ) : (
-            <Link href={item.href} className="hover:underline underline-offset-4">
-              {item.icon !== null && <PageIconView icon={item.icon} className="mr-1" />}
-              {item.label}
-            </Link>
-          )}
-        </Fragment>
-      ))}
-    </nav>
+    <>
+      <NavUpShortcut href={upHrefOf(trail)} />
+      <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
+        {trail.map((item, i) => (
+          <Fragment key={`${item.kind}:${item.id}`}>
+            {i > 0 && <span aria-hidden>/</span>}
+            {item.href === null ? (
+              <span className="text-neutral-400">
+                <PageIconView icon={item.icon} className="mr-1" />
+                {item.label}
+              </span>
+            ) : (
+              <Link href={item.href} className="hover:underline underline-offset-4">
+                {item.icon !== null && <PageIconView icon={item.icon} className="mr-1" />}
+                {item.label}
+              </Link>
+            )}
+          </Fragment>
+        ))}
+      </nav>
+    </>
   )
 }
