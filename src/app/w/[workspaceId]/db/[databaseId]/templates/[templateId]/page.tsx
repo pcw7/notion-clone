@@ -54,6 +54,8 @@ import { collabServerUrl } from '@/lib/collab/collab-url'
 import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
 import { readBodyYDocWithSuggestions } from '@/lib/collab/ydoc'
 import { templateTrail } from '@/lib/block/breadcrumb'
+import { upHrefOf } from '@/lib/nav/nav-keys'
+import { NavUpShortcut } from '../../../../nav-shortcut'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
 import { formulaPlanOf } from '@/lib/database/formula-plan'
@@ -137,6 +139,8 @@ export default async function TemplatePage({
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
       {/* 탭 제목(10d-7b) — "템플릿 — 데이터베이스 이름" */}
       <DocumentTitle title={templateTitle(database.value.name)} />
+      {/* 위 칸 단축키(NV-1 · F-07-12) — Ctrl/Cmd + Shift + U 가 그 데이터베이스로 */}
+      <NavUpShortcut href={upHrefOf(trail)} />
       <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
         {trail.map((item, i) => (
           <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">

@@ -41150,6 +41150,108 @@ async function main() {
       await sleep(500)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 이동 · 최근 (NV-1 · F-07-12)')) { try {
+      // 정본 §3.9 [보강 NV-0]. 부모 A > 자식 B. ① 이 탭의 첫 앱 항목(앞이 다른 사이트)에서 Ctrl+[ 는 무시 — 앱 밖으로 나가지 않는다 ② B → (경로
+      // 링크) A → Ctrl+[ → B(편집기에 포커스가 있어도) · Ctrl+] → A — 브라우저 히스토리 그대로 · 사이드바의 최근 맨 위가 따라온다 ③ Ctrl+Shift+U —
+      // B → A(부모) → 워크스페이스 홈(루트의 위) · 홈에서 Ctrl+L 은 가로채지 않는다 ④ Ctrl+L — 그 페이지의 정식 주소가 클립보드에 · 알림 · 팔레트의
+      // "링크 복사" 줄이 단축키를 적는다. 스스로 데이터를 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const pageA = await newPage({ title: `이동 부모 ${stamp}` })
+      const pageB = await newPage({ title: `이동 자식 ${stamp}`, parentPageId: pageA })
+      const urlA = `/w/${workspaceId}/${pageA}`
+      const urlB = `/w/${workspaceId}/${pageB}`
+      const home = `/w/${workspaceId}`
+      const chord = async (k, code, vk, modifiers) => {
+        const base = { key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers }
+        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+      }
+      const goBack = () => chord('[', 'BracketLeft', 219, MOD)
+      const goForward = () => chord(']', 'BracketRight', 221, MOD)
+      const goUp = () => chord('U', 'KeyU', 85, MOD | SHIFT)
+      const copyLink = () => chord('l', 'KeyL', 76, MOD)
+      const at = (path) => waitFor(`location.pathname === ${JSON.stringify(path)}`, 10000)
+      const where = () => evaluate('location.href')
+      /** 그 화면이 수화됐는가 — 단축키는 effect 가 붙인다. 페이지는 경로 줄, 홈은 사이드바. */
+      const ready = (sel = '[data-testid="page-topbar"] nav[aria-label="상위 경로"]') => waitHydrated(sel, 15000)
+      const firstRecent = () => evaluate(`document.querySelector('section[aria-label="최근"] a[href]')?.getAttribute('href') ?? null`)
+
+      // ① 앞이 다른 사이트인 첫 앱 항목
+      await send('Page.navigate', { url: 'about:blank' })
+      await sleep(300)
+      await send('Page.navigate', { url: `${BASE}${urlB}` })
+      await ready()
+      const reach = await evaluate(`window.navigation ? window.navigation.canGoBack : 'API 없음'`)
+      await goBack()
+      await sleep(1000)
+      check('★ 이 탭의 첫 앱 항목에서 Ctrl+[ 는 무시한다 — 앞이 다른 사이트여도 앱 밖으로 나가지 않는다',
+        reach === false && (await where()) === `${BASE}${urlB}`, `canGoBack ${reach} · ${await where()}`)
+
+      // ② 앱 안 이동(경로의 링크) → 뒤로 · 앞으로
+      if (await evaluate(`!!document.querySelector('button[aria-label="사이드바 열기"]')`)) {
+        await evaluate(`document.querySelector('button[aria-label="사이드바 열기"]').click()`)
+        await waitFor(`!!document.querySelector('section[aria-label="최근"]')`, 5000)
+      }
+      await evaluate(`document.querySelector('[data-testid="page-topbar"] nav[aria-label="상위 경로"] a[href=${JSON.stringify(urlA)}]')?.click()`)
+      const movedToA = await at(urlA)
+      await ready()
+      await evaluate(`document.querySelector('.ProseMirror')?.focus()`)
+      const focusedEditor = await evaluate(`!!document.activeElement?.closest('.ProseMirror')`)
+      await goBack()
+      const backToB = await at(urlB)
+      check('★ Ctrl+[ — 앱 안에서 옮겨 온 페이지에서 뒤로(편집기에 포커스가 있어도) · 브라우저 히스토리 그대로',
+        movedToA && focusedEditor && backToB, JSON.stringify({ movedToA, focusedEditor, at: await where() }))
+      const recentAfterBack = await waitFor(`document.querySelector('section[aria-label="최근"] a[href]')?.getAttribute('href') === ${JSON.stringify(urlB)}`, 5000)
+      check('사이드바의 최근 맨 위가 뒤로 간 페이지다', recentAfterBack, String(await firstRecent()))
+      await ready()
+      await goForward()
+      const forwardToA = await at(urlA)
+      check('★ Ctrl+] — 앞으로(뒤로 온 그 자리로)', forwardToA, await where())
+      check('사이드바의 최근 맨 위가 앞으로 간 페이지다',
+        await waitFor(`document.querySelector('section[aria-label="최근"] a[href]')?.getAttribute('href') === ${JSON.stringify(urlA)}`, 5000), String(await firstRecent()))
+      await ready()
+      await goForward()
+      await sleep(800)
+      check('앞으로의 끝에서 Ctrl+] 는 무시한다', (await where()) === `${BASE}${urlA}`, await where())
+
+      // ③ 위 칸 — 경로의 바로 위 칸(시간이 아니라 트리)
+      await goBack()
+      await at(urlB)
+      await ready()
+      await goUp()
+      const upToA = await at(urlA)
+      check('★ Ctrl+Shift+U — 자식에서 부모로(경로의 바로 위 칸)', upToA, await where())
+      await ready()
+      await goUp()
+      const upToHome = await at(home)
+      check('★ Ctrl+Shift+U — 루트 페이지에서 워크스페이스 홈으로', upToHome, await where())
+      await waitHydrated('section[aria-label="최근"]', 15000)
+      await copyLink()
+      await sleep(600)
+      const homeNotice = await evaluate(`document.querySelector('[data-testid="command-notice"]')?.textContent ?? null`)
+      check('페이지가 없는 화면(홈)에서는 Ctrl+L 을 가로채지 않는다 — 알림이 없다', homeNotice === null, String(homeNotice))
+      await goBack()
+      const upIsPush = await at(urlA)
+      check('위 칸은 새 히스토리 항목이다 — 뒤로 가면 떠난 페이지', upIsPush, await where())
+
+      // ④ 링크 복사
+      await ready()
+      await copyLink()
+      const copiedNotice = await waitFor(`document.querySelector('[data-testid="command-notice"]')?.textContent === '링크를 복사했습니다.'`, 5000)
+      const copied = await evaluate(`navigator.clipboard.readText()`).catch((e) => `읽지 못함: ${e}`)
+      check('★ Ctrl+L — 그 페이지의 정식 주소가 클립보드에 · 알림', copiedNotice && copied === `${BASE}${urlA}`, JSON.stringify({ copiedNotice, copied }))
+      await key('k', MOD)
+      await waitFor(`!!document.querySelector('[data-testid="search-input"]') && document.activeElement === document.querySelector('[data-testid="search-input"]')`, 5000)
+      await typeText('링크')
+      const kbdSel = `[data-testid="command-action"][data-action="copy-link"] kbd`
+      const kbd = await waitFor(`['Ctrl+L', '⌘L'].includes(document.querySelector('${kbdSel}')?.textContent ?? '')`, 5000)
+      check('팔레트의 "링크 복사" 줄이 단축키(Ctrl+L)를 적는다', kbd, String(await evaluate(`document.querySelector('${kbdSel}')?.textContent ?? null`)))
+      await key('Escape')
+      await sleep(300)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

@@ -42,6 +42,7 @@ import { OfflineResync } from './offline-resync'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { WorkspaceShortcut } from './workspace-shortcut'
 import { AiShortcut } from './ai-shortcut'
+import { NavShortcut } from './nav-shortcut'
 
 /**
  * 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. `teamspaceId` 는 넘기지 않는다 — 섹션은 여기서 이미 갈랐고, 멤버가
@@ -141,6 +142,8 @@ export default async function WorkspaceLayout({
       <ThemeShortcut workspaceId={workspaceId} />
       {/* AI 단축키(AI-6 · F-10-17) — 어디서든 Ctrl/Cmd + Shift + J 가 AI 채팅 화면으로 */}
       <AiShortcut workspaceId={workspaceId} />
+      {/* 이동 단축키(NV-1 · F-07-12) — 어디서든 Ctrl/Cmd + [ 뒤로 · ] 앞으로(브라우저 히스토리 그대로 · 이 탭의 첫 앱 항목이면 무시) */}
+      <NavShortcut />
       {/* 소프트 키보드(10j-4 · F-12-12) — 보이는 영역만 줄이는 브라우저(iOS Safari)에서 캐럿이 키보드 아래에 남지 않게. 터치 기기에서만 듣는다 */}
       <KeyboardCaret />
       <TimeZoneCookie />
