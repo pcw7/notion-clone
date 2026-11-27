@@ -28,7 +28,7 @@ import { createBareWorkspace, createUser, joinAs, makeFixture, probeDatabase, ty
 import { createPage, titleFromPlainText } from './page.ts'
 import { savePageBody } from './save-page-body.ts'
 import { SYNCED_BLOCK_TYPE } from './synced-block.ts'
-import { requestSyncedOriginalAccess, resolveSyncedBlock } from './synced-block-resolve.ts'
+import { listSyncedPlaces, requestSyncedOriginalAccess, resolveSyncedBlock } from './synced-block-resolve.ts'
 import { restorePage, trashPage } from './trash.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -149,6 +149,44 @@ async function pageWithCopy(original: string): Promise<{ page: string; copy: str
   assert.equal(saved.ok, true, JSON.stringify(saved))
   return { page, copy }
 }
+
+describe('동기화 블록이 보이는 곳 — "다른 N개 페이지에서 편집 중" (SB-3 · ㉑)', () => {
+  test('★ 원본 · 사본의 페이지 중 살아 있고 볼 수 있는 것만 — 원본 먼저 · 페이지마다 한 줄 · 휴지통 · 볼 수 없는 페이지는 수에도 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { page: a, synced } = await pageWithOriginal()
+    const { page: b, copy: copyB } = await pageWithCopy(synced)
+    // 한 페이지에 사본 둘 — 한 줄(첫 블록)
+    const c = (await createPage(fx.owner.ctx, { title: titleFromPlainText('사본 둘') })).id
+    const [c1, c2] = [randomUUID(), randomUUID()]
+    const copyOf = (id: string): EditorBlock => ({ id, type: SYNCED_BLOCK_TYPE, title: [], properties: { synced_from: synced }, format: {}, children: [] })
+    assert.equal((await savePageBody(fx.owner.ctx, c, { blocks: [copyOf(c1), blk(randomUUID(), 'paragraph', '사이'), copyOf(c2)] })).ok, true)
+    const { page: trashed } = await pageWithCopy(synced)
+    await trashPage(fx.owner.ctx, asBlockId(trashed))
+
+    const owner = await listSyncedPlaces(fx.owner.ctx, synced)
+    assert.deepEqual(owner[0], { pageId: a, title: owner[0]?.title, blockId: synced, original: true }, '원본 먼저')
+    assert.deepEqual(
+      owner.slice(1).map((p) => [p.pageId, p.blockId, p.original]).sort(),
+      [[b, copyB, false], [c, [c1, c2].sort()[0], false]].sort(),
+      '사본의 페이지마다 한 줄 · 휴지통의 페이지는 없다',
+    )
+    assert.deepEqual(await listSyncedPlaces(fx.owner.ctx, synced.toUpperCase()), owner, '대문자로 와도 같다')
+
+    // 손님 — 볼 수 있게 받은 페이지만(수에도 들지 않는다)
+    const guest = await joinAs(fx.workspaceId, await createUser('곳을 보는 손님'), 'guest')
+    assert.deepEqual(await listSyncedPlaces(guest.ctx, synced), [], '볼 수 있는 곳이 없다')
+    assert.ok((await grantAccess(fx.owner.ctx, b, { type: 'user', id: guest.userId }, 'view')).ok)
+    assert.deepEqual((await listSyncedPlaces(guest.ctx, synced)).map((p) => [p.pageId, p.original]), [[b, false]], '원본 페이지를 볼 수 없으면 원본은 없다')
+    assert.ok((await grantAccess(fx.owner.ctx, a, { type: 'user', id: guest.userId }, 'view')).ok)
+    assert.deepEqual((await listSyncedPlaces(guest.ctx, synced)).map((p) => [p.pageId, p.original]), [[a, true], [b, false]])
+
+    // 다른 워크스페이스 · uuid 아님 · 사본의 id(원본이 아니다 — 가리키는 사본도 없다)
+    const stranger = await joinAs(await createBareWorkspace('다른 곳'), { userId: fx.owner.userId })
+    assert.deepEqual(await listSyncedPlaces(stranger.ctx, synced), [])
+    assert.deepEqual(await listSyncedPlaces(fx.owner.ctx, 'nope'), [])
+    assert.deepEqual(await listSyncedPlaces(fx.owner.ctx, copyB), [])
+  })
+})
 
 describe('동기화 블록 사본의 해석 (SB-2 · ⑨)', () => {
   test('★ 권한 — 볼 수 있으면 ok(pageId) · 게스트는 부여 전 no_access(id 없음) · 부여하면 ok · 회수하면 다시 no_access', async (t) => {

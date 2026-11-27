@@ -40463,8 +40463,8 @@ async function main() {
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('동기화 블록 — 사본 (SB-2 · F-01-11)')) { try {
-      // 원본 페이지 A(소유자만의 페이지)의 원본 X 를 다른 페이지 B 의 사본이 가리킨다. 두 창 — A 에서 친 글이 B 의 사본에 곧바로 뜬다 · 사본은 이
-      // 조각에서 고칠 수 없다(A · B 가 그대로). A 에서 원본의 "복사" 를 붙이면 같은 원본의 사본이 선다(둘째 원본이 아니다 · 같은 페이지의 사본도
+      // 원본 페이지 A(소유자만의 페이지)의 원본 X 를 다른 페이지 B 의 사본이 가리킨다. 두 창 — A 에서 친 글이 B 의 사본에 곧바로 뜬다 · 사본에서
+      // 고치기는 SB-3 절이 본다. A 에서 원본의 "복사" 를 붙이면 같은 원본의 사본이 선다(둘째 원본이 아니다 · 같은 페이지의 사본도
       // 내용을 그린다). A 를 볼 수 없는 동료는 자리(권한 없음 · 접근 요청)만 보고 A 의 내용 · 페이지 id 가 화면에 없다. 볼 수 있게 했다가 권한을
       // 빼면 새로 열지 않아도 사본이 자리로 바뀐다(협업 서버가 연결을 닫는다). 좁은 화면 · 어두운 테마. 스스로 데이터를 만든다 — E2E_ONLY 로
       // 홀로 돈다. 끝에 브라우저 세션을 소유자로 되돌린다.
@@ -40516,17 +40516,7 @@ async function main() {
           await tab.close()
         }
 
-        // ③ 이 조각에서 사본은 고칠 수 없다 — 중첩 편집기가 읽기 전용 · 쳐도 A · B 가 그대로
-        await sleep(1500) // 친 글이 서버에 쌓이고 투영되기를
-        const beforeA = await tree(pageA)
-        const beforeB = await tree(pageB)
-        const nestedEditable = await evaluate(`document.querySelector('${COPY} .blk-synced-nested')?.getAttribute('contenteditable') ?? null`)
-        await clickSelector(`${COPY} [data-copy-block-id="${sc.a1}"] p`)
-        await typeText('몰래')
-        await sleep(1500)
-        const [afterA, afterB] = [await tree(pageA), await tree(pageB)]
-        check('★ 사본은 고칠 수 없다 — 중첩 편집기가 읽기 전용 · 친 글이 A 에도 B 에도 화면에도 없다',
-          nestedEditable === 'false' && afterA === beforeA && afterB === beforeB && !(await copyText()).includes('몰래'), JSON.stringify({ nestedEditable, beforeA, afterA, afterB }))
+        // ③ 사본 안의 블록은 바깥 편집기의 블록으로 잡히지 않는다 — 사본에서 고치기(편집 조건 · 되돌리기)는 SB-3 절이 본다
         check('사본 안의 블록은 바깥 편집기의 블록으로 잡히지 않는다(data-block-id 가 없다)',
           await evaluate(`!document.querySelector('${COPY} [data-block-id]') && !!document.querySelector('${COPY} [data-copy-block-id="${sc.a1}"]')`))
 
@@ -40597,6 +40587,221 @@ async function main() {
         await send('Emulation.setEmulatedMedia', { features: [] })
         check('어두운 테마 — 자리의 글 색이 바뀐다(테마가 시스템을 따를 때)', theme !== 'system' || dark !== light, JSON.stringify({ theme, dark, light }))
       } finally {
+        await browseAs(session)
+      }
+      await sleep(500)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('동기화 블록 — 사본에서 고치기 (SB-3 · F-01-11)')) { try {
+      // 원본 페이지 A(소유자만)의 원본 X 를 B · C 의 사본이 가리킨다. 세 창 — B 의 사본에서 친 글이 A 와 C 의 사본에 · 두 사본(B · C)에 동시에 쳐도
+      // 같은 글로 모인다. 사본의 Ctrl+Z 는 바깥(B 의 본문)을 되돌리지 않고 바깥의 Ctrl+Z 도 사본을 되돌리지 않는다. 고칠 수 없는 셋 — 읽기 전용
+      // B(잠금) · 잠긴 A · A 를 보기만 하는 동료 — 는 중첩 편집기가 읽기 전용이고 쳐도 A 가 그대로다(동료에게 고치기를 주면 새로 열지 않아도
+      // 고칠 수 있게 된다). "다른 2개 페이지에서 편집 중" — 누르면 A(원본) · C 가 있고 A 를 누르면 그 원본으로 간다. 좁은 화면 · 어두운 테마.
+      // 스스로 데이터를 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 잠금을 풀고 브라우저 세션을 소유자로 되돌린다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const pageA = await newPage({ title: `고치는 원본 ${stamp}`, privateTop: true })
+      const pageB = await newPage({ title: `고치는 사본 B ${stamp}` })
+      const pageC = await newPage({ title: `고치는 사본 C ${stamp}` })
+      const sc = {
+        x: randomUUID(), a1: randomUUID(), aEnd: randomUUID(), copyA: randomUUID(), b1: randomUUID(), copyB: randomUUID(), bEnd: randomUUID(), copyC: randomUUID(), cEnd: randomUUID(),
+      }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      const copyOf = (id) => ({ id, type: 'synced_block', title: [], properties: { synced_from: sc.x }, format: {}, children: [] })
+      // A 에는 같은 페이지의 사본도 하나 — 원본과 같은 문서에 묶인다(⑤-b)
+      await saveBody(pageA, { blocks: [{ id: sc.x, type: 'synced_block', title: [], properties: {}, format: {}, children: [para(sc.a1, '원본')] }, para(sc.aEnd, 'A 끝'), copyOf(sc.copyA)] })
+      await saveBody(pageB, { blocks: [para(sc.b1, 'B 앞'), copyOf(sc.copyB), para(sc.bEnd, 'B 끝')] })
+      await saveBody(pageC, { blocks: [copyOf(sc.copyC), para(sc.cEnd, 'C 끝')] })
+      const mate = await joinAs(workspaceId, await createUser(`사본을 고치려는 동료 ${stamp}`), 'member')
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const COPY_B = `[data-block-id="${sc.copyB}"] .blk-synced-copy`
+      const COPY_C = `[data-block-id="${sc.copyC}"] .blk-synced-copy`
+      const IN_B = `${COPY_B} [data-copy-block-id="${sc.a1}"] p`
+      const IN_C = `${COPY_C} [data-copy-block-id="${sc.a1}"] p`
+      const nestedEditable = (copy, run = evaluate) => run(`document.querySelector('${copy} .blk-synced-nested')?.getAttribute('contenteditable') ?? null`)
+      const textIn = (sel, run = evaluate) => run(`document.querySelector('${sel}')?.textContent ?? ''`)
+      const plain = (b) => (b?.title ?? []).map((r) => r.plain_text).join('')
+      /** 서버의 A — X 의 자식 글. */
+      const xText = async () => ((await readBody(pageA)).doc.blocks.find((b) => b.id === sc.x)?.children ?? []).map(plain).join('|')
+      const bText = async () => plain((await readBody(pageB)).doc.blocks.find((b) => b.id === sc.b1))
+      const until = async (read, ok, ms = 10000) => {
+        let got = await read()
+        for (let waited = 0; !ok(got) && waited < ms; waited += 200) {
+          await sleep(200)
+          got = await read()
+        }
+        return got
+      }
+      const openB = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageB}` })
+        return waitFor(`!!document.querySelector('[data-block-id="${sc.bEnd}"] p') && document.querySelector('${COPY_B}')?.dataset.copyState === 'ok'`, 15000)
+      }
+      /** 사본의 글 끝에 캐럿을 두고 친다(주 탭). */
+      const typeInCopy = async (sel, text) => {
+        await clickSelector(sel)
+        await key('End')
+        await typeText(text)
+      }
+      const lock = (page, on) => fetch(`${pagesUrl}/${page}/lock`, { method: on ? 'PUT' : 'DELETE', headers: authed })
+      const share = (action, level) =>
+        fetch(`${pagesUrl}/${pageA}/access`, { method: 'POST', headers: authed, body: JSON.stringify({ action, principal: { type: 'user', id: mate.userId }, ...(level ? { level } : {}) }) })
+
+      try {
+        // ① 소유자가 B 를 연다 — 사본을 고칠 수 있다(A 고치기 × B 편집)
+        check('전제 — B 가 열리고 사본이 내용을 그린다', await openB())
+        check('★ A 를 고칠 수 있고 B 를 고칠 수 있으면 사본의 중첩 편집기가 편집 가능이다', await waitFor(`document.querySelector('${COPY_B} .blk-synced-nested')?.getAttribute('contenteditable') === 'true'`, 10000),
+          String(await nestedEditable(COPY_B)))
+
+        // ② B 의 사본에서 친 글 — A(서버 · A 의 창)와 C 의 사본에
+        await typeInCopy(IN_B, ' B에서')
+        const typedA = await until(xText, (t) => t.includes('원본 B에서'))
+        check('★ B 의 사본에서 친 글이 A 에 쌓인다(원본 X 안 · 서버)', typedA === '원본 B에서', typedA)
+        check('B 의 본문은 그대로다(사본의 글은 B 에 쓰이지 않는다)', (await bText()) === 'B 앞' && !JSON.stringify((await readBody(pageB)).doc).includes('B에서'))
+        const tabA = await openTab(`${BASE}/w/${workspaceId}/${pageA}`)
+        try {
+          check('★ A 의 창 — 원본 안에 B 의 사본에서 친 글', await tabA.waitFor(`(document.querySelector('[data-block-id="${sc.a1}"] p')?.textContent ?? '') === '원본 B에서'`, 15000),
+            await textIn(`[data-block-id="${sc.a1}"] p`, tabA.evaluate))
+        } finally {
+          await tabA.close()
+        }
+
+        // ③ C 의 창 — B 에서 친 글이 C 의 사본에 · 두 사본에 동시에 쳐도 같은 글로 모인다
+        const want = 'C쪽 원본 B에서 B쪽'
+        const tabC = await openTab(`${BASE}/w/${workspaceId}/${pageC}`)
+        try {
+          check('★ C 의 사본에 B 의 사본에서 친 글이 뜬다', await tabC.waitFor(`(document.querySelector('${IN_C}')?.textContent ?? '') === '원본 B에서' && document.querySelector('${COPY_C} .blk-synced-nested')?.getAttribute('contenteditable') === 'true'`, 15000),
+            await textIn(IN_C, tabC.evaluate))
+          // C 는 글 맨 앞 · B 는 글 맨 끝 — 자리를 갈라 동시에 친다(같은 자리면 글자가 서로 사이에 낀다 · CRDT 로서는 맞다)
+          let inside = false
+          for (let i = 0; i < 10 && !inside; i += 1) {
+            const box = await tabC.evaluate(`(() => { const r = document.querySelector('${IN_C}').getBoundingClientRect(); return { x: r.x + 2, y: r.y + r.height / 2 } })()`)
+            await tabC.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 })
+            await tabC.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 })
+            inside = await tabC.waitFor(`document.querySelector('${IN_C}')?.contains(getSelection()?.anchorNode ?? null)`, 800)
+          }
+          const home = { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 }
+          await tabC.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...home })
+          await tabC.send('Input.dispatchKeyEvent', { type: 'keyUp', ...home })
+          await clickSelector(IN_B)
+          await key('End')
+          await Promise.all([tabC.send('Input.insertText', { text: 'C쪽 ' }), send('Input.insertText', { text: ' B쪽' })])
+          const convergedB = await waitFor(`(document.querySelector('${IN_B}')?.textContent ?? '') === ${JSON.stringify(want)}`, 15000)
+          const convergedC = await tabC.waitFor(`(document.querySelector('${IN_C}')?.textContent ?? '') === ${JSON.stringify(want)}`, 15000)
+          const server = await until(xText, (t) => t === want)
+          check('★ 두 사본(B · C)에 동시에 쳐도 같은 글로 모인다 — 두 창 · 서버의 A', inside && convergedB && convergedC && server === want,
+            JSON.stringify({ inside, b: await textIn(IN_B), c: await textIn(IN_C, tabC.evaluate), server }))
+        } finally {
+          await tabC.close()
+        }
+
+        // ④ 되돌리기 — 사본의 Ctrl+Z 는 바깥을 되돌리지 않고 · 바깥의 Ctrl+Z 는 사본을 되돌리지 않는다
+        await sleep(700) // 되돌리기 한 칸을 끊는다(UndoManager 는 500ms 안의 편집을 묶는다)
+        await clickSelector(`[data-block-id="${sc.b1}"] p`)
+        await key('End')
+        await typeText(' 바깥')
+        await sleep(700)
+        await typeInCopy(IN_B, ' 사본Z')
+        check('전제 — 바깥 · 사본에 하나씩 쳤다', await waitFor(`(document.querySelector('${IN_B}')?.textContent ?? '').endsWith(' 사본Z') && (document.querySelector('[data-block-id="${sc.b1}"] p')?.textContent ?? '') === 'B 앞 바깥'`, 5000))
+        await key('z', MOD)
+        const afterCopyUndo = { copy: await textIn(IN_B), outer: await textIn(`[data-block-id="${sc.b1}"] p`) }
+        check('★ 사본의 Ctrl+Z — 사본의 편집만 돌아가고 바깥(B 의 본문)은 그대로', afterCopyUndo.copy === want && afterCopyUndo.outer === 'B 앞 바깥', JSON.stringify(afterCopyUndo))
+        await clickSelector(`[data-block-id="${sc.bEnd}"] p`)
+        await key('z', MOD)
+        await sleep(300)
+        const afterOuterUndo = { copy: await textIn(IN_B), outer: await textIn(`[data-block-id="${sc.b1}"] p`) }
+        check('★ 바깥의 Ctrl+Z — 바깥의 편집만 돌아가고 사본(A 의 내용)은 그대로', afterOuterUndo.outer === 'B 앞' && afterOuterUndo.copy === want, JSON.stringify(afterOuterUndo))
+        check('서버 — A 는 사본의 되돌리기만 · B 는 바깥의 되돌리기만', (await until(xText, (t) => t === want)) === want && (await until(bText, (t) => t === 'B 앞')) === 'B 앞')
+
+        // ⑤ "다른 2개 페이지에서 편집 중" — 누르면 A(원본) · C · A 를 누르면 그 원본으로 간다
+        const PLACES = `[data-block-id="${sc.copyB}"] > .blk-synced_block .blk-synced-places-toggle`
+        check('★ 사본의 머리 줄 — "다른 2개 페이지에서 편집 중"(A · C)', await waitFor(`(document.querySelector('${PLACES}')?.textContent ?? '') === '다른 2개 페이지에서 편집 중' && !document.querySelector('${PLACES}').hidden`, 10000),
+          await textIn(PLACES))
+        await clickSelector(PLACES)
+        const items = await (async () => {
+          await waitFor(`document.querySelectorAll('[data-block-id="${sc.copyB}"] .blk-synced-places-item').length === 2`, 5000)
+          return evaluate(`[...document.querySelectorAll('[data-block-id="${sc.copyB}"] .blk-synced-places-item')].map((e) => e.textContent)`)
+        })()
+        check('목록 — A 가 원본 표지와 함께 먼저 · C', JSON.stringify(items) === JSON.stringify([`고치는 원본 ${stamp}원본`, `고치는 사본 C ${stamp}`]), JSON.stringify(items))
+        // 좁은 화면 · 어두운 테마 — 목록이 화면 안 · 단추 글 색이 바뀐다
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await sleep(300)
+        const narrow = await evaluate(`(() => { const r = document.querySelector('[data-block-id="${sc.copyB}"] .blk-synced-places-list').getBoundingClientRect()
+          return { right: Math.round(r.right), width: innerWidth, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth } })()`)
+        await send('Emulation.clearDeviceMetricsOverride')
+        check('좁은 화면(390px) — 목록이 화면 안이고 가로로 넘치지 않는다', narrow.right <= narrow.width && narrow.overflow <= 0, JSON.stringify(narrow))
+        const theme = await evaluate(`document.documentElement.dataset.theme ?? ''`)
+        const toggleColor = () => evaluate(`getComputedStyle(document.querySelector('${PLACES}')).color`)
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+        await sleep(200)
+        const dark = await toggleColor()
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+        await sleep(200)
+        const light = await toggleColor()
+        await send('Emulation.setEmulatedMedia', { features: [] })
+        check('어두운 테마 — "다른 N개 페이지" 단추의 글 색이 바뀐다(테마가 시스템을 따를 때)', theme !== 'system' || dark !== light, JSON.stringify({ theme, dark, light }))
+        await clickSelector(`[data-block-id="${sc.copyB}"] .blk-synced-places-item`)
+        check('★ 목록의 원본을 누르면 A 의 그 원본으로 간다', await waitFor(`location.pathname.endsWith('/${pageA}') && location.hash === '#${sc.x}' && !!document.querySelector('[data-block-id="${sc.a1}"] p')`, 15000),
+          await evaluate(`location.pathname + location.hash`))
+
+        // ⑤-b 같은 페이지의 사본 — 원본과 같은 문서 · 사본에서 친 글이 원본에 · 사본의 Ctrl+Z 는 원본을 바깥에서 고친 것을 되돌리지 않는다
+        const COPY_A = `[data-block-id="${sc.copyA}"] .blk-synced-copy`
+        const IN_COPY_A = `${COPY_A} [data-copy-block-id="${sc.a1}"] p`
+        const ORIGINAL = `[data-block-id="${sc.a1}"] p`
+        check('전제 — A 의 같은 페이지 사본을 고칠 수 있다', await waitFor(`document.querySelector('${COPY_A}')?.dataset.copyState === 'ok' && document.querySelector('${COPY_A} .blk-synced-nested')?.getAttribute('contenteditable') === 'true'`, 15000))
+        check('원본의 머리 줄에도 — "다른 2개 페이지에서 편집 중"(B · C — 같은 페이지는 세지 않는다)',
+          await waitFor(`(document.querySelector('[data-block-id="${sc.x}"] > .blk-synced_block .blk-synced-places-toggle')?.textContent ?? '') === '다른 2개 페이지에서 편집 중'`, 10000))
+        await clickSelector(ORIGINAL)
+        await key('End')
+        await typeText(' 바깥A')
+        await sleep(700)
+        await typeInCopy(IN_COPY_A, ' 사본A')
+        const both = `${want} 바깥A 사본A`
+        check('★ 같은 페이지 — 사본에서 친 글이 원본에(같은 화면)', await waitFor(`(document.querySelector('${ORIGINAL}')?.textContent ?? '') === ${JSON.stringify(both)} && (document.querySelector('${IN_COPY_A}')?.textContent ?? '') === ${JSON.stringify(both)}`, 5000),
+          JSON.stringify({ original: await textIn(ORIGINAL), copy: await textIn(IN_COPY_A) }))
+        await key('z', MOD)
+        const sameUndo = { original: await textIn(ORIGINAL), copy: await textIn(IN_COPY_A) }
+        check('★ 같은 페이지 — 사본의 Ctrl+Z 는 사본에서 친 것만 · 원본을 바깥에서 친 것은 남는다', sameUndo.original === `${want} 바깥A` && sameUndo.copy === `${want} 바깥A`, JSON.stringify(sameUndo))
+
+        // ⑥ 읽기 전용 B(잠금) — 사본도 고칠 수 없다(A 는 고칠 수 있어도 · B 의 편집 가능을 본다)
+        check('전제 — B 를 잠갔다', (await lock(pageB, true)).ok)
+        check('다시 B 를 연다', await openB())
+        const lockedB = await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false' && document.querySelector('${COPY_B} .blk-synced-nested')?.getAttribute('contenteditable') === 'false'`, 10000)
+        const beforeLockedB = await xText()
+        await typeInCopy(IN_B, '몰래B')
+        await sleep(1200)
+        check('★ 읽기 전용 B — 사본의 중첩 편집기가 읽기 전용 · 쳐도 A 에 없다', lockedB && (await xText()) === beforeLockedB && !(await textIn(IN_B)).includes('몰래B'),
+          JSON.stringify({ lockedB, nested: await nestedEditable(COPY_B), a: await xText() }))
+        check('전제 — B 의 잠금을 풀었다', (await lock(pageB, false)).ok)
+        check('잠금을 풀면 사본을 다시 고칠 수 있다(새로 열지 않아도)', await waitFor(`document.querySelector('${COPY_B} .blk-synced-nested')?.getAttribute('contenteditable') === 'true'`, 15000),
+          String(await nestedEditable(COPY_B)))
+
+        // ⑦ 잠긴 A — B 를 고칠 수 있어도 사본은 고칠 수 없다(서버가 사본의 연결을 읽기 전용으로 다시 받는다)
+        check('전제 — A 를 잠갔다', (await lock(pageA, true)).ok)
+        const lockedA = await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true' && document.querySelector('${COPY_B} .blk-synced-nested')?.getAttribute('contenteditable') === 'false'`, 15000)
+        const beforeLockedA = await xText()
+        await typeInCopy(IN_B, '몰래A')
+        await sleep(1200)
+        check('★ 잠긴 A — 새로 열지 않아도 사본이 읽기 전용 · 쳐도 A 에 없다', lockedA && (await xText()) === beforeLockedA && !(await textIn(IN_B)).includes('몰래A'),
+          JSON.stringify({ lockedA, nested: await nestedEditable(COPY_B), a: await xText() }))
+        check('전제 — A 의 잠금을 풀었다', (await lock(pageA, false)).ok)
+
+        // ⑧ A 를 보기만 하는 동료 — B 는 고칠 수 있어도 사본은 읽기 전용 · 고치기를 주면 새로 열지 않아도 고칠 수 있다
+        check('전제 — 동료에게 A 를 보기로 공유', (await share('grant', 'view')).ok)
+        await browseAs(mate.token)
+        check('동료로 B 를 연다', await openB())
+        const viewOnly = await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true' && document.querySelector('${COPY_B} .blk-synced-nested')?.getAttribute('contenteditable') === 'false'`, 10000)
+        const beforeView = await xText()
+        await typeInCopy(IN_B, '몰래V')
+        await sleep(1200)
+        check('★ A 를 보기만 하는 사람 — 사본은 읽기 전용 · 쳐도 A 에 없다(B 는 고칠 수 있다)', viewOnly && (await xText()) === beforeView && !(await textIn(IN_B)).includes('몰래V'),
+          JSON.stringify({ viewOnly, nested: await nestedEditable(COPY_B), a: await xText() }))
+        check('전제 — 동료에게 A 를 고치기로', (await share('grant', 'edit')).ok)
+        check('고치기를 받으면 새로 열지 않아도 사본을 고칠 수 있다(upgraded)', await waitFor(`document.querySelector('${COPY_B} .blk-synced-nested')?.getAttribute('contenteditable') === 'true'`, 15000),
+          String(await nestedEditable(COPY_B)))
+      } finally {
+        await lock(pageA, false).catch(() => undefined)
+        await lock(pageB, false).catch(() => undefined)
         await browseAs(session)
       }
       await sleep(500)

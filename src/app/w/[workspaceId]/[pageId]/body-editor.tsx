@@ -67,7 +67,7 @@ import {
   type SlashCommand,
 } from '@/lib/editor/slash-menu'
 import { excludedAt } from '@/lib/editor/synced-block'
-import { createCopyEditorState, watchSyncedGroup } from '@/lib/editor/synced-copy-binding'
+import { copyKeyHandler, createCopyEditorState, watchSyncedGroup } from '@/lib/editor/synced-copy-binding'
 import { createCollabEditorState } from '@/lib/collab/collab-editor'
 import { memoryPendingEditStore, openCollabConnection, type CollabConnection, type CollabSnapshot, type DiscardedDoc } from '@/lib/collab/collab-connection'
 import { decodeBodyState } from '@/lib/collab/collab-protocol'
@@ -146,8 +146,8 @@ import {
   subscribeSuggestionMode,
 } from './suggestion-mode-store'
 
-/** 동기화 블록 사본의 묶기(SB-2) — 이 편집기가 이미 가진 y-prosemirror 로 사본의 지연 구현에 넘긴다(`synced-block-view.ts` `CopyBinding`). */
-const SYNCED_COPY_BINDING = { createCopyEditorState, watchSyncedGroup, EditorView }
+/** 동기화 블록 사본의 묶기(SB-2 · SB-3) — 이 편집기가 이미 가진 y-prosemirror · 편집 규칙으로 사본의 지연 구현에 넘긴다(`synced-block-view.ts` `CopyBinding`). */
+const SYNCED_COPY_BINDING = { createCopyEditorState, watchSyncedGroup, copyKeyHandler, EditorView }
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
 const SYNCING_AFTER_MS = 3000
@@ -689,6 +689,11 @@ export function BodyEditor({
   useEffect(() => {
     for (const listener of aiBlockListenersRef.current) listener()
   }, [ai.state, editable, suggesting])
+  // 동기화 블록 사본(SB-3 · SY7) — 이 편집기의 편집 가능 · 제안 모드가 바뀌면 사본이 고칠 수 있는지 다시 본다
+  const syncedCopyListenersRef = useRef<Set<() => void>>(new Set())
+  useEffect(() => {
+    for (const listener of syncedCopyListenersRef.current) listener()
+  }, [editable, suggesting])
   /** 입력창을 그 줄에 연다 — 스페이스는 `ready` 일 때만(아니면 글자) · `/ai` 는 늘(까닭을 말한다). */
   const openAi = useCallback((blockId: string, from: 'space' | 'slash'): boolean => {
     const view = viewRef.current
@@ -1838,14 +1843,21 @@ export function BodyEditor({
       takeAiBlockFocus: (id) => aiBlockFocusRef.current.delete(id),
       // 클립보드 v2(SB-2) — 복사할 때 싣고 붙일 때 견준다(동기화 블록의 붙여넣기 ⑪ⓑ~ⓔ)
       clipboardPlace: () => ({ workspaceId, pageId }),
-      // 동기화 블록의 사본(SB-2) — 같은 페이지면 이 문서에, 다른 페이지면 embed 연결로 원본에 붙는다(노드 뷰가 화면에 들 때 묻는다)
+      // 동기화 블록의 사본(SB-2 · SB-3) — 같은 페이지면 이 문서에, 다른 페이지면 embed 연결로 원본에 붙는다(노드 뷰가 화면에 들 때 묻는다).
+      // 고칠 수 있는지는 A 쪽(서버가 정한 연결의 모드)과 이 편집기(편집 가능 · 제안 모드 아님)가 함께 정한다(SY7)
       syncedCopyHost: () => ({
         workspaceId,
         pageId,
         collabUrl,
         doc: boundDocRef.current,
-        editable: editableRef.current,
-        // embed 갈래 — presence · 보존본 · 보내기가 없다(`collab-connection.ts`)
+        editable: () => editableRef.current,
+        suggesting: () => suggestingRef.current,
+        subscribe: (listener) => {
+          syncedCopyListenersRef.current.add(listener)
+          return () => syncedCopyListenersRef.current.delete(listener)
+        },
+        editorDeps: () => editorDepsRef.current,
+        // embed 갈래 — presence · 보존본이 없고 읽기 전용이면 보내지 않는다(`collab-connection.ts`)
         openEmbed: (target, onChange) =>
           openCollabConnection({ url: collabUrl, workspaceId, pageId: target, store: memoryPendingEditStore(), storeKey: '', embed: true, onChange }),
         // 묶기는 이 편집기가 준다 — 지연 청크 · 노드 뷰가 y-prosemirror 를 가져오지 않게(`synced-block-view.ts` `CopyBinding`)

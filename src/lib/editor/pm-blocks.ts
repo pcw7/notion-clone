@@ -209,6 +209,8 @@ export function visibleBlocks(
   isCollapsed: (id: string) => boolean,
 ): VisibleIndex<VisibleBlock> {
   if (doc.childCount === 0) return flattenVisible<VisibleBlock>([])
+  // 동기화 블록 사본의 중첩 편집기(SB-3)는 문서 자신이 루트 그룹이다 — 첫 자식이 0 에 선다(그룹 "앞" 이 -1)
+  if (doc.type.name === 'blockGroup') return flattenVisible(treeFromGroup(doc, -1, isCollapsed))
   // 루트 blockGroup 은 doc 의 첫 자식이므로 그 앞 위치가 0 이다.
   return flattenVisible(treeFromGroup(doc.child(0), 0, isCollapsed))
 }

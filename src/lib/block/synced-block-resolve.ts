@@ -17,7 +17,8 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { requestAccess, type AccessRequestResult } from '../permissions/access-request.ts'
 import { can } from '../permissions/levels.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
+import { plainTitleOf } from './page.ts'
 import { SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY } from './synced-block.ts'
 
 export type SyncedResolution =
@@ -52,6 +53,57 @@ export async function resolveSyncedBlock(ctx: SessionContext, blockId: string): 
     if (page.lifecycle === 'trashed') return { state: 'trashed' }
     if (page.lifecycle !== 'live') return { state: 'missing' }
     return { state: 'ok', pageId: page.id }
+  })
+}
+
+/** 원본 X 가 보이는 곳 — 페이지마다 한 줄(그 안의 첫 블록 · 원본이 있으면 원본). */
+export type SyncedPlace = {
+  readonly pageId: string
+  readonly title: string
+  /** 그 페이지에서 X 를 보이는 블록 — 원본이면 X, 사본이면 그 사본. */
+  readonly blockId: string
+  readonly original: boolean
+}
+
+/** 한 번에 돌려주는 페이지 수 — 줄 하나 · 목록 하나에 그린다. */
+export const SYNCED_PLACES_LIMIT = 50
+
+/**
+ * "다른 N개 페이지에서 편집 중"(SB-3 · 정본 ㉑ [SB-3 고침]) — X 의 페이지(원본)와 X 를 가리키는 사본의 페이지들 중 **살아 있고 이 사람이 볼 수 있는
+ * 것만**(`perm_scope_id = ANY(readableScopes)` — 볼 수 없는 페이지는 수에도 들지 않는다 · 백링크와 같은 판결). 원본 먼저, 그다음 최근에 고친
+ * 페이지 차례. 사본은 역인덱스(`ix_block_synced_copies` — 부분 식 인덱스라 술어를 글자 그대로 쓴다)로 찾는다. 사본의 페이지는 그 행의
+ * `ancestor_path` 에서 가장 깊은 `page` 다(정본 ④).
+ */
+export async function listSyncedPlaces(ctx: SessionContext, originalId: string): Promise<SyncedPlace[]> {
+  if (!isUuid(originalId)) return []
+  const id = originalId.toLowerCase()
+  return withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    const rows = await tx.query<{ block_id: string; original: boolean; page_id: string; properties: { title?: unknown } | null }>(
+      `SELECT block_id, original, page_id, properties FROM (
+         SELECT DISTINCT ON (p.id) s.id AS block_id, s.original, p.id AS page_id, p.properties, p.last_edited_at
+           FROM (
+             SELECT b.id, true AS original, b.ancestor_path FROM block b
+              WHERE b.id = $2::uuid AND b.workspace_id = $1 AND b.type = 'synced_block' AND NOT (b.properties ? 'synced_from')
+             UNION ALL
+             SELECT b.id, false, b.ancestor_path FROM block b
+              WHERE b.workspace_id = $1 AND b.type = 'synced_block' AND b.properties ? 'synced_from' AND (b.properties ->> 'synced_from') = $3
+           ) s
+           JOIN LATERAL (
+             SELECT a.id, a.properties, a.lifecycle, a.perm_scope_id, a.last_edited_at
+               FROM unnest(s.ancestor_path) WITH ORDINALITY AS t(id, depth)
+               JOIN block a ON a.id = t.id AND a.type = 'page'
+              ORDER BY t.depth DESC LIMIT 1
+           ) p ON true
+          WHERE p.lifecycle = 'live' AND p.perm_scope_id = ANY($4::uuid[])
+          ORDER BY p.id, s.original DESC, s.id
+       ) d
+       ORDER BY d.original DESC, d.last_edited_at DESC, d.page_id
+       LIMIT ${SYNCED_PLACES_LIMIT}`,
+      [ctx.workspaceId, id, id, scopes],
+    )
+    return rows.map((r) => ({ pageId: r.page_id, title: plainTitleOf(r.properties), blockId: r.block_id, original: r.original }))
   })
 }
 

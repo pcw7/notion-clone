@@ -1,16 +1,19 @@
 /**
- * 동기화 블록의 노드 뷰 — 머리 줄 · 사본의 자리 (SB-1 · SB-2 · F-01-11 · 정본 [보강 SB-0] ⑦ ⑧ ⑪ⓐⓑ ⑫ⓒ · ㉑)
+ * 동기화 블록의 노드 뷰 — 머리 줄 · 사본의 자리 (SB-1 · SB-2 · SB-3 · F-01-11 · 정본 [보강 SB-0] ⑦ ⑧ ⑪ⓐⓑ ⑫ⓒ · ㉑)
  *
  * ⚠ 이 파일은 브라우저에서만 로드된다(`document` 를 쓴다).
  *
  *   div.blk.blk-synced_block[data-block-type=synced_block][data-synced=original|copy]   (contenteditable=false)
  *     span.blk-synced-badge     ← 동기화 그림 + `원본`(사본이면 `사본`)
+ *     span.blk-synced-places    ← "다른 N개 페이지에서 편집 중"(SB-3 · ㉑ — 지연 로드한 구현이 채운다 · 없으면 비었다)
  *     button.blk-synced-copy-button ← "복사"(원본 — 이 원본의 사본 하나를 클립보드에 · ⑪ⓑ 시나리오 2)
  *     button.blk-synced-unsync  ← "동기화 해제"(원본 · 고칠 수 있을 때)
  *     div.blk-synced-copy[data-copy-state]  ← 사본만 — 원본 페이지의 내용(중첩 편집기) 또는 자리(불러오는 중 · 권한 없음 · 휴지통 · 삭제됨)
  *
  *   · 틀(테두리)은 **컨테이너**에 그린다 — 원본의 내용(= 자식 그룹)이 틀 안에 선다(`editor.css` · AI 블록 · 콜아웃과 같은 짜임)
- *   · 사본의 내용은 **화면에 들 때** 지연 로드한 구현이 그린다(`synced-copy-view-impl.ts` — 사본이 없는 페이지의 첫 번들에 싣지 않는다)
+ *   · 사본의 내용 · "다른 N개 페이지" 줄은 **화면에 들 때** 지연 로드한 구현이 그린다(`synced-copy-view-impl.ts` — 동기화 블록이 없는 페이지의
+ *     첫 번들에 싣지 않는다)
+ *   · 사본의 내용 안에서 난 이벤트는 바깥 편집기가 보지 않는다(`stopEvent` — 중첩 편집기가 키 · 선택 · 끌기 · 되돌리기를 받는다 · ⑧ⓖ)
  */
 
 import type { Node as PmNode } from '@tiptap/pm/model'
@@ -21,9 +24,10 @@ import { isSyncedCopyProps, SYNCED_BLOCK_TYPE, syncedFromOf } from '../block/syn
 import type { CollabConnection, CollabSnapshot } from '../collab/collab-connection.ts'
 import { BLOCKS_MIME, syncedCopyClipboard } from './block-clipboard.ts'
 import { BlockSelection, deleteBlockSelectionCommand } from './block-selection.ts'
+import type { EditorDeps } from './create-editor.ts'
 import type { createNodeViews, NodeViewDeps } from './node-views.ts'
 import { unsyncSyncedBlockCommand } from './synced-block.ts'
-import type { createCopyEditorState, watchSyncedGroup } from './synced-copy-binding.ts'
+import type { copyKeyHandler, createCopyEditorState, watchSyncedGroup } from './synced-copy-binding.ts'
 
 /**
  * 사본의 묶기 — 협업 편집기가 준다(`synced-copy-binding.ts` · 편집기 클래스). 번들을 재 보고 정했다(SB-2):
@@ -35,10 +39,12 @@ import type { createCopyEditorState, watchSyncedGroup } from './synced-copy-bind
 export type CopyBinding = {
   readonly createCopyEditorState: typeof createCopyEditorState
   readonly watchSyncedGroup: typeof watchSyncedGroup
+  /** 고칠 수 있는 사본의 키(SB-3 · 편집 규칙은 협업 편집기의 것 — 지연 청크가 키맵을 가져오지 않게). */
+  readonly copyKeyHandler: typeof copyKeyHandler
   readonly EditorView: typeof EditorView
 }
 
-/** 사본이 묻는 지금의 맥락 — 편집기가 준다(SB-2). */
+/** 사본이 묻는 지금의 맥락 — 편집기가 준다(SB-2 · SB-3). */
 export type SyncedCopyHost = {
   readonly workspaceId: string
   /** 이 편집기의 페이지 — 같은 페이지의 사본은 새 연결 없이 이 문서에 묶는다(⑧). */
@@ -47,8 +53,14 @@ export type SyncedCopyHost = {
   readonly collabUrl: string
   /** 이 편집기가 묶인 Y.Doc — 없으면(아직 · 미리보기) null. */
   readonly doc: Y.Doc | null
-  /** 이 페이지를 지금 고칠 수 있는가 — "사본 지우기"(원본이 삭제되었다)를 보일까. */
-  readonly editable: boolean
+  /** 이 페이지를 지금 고칠 수 있는가 — 물을 때마다(SY7 의 B 쪽 · "사본 지우기"). */
+  editable(): boolean
+  /** 이 편집기가 제안 모드인가(SG-1) — 사본은 고칠 수 없다(중첩 편집기에는 제안 모드가 없다 · SY7). */
+  suggesting(): boolean
+  /** 위 둘이 바뀌면 부른다 — 해제 함수를 돌려준다. */
+  subscribe(listener: () => void): () => void
+  /** 바깥 편집기의 deps(협업 편집기가 돌려준 것) — 사본의 편집 규칙 · 노드 뷰가 쓴다. 아직이면 null. */
+  editorDeps(): EditorDeps | null
   /**
    * 원본 페이지에 embed 연결을 연다(`openCollabConnection({ embed: true })` — presence · 보존본 · 보내기가 없다). 편집기가 준다 — 지연 로드한
    * 구현이 연결 모듈을 직접 가져오지 않게(첫 번들의 청크가 갈리지 않게).
@@ -58,7 +70,7 @@ export type SyncedCopyHost = {
   readonly binding: CopyBinding
 }
 
-/** 사본의 중첩 편집기가 쓰는 노드 뷰 — 바깥 편집기와 같은 것(`node-views.ts` 가 준다). */
+/** 사본의 중첩 편집기가 쓰는 노드 뷰 — 바깥 편집기와 같은 것(`node-views.ts` 가 준다 · 사본의 deps 로). */
 export type CopyNodeViews = ReturnType<typeof createNodeViews>
 
 export type SyncedBlockViewDeps = {
@@ -72,6 +84,9 @@ export type MountedSyncedCopy = {
   stopEvent(event: Event): boolean
   destroy(): void
 }
+
+/** 지연 로드한 "다른 N개 페이지에서 편집 중" 줄(SB-3 · ㉑). */
+export type MountedSyncedPlaces = { destroy(): void }
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
@@ -128,24 +143,31 @@ function copyOriginalToClipboard(originalId: string, deps: NodeViewDeps): boolea
   return wrote
 }
 
+/** 이 블록을 블록 선택으로 고른다(바깥 편집기). */
+function selectBlockAt(view: EditorView, getPos: () => number | undefined): boolean {
+  const pos = getPos()
+  if (pos === undefined) return false
+  const $pos = view.state.doc.resolve(pos)
+  view.dispatch(view.state.tr.setSelection(BlockSelection.create(view.state.doc, $pos.before($pos.depth))).scrollIntoView())
+  return true
+}
+
 /** "사본 지우기" — 이 사본의 블록을 블록 선택으로 지운다(지우기 명령의 규칙 그대로 · 되돌릴 수 있다). */
 function removeBlockAt(view: EditorView, getPos: () => number | undefined, deps: NodeViewDeps): void {
-  const pos = getPos()
-  if (pos === undefined || !view.editable) return
-  const $pos = view.state.doc.resolve(pos)
-  view.dispatch(view.state.tr.setSelection(BlockSelection.create(view.state.doc, $pos.before($pos.depth))))
+  if (!view.editable || !selectBlockAt(view, getPos)) return
   deleteBlockSelectionCommand(deps)(view.state, view.dispatch.bind(view))
 }
 
 /**
- * @param nestedNodeViews 사본의 중첩 편집기가 쓸 노드 뷰 — `node-views.ts` 가 준다(지연 로드한 구현이 그 모듈을 가져오지 않게).
+ * @param nestedNodeViews 사본의 중첩 편집기가 쓸 노드 뷰 — `node-views.ts` 가 준다(지연 로드한 구현이 그 모듈을 가져오지 않게). 사본의 deps 로
+ *   짓는다(토글 접힘이 중첩 편집기를 다시 그리게 — SB-3).
  */
 export function syncedBlockNodeView(
   node: PmNode,
   view: EditorView,
   getPos: () => number | undefined,
   deps: NodeViewDeps,
-  nestedNodeViews: () => CopyNodeViews,
+  nestedNodeViews: (deps: NodeViewDeps) => CopyNodeViews,
 ): NodeView {
   const dom = document.createElement('div')
   dom.className = `blk blk-${SYNCED_BLOCK_TYPE}`
@@ -189,14 +211,22 @@ export function syncedBlockNodeView(
   badge.title = copy ? '동기화 블록의 사본 — 원본 페이지의 내용을 보여 줍니다' : '동기화 블록의 원본 — 여기서 고친 내용이 사본에도 보입니다'
   copyButton.hidden = copy
   unsync.hidden = copy
-  dom.append(badge, copyButton, unsync)
+  // "다른 N개 페이지에서 편집 중"(SB-3 · ㉑) — 지연 로드한 구현이 채운다
+  const places = document.createElement('span')
+  places.className = 'blk-synced-places'
+  dom.append(badge, places, copyButton, unsync)
 
-  // ── 사본의 자리(SB-2) — 화면에 들 때 구현을 불러 원본의 내용을 그린다 ──
+  // ── 화면에 들 때 구현을 불러 사본의 내용(SB-2) · 다른 페이지 줄(SB-3)을 그린다 ──
   let mounted: MountedSyncedCopy | null = null
+  let mountedPlaces: MountedSyncedPlaces | null = null
   let observer: IntersectionObserver | null = null
   let gone = false
+  const selfId = containerIdAt(view, getPos)
+  const originalId = copy ? syncedFromOf(node.attrs.props, selfId) : selfId || null
+  const host = deps.syncedCopyHost?.() ?? null
+  let body: HTMLElement | null = null
   if (copy) {
-    const body = document.createElement('div')
+    body = document.createElement('div')
     body.className = 'blk-synced-copy'
     body.dataset.copyState = 'loading'
     const place = document.createElement('div')
@@ -204,34 +234,41 @@ export function syncedBlockNodeView(
     place.textContent = '동기화된 내용을 불러오는 중…'
     body.append(place)
     dom.append(body)
-    const originalId = syncedFromOf(node.attrs.props, containerIdAt(view, getPos))
-    let visible = false
-    let loading = false
-    const load = (): void => {
-      if (loading) return
-      loading = true
-      void import('./synced-copy-view-impl.ts').then((impl) => {
-        if (gone) return
-        mounted = impl.mountSyncedCopy(body, {
-          originalId,
-          outer: view,
-          host: deps.syncedCopyHost?.() ?? null,
-          nodeViews: nestedNodeViews,
-          removeCopy: () => removeBlockAt(view, getPos, deps),
-        })
-        mounted.setVisible(visible)
+  }
+  let visible = false
+  let loading = false
+  const load = (): void => {
+    if (loading) return
+    loading = true
+    void import('./synced-copy-view-impl.ts').then((impl) => {
+      if (gone) return
+      if (host !== null && originalId !== null) {
+        mountedPlaces = impl.mountSyncedPlaces(places, { workspaceId: host.workspaceId, pageId: host.pageId, originalId, navigate: deps.navigate })
+      }
+      if (body === null) return
+      mounted = impl.mountSyncedCopy(body, {
+        originalId,
+        outer: view,
+        host,
+        nodeViews: nestedNodeViews,
+        removeCopy: () => removeBlockAt(view, getPos, deps),
+        // 사본 안의 블록 선택에서 Esc — 바깥 편집기에서 이 사본 블록을 고른다(⑧ⓖ)
+        leave: () => {
+          if (selectBlockAt(view, getPos)) view.focus()
+        },
       })
-    }
-    const onVisible = (now: boolean): void => {
-      visible = now
-      if (now) load()
-      mounted?.setVisible(now)
-    }
-    if (typeof IntersectionObserver === 'undefined') onVisible(true)
-    else {
-      observer = new IntersectionObserver((records) => onVisible(records.some((r) => r.isIntersecting)), { rootMargin: '200px 0px' })
-      observer.observe(dom)
-    }
+      mounted.setVisible(visible)
+    })
+  }
+  const onVisible = (now: boolean): void => {
+    visible = now
+    if (now) load()
+    mounted?.setVisible(now)
+  }
+  if (typeof IntersectionObserver === 'undefined') onVisible(true)
+  else {
+    observer = new IntersectionObserver((records) => onVisible(records.some((r) => r.isIntersecting)), { rootMargin: '200px 0px' })
+    observer.observe(dom)
   }
 
   return {
@@ -243,14 +280,16 @@ export function syncedBlockNodeView(
       if (copy && (updated.attrs.props as Record<string, unknown>)?.synced_from !== (node.attrs.props as Record<string, unknown>)?.synced_from) return false
       return true
     },
-    // 단추 누르기 · 사본의 내용(읽기 전용 중첩 편집기의 글 고르기)은 바깥 편집기가 아니라 우리가 받는다
+    // 단추 누르기 · 다른 페이지 줄 · 사본의 내용(중첩 편집기의 키 · 선택 · 끌기 · 되돌리기)은 바깥 편집기가 아니라 우리가 받는다(⑧ⓖ)
     stopEvent: (event) =>
-      (event.target instanceof Node && (unsync.contains(event.target) || copyButton.contains(event.target))) || (mounted?.stopEvent(event) ?? false),
+      (event.target instanceof Node && (unsync.contains(event.target) || copyButton.contains(event.target) || places.contains(event.target))) ||
+      (mounted?.stopEvent(event) ?? false),
     ignoreMutation: () => true,
     destroy: () => {
       gone = true
       observer?.disconnect()
       mounted?.destroy()
+      mountedPlaces?.destroy()
     },
   }
 }

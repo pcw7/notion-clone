@@ -61,17 +61,19 @@
  * 다시 붙는다 — 검사 프로세스가 끝나지 않아 찾았다).
  *
  * ──────────────────────────────────────────────────────────────────────
- * embed 갈래 — 동기화 블록 사본의 연결 (SB-2 · 정본 [보강 SB-0] ⑧ · SY8)
+ * embed 갈래 — 동기화 블록 사본의 연결 (SB-2 · SB-3 · 정본 [보강 SB-0] ⑧ [SB-3 고침] · SY7 · SY8)
  * ──────────────────────────────────────────────────────────────────────
  *
  * 사본은 원본 페이지 A 의 문서에 **보통의 협업 연결**로 붙되(`embed: true`) 셋이 다르다.
  *
  *   - **presence 를 싣지 않는다** — awareness 를 만들지 않는다. 실으면 [보강 AW-2] 가 B 를 보는 사람을 A 를 보는 사람으로 세고 A 의 알림을
  *     읽음으로 만든다
- *   - **보존본을 읽지도 쓰지도 않는다** — `store` 를 부르지 않는다. 서버가 닫아도(`not_found`) A 의 보존본(A 를 연 탭의 것)을 지우지 않는다
- *   - **아무것도 보내지 않는다** — provider 가 스스로 보내는 길을 떼고 다시 달지 않는다. 주소의 `embed=1` 로 서버도 읽기 전용으로 받는다
- *     (`collab-server.ts` — 문은 서버다). awareness 가 없으면 조용한 문서에서 양쪽이 메시지를 받지 못해 소켓을 끊으므로(provider 30초 ·
- *     서버 60초) 확인 요청 하나를 주기적으로 보내 답을 받는다(읽기 전용 연결은 "확인하지 않는다" 고 답한다 — 쓰는 것이 없다)
+ *   - **보존본을 읽지도 쓰지도 않는다** — `store` 를 부르지 않는다. 서버가 닫아도(`not_found`) A 의 보존본(A 를 연 탭의 것)을 지우지 않는다.
+ *     확인받지 않은 편집은 세되(확인 요청 · `read_only` 면 버리고 다시 연다) 탭을 닫으면 잃는다 — 그래서 붙지 않은 동안 사본은 고칠 수 없다
+ *   - **읽기 전용으로 받으면 보내지 않는다** — 주소의 `embed=1` 로 서버가 A 를 고칠 수 있고 잠기지 않았을 때만 쓸 수 있게 받는다(SB-3 ·
+ *     `collab-server.ts` — 문은 서버다). B 쪽 조건(B 가 읽기 전용 · 제안 모드)은 중첩 편집기가 쓰기 길 없이 묶어 지킨다 — 쓰지 않으므로 보낼 것도
+ *     없다(`editor/synced-copy-binding.ts`). awareness 가 없으면 조용한 문서에서 양쪽이 메시지를 받지 못해 소켓을 끊으므로(provider 30초 ·
+ *     서버 60초) 확인 요청 하나를 주기적으로 보내 답을 받는다
  */
 
 import * as Y from 'yjs'
@@ -188,7 +190,7 @@ export type CollabConnectionOptions = {
   readonly onlineSource?: EventTarget
   /** 첫 시도가 붙지도 끊기지도 않은 채 이만큼 지나면 `connecting` 을 끝낸다 — 답이 없는 연결도 오프라인으로 알린다. 기본 3s. */
   readonly firstConnectGraceMs?: number
-  /** 동기화 블록 사본의 연결(SB-2 · 머리말 "embed 갈래") — presence · 보존본 · 보내기가 없다. `store` · `storeKey` 를 쓰지 않는다. */
+  /** 동기화 블록 사본의 연결(SB-2 · SB-3 · 머리말 "embed 갈래") — presence · 보존본이 없고 읽기 전용이면 보내지 않는다. `store` · `storeKey` 를 쓰지 않는다. */
   readonly embed?: boolean
   /** embed 연결이 소켓을 살려 두려고 확인 요청을 보내는 간격. 기본 10s(provider 는 30초 동안 받은 것이 없으면 끊는다). */
   readonly keepAliveMs?: number
@@ -244,7 +246,7 @@ const MAX_RETRY_DELAY_MS = 30_000
 const FIRST_CONNECT_GRACE_MS = 3000
 const KEEP_ALIVE_MS = 10_000
 
-/** 사본의 연결 주소 — 서버가 읽기 전용으로 받는다(`collab-server.ts` `EMBED_PARAMETER`). */
+/** 사본의 연결 주소 — 서버가 사본의 모드(`edit` · `view`)로 받는다(`collab-server.ts` `EMBED_PARAMETER`). */
 export function embedUrl(url: string): string {
   return `${url}${url.includes('?') ? '&' : '?'}embed=1`
 }
@@ -356,8 +358,8 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   }
 
   const onLocalUpdate = (update: Uint8Array, origin: unknown): void => {
-    // embed 는 보내지 않으므로 확인받을 편집도 없다(머리말)
-    if (embed || origin === INITIAL || origin === RESTORED || origin instanceof HocuspocusProvider) return
+    // embed 도 센다 — 보존본에는 쓰지 않는다(`persist` · 머리말)
+    if (origin === INITIAL || origin === RESTORED || origin instanceof HocuspocusProvider) return
     unconfirmed.push(update)
     appendedCount += 1
     persist()
@@ -452,17 +454,14 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
     // provider 는 연결을 다시 시도할 때 못 보낸 큐를 비우고, 소켓이 열린 뒤 서버의 첫 메시지 전까지는 새 update 를 곧바로 보내 큐의
     // 옛 update 를 앞지른다 — 서버는 의존이 없는 update 를 닫는다. 그래서 provider 가 스스로 보내는 길을 떼고, **이 연결이 서버의
     // SyncStep1 에 답한 뒤에만** 보낸다. 그 답(SyncStep2)이 그때까지의 편집을 모두 싣는다. 연결이 끊기면 다시 "답하기 전" 이다.
-    // embed 는 뗀 채로 둔다 — 아무것도 보내지 않는다(머리말). 서버의 SyncStep1 에 답하는 SyncStep2 는 provider 의 받기 길이 보낸다
-    // (그 답에 실릴 로컬 편집이 없다 — 읽기 전용 묶기는 쓰지 않는다 · `editor/synced-copy-binding.ts`).
+    // embed 는 읽기 전용으로 받았으면 보내지 않는다(머리말 · 서버도 버린다 — 확인 답이 "확인하지 않는다" 면 버리고 다시 연다).
     let answered = false
     target.off('update', next.boundDocumentUpdateHandler)
-    if (!embed) {
-      const sendInOrder = (update: Uint8Array, origin: unknown): void => {
-        if (answered) next.documentUpdateHandler(update, origin)
-      }
-      target.on('update', sendInOrder)
-      unbindSender = () => target.off('update', sendInOrder)
+    const sendInOrder = (update: Uint8Array, origin: unknown): void => {
+      if (answered && (!embed || readOnly === false)) next.documentUpdateHandler(update, origin)
     }
+    target.on('update', sendInOrder)
+    unbindSender = () => target.off('update', sendInOrder)
     // 받은 메시지가 서버의 SyncStep1 이면 provider 가 같은 흐름에서 곧바로 SyncStep2 로 답한다 — 그 사이에 로컬 편집이 끼지 않는다
     next.on('message', ({ message }: onMessageParameters) => {
       if (isServerSyncStepOne(message)) answered = true

@@ -1493,8 +1493,9 @@ span.blk-equation {
 .blk-synced_block .blk-synced-copy-button:hover { background: rgba(55, 53, 47, 0.06); color: #37352f; }
 .blk-synced_block .blk-synced-copy-button:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
 /*
- * 사본의 내용(SB-2) — 머리 줄 아래 한 줄을 다 쓴다. 머리의 작은 붉은 글씨를 물려받지 않게 본문 글자로 되돌린다. 중첩 편집기는 읽기 전용이라
- * `.blk-editor[contenteditable='false']` 규칙이 편집 크롬을 숨긴다. 자리(불러오는 중 · 권한 없음 · 휴지통 · 삭제됨)는 흐린 글 한 줄 + 단추.
+ * 사본의 내용(SB-2) — 머리 줄 아래 한 줄을 다 쓴다. 머리의 작은 붉은 글씨를 물려받지 않게 본문 글자로 되돌린다. 읽기 전용 중첩 편집기는
+ * `.blk-editor[contenteditable='false']` 규칙이 편집 크롬을 숨긴다(고칠 수 있으면 바깥 본문과 같다 — SB-3). 자리(불러오는 중 · 권한 없음 ·
+ * 휴지통 · 삭제됨)는 흐린 글 한 줄 + 단추.
  */
 .blk-synced_block .blk-synced-copy {
   flex: 1 0 100%; min-width: 0; font-size: 16px; line-height: 1.5; color: var(--foreground); user-select: text; cursor: text;
@@ -1512,8 +1513,40 @@ span.blk-equation {
 .blk-synced-copy .blk-synced-place button:hover { background: rgba(55, 53, 47, 0.06); }
 .blk-synced-copy .blk-synced-place button:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
 .blk-synced-copy .blk-synced-place button:disabled { opacity: 0.5; cursor: default; }
+/* 고칠 수 있는 사본이 끊겨 잠깐 멈춘 동안(SB-3 · SY7 — 입력을 받지 않는다)은 흐리게 */
+.blk-synced-copy[data-copy-state='ok'][data-copy-editable='false'] > .blk-synced-copy-body:has(.blk-synced-nested[aria-readonly='false']) { opacity: 0.7; }
+/*
+ * "다른 N개 페이지에서 편집 중"(SB-3 · ㉑) — 머리 줄의 작은 단추 · 누르면 머리 줄 아래로 펼친 목록(페이지 · `원본` 표지). 목록은 머리 줄의 폭을
+ * 넘지 않는다(좁은 화면에서 가로로 넘치지 않게). 목록의 글자는 본문 글자다.
+ */
+.blk-synced_block { position: relative; }
+.blk-synced_block .blk-synced-places { display: inline-flex; min-width: 0; }
+.blk-synced_block .blk-synced-places-toggle {
+  border: 0; border-radius: 4px; background: none; padding: 0 6px; color: #6b7280; font: inherit; cursor: pointer; white-space: nowrap;
+}
+.blk-synced_block .blk-synced-places-toggle:hover { background: rgba(55, 53, 47, 0.06); color: #37352f; }
+.blk-synced_block .blk-synced-places-toggle:focus-visible { outline: 2px solid #2383e2; outline-offset: 1px; }
+.blk-synced_block .blk-synced-places-list {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; display: flex; flex-direction: column; gap: 1px;
+  width: max-content; min-width: min(200px, 100%); max-width: min(320px, 100%); max-height: 240px; overflow-y: auto;
+  border-radius: 6px; background: var(--popover-bg); padding: 4px; box-shadow: var(--popover-shadow);
+  font-size: 0.875rem; line-height: 1.4; color: var(--foreground); user-select: none;
+}
+.blk-synced_block .blk-synced-places-item {
+  display: flex; align-items: center; gap: 8px; min-width: 0; border: 0; border-radius: 4px; background: none; padding: 4px 8px;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.blk-synced_block .blk-synced-places-item > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blk-synced_block .blk-synced-places-item:hover { background: rgba(55, 53, 47, 0.06); }
+.blk-synced_block .blk-synced-places-item:focus-visible { outline: 2px solid #2383e2; outline-offset: -2px; }
+.blk-synced_block .blk-synced-places-tag {
+  flex: none; margin-left: auto; border-radius: 9999px; background: rgba(235, 87, 87, 0.1); padding: 0 6px; font-size: 0.75rem; font-weight: 600; color: #9b2c2c;
+}
 :root {
   @variant dark {
+    .blk-synced_block .blk-synced-places-toggle { color: #a3a3a3; }
+    .blk-synced_block .blk-synced-places-toggle:hover, .blk-synced_block .blk-synced-places-item:hover { background: rgba(255, 255, 255, 0.055); color: #e5e5e5; }
+    .blk-synced_block .blk-synced-places-tag { background: rgba(255, 123, 114, 0.14); color: #fca5a5; }
     .blk-editor .blk-container:has(> .blk-synced_block) { border-color: rgba(255, 123, 114, 0.45); }
     .blk-synced_block { color: #fca5a5; }
     .blk-synced_block .blk-synced-badge { background: rgba(255, 123, 114, 0.14); }
