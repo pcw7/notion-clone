@@ -36,8 +36,8 @@ import type { EditorBlock } from '../editor/document.ts'
 import { asBlockId } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
-import { newApiBlockId, uploadIssueIn, writeNewPageBodyIn } from './block-body.ts'
-import { parseApiChildren, type UploadRef } from './block-json.ts'
+import { newApiBlockId, syncedRefIssueIn, uploadIssueIn, writeNewPageBodyIn } from './block-body.ts'
+import { parseApiChildren, type SyncedRef, type UploadRef } from './block-json.ts'
 import { fileUrlKey, ownFileIdOf, signedFileUrl } from './file-url.ts'
 import { loadPageIn, readApiOptions, readApiPage, readApiPageOnly, readApiProperties, readPropertyItem, visibleRelationIn } from './page-object.ts'
 import { TITLE_PROPERTY_ID, findProperty, parsePropertyWrite, type ApiProperty, type ApiWrite } from './property-values.ts'
@@ -349,12 +349,15 @@ async function applyRelationsIn(tx: Tx, ctx: SessionContext, rowId: string, writ
 }
 
 /** 받은 `children` — 새 페이지의 본문(API-3). 올린 파일은 이 워크스페이스의 것이어야 한다. */
-type NewBody = { readonly blocks: readonly EditorBlock[]; readonly uploads: readonly UploadRef[] }
+type NewBody = { readonly blocks: readonly EditorBlock[]; readonly uploads: readonly UploadRef[]; readonly syncedRefs: readonly SyncedRef[] }
 
 /** 새 페이지의 본문을 같은 트랜잭션에서 쓴다 — 거부면 그 답(트랜잭션째 되돌린다). */
 async function writeNewBodyIn(tx: Tx, ctx: SessionContext, pageId: string, body: NewBody): Promise<V1Reply | null> {
   const upload = await uploadIssueIn(tx, ctx, body.uploads)
   if (upload !== null) return bodyInvalid(upload)
+  // 동기화 블록 사본의 원본 — 살아 있고 이 사람이 볼 수 있어야 한다(SB-5 · ⑳)
+  const synced = await syncedRefIssueIn(tx, ctx, body.syncedRefs)
+  if (synced !== null) return bodyInvalid(synced)
   const wrote = await writeNewPageBodyIn(tx, ctx, pageId, body.blocks)
   return wrote === null ? null : invalid(wrote)
 }
@@ -447,7 +450,7 @@ export const createApiPage: V1Handler = async ({ ctx, body, request }) => {
   // 본문 — 블록 API 와 같은 변환 · 같은 상한(페이지 본문의 맨 위)
   const children = body.children === undefined ? null : parseApiChildren(body.children, 'body.children', 'page', newApiBlockId, { ownFileId: ownFileIdOf })
   if (children !== null && !children.ok) return bodyInvalid(children.message)
-  const newBody: NewBody = children === null ? { blocks: [], uploads: [] } : { blocks: children.blocks, uploads: children.uploads }
+  const newBody: NewBody = children === null ? { blocks: [], uploads: [], syncedRefs: [] } : { blocks: children.blocks, uploads: children.uploads, syncedRefs: children.syncedRefs }
   const icon = body.icon === undefined ? undefined : parseIcon(body.icon)
   if (icon !== undefined && !icon.ok) return icon.reply
   const cover = body.cover === undefined ? undefined : parseCover(body.cover)

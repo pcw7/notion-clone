@@ -41,6 +41,7 @@ import { can } from '../permissions/levels.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { AI_BLOCK_MIN_SOURCE, aiBlockResultBlocks, buildAiBlockMessages } from './block-prompt.ts'
 import { aiResultText, aiSourceLines, aiTextHash, findBlockIn, readAiBlock } from './block-source.ts'
+import { expandSyncedForReader } from './synced-source.ts'
 import type { AiCompleteOptions } from './complete-http.ts'
 import { maxOutputChars, readAiConfig, type AiConfig } from './config.ts'
 import { AiProviderError, openChatStream, type ChatMessage, type ChatStreamEvent } from './provider.ts'
@@ -104,12 +105,13 @@ async function prepare(
     if (block === null || block.type !== AI_BLOCK_TYPE) return { ok: false, error: 'not_found' } as const
     const props = readAiBlock(block.properties)
     if (props.kind === 'custom' && props.instruction.trim() === '') return { ok: false, error: 'instruction_missing' } as const
-    const lines = aiSourceLines(doc.blocks)
+    // 프롬프트는 동기화 블록 사본을 편 원문(요청자가 원본을 볼 수 있을 때만 — SB-5 · ⑲) · 해시는 펴기 전의 원문(편집기가 같은 값을 짓는다)
+    const lines = aiSourceLines((await expandSyncedForReader(tx, ctx, doc)).blocks)
     const source = lines.join('\n')
     if (source.trim().length < AI_BLOCK_MIN_SOURCE) return { ok: false, error: 'not_enough_content' } as const
     const built = buildAiBlockMessages({ kind: props.kind, instruction: props.instruction, title: plainTitleOf(row.properties), lines }, config.maxInputChars)
     if (!built.ok) return { ok: false, error: built.error } as const
-    return { ok: true, value: { kind: props.kind, messages: built.messages, sourceHash: aiTextHash(source) } } as const
+    return { ok: true, value: { kind: props.kind, messages: built.messages, sourceHash: aiTextHash(aiSourceLines(doc.blocks).join('\n')) } } as const
   })
 }
 

@@ -14,6 +14,7 @@ import { withReadTransaction } from '../db/tx.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import type { AskPage } from './ask-prompt.ts'
+import { expandSyncedForReader } from './synced-source.ts'
 
 export async function readAskPage(ctx: SessionContext, pageId: string): Promise<AskPage | null> {
   return withReadTransaction(async (tx) => {
@@ -22,6 +23,7 @@ export async function readAskPage(ctx: SessionContext, pageId: string): Promise<
       [pageId, ctx.workspaceId],
     )
     if (row === null || !can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
-    return { title: plainTitleOf(row.properties), doc: await readBodyIn(tx, ctx, pageId) }
+    // 동기화 블록 사본은 요청자가 원본을 볼 수 있을 때만 원본의 글로 편다(SB-5 · ⑲)
+    return { title: plainTitleOf(row.properties), doc: await expandSyncedForReader(tx, ctx, await readBodyIn(tx, ctx, pageId)) }
   })
 }

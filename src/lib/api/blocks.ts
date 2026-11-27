@@ -22,6 +22,7 @@ import type { Transaction } from '@tiptap/pm/state'
 import type { SessionContext } from '../auth/session-context.ts'
 import { openPageBody, type PageBodyWrite } from '../block/body-write.ts'
 import { restorePage, trashPage, TrashError } from '../block/trash.ts'
+import { isSyncedCopyProps, SYNCED_BLOCK_TYPE } from '../block/synced-block.ts'
 import { specOf, type BlockType } from '../block/types.ts'
 import { trashRow } from '../database/row.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
@@ -39,6 +40,7 @@ import {
   newApiBlockId,
   pageBlockObjectIn,
   readBodyIn,
+  syncedRefIssueIn,
   uploadIssueIn,
   type BodyEntry,
   type Located,
@@ -348,19 +350,32 @@ export const appendBlockChildren: V1Handler = async ({ ctx, params, body, reques
   const done = await editBody(ctx, ownerId, async (tx, session, doc): Promise<Step<string[]>> => {
     let parentType: BlockType = 'page'
     let tableWidth: number | undefined
+    let insideSynced = false
     if (target !== null) {
-      const entry = indexBody(doc).get(target)
+      const index = indexBody(doc)
+      const entry = index.get(target)
       if (entry === undefined) return no(notFound(id))
       parentType = entry.block.type
       if (!specOf(parentType).canHaveChildren || apiTypeOf(entry.block) === 'unsupported') {
         return no(invalid(`Block type ${apiTypeOf(entry.block)} does not support children.`))
       }
+      // 동기화 블록 사본은 자식이 없다 — 내용은 원본에 붙인다(SB-5 · ⑳)
+      if (parentType === SYNCED_BLOCK_TYPE && isSyncedCopyProps(entry.block.properties)) {
+        return no(invalid('Block type synced_block does not support children here — this block is a synced copy. Append to its original (synced_from.block_id) instead.'))
+      }
       if (parentType === 'table') tableWidth = tableWidthOf(entry.block)
+      // 붙이는 곳이 동기화 블록 안인가(그 블록 · 조상 어느 것이든 — SY5)
+      for (let at: BodyEntry | undefined = entry; at !== undefined; at = at.parentId === null ? undefined : index.get(at.parentId)) {
+        if (at.block.type === SYNCED_BLOCK_TYPE) insideSynced = true
+      }
     }
-    const parsed = parseApiChildren(body.children, 'body.children', parentType, newApiBlockId, { tableWidth, ownFileId: ownFileIdOf })
+    const parsed = parseApiChildren(body.children, 'body.children', parentType, newApiBlockId, { tableWidth, ownFileId: ownFileIdOf, insideSynced })
     if (!parsed.ok) return no(bodyInvalid(parsed.message))
     const upload = await uploadIssueIn(tx, ctx, parsed.uploads)
     if (upload !== null) return no(bodyInvalid(upload))
+    // 사본이 가리키는 원본 — 살아 있고 이 토큰의 사람이 볼 수 있어야 한다(SY10 · 없는 것과 같은 답)
+    const synced = await syncedRefIssueIn(tx, ctx, parsed.syncedRefs)
+    if (synced !== null) return no(bodyInvalid(synced))
     const outcome = applyEdit(session, (tr, pm) => appendBlocksIn(tr, pm, target, place.value, parsed.blocks))
     if (outcome !== 'ok') return no(outcomeReply(outcome, id, place.value.kind === 'after' ? place.value.id : null))
     return yes(parsed.blocks.map((b) => b.id))

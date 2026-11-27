@@ -10,6 +10,8 @@
  *   → 그 블록이 · 이미지 블록이면 그 블록이 든 페이지(가장 가까운 페이지 조상)가 · 아이콘 · 커버면 그 페이지 자신이 이 토큰으로 열린다
  *   → 그 블록이 **지금** 가리키는 파일 하나(이 워크스페이스의 것) — 아이콘이 커스텀 이모지면(7c-2a) 그 이모지(살아 있는 것)의 파일
  *
+ * 동기화 블록 사본으로 펼친 원본의 블록(SB-5)은 원본 페이지가 지금 웹에 열려 있고 사본이 이 토큰으로 열리는 페이지에 있을 때 연다(`bodyPageOpensIn`).
+ *
  * 그래서 공개 주소를 알아도 다른 파일 id 를 찍어 읽을 수 없고, 이미지를 본문에서 지우거나 페이지를 닫으면 그 주소도 닫힌다.
  * 이유는 말하지 않는다 — 열 수 없으면 모두 null(404).
  */
@@ -25,7 +27,8 @@ import { PAGE_TYPE } from '../block/types.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { fileStorage } from '../file/storage.ts'
 import { isUuid } from '../ids.ts'
-import { openablePagesIn, resolvePublicPageIn } from './public-access.ts'
+import { SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY } from '../block/synced-block.ts'
+import { openablePagesIn, resolvePublicPageIn, webExposureIn, type PublicTarget } from './public-access.ts'
 import type { AiCrawler, RobotsDirective } from './public-token.ts'
 
 /** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘 · 본문의 파일 블록(F-1a — 내려받기로만 연다) · 비디오 · 페이지의 올린 이미지 커버(PC-4). */
@@ -103,7 +106,10 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
       fileId = source?.kind === 'file' ? source.fileId : null
     }
     if (pageId === null || fileId === null) return null
-    if (!(await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)) return null
+    const opens = kind === 'icon' || kind === 'cover'
+      ? (await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)
+      : await bodyPageOpensIn(tx, root, block.ancestor_path, pageId)
+    if (!opens) return null
 
     const file = await tx.queryMaybe<{ storage_key: string; mime: string; size_bytes: string; original_name: string | null }>(
       `SELECT storage_key, mime, size_bytes, original_name FROM file WHERE id = $1 AND workspace_id = $2`,
@@ -143,7 +149,10 @@ export async function readPublicEmojiFile(token: string, blockId: string, emojiI
     if (!readTitle(block.properties).some((run) => customEmojiIdOfRun(run)?.toLowerCase() === wanted)) return null
     const pageId = block.type === PAGE_TYPE ? block.id : await ownerPageOf(tx, block.ancestor_path)
     if (pageId === null) return null
-    if (!(await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)) return null
+    const opens = block.type === PAGE_TYPE
+      ? (await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)
+      : await bodyPageOpensIn(tx, root, block.ancestor_path, pageId)
+    if (!opens) return null
 
     const file = await tx.queryMaybe<{ storage_key: string; mime: string; size_bytes: string }>(
       `SELECT f.storage_key, f.mime, f.size_bytes FROM custom_emoji e JOIN file f ON f.id = e.file_id AND f.workspace_id = e.workspace_id
@@ -156,6 +165,33 @@ export async function readPublicEmojiFile(token: string, blockId: string, emojiI
   const bytes = await fileStorage().read(found.file.storage_key)
   if (bytes === null) return null
   return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), originalName: null, robots: found.robots, aiCrawler: found.aiCrawler }
+}
+
+/**
+ * 본문 블록의 페이지가 이 토큰으로 열리는가. 아니어도 공개 화면이 동기화 블록 사본으로 펼친 내용이면 연다(SB-5 · 정본 [SB-5 고침] ⓑ) — 그 블록이
+ * 원본 X 의 하위이고, X 를 가리키는 사본이 이 토큰으로 열리는 페이지에 있으며, X 의 페이지가 지금 웹에 열려 있을 때(화면이 펴는 조건과 같다).
+ */
+async function bodyPageOpensIn(tx: Tx, root: PublicTarget, ancestorPath: readonly string[], pageId: string): Promise<boolean> {
+  if ((await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)) return true
+  if (ancestorPath.length === 0) return false
+  const original = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = $3 AND NOT (properties ? $4) LIMIT 1`,
+    [ancestorPath, root.workspaceId, SYNCED_BLOCK_TYPE, SYNCED_FROM_KEY],
+  )
+  if (original === null) return false
+  const copyPages = await tx.query<{ page_id: string }>(
+    `SELECT DISTINCT p.id AS page_id
+       FROM block b
+       JOIN LATERAL (
+         SELECT a.id FROM unnest(b.ancestor_path) WITH ORDINALITY AS t(id, depth)
+           JOIN block a ON a.id = t.id AND a.type = 'page'
+          ORDER BY t.depth DESC LIMIT 1
+       ) p ON true
+      WHERE b.workspace_id = $1 AND b.type = 'synced_block' AND b.properties ? 'synced_from' AND (b.properties ->> 'synced_from') = $2`,
+    [root.workspaceId, original.id],
+  )
+  if ((await openablePagesIn(tx, root.workspaceId, root.rootId, copyPages.map((r) => r.page_id))).size === 0) return false
+  return (await webExposureIn(tx, root.workspaceId, pageId)).open
 }
 
 /** 본문 블록이 든 페이지 — 조상 중 가장 가까운 페이지. */

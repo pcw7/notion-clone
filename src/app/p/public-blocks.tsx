@@ -24,7 +24,6 @@ import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
 import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
 import { BREADCRUMB_TYPE } from '@/lib/block/breadcrumb'
-import { isSyncedCopyProps } from '@/lib/block/synced-block'
 import { COLUMN_RATIO_KEY, DATABASE_TYPE, PAGE_TYPE } from '@/lib/block/types'
 import { isSafeLinkUrl } from '@/lib/contracts/link-url'
 import { customEmojiIdOfRun, mentionTarget, toPlainText, type RichTextRun } from '@/lib/contracts/rich-text'
@@ -304,10 +303,10 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
     // AI 블록(AI-5) — 결과(자식)만. 머리(종류 · 지시 · 단추)는 편집기의 것이다
     case 'ai_block':
       return <Blocks blocks={block.children ?? []} view={view} />
-    // 동기화 블록(SB-1) — 원본은 내용(자식)만 · 틀과 표지는 편집기의 것이다. 사본은 이 페이지에 내용이 없다 — 원본이 웹에 열려 있을 때
-    // 펼치는 것은 SB-5(정본 [보강 SB-0] ⑱) · 그 전에는 블록째 뺀다(공개로 보는 사람에게 자리를 보이지 않는다)
+    // 동기화 블록(SB-1 · SB-5) — 원본도 사본도 내용(자식)만 · 틀과 표지는 편집기의 것이다. 사본의 자식은 공개 읽기가 단 원본의 내용이다(원본
+    // 페이지가 웹에 열려 있을 때만 — 아니면 읽기가 사본을 뺐다 · 정본 [보강 SB-0] ⑱)
     case 'synced_block':
-      return isSyncedCopyProps(props) ? null : <Blocks blocks={block.children ?? []} view={view} />
+      return <Blocks blocks={block.children ?? []} view={view} />
     case TOC_TYPE:
       return <TableOfContents view={view} color={color} />
     case BREADCRUMB_TYPE:

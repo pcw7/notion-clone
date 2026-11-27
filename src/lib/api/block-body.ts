@@ -27,7 +27,8 @@ import { docToPm } from '../editor/pm-adapter.ts'
 import { isAllowedMime, isVideoMime } from '../file/limits.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
-import { apiBlockObject, blockContentToApi, columnWidthsOf, type RefInfo, type UploadRef } from './block-json.ts'
+import { syncedOriginalPagesIn } from '../block/synced-block-resolve.ts'
+import { apiBlockObject, blockContentToApi, columnWidthsOf, type RefInfo, type SyncedRef, type UploadRef } from './block-json.ts'
 import { loadPageIn, type LoadedPage } from './page-object.ts'
 import type { ApiLinks } from './rich-text.ts'
 import { claimApiUploadsIn } from './upload-claim.ts'
@@ -260,6 +261,25 @@ export async function uploadIssueIn(tx: Tx, ctx: SessionContext, uploads: readon
     if (mime === undefined) return `${upload.path} should be a file uploaded to this workspace, instead was "${upload.id}".`
     if ((upload.blockType === 'image' && !isAllowedMime(mime)) || (upload.blockType === 'video' && !isVideoMime(mime))) {
       return `${upload.path} should be an ${upload.blockType} file, instead was a file of type "${mime || 'unknown'}".`
+    }
+  }
+  return null
+}
+
+/**
+ * 받은 동기화 블록 사본이 가리키는 원본(SB-5 · 정본 ⑳ [SB-5 고침] ⓓ) — 이 워크스페이스의 살아 있는 원본이고 그 페이지가 살아 있으며 **이 토큰의
+ * 사람이 볼 수 있어야**(`can(effectiveCaps(A),'view')` — SY10) 한다. 아니면 첫 자리의 글 — 없는 것 · 볼 수 없는 것 · 사본 · 휴지통을 가르지
+ * 않는다(존재를 새지 않는다).
+ */
+export async function syncedRefIssueIn(tx: Tx, ctx: SessionContext, refs: readonly SyncedRef[]): Promise<string | null> {
+  if (refs.length === 0) return null
+  const originals = await syncedOriginalPagesIn(tx, ctx.workspaceId, refs.map((r) => r.id))
+  const viewable = new Map<string, boolean>()
+  for (const ref of refs) {
+    const page = originals.get(ref.id)
+    if (page?.live === true && !viewable.has(page.pageId)) viewable.set(page.pageId, can(await effectiveCaps(tx, ctx, page.pageId), 'view'))
+    if (page?.live !== true || viewable.get(page.pageId) !== true) {
+      return `${ref.path} should be the id of an original synced_block you can read, instead was "${ref.id}".`
     }
   }
   return null

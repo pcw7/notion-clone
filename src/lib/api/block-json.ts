@@ -13,7 +13,8 @@
  *
  * 받기 — 노션의 요청 모양을 우리 블록으로. **엄격하게** — 틀리면 그 자리를 영어로 말한다(`body.children[0].paragraph.rich_text …`).
  *   · 한 배열 100개 · 한 요청 1000개 · 중첩 2단 · 글 조각 2000자(노션의 상한 · 정본 ④)
- *   · 우리에게 없는 타입(`link_to_page` · `synced_block` · `pdf` · `audio` …)은 그 이름을 말하고 거부한다 · `child_page` 는 노션처럼 `POST /v1/pages` 로
+ *   · 우리에게 없는 타입(`link_to_page` · `pdf` · `audio` …)은 그 이름을 말하고 거부한다 · `child_page` 는 노션처럼 `POST /v1/pages` 로
+ *   · `synced_block` 은 만들기만 받는다(SB-5 · 정본 ⑳ [SB-5 고침] ⓓ — `parseSyncedBlock`) · 고치기는 400
  *   · 구조는 앱의 규칙 그대로(레지스트리 `parentTypes` · `childTypes` · `excludedChildTypes`) — 컬럼 목록은 컬럼 둘 이상 · 컬럼마다 블록 하나
  *     이상 · 컬럼 바로 안에 컬럼 목록 없음 · 표의 행은 표 안에만 · 셀 수는 `table_width`
  *   · **정규형으로 쓴다** — 기본값은 키가 없다(색 `default` · 언어 `plain text` · 콜아웃 💡 · 빈 캡션 · 머리 플래그 false). 같은 뜻의 두 모양을
@@ -88,7 +89,7 @@ export type ApiBlockContent = { readonly type: string; readonly payload: Readonl
 export function apiTypeOf(block: EditorBlock): string {
   if (block.type === 'page') return 'child_page'
   if (block.type === 'database') return 'child_database'
-  // 동기화 블록(원본 SB-1 · 사본 SB-2) — 읽기의 이름. 고치기 · 붙이기는 받지 않는다(`UNWRITABLE` — 정본 ⑳ · SB-5 까지 400)
+  // 동기화 블록(원본 SB-1 · 사본 SB-2) — 읽기의 이름. 만들기는 SB-5 부터(`parseSyncedBlock`) · 고치기는 받지 않는다(`UNWRITABLE` — 정본 ⑳)
   if (block.type === SYNCED_BLOCK_TYPE) return !isSyncedCopyProps(block.properties) || syncedFromOf(block.properties, block.id) !== null ? SYNCED_BLOCK_TYPE : 'unsupported'
   if (MEDIA_TYPES.has(block.type)) return readImageSource(block.properties) === null ? 'unsupported' : block.type
   return WRITABLE.has(block.type) ? block.type : 'unsupported'
@@ -245,8 +246,14 @@ export function apiBlockObject(
 /** 받은 블록이 가리키는 올린 파일 — 이 워크스페이스의 것인지 DB 가 본다(API 업로드 세션이면 그 상태도 — `upload-claim.ts`). */
 export type UploadRef = { readonly id: string; readonly blockType: 'image' | 'video' | 'file'; readonly path: string }
 
-/** 받기의 선택 — 표의 열 수 · 우리 서명 주소를 파일 id 로(왕복 — 없으면 `type: "file"` 은 받지 않는다). */
-export type ParseOptions = { readonly tableWidth?: number; readonly ownFileId?: (url: string) => string | null }
+/** 받은 동기화 블록 사본이 가리키는 원본(SB-5) — 살아 있는 원본이고 읽을 수 있는지는 DB 가 본다(`syncedRefIssueIn`). */
+export type SyncedRef = { readonly id: string; readonly path: string }
+
+/**
+ * 받기의 선택 — 표의 열 수 · 우리 서명 주소를 파일 id 로(왕복 — 없으면 `type: "file"` 은 받지 않는다) · 붙이는 곳이 동기화 블록 안(그 블록 ·
+ * 조상 어느 것이든 — SY5)인가.
+ */
+export type ParseOptions = { readonly tableWidth?: number; readonly ownFileId?: (url: string) => string | null; readonly insideSynced?: boolean }
 
 /** 받는 쪽에서 던지는 거부 — 경계에서 `{ ok: false, message }` 로 바뀐다. 밖으로 나가지 않는다. */
 class Invalid extends Error {}
@@ -259,6 +266,9 @@ type ParseState = {
   readonly newId: () => string
   readonly uploads: UploadRef[]
   readonly ownFileId?: ((url: string) => string | null) | undefined
+  readonly syncedRefs: SyncedRef[]
+  /** 지금 읽는 자리를 감싼 동기화 블록의 수(붙이는 곳 포함) — 0 이 아니면 동기화 블록을 받지 않는다(SY5). */
+  insideSynced: number
 }
 
 /** 받은 블록의 글 · 속성 · 모습. 표는 열 수도(자식 행의 셀 수를 본다). */
@@ -534,6 +544,7 @@ function parseBlock(raw: unknown, at: string, parent: BlockType, tableWidth: num
   const name = kind as string
   const extra = Object.keys(item).find((k) => k !== 'object' && k !== 'type' && k !== name)
   if (extra !== undefined) fail(`${at}.${extra} should be not present, instead was ${shownValue(item[extra])}.`)
+  if (name === SYNCED_BLOCK_TYPE) return parseSyncedBlock(item[name], at, parent, nesting, state)
   if (!WRITABLE.has(name)) fail(unwritableMessage(at, name))
   const type = name as WritableType
   const payload = item[name]
@@ -562,6 +573,51 @@ function parseBlock(raw: unknown, at: string, parent: BlockType, tableWidth: num
   return { id: state.newId(), type, title: specOf(type).hasRichText ? content.title : [], properties: content.properties, format: content.format, children }
 }
 
+/**
+ * 동기화 블록 만들기(SB-5 · 정본 [보강 SB-0] ⑳ [SB-5 고침] ⓓ). `synced_from: null` 이면 원본 — `children` 이 없거나 비면 빈 문단 하나(⑥ⓐ ·
+ * `/동기화 블록` 과 같다) · 깊이 규칙은 보통과 같다. `{type?: 'block_id', block_id}` 이면 사본 — 자식이 없다 · 그 원본을 읽을 수 있는지는 DB 가
+ * 본다(`syncedRefs`). 동기화 블록 안(붙이는 곳이든 요청 안이든)에는 둘 수 없다(SY5).
+ */
+function parseSyncedBlock(payload: unknown, at: string, parent: BlockType, nesting: number, state: ParseState): EditorBlock {
+  const p = `${at}.${SYNCED_BLOCK_TYPE}`
+  if (!isObject(payload)) fail(`${p} should be an object, instead was ${shownValue(payload)}.`)
+  const placed = placementIssue(SYNCED_BLOCK_TYPE, parent, at)
+  if (placed !== null) fail(placed)
+  if (state.insideSynced > 0 || parent === SYNCED_BLOCK_TYPE) fail(`${at}.type "synced_block" cannot be placed inside a synced_block.`)
+  const body = payload as Obj
+  const extraKey = Object.keys(body).find((k) => k !== 'synced_from' && k !== 'children')
+  if (extraKey !== undefined) fail(`${p}.${extraKey} should be not present, instead was ${shownValue(body[extraKey])}.`)
+  if (body.synced_from === undefined) fail(`${p}.synced_from should be defined, instead was undefined.`)
+  const id = state.newId()
+
+  if (body.synced_from === null) {
+    let children: EditorBlock[] = []
+    if (body.children !== undefined) {
+      if (nesting + 1 > API_MAX_NESTING) {
+        fail(`${p}.children should be not present — a request can nest children at most ${API_MAX_NESTING} levels deep. Append deeper blocks with another request.`)
+      }
+      state.insideSynced += 1
+      children = parseList(body.children, `${p}.children`, SYNCED_BLOCK_TYPE, undefined, nesting + 1, state)
+      state.insideSynced -= 1
+    }
+    if (children.length === 0) children = [{ id: state.newId(), type: 'paragraph', title: [], properties: {}, format: {}, children: [] }]
+    return { id, type: SYNCED_BLOCK_TYPE, title: [], properties: {}, format: {}, children }
+  }
+
+  if (!isObject(body.synced_from)) fail(`${p}.synced_from should be null or an object, instead was ${shownValue(body.synced_from)}.`)
+  const ref = body.synced_from as Obj
+  const refExtra = Object.keys(ref).find((k) => k !== 'type' && k !== 'block_id')
+  if (refExtra !== undefined) fail(`${p}.synced_from.${refExtra} should be not present, instead was ${shownValue(ref[refExtra])}.`)
+  if (ref.type !== undefined && ref.type !== 'block_id') fail(`${p}.synced_from.type should be "block_id", instead was ${shownValue(ref.type)}.`)
+  const target = parseApiId(ref.block_id)
+  if (target === null) fail(`${p}.synced_from.block_id should be a valid uuid, instead was ${shownValue(ref.block_id)}.`)
+  if (body.children !== undefined && !(Array.isArray(body.children) && body.children.length === 0)) {
+    fail(`${p}.children should be not present — a synced_block copy has no children. Append blocks to its original instead.`)
+  }
+  state.syncedRefs.push({ id: target as string, path: `${p}.synced_from.block_id` })
+  return { id, type: SYNCED_BLOCK_TYPE, title: [], properties: { synced_from: target }, format: {}, children: [] }
+}
+
 function parseList(raw: unknown, at: string, parent: BlockType, tableWidth: number | undefined, nesting: number, state: ParseState): EditorBlock[] {
   if (!Array.isArray(raw)) fail(`${at} should be an array, instead was ${shownValue(raw)}.`)
   const list = raw as unknown[]
@@ -576,7 +632,7 @@ function parseList(raw: unknown, at: string, parent: BlockType, tableWidth: numb
 }
 
 export type ParsedChildren =
-  | { readonly ok: true; readonly blocks: EditorBlock[]; readonly uploads: readonly UploadRef[] }
+  | { readonly ok: true; readonly blocks: EditorBlock[]; readonly uploads: readonly UploadRef[]; readonly syncedRefs: readonly SyncedRef[] }
   | { readonly ok: false; readonly message: string }
 
 /**
@@ -590,9 +646,10 @@ export function parseApiChildren(
   newId: () => string,
   options: ParseOptions = {},
 ): ParsedChildren {
-  const state: ParseState = { count: 0, newId, uploads: [], ownFileId: options.ownFileId }
+  const state: ParseState = { count: 0, newId, uploads: [], ownFileId: options.ownFileId, syncedRefs: [], insideSynced: options.insideSynced === true ? 1 : 0 }
   try {
-    return { ok: true, blocks: parseList(raw, path, parent, options.tableWidth, 0, state), uploads: state.uploads }
+    const blocks = parseList(raw, path, parent, options.tableWidth, 0, state)
+    return { ok: true, blocks, uploads: state.uploads, syncedRefs: state.syncedRefs }
   } catch (e) {
     if (e instanceof Invalid) return { ok: false, message: e.message }
     throw e
@@ -618,7 +675,7 @@ export type ParsedUpdate =
  */
 export function parseApiBlockUpdate(block: EditorBlock, payload: unknown, path: string, options: ParseOptions = {}): ParsedUpdate {
   const type = block.type
-  const state: ParseState = { count: 0, newId: () => block.id, uploads: [], ownFileId: options.ownFileId }
+  const state: ParseState = { count: 0, newId: () => block.id, uploads: [], ownFileId: options.ownFileId, syncedRefs: [], insideSynced: 0 }
   try {
     if (!WRITABLE.has(type)) fail(`${path} cannot be updated — blocks of type "${apiTypeOf(block)}" are not editable through the API.`)
     if (!isObject(payload)) fail(`${path} should be an object, instead was ${shownValue(payload)}.`)
