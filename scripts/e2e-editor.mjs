@@ -12130,6 +12130,148 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('계정 — 별칭으로 초대 · 공유 (AC-2 · F-14-07)')) { try {
+      // 정본 §3.2 [보강 AC-0] ④ ⑤ [AC-2] — 검증된 별칭은 공유 · 초대의 수신에서 대표와 같고(`resolveUserByEmail` 한 곳 · 저장은 user_id) 다른
+      // 사람에게는 대표만 보인다. 실제 서버로: 별칭 더하기(콘솔 메일러의 코드) → 별칭으로 이메일 공유 = 그 계정의 부여 · 대표와 같은 응답 · 초대의
+      // 열거 방지. 브라우저로: 계정 없는 주소로 간 멤버 초대 → 수락 화면은 "다른 계정" + 별칭 안내 → 그 주소를 별칭으로 확인하면 같은 화면이
+      // "워크스페이스 참여" → 받으면 그 계정이 멤버(대기 초대의 승계). 그 뒤 사람 절 · 공유 패널 · @ 후보에 별칭이 없고, 별칭을 빼도 공유는 남는다.
+      // 폰 폭 · 어두운 테마. 브라우저 세션을 바꿔 진행하고 끝에 소유자로 되돌린다. 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newDoc = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title, privateTop: true }) })).json()).page.id
+      const homeOf = async (name) => {
+        const home = await createBareWorkspace(`${name}의 집 ${stamp}`)
+        return { home, who: await joinAs(home, await createUser(`${name} ${stamp}`), 'owner') }
+      }
+      /** 이 사람의 별칭 하나를 실제 라우트로 더한다(코드 요청 → 콘솔 메일러의 코드 → 확인) — 자기 워크스페이스에서. 주소 행 id 또는 null. */
+      const addAlias = async (who, home, address) => {
+        const headers = { ...json, cookie: `nc_session=${who.token}` }
+        const url = `${BASE}/api/workspaces/${home}/account/emails`
+        const asked = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ email: address }) })
+        if (!asked.ok) return null
+        const verified = await readRes(await fetch(`${url}/verify`, { method: 'POST', headers, body: JSON.stringify({ email: address, code: await loginCodeFor(address) }) }))
+        return verified.status === 200 ? (verified.body?.email?.id ?? null) : null
+      }
+      const invite = async (email) =>
+        readRes(await fetch(`${BASE}/api/workspaces/${workspaceId}/invites`, { method: 'POST', headers: authed, body: JSON.stringify({ email, role: 'member' }) }))
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const HINT = '[data-testid="invite-alias-hint"]'
+
+      // ── 공유 — 별칭은 그 계정 ──
+      const { home: sharedHome, who: shared } = await homeOf('별칭으로 공유받는 사람')
+      const sharedAlias = `e2e-ac2-share-${stamp}@example.com`
+      const sharedAliasId = await addAlias(shared, sharedHome, sharedAlias)
+      check('전제 — 별칭을 실제 라우트로 더했다(코드를 맞혀서)', typeof sharedAliasId === 'string', String(sharedAliasId))
+      const docA = await newDoc(`별칭 공유 가 ${stamp}`)
+      const docB = await newDoc(`별칭 공유 나 ${stamp}`)
+      const docC = await newDoc(`별칭 공유 다 ${stamp}`)
+      const give = async (doc, email) => readRes(await fetch(`${pagesUrl}/${doc}/guests`, { method: 'POST', headers: authed, body: JSON.stringify({ email, level: 'view' }) }))
+      const grantOn = async (doc) =>
+        (await dbQuery(`SELECT 1 FROM acl_entry WHERE node_id = $1 AND principal_type = 'user' AND principal_id = $2`, [doc, shared.userId])).length === 1
+      const byAlias = await give(docA, sharedAlias)
+      check('★ 별칭으로 이메일 공유 — 그 계정이 게스트로 들어오고 부여는 user_id 다(대기 초대 · 초대 메일이 아니다)',
+        byAlias.status === 200 && byAlias.body?.as === 'guest' && byAlias.body?.joined === true && (await grantOn(docA))
+          && (await dbQuery(`SELECT 1 FROM workspace_invite WHERE email = $1`, [sharedAlias])).length === 0,
+        JSON.stringify(byAlias))
+      const byPrimary = await give(docB, shared.email)
+      const byAliasAgain = await give(docC, sharedAlias)
+      check('★ 별칭과 대표는 공유의 응답이 같다',
+        byPrimary.status === 200 && JSON.stringify(byPrimary) === JSON.stringify(byAliasAgain) && (await grantOn(docC)),
+        JSON.stringify([byPrimary, byAliasAgain]))
+
+      // ── 초대 — 열거 방지 ──
+      const { home: outsiderHome, who: outsider } = await homeOf('멤버 아닌 계정')
+      const outsiderAlias = `e2e-ac2-outsider-${stamp}@example.com`
+      const outsiderAliasId = await addAlias(outsider, outsiderHome, outsiderAlias)
+      const toAlias = await invite(outsiderAlias)
+      const toNobody = await invite(`e2e-ac2-nobody-${stamp}@example.com`)
+      check('★ 초대 — 멤버 아닌 계정의 별칭과 아무의 것도 아닌 주소는 응답의 모양이 같다(둘 다 주소로 기다린다)',
+        typeof outsiderAliasId === 'string' && toAlias.status === 200 && toNobody.status === 200
+          && JSON.stringify(Object.keys(toAlias.body ?? {}).sort()) === JSON.stringify(Object.keys(toNobody.body ?? {}).sort()),
+        JSON.stringify([toAlias, toNobody]))
+
+      // ── 대기 초대의 승계 — 수락 화면 ──
+      const { home: joinHome, who: joiner } = await homeOf('나중에 별칭을 더하는 사람')
+      const address = `e2e-ac2-invite-${stamp}@example.com`
+      const invited = await invite(address)
+      const link = await inviteLinkFor(address)
+      check('전제 — 계정 없는 주소로 멤버 초대 · 메일의 수락 링크', invited.status === 200 && typeof link === 'string', `${JSON.stringify(invited)} · ${link}`)
+      const invitePath = link ? new URL(link).pathname : '/invite/missing'
+      try {
+        await browseAs(joiner.token)
+        await send('Page.navigate', { url: `${BASE}${invitePath}` })
+        check('★ 그 주소가 아직 내 것이 아니면 "다른 계정" 안내와 별칭으로 받는 길을 말한다 — 참여 단추가 없다',
+          (await waitFor(`!!document.querySelector(${JSON.stringify(HINT)})`, 15000)) && !(await evaluate(`document.body.innerText.includes('워크스페이스 참여')`)),
+          String(await evaluate(`document.querySelector('main')?.innerText ?? null`)))
+
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await send('Page.navigate', { url: `${BASE}${invitePath}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(HINT)})`, 15000)
+        check('폰 폭(390) — 수락 화면이 칸 밖으로 넘치지 않는다',
+          await evaluate(`(() => { const m = document.querySelector('main'); return !!m && m.scrollWidth <= m.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1 })()`),
+          String(await evaluate(`(() => { const m = document.querySelector('main'); return m ? m.scrollWidth + ' / ' + m.clientWidth : null })()`)))
+        await send('Emulation.clearDeviceMetricsOverride')
+        const hintColor = () => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(HINT)}); return el ? getComputedStyle(el).color : null })()`)
+        const lightColor = await hintColor()
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+        await send('Page.navigate', { url: `${BASE}${invitePath}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(HINT)})`, 15000)
+        const darkColor = await hintColor()
+        check('어두운 테마 — 안내 글의 색이 밝을 때와 다르다', lightColor !== null && darkColor !== null && lightColor !== darkColor, JSON.stringify([lightColor, darkColor]))
+        await send('Emulation.setEmulatedMedia', { features: [] })
+
+        const joinerAliasId = await addAlias(joiner, joinHome, address)
+        await send('Page.navigate', { url: `${BASE}${invitePath}` })
+        check('★ 그 주소를 별칭으로 확인하면 같은 화면이 참여 단추를 낸다(수락과 같은 해석)',
+          typeof joinerAliasId === 'string'
+            && (await waitFor(`document.body.innerText.includes('워크스페이스 참여') && !document.querySelector(${JSON.stringify(HINT)})`, 15000)),
+          String(await evaluate(`document.querySelector('main')?.innerText ?? null`)))
+        let arrived = false
+        for (let i = 0; i < 10 && !arrived; i += 1) {
+          await clickText('워크스페이스 참여')
+          arrived = await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)}`, 1500)
+        }
+        const joined = await dbQuery(
+          `SELECT m.role, m.status, i.accepted_by_user_id FROM workspace_member m JOIN workspace_invite i ON i.id = $3
+            WHERE m.workspace_id = $1 AND m.user_id = $2`,
+          [workspaceId, joiner.userId, invited.body?.inviteId ?? '00000000-0000-0000-0000-000000000000'],
+        )
+        check('★ 받으면 그 계정이 멤버 — 수락은 user_id 로 남는다(계정 없는 주소로 간 초대를 별칭으로 이어받았다)',
+          arrived && joined[0]?.role === 'member' && joined[0]?.status === 'active' && joined[0]?.accepted_by_user_id === joiner.userId,
+          JSON.stringify([await evaluate('location.pathname'), joined]))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+        await send('Emulation.setEmulatedMedia', { features: [] }).catch(() => {})
+        await browseAs(session)
+      }
+
+      // ── 다른 사람에게는 대표만 ──
+      const aliases = [sharedAlias, address].map((a) => a.toLowerCase())
+      const leaked = (text) => aliases.filter((a) => String(text).toLowerCase().includes(a))
+      const people = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.people`, { headers: authed })).text()
+      check('★ 사람 절 — 별칭이 없고 대표 주소로 선다', leaked(people).length === 0 && people.includes(joiner.email), JSON.stringify(leaked(people)))
+      const panel = await (await fetch(`${pagesUrl}/${docA}/access`, { headers: authed })).text()
+      check('★ 공유 패널의 사람 — 별칭이 없고 대표 주소로 선다', leaked(panel).length === 0 && panel.includes(shared.email) && panel.includes(joiner.email),
+        JSON.stringify(leaked(panel)))
+      const mentionOf = async (q) => (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/mention-candidates?q=${encodeURIComponent(q)}`, { headers: authed })).json()).candidates ?? []
+      const byAliasFragment = await mentionOf(address.split('@')[0])
+      const byPrimaryFragment = await mentionOf(joiner.email.split('@')[0])
+      check('★ @ 후보 — 별칭 조각으로는 그 사람이 나오지 않고 대표 주소로는 나온다',
+        !byAliasFragment.some((c) => c.id === joiner.userId) && byPrimaryFragment.some((c) => c.id === joiner.userId),
+        JSON.stringify([byAliasFragment.length, byPrimaryFragment.map((c) => c.id)]))
+
+      // ── 별칭을 빼도 공유는 남는다 ──
+      const removed = await fetch(`${BASE}/api/workspaces/${sharedHome}/account/emails/${sharedAliasId}`, {
+        method: 'DELETE', headers: { ...json, cookie: `nc_session=${shared.token}` }, body: '{}',
+      })
+      const opened = await fetch(`${BASE}/w/${workspaceId}/${docA}`, { headers: { cookie: `nc_session=${shared.token}` } })
+      check('★ 별칭을 빼도 공유는 남는다 — 부여는 user_id 그대로 · 그 사람은 페이지를 연다',
+        removed.ok && (await grantOn(docA)) && opened.status === 200 && !(await shownNoAccess(opened)),
+        String([removed.status, opened.status]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('워크스페이스 스위처 (8j-1 · F-14-09)')) { try {
       // 사이드바 머리의 이름 → 스위처(이 계정의 이메일 · 워크스페이스(만든 순서) · 지금 것에 ✓ · 역할) → 고르면 그리로 · Ctrl/Cmd + Shift + 숫자 ·
       // Esc · 사이드바의 "홈". 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 그 멤버가 둘째 워크스페이스를 만든다(소유자).

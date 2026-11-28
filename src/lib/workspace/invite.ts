@@ -15,6 +15,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
+import { resolveUserByEmail } from '../auth/resolve-user.ts'
 import { isLoginSession, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { isUuid } from '../ids.ts'
 import { queryMaybe } from '../db/pool.ts'
@@ -94,16 +95,17 @@ export async function createEmailInvite(
   const email = input.email.trim()
 
   return withTransaction(async (tx) => {
-    // 이미 멤버인가. 이메일이 그 계정의 **별칭**일 수도 있으므로 user_email 로 조인한다.
+    // 이미 멤버인가. 이메일이 그 계정의 **별칭**일 수도 있으므로 주소 → 계정 해석을 지난다(AC-2 · 정본 [보강 AC-0] ④).
     // (F-14-10 엣지 케이스: "초대된 주소가 이미 그 계정의 별칭 → 이미 멤버로 판정.
-    //  좌석 중복 금지")
-    const member = await tx.queryMaybe<{ status: string }>(
-      `SELECT m.status
-         FROM user_email ue
-         JOIN workspace_member m ON m.user_id = ue.user_id
-        WHERE ue.email = $1 AND m.workspace_id = $2`,
-      [email, input.workspaceId],
-    )
+    //  좌석 중복 금지") 멤버가 아닌 계정의 주소(대표 · 별칭)와 아무의 것도 아닌 주소는 응답이 같다 — 초대는 주소로 기다린다.
+    const account = await resolveUserByEmail(email, { tx })
+    const member =
+      account === null
+        ? null
+        : await tx.queryMaybe<{ status: string }>(`SELECT status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`, [
+            input.workspaceId,
+            account.userId,
+          ])
     if (member && member.status === 'active') {
       return { ok: false, reason: 'already_member' } as const
     }
@@ -211,6 +213,14 @@ export async function previewInvite(token: string): Promise<InvitePreview | null
   }
 }
 
+/**
+ * 이 초대가 이 계정 앞인가 — 수락 화면이 "받기" 단추와 "다른 계정" 안내를 가른다. 수락(`acceptInvite`)과 같은 해석이다(AC-2): 초대받은
+ * 주소가 이 계정의 검증된 어느 주소든(별칭 포함) 이 계정 앞이다. 전에는 대표 주소만 견주어 별칭 앞의 초대를 받을 길이 없었다.
+ */
+export async function isInviteFor(invite: Pick<InvitePreview, 'email'>, userId: string): Promise<boolean> {
+  return (await resolveUserByEmail(invite.email))?.userId === userId
+}
+
 // ── 수락 ──────────────────────────────────────────────────────────────
 
 export type AcceptInviteOutcome =
@@ -296,14 +306,13 @@ export async function acceptInvite(
       return { ok: false, reason: 'invalid' } as const
     }
 
-    // 초대받은 주소가 이 계정의 **검증된** 이메일이어야 한다.
-    // 미검증 별칭을 인정하면 아무 주소나 등록해 남의 초대를 가져갈 수 있다.
-    const owns = await tx.queryMaybe<{ id: string }>(
-      `SELECT id FROM user_email
-        WHERE user_id = $1 AND email = $2 AND verified_at IS NOT NULL`,
-      [userId, invite.email],
-    )
-    if (!owns) {
+    // 초대받은 주소가 이 계정의 **검증된** 이메일(대표 · 별칭)이어야 한다 — 주소 → 계정 해석(AC-2). 받는 때는 지금이다: 초대한 뒤에
+    // 이 주소를 별칭으로 확인한 계정이 이어받는다. 남이 걸어 둔 확인 대기는 받지 못한다(아무 주소나 걸어 남의 초대를 가져가지 못하게).
+    // 받는 사람 행을 먼저 잡는다 — 주소 더하기 · 빼기도 사람 행을 먼저 잡으므로(같은 순서 · 교착 없음) 수락과 그 주소 빼기가 겹치지 않는다.
+    // NO KEY UPDATE — 그 사람을 가리키는 행을 쓰는 다른 명령(FK 의 KEY SHARE)은 막지 않는다.
+    await tx.query(`SELECT 1 FROM "user" WHERE id = $1 FOR NO KEY UPDATE`, [userId])
+    const owner = await resolveUserByEmail(invite.email, { tx })
+    if (owner?.userId !== userId) {
       return { ok: false, reason: 'email_mismatch' } as const
     }
 
