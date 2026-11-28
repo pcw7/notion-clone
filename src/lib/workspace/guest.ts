@@ -15,7 +15,7 @@
  * 주체는 이 워크스페이스의 사람이어야 한다(`acl.ts` `isPerson` · 7d-2).
  *
  *   · **있는 계정은 수락 없이 곧바로.** 이메일은 **검증된** 주소로 찾는다(미검증 주소는 누구나 등록할 수 있다 — 워크스페이스
- *     초대의 수락과 같은 규칙). **없으면 대기 초대를 남긴다**(7g-1 · `as: 'pending'`) — 워크스페이스 초대의 한 종류(`role='guest'`
+ *     초대의 수락과 같은 규칙) — 대표든 별칭이든 그 계정이다(`resolveUserByEmail` · AC-2). **없으면 대기 초대를 남긴다**(7g-1 · `as: 'pending'`) — 워크스페이스 초대의 한 종류(`role='guest'`
  *     + 페이지 · 레벨)로, 받는 사람이 메일의 링크로 가입해 받아들이면 그때 멤버십과 부여를 쓴다(`invite.ts` `acceptInvite`)
  *   · 그 사람이 **이미 멤버**면 역할을 건드리지 않고 부여만 한다(`as: 'member'`). 이미 게스트면 부여만, 떠났던 사람은 게스트로
  *     돌아온다(M1 의 행을 되살린다). 멈춘 사람은 들이지 않는다(`unavailable`)
@@ -27,6 +27,7 @@
 
 import { randomBytes } from 'node:crypto'
 
+import { resolveUserByEmail } from '../auth/resolve-user.ts'
 import { isLoginSession, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { query } from '../db/pool.ts'
@@ -108,14 +109,9 @@ export async function inviteGuestToPage(
   const level = rawLevel
 
   return withCommandTransaction(async (tx) => {
-    const account = await tx.queryMaybe<{ user_id: string }>(
-      `SELECT ue.user_id
-         FROM user_email ue
-         JOIN "user" u ON u.id = ue.user_id AND u.deleted_at IS NULL
-        WHERE ue.email = $1 AND ue.verified_at IS NOT NULL`,
-      [email],
-    )
-    const target = account?.user_id ?? null
+    // 주소 → 계정 해석(AC-2) — 검증된 별칭도 대표와 같다. 부여는 그 계정(user_id)에 쓴다 — 별칭을 빼도 이 공유는 남는다.
+    const account = await resolveUserByEmail(email, { tx })
+    const target = account?.userId ?? null
     const membership =
       target === null
         ? null

@@ -25,6 +25,7 @@ import { CODE_REQUEST_PER_EMAIL, LOGIN_CODE_MAX_ATTEMPTS, LOGIN_CODE_TTL_SECONDS
 import { generateOtpCode, hashOtpCode, otpCodeMatches, recordAuthEvent, type RequestContext } from './login-code.ts'
 import { sendEmailVerifyCode } from './mailer.ts'
 import { verifyPassword } from './password-hash.ts'
+import { resolveUserByEmail } from './resolve-user.ts'
 import { isLoginSession, type SessionContext } from './session-context.ts'
 
 /** 이 시간 안에 로그인한 세션은 지금 비밀번호 없이 주소를 바꾼다(정본 ⑦ — 2단계 인증의 게이트를 이미 지났다). */
@@ -187,8 +188,9 @@ export async function requestEmailVerification(
   const gate = await withReadTransaction(async (tx) => {
     const denied = await reauthFailure(tx, ctx, input.currentPassword)
     if (denied !== null) return { denied } as const
-    const owner = await tx.queryMaybe<{ user_id: string }>(`SELECT user_id FROM user_email WHERE email = $1`, [email])
-    if (owner?.user_id === ctx.userId) return { denied: 'already_yours' } as const
+    // 다른 계정의 주소인가 — 주소 → 계정 해석(AC-2 · `resolveUserByEmail` 한 곳)
+    const owner = await resolveUserByEmail(email, { tx })
+    if (owner?.userId === ctx.userId) return { denied: 'already_yours' } as const
     const count = await tx.queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM user_email WHERE user_id = $1`, [ctx.userId])
     if (count.n >= MAX_EMAILS_PER_ACCOUNT) return { denied: 'limit_reached' } as const
     return { denied: null, taken: owner !== null } as const
@@ -270,8 +272,8 @@ export async function verifyEmail(
 
   const added = await withCommandTransaction(async (tx): Promise<EmailResult<AccountEmail>> => {
     await tx.query(`SELECT 1 FROM "user" WHERE id = $1 FOR UPDATE`, [ctx.userId])
-    const owner = await tx.queryMaybe<{ user_id: string }>(`SELECT user_id FROM user_email WHERE email = $1`, [email])
-    if (owner?.user_id === ctx.userId) return fail('already_yours')
+    const owner = await resolveUserByEmail(email, { tx })
+    if (owner?.userId === ctx.userId) return fail('already_yours')
     if (owner !== null) return fail('unavailable')
     const count = await tx.queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM user_email WHERE user_id = $1`, [ctx.userId])
     if (count.n >= MAX_EMAILS_PER_ACCOUNT) return fail('limit_reached')
