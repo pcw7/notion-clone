@@ -48,6 +48,18 @@ export const SESSION_COOKIE = 'nc_session'
  */
 export const ACCOUNTS_COOKIE = 'nc_accounts'
 
+/**
+ * 이 브라우저의 기기 열쇠(AC-3 · F-14-08) — 256비트 난수 · httpOnly. DB 에는 원문이 아니라 사람마다 다른 해시만 간다(`device.ts`). 게이트는
+ * 읽지 않는다 — 새 기기 알림과 기기 목록의 "같은 기기"만 가른다.
+ */
+export const DEVICE_COOKIE = 'nc_device'
+/** 기기 쿠키의 수명 — 브라우저가 받아 주는 상한(Chrome 400일). 로그인마다 다시 늘린다. */
+export const DEVICE_COOKIE_DAYS = 400
+/** [추정] "아는 기기"를 보는 창 — 그 사람의 지난 30일 세션(정본 [보강 AC-0] ⑭). */
+export const KNOWN_DEVICE_DAYS = 30
+/** [추정] 새 기기 알림의 "내가 아니에요" 링크가 사는 날 수. */
+export const DEVICE_REPORT_TTL_DAYS = 7
+
 // ── 레이트리밋 (F-14-16) ──────────────────────────────────────────────
 //
 // 전부 클론의 설계 결정이다. Notion 은 이 영역을 공개하지 않는다.

@@ -187,7 +187,14 @@ type SessionRow = GateRow & {
   mfa_enabled: boolean
   is_expired: boolean
   is_revoked: boolean
+  touch_due: boolean
 }
+
+/**
+ * 세션의 `last_seen_at` 을 이만큼 지나야 다시 쓴다(AC-3 · 기기 목록의 "마지막 활동" · 정본 [보강 AC-0] ⑭ [AC-3]) — 요청마다 쓰지 않는다.
+ * 0016 의 트리거는 `revoked_at` · `expires_at` 만 보므로 이 쓰기는 협업 서버를 울리지 않는다.
+ */
+export const SESSION_TOUCH_SECONDS = 5 * 60
 
 /** 공개 API 의 개인 토큰 — 쿠키 대신 이것을 내면 워크스페이스는 토큰 행에서 온다(API-1). */
 export type ApiTokenCredential = { readonly apiToken: string }
@@ -234,6 +241,7 @@ export async function resolveSessionContext(
                     WHERE mm.user_id = s.user_id AND mm.confirmed_at IS NOT NULL) AS mfa_enabled,
            (s.expires_at <= now())       AS is_expired,
            (s.revoked_at IS NOT NULL)    AS is_revoked,
+           (s.last_seen_at <= now() - make_interval(secs => $3)) AS touch_due,
            m.role                        AS role,
            m.status                      AS member_status,
            COALESCE(sc.enforced, false)  AS sso_enforced,
@@ -247,7 +255,7 @@ export async function resolveSessionContext(
              ON w.id = $2
      WHERE s.token_hash = $1
     `,
-    [hashSessionToken(token), workspaceId],
+    [hashSessionToken(token), workspaceId, SESSION_TOUCH_SECONDS],
   )
 
   if (!row) return { ok: false, reason: 'no_session' }
@@ -260,6 +268,15 @@ export async function resolveSessionContext(
   const authMethod = row.auth_method as AuthMethod
   const gate = passGate(row, authMethod)
   if (!gate.ok) return gate
+
+  if (row.touch_due) {
+    // 마지막 활동(AC-3) — 조건을 다시 건다: 같은 순간의 두 요청이 둘 다 쓰지 않게 · 그새 폐기된 세션은 건드리지 않는다
+    await query(
+      `UPDATE user_session SET last_seen_at = now()
+        WHERE id = $1 AND revoked_at IS NULL AND last_seen_at <= now() - make_interval(secs => $2)`,
+      [row.session_id, SESSION_TOUCH_SECONDS],
+    )
+  }
 
   return {
     ok: true,

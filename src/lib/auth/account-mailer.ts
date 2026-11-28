@@ -1,7 +1,7 @@
 /**
- * 계정 알림 메일 — 주소를 더했다 · 뺐다 · 대표를 바꿨다 · 이미 다른 계정의 주소다 (AC-1 · F-14-07 · F-14-15)
+ * 계정 알림 메일 — 주소를 더했다 · 뺐다 · 대표를 바꿨다 · 이미 다른 계정의 주소다 (AC-1 · F-14-07 · F-14-15) · 새 기기에서 로그인했다 (AC-3 · F-14-08)
  *
- * 정본: 00-canonical-data-model.md §3.2 [보강 AC-0] ③ ⑧
+ * 정본: 00-canonical-data-model.md §3.2 [보강 AC-0] ③ ⑧ ⑭ [AC-3]
  *
  * 로그인 코드(`mailer.ts`)와 **큐를 분리**한다 — 알림이 밀려도 로그인 코드는 늦지 않아야 한다(F-14-02 의 원칙 · 초대 메일과 같은 자리).
  * 유료 발송기에 기대지 않는다. 지금은 개발용 콘솔뿐이다(실제 발송기는 배포 준비 때 — 이 함수의 모양은 그대로).
@@ -20,17 +20,43 @@ export type AccountNoticeKind =
   | 'email_primary_changed'
   /** 다른 계정의 주소를 더하려 했다 — 그 주소로(그 메일함의 주인만 안다 · 열거 방지) */
   | 'email_taken'
+  /** 처음 보는 기기에서 로그인했다 — 대표 주소로(AC-3 · "내가 아니에요" 링크) */
+  | 'new_device_login'
 
-export type AccountNotice = {
-  readonly to: string
-  readonly kind: AccountNoticeKind
-  /** 알림이 말하는 주소(더한 · 뺀 · 새 대표 · 더하려던 주소). */
-  readonly address: string
-}
+export type AccountNotice =
+  | {
+      readonly to: string
+      readonly kind: Exclude<AccountNoticeKind, 'new_device_login'>
+      /** 알림이 말하는 주소(더한 · 뺀 · 새 대표 · 더하려던 주소). */
+      readonly address: string
+    }
+  | {
+      readonly to: string
+      readonly kind: 'new_device_login'
+      /** 기기 이름("Chrome · Windows" — `deviceLabel`). */
+      readonly device: string
+      /** 대략 위치(`placeLabel` — 가린 IP) — 모르면 null. 온전한 IP 를 싣지 않는다. */
+      readonly place: string | null
+      /** 로그인한 때(ISO). */
+      readonly at: string
+      /** "내가 아니에요" 화면의 주소 — 서명을 만들지 못했으면 null(알림은 그래도 간다). */
+      readonly reportUrl: string | null
+    }
+
+/** 알림 메일의 시각 — 받는 사람의 시간대를 모르므로 UTC 로 적는다. */
+const noticeTime = (iso: string): string => `${iso.slice(0, 16).replace('T', ' ')} UTC`
 
 /** 알림의 본문 — 화면과 같은 말투 · 개발 콘솔이 그대로 찍는다. */
 export function accountNoticeText(notice: AccountNotice): string {
   switch (notice.kind) {
+    case 'new_device_login':
+      return [
+        `처음 보는 기기에서 계정에 로그인했습니다 — ${notice.device}${notice.place === null ? '' : ` · ${notice.place}`} · ${noticeTime(notice.at)}.`,
+        '본인이라면 아무것도 하지 않아도 됩니다.',
+        notice.reportUrl === null
+          ? '본인이 아니면 바로 로그인해 설정 → 보안에서 다른 모든 기기에서 로그아웃하고 비밀번호를 바꾸세요.'
+          : `본인이 아니면 이 링크에서 모든 기기를 로그아웃시키고 비밀번호를 바꾸세요(7일 · 한 번) — 내가 아니에요 : ${notice.reportUrl}`,
+      ].join(' ')
     case 'email_added':
       return `계정에 새 이메일 주소 ${notice.address} 를 더했습니다. 본인이 한 일이 아니면 바로 로그인해 그 주소를 빼고 비밀번호를 바꾸세요.`
     case 'email_removed':

@@ -30,6 +30,8 @@ export const SCREEN_TITLES = {
   developers: 'API 문서',
   // AI 채팅(AI-6 · F-10-17) — 사이드바의 "AI"
   ai: 'AI',
+  // 새 기기 알림의 "내가 아니에요"(AC-3 · F-14-08) — 메일의 링크로 연다 · 로그인하지 않아도 된다
+  notMe: '내가 아니에요',
 } as const
 
 /** 틀을 씌운 전체 제목 — 브라우저에서 탭 제목을 쓸 때(10d-7b · `DocumentTitle`) · 틀이 닿지 않는 루트 구간의 화면. */

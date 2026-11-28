@@ -10,6 +10,7 @@
  *   too_many_attempts    429  로그인 코드로는 들어올 수 있다
  *
  * `addAccount: true` 면 다른 계정 더하기다(8j-2 — 로그인 코드와 같다 · `finishLogin`).
+ * 이 브라우저의 기기 열쇠(`nc_device` · AC-3)를 넘긴다 — 처음 보는 기기면 새 기기 알림(로그인 코드와 같다).
  */
 
 import { finishLogin, readAccounts } from '@/lib/auth/accounts-cookie'
@@ -17,6 +18,7 @@ import { establishLogin } from '@/lib/auth/establish-login'
 import { mfaEnabledFor } from '@/lib/auth/mfa'
 import { findPasswordLogin } from '@/lib/auth/password'
 import { requestMeta } from '@/lib/auth/request-meta'
+import { deviceKeyForLogin, setDeviceCookie } from '@/lib/auth/session-cookie'
 import { withMinimumDuration } from '@/lib/auth/timing'
 
 export async function POST(request: Request): Promise<Response> {
@@ -41,14 +43,18 @@ export async function POST(request: Request): Promise<Response> {
       return Response.json({ error: found.reason }, { status: found.reason === 'too_many_attempts' ? 429 : 401 })
     }
 
+    const deviceKey = await deviceKeyForLogin()
     const login = await establishLogin({
       email: found.value.email,
       existingUserId: found.value.userId,
       authMethod: 'password',
       ip: meta.ip,
       userAgent: meta.userAgent,
+      deviceKey,
+      appUrl: process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin,
     })
     await finishLogin(before, login.session, login.userId, addAccount === true)
+    await setDeviceCookie(deviceKey)
     // 2단계 인증을 켠 사람이면 이 세션은 둘째 단계를 거쳐야 들어온다(8i-2a) — 화면이 그 단계로 간다.
     return Response.json({ ok: true, mfaRequired: await mfaEnabledFor(login.userId) })
   })

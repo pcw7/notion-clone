@@ -406,12 +406,14 @@ CREATE TABLE user_session (                                  -- <14 B. `session`
     CHECK (auth_method IN ('login_code','password','passkey','google','apple','microsoft','saml')),
   mfa_satisfied boolean NOT NULL DEFAULT false,
   device_id uuid NULL,                                       -- device_offline_manifest 와 연결 <C-11>
+                                                             -- [보강 AC-0] [AC-3] 기기 쿠키의 해시(판 8 만 — CHECK · 0158)
   device_label text, device_kind text CHECK (device_kind IN ('web','desktop','mobile')),
   ip inet, approx_location text,
   created_at timestamptz NOT NULL, last_seen_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL, revoked_at timestamptz NULL, revoked_reason text NULL
 );
 CREATE INDEX ON user_session (user_id) WHERE revoked_at IS NULL;
+CREATE INDEX ON user_session (user_id, device_id) WHERE device_id IS NOT NULL;   -- [AC-3] 아는 기기 묻기 (0158)
 -- 불변식 A8: 유효 세션 = revoked_at IS NULL AND expires_at > now()
 -- 불변식 A9: effective() 의 입력은 user_id 가 아니라
 --            (user_id, workspace_id, auth_method, mfa_satisfied, session_id) 다.
@@ -627,6 +629,35 @@ F-14-15 · F-14-08 / 마이그레이션 0157~⟩
 > 남는다 · API 토큰은 그대로) · **새 기기 로그인 알림**(그 사람의 지난 30일 세션에 없던 기기 표시로 들어오면 대표 주소로 · "내가 아니다"
 > 링크는 한 번 쓰는 서명 링크 — 모든 세션 폐기 · `revoked_reason='user_reported'`). 폐기가 협업 연결을 닫는지는 그 조각이 확인한다(세션
 > 재확인의 길). 세션 표는 그대로다.
+> **[AC-3] 기기 표시 · 아는 기기 · 목록 · 끊기 · 알림** ⟨마이그레이션 0158 — 색인 하나 · CHECK 하나 · 칸은 그대로⟩
+> · **기기 표시는 `user_session.device_id`** — 브라우저마다 오래 사는 쿠키 `nc_device`(256비트 난수 · httpOnly · 400일 · 로그인 때 없거나
+> 모양이 틀리면 새로 만든다)를 들고, DB 에는 원문이 아니라 **`SHA-256(user_id ‖ 열쇠)` 의 앞 16바이트를 판 8 UUID 로** 적는다. 사람마다
+> 값이 달라 한 브라우저의 두 계정(8j-2)이 DB 에서 이어지지 않고, DB 가 새어도 "아는 기기"를 흉내 내 알림을 피하지 못한다. 판 8 만 받는다
+> (CHECK — 날 UUID 를 그대로 넣는 실수를 막는다). `device_offline_manifest` 와 같은 축(C-11)은 그대로 — 그 표가 생기면 같은 값을 쓴다.
+> · **아는 기기** = 그 사람의 세션 중 같은 기기 표시 · 마지막 활동이 30일 안 · **살아 있거나 그 기기가 스스로 끝낸 것**(`user_logout` ·
+> `user_logout_all` · `superseded`). 다른 곳에서 끊은 세션(하나씩 · 다른 모든 · 내가 아니다 · 비밀번호 · 주소 빼기 · 계정 삭제)은 보증하지
+> 않는다 — 끊은 기기가 다시 들어오면 다시 알린다. 가입(그 계정의 첫 세션)은 알리지 않는다. 기기 표시 없는 세션(시험 도우미)은 보증하지 않는다.
+> · **알림**은 대표 주소로 — 계정 알림 큐(⑧ 과 같은 큐 · 실패해도 로그인을 되돌리지 않는다) · 기기(브라우저 · OS) · 대략 위치 · 시각 ·
+> "내가 아니다" 링크 · `auth_event('new_device_login', meta.session_id)`. **앱 안에서는 기기 목록의 "새 기기" 표지**(30일 안에 알림을 보낸
+> 세션)다 — 받은편지함 알림은 만들지 않는다(`notification` 은 페이지 · 워크스페이스의 것 — `page_id` · `workspace_id` NOT NULL).
+> · **"내가 아니다"** — `/account/not-me?t=<세션 id>.<만료 초>.<서명>` · HMAC-SHA256(`AUTH_SECRET` → HKDF `notion-clone/device-report/v1`) ·
+> 7일. **GET 은 아무것도 바꾸지 않는다**(메일의 링크 미리보기 · 검사기가 누르지 않게) — 화면의 단추(POST)가 그 사람의 모든 세션을
+> 폐기한다(`user_reported` · API 토큰은 그대로 — ⑫). 한 번만: 그 세션의 `auth_event('new_device_reported')` 가 있으면 `already_used`.
+> 끝나면 다시 로그인해 비밀번호를 바꾸라고 말한다(비밀번호가 없으면 메일함을 지키라고).
+> · **목록**은 살아 있는 세션(A8)만 · 이 세션이 맨 위("이 기기") · 그다음 마지막 활동 순. 기기는 `device_label`(User-Agent 원문 256자)을
+> 읽을 때 저장소 안의 작은 함수로 가른다(브라우저 · OS · 폰/태블릿/컴퓨터 — 새 의존성 없음). 대략 위치는 `approx_location` 이 있으면 그것,
+> 없으면 **가린 IP**(IPv4 앞 셋 · IPv6 앞 세 묶음) · 없으면 "알 수 없음" — 유료 geo-IP 는 쓰지 않고 화면에 온전한 IP 를 주지 않는다.
+> **마지막 활동**은 세션 해석(`resolveSessionContext`)이 `last_seen_at` 을 5분에 한 번만 쓴다(API 토큰의 `last_used_at` 과 같은 꼴 · 0016
+> 트리거는 그 칸을 보지 않는다).
+> · **하나씩 로그아웃** — 그 사람의 다른 살아 있는 세션(`device_signed_out`) · 이 세션은 못 한다(`current_session` — 로그아웃 단추로) · 남의
+> 세션 · 없는 세션은 `not_found`(같은 답). **다른 모든 기기** — 이 세션을 뺀 모두(`other_devices_signed_out` · API 토큰 그대로). 둘 다
+> **재인증을 묻지 않는다**(⑦ 은 주소의 일 — 끊기는 새 접근을 주지 않는다 · 노션도 묻지 않는다). 위임 · API 토큰 컨텍스트는 목록까지
+> `session_required`.
+> · **폐기가 닿는 곳** — 세션 해석은 요청마다 DB 를 읽는다(캐시 없음) → 그 세션의 다음 요청이 401. `revoked_at` 을 쓰는 UPDATE 는 0016 의
+> 트리거(`collab_access` · `user:<id>`)를 울린다 → 협업 서버가 그 사람의 연결을 다시 판정해 닫고(편집기 "로그인이 풀렸습니다") 표 변경
+> 허브(SSE)도 같은 신호를 받는다. 같은 길이라 새 신호를 만들지 않는다.
+> · **기록** — `auth_event` `session_revoked`(meta.scope `one` · `others` · 폐기 수) · `new_device_login` · `new_device_reported` · 감사
+> `account.security_changed` 의 change `device_signed_out` · `other_devices_signed_out` · `new_device_reported`.
 >
 > 조각: **AC-1** 이메일 여러 개 — 더하기 · 확인 · 대표로 · 빼기 · 재인증 · 알림 · 열거 방지(0157) → **AC-2** 별칭의 공유 · 초대 · 멘션
 > 해석(`resolveUserByEmail` 한 곳 · 대기 초대 승계 · 다른 사람에게는 대표만) → **AC-3** 기기 목록 · 하나씩 · 다른 모든 기기 로그아웃 · 새

@@ -9,8 +9,9 @@
  */
 
 import { cookies } from 'next/headers'
-import { ACCOUNTS_COOKIE, SESSION_COOKIE, SESSION_MAX_LIFETIME_DAYS } from './constants.ts'
+import { ACCOUNTS_COOKIE, DEVICE_COOKIE, DEVICE_COOKIE_DAYS, SESSION_COOKIE, SESSION_MAX_LIFETIME_DAYS } from './constants.ts'
 import { parseAccountTokens, serializeAccountTokens } from './account-set.ts'
+import { isDeviceKey, newDeviceKey } from './device-identity.ts'
 import type { IssuedSession } from './session.ts'
 
 export { SESSION_COOKIE }
@@ -35,6 +36,28 @@ export async function clearSessionCookie(): Promise<void> {
 export async function readSessionToken(): Promise<string | null> {
   const jar = await cookies()
   return jar.get(SESSION_COOKIE)?.value ?? null
+}
+
+/**
+ * 로그인할 이 브라우저의 기기 열쇠(AC-3 · F-14-08) — 쿠키에 모양이 맞는 열쇠가 있으면 그것, 없으면 새로 만든다(쓰는 것은
+ * `setDeviceCookie` — 로그인이 성공한 뒤에). 원문은 쿠키에만 있고 DB 에는 해시만 간다(`deviceIdFor`).
+ */
+export async function deviceKeyForLogin(): Promise<string> {
+  const jar = await cookies()
+  const value = jar.get(DEVICE_COOKIE)?.value
+  return isDeviceKey(value) ? value : newDeviceKey()
+}
+
+/** 기기 쿠키를 쓴다 — 로그인마다 수명을 다시 늘린다. 로그아웃은 지우지 않는다(같은 브라우저는 같은 기기다). */
+export async function setDeviceCookie(deviceKey: string): Promise<void> {
+  const jar = await cookies()
+  jar.set(DEVICE_COOKIE, deviceKey, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    expires: new Date(Date.now() + DEVICE_COOKIE_DAYS * 24 * 60 * 60 * 1000),
+  })
 }
 
 /** 함께 로그인한 다른 계정의 세션들(8j-2) — 모양이 맞는 토큰만 · 겹치면 한 번. */

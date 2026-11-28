@@ -38,6 +38,10 @@ const SECURITY_CHANGE: Readonly<Record<string, string>> = {
   email_added: '이메일 주소를 더했다',
   email_removed: '이메일 주소를 뺐다',
   email_primary_changed: '대표 이메일 주소를 바꿨다',
+  // 로그인한 기기(AC-3 · 정본 §3.2 [보강 AC-0] ⑭ [AC-3]) — 끊은 세션의 수만 싣는다
+  device_signed_out: '기기 하나를 로그아웃시켰다',
+  other_devices_signed_out: '다른 모든 기기를 로그아웃시켰다',
+  new_device_reported: '새 기기 로그인을 "내가 아니에요"로 알렸다',
   // 공개 API 의 개인 토큰(API-1) — 이 워크스페이스의 범위로 쌓는다 · 이름을 함께 보인다
   api_token_created: 'API 토큰을 만들었다',
   api_token_revoked: 'API 토큰을 폐기했다',
