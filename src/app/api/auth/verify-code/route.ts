@@ -5,6 +5,8 @@
  *
  * `addAccount: true` 면 다른 계정 더하기다(8j-2 · F-14-09) — 앞의 활성 세션이 다른 사람의 살아 있는 세션이면 로그아웃하지 않고 목록으로
  * 옮긴다(`finishLogin` · 정본 §3.2 [보강] 다중 계정 ②).
+ *
+ * 이 브라우저의 기기 열쇠(`nc_device` · AC-3)를 넘긴다 — 처음 보는 기기면 대표 주소로 새 기기 알림이 간다(정본 [보강 AC-0] ⑭ [AC-3]).
  */
 
 import { finishLogin, readAccounts } from '@/lib/auth/accounts-cookie'
@@ -12,6 +14,7 @@ import { establishLogin } from '@/lib/auth/establish-login'
 import { verifyLoginCode } from '@/lib/auth/login-code'
 import { mfaEnabledFor } from '@/lib/auth/mfa'
 import { requestMeta } from '@/lib/auth/request-meta'
+import { deviceKeyForLogin, setDeviceCookie } from '@/lib/auth/session-cookie'
 import { withMinimumDuration } from '@/lib/auth/timing'
 
 function parseEmail(value: unknown): string | null {
@@ -59,15 +62,19 @@ export async function POST(request: Request): Promise<Response> {
       return Response.json({ error: verified.reason }, { status })
     }
 
+    const deviceKey = await deviceKeyForLogin()
     const login = await establishLogin({
       email: verified.email,
       existingUserId: verified.userId,
       authMethod: 'login_code',
       ip: meta.ip,
       userAgent: meta.userAgent,
+      deviceKey,
+      appUrl: process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin,
     })
 
     await finishLogin(before, login.session, login.userId, (body as { addAccount?: unknown })?.addAccount === true)
+    await setDeviceCookie(deviceKey)
 
     return Response.json({
       ok: true,

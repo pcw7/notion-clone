@@ -330,6 +330,19 @@ try {
     await client.query('SET CONSTRAINTS user_primary_email_own_fk DEFERRED')
   }
 
+  // [보강 AC-0] ⑭ [AC-3] 세션의 기기 표시는 해시만(판 8 UUID) · 아는 기기를 묻는 부분 색인 (0158)
+  {
+    const insertSession = `INSERT INTO user_session (id, user_id, token_hash, auth_method, device_id, created_at, last_seen_at, expires_at)
+                           VALUES ($1, $2, $3, 'login_code', $4, now(), now(), now() + interval '1 day')`
+    await mustReject('AC-3 기기 표시가 날 UUID(판 4 — 쿠키 원문을 그대로 넣었다)', insertSession, [randomUUID(), userId, randomUUID(), randomUUID()])
+    await client.query(insertSession, [randomUUID(), userId, randomUUID(), '5f0c3b1e-2a4d-8e6f-9a1b-3c5d7e9f0a2b'])
+    await client.query(insertSession, [randomUUID(), userId, randomUUID(), null])
+    ok('AC-3 판 8 기기 표시 · 기기 표시 없는 세션은 들어간다')
+    const device = (await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_user_session_device'`)).rows[0]?.indexdef ?? ''
+    if (/\(user_id, device_id\)/.test(device) && /WHERE \(device_id IS NOT NULL\)/.test(device)) ok('ix_user_session_device — 기기 표시가 있는 행만의 (user_id, device_id) 색인')
+    else fail(`ix_user_session_device 가 틀렸다 — ${device || '없다'}`)
+  }
+
   await mustReject(
     'U3 is_managed 인데 org 없음',
     `INSERT INTO "user" (id, name, is_managed, created_at) VALUES ($1,'관리자계정', true, now())`,

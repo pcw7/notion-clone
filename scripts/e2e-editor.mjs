@@ -12368,6 +12368,207 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('계정 — 기기 (AC-3 · F-14-08)')) { try {
+      // 정본 §3.2 [보강 AC-0] ⑭ [AC-3] — 브라우저 컨텍스트 둘(쿠키 상자 둘) = 기기 둘. 각 기기가 실제 로그인 길(비밀번호 — 로그인 코드는 주소마다
+      // 5분에 세 번이라 이 절의 로그인 다섯 번을 받지 못한다)을 지나 기기 쿠키를 받는다. 새 기기 알림은 한 번 · 같은 기기는 다시 없다 · 설정 →
+      // 보안의 기기 목록("이 기기" · "새 기기") · 하나씩 끊으면 그 기기의 다음 요청이 401 이고 열린 페이지의 협업 연결이 닫힌다 · 다른 모든 기기 ·
+      // "내가 아니에요" 링크(GET 은 그대로 · 단추가 모두 끊는다 · 한 번만) · 폰 폭 · 어두운 테마. 주 탭의 세션은 건드리지 않는다. 자기 데이터를 스스로.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { deviceIdFor } = await import(new URL('../src/lib/auth/device-identity.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const who = await joinAs(workspaceId, await createUser(`기기의 사람 ${stamp}`), 'member')
+      const password = `devices-e2e-${stamp}`
+      const asFixture = { ...json, cookie: `nc_session=${who.token}` }
+      const pageId = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: asFixture, body: '{}' })).json())?.page?.id
+      const setPw = await fetch(`${BASE}/api/workspaces/${workspaceId}/account/password`, { method: 'PUT', headers: asFixture, body: JSON.stringify({ newPassword: password }) })
+      const SECURITY = `${BASE}/w/${workspaceId}/settings?s=account.security`
+      const outputFrom = serverOutput.length
+      // 이 사람에게 간 새 기기 알림 — 이 절이 시작한 뒤의 서버 출력에서(콘솔 메일러)
+      const alerts = () => {
+        const out = serverOutput.slice(outputFrom)
+        const found = []
+        for (let at = out.indexOf(`받는 사람 : ${who.email}`); at >= 0; at = out.indexOf(`받는 사람 : ${who.email}`, at + 1)) {
+          // 그 알림의 상자 끝(└)까지만 — 뒤따르는 다른 알림의 글을 섞지 않는다
+          const end = out.indexOf('└', at)
+          const block = out.slice(at, end < 0 ? at + 1200 : end)
+          if (block.includes('종류      : new_device_login')) found.push(block.match(/내가 아니에요 : (\S+)/)?.[1] ?? null)
+        }
+        return found
+      }
+      const waitAlerts = async (n) => {
+        for (let i = 0; i < 50 && alerts().length < n; i += 1) await sleep(100)
+        return alerts().length
+      }
+      const sessions = () => dbQuery(`SELECT id, revoked_reason FROM user_session WHERE user_id = $1 ORDER BY created_at`, [who.userId])
+      const newestSession = async () => (await sessions()).at(-1)?.id ?? null
+
+      // 브라우저에 붙는 연결(브라우저 수준) — 컨텍스트를 만들고 그 안의 탭에 flatten 세션으로 붙는다
+      const version = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const browserWs = new WebSocket(version.webSocketDebuggerUrl)
+      await new Promise((ok, no) => { browserWs.onopen = ok; browserWs.onerror = no })
+      let browserSeq = 0
+      const browserPending = new Map()
+      browserWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)(m); browserPending.delete(m.id) }
+      }
+      const browserSend = (method, params = {}, sessionId = undefined) => new Promise((ok, no) => {
+        const id = ++browserSeq
+        browserPending.set(id, (m) => (m.error ? no(new Error(`${method}: ${m.error.message}`)) : ok(m.result)))
+        browserWs.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+      const contexts = []
+      /** 쿠키 상자가 따로인 기기 하나 — 그 탭의 evaluate · 기다리기 · 이동 · 같은 출처 fetch · 비밀번호 로그인. */
+      const openDevice = async () => {
+        const { browserContextId } = await browserSend('Target.createBrowserContext', { disposeOnDetach: true })
+        contexts.push(browserContextId)
+        const { targetId } = await browserSend('Target.createTarget', { url: 'about:blank', browserContextId })
+        const { sessionId } = await browserSend('Target.attachToTarget', { targetId, flatten: true })
+        const cdpIn = (method, params = {}) => browserSend(method, params, sessionId)
+        await cdpIn('Runtime.enable')
+        await cdpIn('Page.enable')
+        const ev = async (expression) => {
+          const r = await cdpIn('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
+          if (r.exceptionDetails) throw new Error(`evaluate(기기): ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`)
+          return r.result.value
+        }
+        const wait = async (expression, ms = 10000) => {
+          for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+            try { if (await ev(expression)) return true } catch { /* 이동 중 */ }
+          }
+          return false
+        }
+        const go = async (url) => {
+          await cdpIn('Page.navigate', { url })
+          await wait(`document.readyState === 'complete'`, 15000)
+        }
+        const api = (path, init = {}) =>
+          ev(`fetch(${JSON.stringify(path)}, ${JSON.stringify({ headers: { 'content-type': 'application/json', accept: 'application/json' }, ...init })})
+            .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))`)
+        const login = () => api('/api/auth/password-login', { method: 'POST', body: JSON.stringify({ email: who.email, password }) })
+        // 하이드레이션 전의 클릭은 아무 일이 없다 — 바라는 것이 될 때까지 다시 누른다
+        const clickUntil = async (selector, done, ms = 4000) => {
+          for (let i = 0; i < 5; i += 1) {
+            if (await ev(done)) return true
+            await ev(`document.querySelector(${JSON.stringify(selector)})?.click()`)
+            if (await wait(done, ms)) return true
+          }
+          return false
+        }
+        return { cdpIn, ev, wait, go, api, login, clickUntil }
+      }
+
+      try {
+        const a = await openDevice()
+        const b = await openDevice()
+        await a.go(`${BASE}/login`)
+        await b.go(`${BASE}/login`)
+
+        const aFirst = await a.login()
+        const firstAlerts = await waitAlerts(1)
+        const aCookie = await a.cdpIn('Network.getCookies', { urls: [BASE] }).catch(() => ({ cookies: [] }))
+        const deviceCookie = aCookie.cookies?.find((c) => c.name === 'nc_device')
+        const aStored = (await dbQuery(`SELECT device_id::text AS device_id FROM user_session WHERE id = $1`, [await newestSession()]))[0]?.device_id
+        check('★ 기기 A 로그인 — 처음 보는 기기라 새 기기 알림이 대표 주소로 한 번 · 기기 쿠키는 httpOnly · DB 에는 원문이 아니라 그 사람의 해시',
+          setPw.status === 200 && aFirst.status === 200 && firstAlerts === 1 && deviceCookie?.httpOnly === true
+            && typeof aStored === 'string' && aStored === deviceIdFor(who.userId, deviceCookie.value) && aStored !== deviceCookie.value,
+          JSON.stringify({ setPw: setPw.status, aFirst, firstAlerts, httpOnly: deviceCookie?.httpOnly, aStored }))
+
+        // 같은 기기 — 로그아웃했다 다시 들어와도 알리지 않는다(스스로 끝낸 세션이 보증한다). B 의 알림이 온 뒤에 센다(출력은 차례대로 온다)
+        await a.api('/api/auth/logout', { method: 'POST', body: '{}' })
+        const aAgain = await a.login()
+        const aSession = await newestSession()
+        const bFirst = await b.login()
+        const bSession = await newestSession()
+        await waitAlerts(2)
+        await sleep(300)
+        check('★ 같은 기기(A)는 다시 알리지 않는다 · 다른 기기(B)는 또 한 번 — 알림 둘',
+          aAgain.status === 200 && bFirst.status === 200 && alerts().length === 2, JSON.stringify({ aAgain: aAgain.status, bFirst: bFirst.status, alerts: alerts().length }))
+
+        // B 가 페이지를 열어 협업 서버에 붙는다
+        await b.go(`${BASE}/w/${workspaceId}/${pageId}`)
+        const bOnline = await b.wait(`document.querySelector('section[aria-label="본문"]')?.getAttribute('data-online') === 'true'`, 20000)
+
+        // A 의 설정 → 보안 — 기기 목록
+        await a.go(SECURITY)
+        await a.wait(`!!document.querySelector('[data-testid="devices-panel"]')`, 15000)
+        const rowSel = (id) => `[data-testid="device-row"][data-session-id="${id}"]`
+        const rows = await a.ev(`[...document.querySelectorAll('[data-testid="device-row"]')].map((r) => ({ id: r.dataset.sessionId, current: r.dataset.current, isNew: r.dataset.new, text: r.innerText }))`)
+        check('★ 기기 목록 — 살아 있는 세션 셋(시험 도우미 · A · B) · A 가 맨 위 "이 기기"(끊는 단추 없음) · B 는 "Chrome · Windows" 와 "새 기기" · 온전한 IP 없음',
+          rows.length === 3 && rows[0]?.id === aSession && rows[0]?.current === 'true' && /이 기기/.test(rows[0]?.text ?? '')
+            && !(await a.ev(`!!document.querySelector(${JSON.stringify(`${rowSel(aSession)} [data-testid="device-sign-out"]`)})`))
+            && rows.some((r) => r.id === bSession && r.isNew === 'true' && /Chrome · Windows/.test(r.text) && /새 기기/.test(r.text))
+            && rows.every((r) => !/\d+\.\d+\.\d+\.\d+/.test(r.text)),
+          JSON.stringify(rows))
+
+        // 폰 폭 · 어두운 테마 — A 의 화면에서
+        await a.cdpIn('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await a.go(SECURITY)
+        await a.wait(`!!document.querySelector('[data-testid="devices-panel"]')`, 15000)
+        check('폰 폭(390) — 기기 패널이 칸 밖으로 넘치지 않는다',
+          await a.ev(`(() => { const p = document.querySelector('[data-testid="devices-panel"]'); return !!p && p.scrollWidth <= p.clientWidth + 1 })()`),
+          String(await a.ev(`(() => { const p = document.querySelector('[data-testid="devices-panel"]'); return p ? p.scrollWidth + ' / ' + p.clientWidth + ' · 문서 ' + document.documentElement.scrollWidth : null })()`)))
+        await a.cdpIn('Emulation.clearDeviceMetricsOverride')
+        const badgeBg = () => a.ev(`(() => { const el = document.querySelector('[data-testid="device-current-badge"]'); return el ? getComputedStyle(el).backgroundColor : null })()`)
+        const lightBg = await badgeBg()
+        await a.cdpIn('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+        await a.go(SECURITY)
+        await a.wait(`!!document.querySelector('[data-testid="device-current-badge"]')`, 15000)
+        const darkBg = await badgeBg()
+        await a.cdpIn('Emulation.setEmulatedMedia', { features: [] })
+        check('어두운 테마 — "이 기기" 표지의 바탕이 밝을 때와 다르다', lightBg !== null && darkBg !== null && lightBg !== darkBg, JSON.stringify([lightBg, darkBg]))
+
+        // 하나씩 — A 가 B 를 끊는다
+        await a.go(SECURITY)
+        await a.wait(`!!document.querySelector('[data-testid="devices-panel"]')`, 15000)
+        const signedOut = await a.clickUntil(`${rowSel(bSession)} [data-testid="device-sign-out"]`, `!document.querySelector(${JSON.stringify(rowSel(bSession))})`, 6000)
+        const bInbox = await b.api(`/api/workspaces/${workspaceId}/inbox`)
+        const bClosed = await b.wait(`document.querySelector('section[aria-label="본문"]')?.getAttribute('data-online') === 'false' && document.body.innerText.includes('로그인이 풀렸습니다')`, 15000)
+        const aInbox = await a.api(`/api/workspaces/${workspaceId}/inbox`)
+        check('★ 하나씩 로그아웃 — B 의 줄이 사라지고 · B 의 다음 요청은 401 · 열려 있던 B 의 페이지는 협업 연결이 닫혀 "로그인이 풀렸습니다" · A 는 그대로',
+          signedOut && bOnline && bInbox.status === 401 && bClosed && aInbox.status === 200
+            && (await sessions()).find((s) => s.id === bSession)?.revoked_reason === 'device_signed_out',
+          JSON.stringify({ signedOut, bOnline, bInbox: bInbox.status, bClosed, aInbox: aInbox.status, status: await a.ev(`document.querySelector('[data-testid="devices-status"]')?.textContent ?? null`) }))
+
+        // 끊긴 기기가 다시 들어오면 다시 알린다(다른 곳에서 끊은 세션은 보증하지 않는다)
+        const bBack = await b.login()
+        const bBackSession = await newestSession()
+        const third = await waitAlerts(3)
+        await a.go(SECURITY)
+        await a.wait(`document.querySelectorAll('[data-testid="device-row"]').length === 3`, 15000)
+        const othersDone = await a.clickUntil('[data-testid="devices-sign-out-others"]', `!!document.querySelector('[data-testid="devices-sign-out-others-confirm"]')`)
+          && await a.clickUntil('[data-testid="devices-sign-out-others-confirm"]', `document.querySelectorAll('[data-testid="device-row"]').length === 1`, 6000)
+        const afterOthers = await sessions()
+        check('★ 다른 모든 기기 — 한 번 더 묻고 · 이 기기(A)만 남는다 · 끊겼던 B 가 다시 들어올 때 알림이 다시 갔다',
+          bBack.status === 200 && third === 3 && othersDone && (await a.api(`/api/workspaces/${workspaceId}/inbox`)).status === 200
+            && afterOthers.filter((s) => s.revoked_reason === null).map((s) => s.id).join() === aSession
+            && afterOthers.find((s) => s.id === bBackSession)?.revoked_reason === 'other_devices_signed_out'
+            && afterOthers.find((s) => s.id === who.ctx.sessionId)?.revoked_reason === 'other_devices_signed_out',
+          JSON.stringify({ bBack: bBack.status, third, othersDone, afterOthers }))
+
+
+        // "내가 아니에요" — 셋째 알림(B 의 재로그인)의 링크를 B 에서 연다. GET 은 그대로 · 단추가 모두 끊는다 · 한 번만
+        // 메일의 링크는 앱의 공개 주소(`NEXT_PUBLIC_APP_URL` — 빌드에 박힌 개발 서버)를 가리킨다. 이 판의 서버는 다른 포트라 경로만 옮긴다(초대 링크와 같다)
+        const mailed = alerts()[2]
+        const link = typeof mailed === 'string' ? `${BASE}${new URL(mailed).pathname}${new URL(mailed).search}` : null
+        await b.go(link ?? `${BASE}/account/not-me`)
+        const ready = await b.wait(`document.querySelector('[data-testid="not-me"]')?.dataset.state === 'ready'`, 15000)
+        const aliveAfterGet = (await sessions()).filter((s) => s.revoked_reason === null).length
+        await b.ev(`document.querySelector('[data-testid="not-me-submit"]')?.click()`)
+        const done = await b.wait(`document.querySelector('[data-testid="not-me"]')?.dataset.state === 'done' && document.body.innerText.includes('비밀번호를 바꾸세요')`, 15000)
+        const aAfter = await a.api(`/api/workspaces/${workspaceId}/inbox`)
+        const reported = (await sessions()).find((s) => s.id === aSession)?.revoked_reason
+        await b.go(link ?? `${BASE}/account/not-me`)
+        const used = await b.wait(`document.querySelector('[data-testid="not-me"]')?.dataset.state === 'used'`, 15000)
+        check('★ "내가 아니에요" — 링크를 열기만 해서는 아무것도 끊기지 않는다 · 단추가 모든 기기를 끊고(A 도 401) 비밀번호를 바꾸라고 한다 · 두 번째는 "이미 처리"',
+          typeof link === 'string' && ready && aliveAfterGet === 1 && done && aAfter.status === 401 && reported === 'user_reported' && used,
+          JSON.stringify({ link: link?.slice(0, 60), ready, aliveAfterGet, done, aAfter: aAfter.status, reported, used }))
+      } finally {
+        for (const browserContextId of contexts) await browserSend('Target.disposeBrowserContext', { browserContextId }).catch(() => {})
+        browserWs.close()
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('다중 계정 — 서버 (8j-2 · F-14-09)')) { try {
       // 화면은 8j-3 이다 — 라우트를 실제 서버로 본다. 세 사람이 한 "브라우저"(손으로 나르는 쿠키 상자)에 차례로 로그인한다: A 는 코드로,
       // B 는 코드 + 더하기, C 는 비밀번호 + 더하기 → 목록 · 바꾸기 · 지금 계정 로그아웃(다음 계정이 활성) · 끝난 세션은 "다시 로그인" ·

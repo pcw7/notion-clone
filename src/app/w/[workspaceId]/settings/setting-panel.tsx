@@ -12,6 +12,7 @@ import { aiInstructionsViewFor } from '@/lib/ai/chat-store'
 import { aiModelSettingsFor } from '@/lib/ai/model-setting'
 import { canCreateApiToken, listApiTokens } from '@/lib/api/api-token'
 import { emailsStatus } from '@/lib/auth/account-email'
+import { listDevices } from '@/lib/auth/devices'
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import { listWorkspaceAudit } from '@/lib/audit/audit'
@@ -37,6 +38,7 @@ import {
   ApiTokenPanel,
   AuditPanel,
   DeleteWorkspacePanel,
+  DevicesPanel,
   EmailsPanel,
   EmojiPanel,
   ExportButton,
@@ -67,6 +69,13 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       // 자기 계정의 비밀번호(8i-1b) — 있는가 · 지금 비밀번호를 묻는가는 서버가 판정한다.
       const status = await passwordStatus(ctx)
       return <PasswordPanel workspaceId={ctx.workspaceId} hasPassword={status.hasPassword} currentRequired={status.currentRequired} />
+    }
+    case 'devices': {
+      // 로그인한 기기(AC-3) — 이 사람의 살아 있는 세션 · 이 세션이 맨 위. 위임 · API 토큰이면 그리지 않는다(설정 화면은 로그인 세션이 연다).
+      // 상대 시각은 서버의 지금으로 센다 — 하이드레이션이 같은 글을 그린다.
+      const devices = await listDevices(ctx)
+      if (!devices.ok) return null
+      return <DevicesPanel workspaceId={ctx.workspaceId} devices={[...devices.value]} now={new Date().toISOString()} />
     }
     case 'account-delete':
       // 계정 삭제(AD-3) — 미리보기는 확인 창이 열릴 때 읽는다. 내보내기 링크가 이 워크스페이스의 설정을 가리키려고 id 만 받는다

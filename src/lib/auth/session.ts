@@ -24,6 +24,8 @@ export type NewSessionInput = {
   readonly ip: string | null
   readonly userAgent: string | null
   readonly deviceKind?: 'web' | 'desktop' | 'mobile'
+  /** 기기 표시(AC-3) — 기기 쿠키의 해시(`deviceIdFor` · 판 8). 모르면(시험 도우미) 없다 — 그런 세션은 "아는 기기"를 보증하지 않는다. */
+  readonly deviceId?: string | null
 }
 
 export type IssuedSession = {
@@ -42,12 +44,12 @@ export async function createSession(tx: Tx, input: NewSessionInput): Promise<Iss
   const token = randomBytes(32).toString('base64url')
 
   // user_session 에는 user_agent 컬럼이 없다. 정본(§3.2)은 device_label 을 쓴다 —
-  // 기기 목록 화면에 "Chrome on Windows" 처럼 보여주기 위한 축이다.
+  // 기기 목록 화면에 "Chrome on Windows" 처럼 보여주기 위한 축이다. 원문을 두고 읽을 때 가른다(`user-agent.ts` · AC-3).
   const row = await tx.queryOne<{ id: string; expires_at: Date }>(
     `INSERT INTO user_session
        (id, user_id, token_hash, auth_method, mfa_satisfied,
-        device_kind, device_label, ip, created_at, last_seen_at, expires_at)
-     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, now(), now(),
+        device_kind, device_label, ip, device_id, created_at, last_seen_at, expires_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $9, now(), now(),
              now() + ($8 || ' days')::interval)
      RETURNING id, expires_at`,
     [
@@ -59,6 +61,7 @@ export async function createSession(tx: Tx, input: NewSessionInput): Promise<Iss
       input.userAgent?.slice(0, 256) ?? null,
       input.ip,
       String(SESSION_MAX_LIFETIME_DAYS),
+      input.deviceId ?? null,
     ],
   )
 
